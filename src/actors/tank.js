@@ -440,6 +440,20 @@ export class Tank {
 
     this.root = new THREE.Group();
     this.root.name = `tank:${this.name}`;
+    // Everything visible hangs off `chassis`, NOT off `root`.
+    //
+    // `root` is the vehicle's GROUND point and its heading — the same contract
+    // every other actor follows, and what the game layer writes into it every
+    // frame (Unit.syncActor copies Unit.pos, whose Y is the terrain height).
+    // The suspension datum sits `rideHeight` above that, and it also carries the
+    // hull's pitch and roll. Keeping those on an inner group means the game
+    // layer and the physics can BOTH own the placement without fighting: before
+    // this split, syncActor's terrain-height write landed last and buried the
+    // Edelweiss up to the top of its tracks, 0.60 m into the dirt, every frame.
+    this.chassis = new THREE.Group();
+    this.chassis.name = 'chassis';
+    this.chassis.position.y = 0.60;             // = rideHeight, set again below
+    this.root.add(this.chassis);
     this.root.userData.tank = this;
 
     // ---- dimensions -------------------------------------------------------
@@ -693,7 +707,7 @@ export class Tank {
 
     this.weakPoint = new THREE.Object3D();
     this.weakPoint.position.set(0, 0.17, radZ - 0.06);
-    this.root.add(this.weakPoint);
+    this.chassis.add(this.weakPoint);
     this.weakPointRadius = 0.52;
 
     // ---- exhaust stacks ---------------------------------------------------
@@ -711,7 +725,7 @@ export class Tank {
     }
     this.exhaustPort = new THREE.Object3D();
     this.exhaustPort.position.set(0.92, 0.70, -2.36);
-    this.root.add(this.exhaustPort);
+    this.chassis.add(this.exhaustPort);
 
     // ---- fenders + mud flaps ---------------------------------------------
     const fenderY = this.axleY + 0.62;
@@ -863,7 +877,7 @@ export class Tank {
       mesh.userData.outline = true;
       mesh.userData.tank = this;
       mesh.name = `hull:${key}`;
-      this.root.add(mesh);
+      this.chassis.add(mesh);
       this.hullMeshes[key] = mesh;
     }
     // Keep a pristine copy of the armour vertices so dents are cumulative but
@@ -903,7 +917,7 @@ export class Tank {
       void ang;
     }
     mesh.instanceMatrix.needsUpdate = true;
-    this.root.add(mesh);
+    this.chassis.add(mesh);
     this.rivetMesh = mesh;
   }
 
@@ -915,7 +929,7 @@ export class Tank {
     this.turret = new THREE.Group();
     this.turret.name = 'turret';
     this.turret.position.set(0, 0.535, -0.10);
-    this.root.add(this.turret);
+    this.chassis.add(this.turret);
 
     // ---- turret shell: tapered, sloped, with a bustle ---------------------
     const ts = [
@@ -1154,7 +1168,7 @@ export class Tank {
       m.receiveShadow = false;
       m.userData.outline = true;
       m.frustumCulled = false;
-      this.root.add(m);
+      this.chassis.add(m);
     }
     this.wheelMesh.name = 'wheels';
     this.tyreMesh.name = 'tyres';
@@ -1208,7 +1222,7 @@ export class Tank {
       m.castShadow = true;
       m.userData.outline = true;
       m.frustumCulled = false;
-      this.root.add(m);
+      this.chassis.add(m);
     }
     this.idlerMesh.name = 'idlers';
     this.sprocketMesh.name = 'sprockets';
@@ -1227,7 +1241,7 @@ export class Tank {
     this.rollerMesh.userData.outline = true;
     this.rollerMesh.frustumCulled = false;
     this.rollerMesh.name = 'rollers';
-    this.root.add(this.rollerMesh);
+    this.chassis.add(this.rollerMesh);
   }
 
   /** One track shoe. Quality 0 collapses it to two boxes. */
@@ -1274,7 +1288,7 @@ export class Tank {
     this.linkMesh.userData.outline = true;
     this.linkMesh.frustumCulled = false;
     this.linkMesh.name = 'track';
-    this.root.add(this.linkMesh);
+    this.chassis.add(this.linkMesh);
   }
 
   _buildDamageDecals() {
@@ -1341,7 +1355,7 @@ export class Tank {
     this.decalMesh.userData.noPrepass = true;
     this.decalMesh.count = 0;
     this.decalMesh.name = 'scorch';
-    this.root.add(this.decalMesh);
+    this.chassis.add(this.decalMesh);
     this._decalGeo = inst;
   }
 
@@ -1452,10 +1466,11 @@ export class Tank {
   teleport(x, z, yaw = 0) {
     if (this.physics) {
       this.physics.teleport(x, z, yaw);
-      this.physics.applyToRoot(this.root);
+      this.physics.applyToRoot(this.root, this.chassis);
     } else {
       this.root.position.set(x, 0, z);
       this.root.rotation.y = yaw;
+      this.chassis.position.y = this.rideHeight;
     }
     return this;
   }
@@ -1665,7 +1680,15 @@ export class Tank {
     Bus.emit('unit:critical', { unit: this.unit || this, part: 'radiator', source: opts.source || null });
   }
 
-  /** Kill the tank: burning wreck, thrown tracks, drooping barrel. */
+  /**
+   * Kill the tank: burning wreck, thrown tracks, drooping barrel.
+   *
+   * VISUALS AND PHYSICS ONLY. The gameplay consequences of a unit dying — the
+   * `unit:downed` banner, the death explosion and the area damage that comes with it —
+   * belong to the game layer (src/game/units.js goDown()), which calls play('death')
+   * to get here. Emitting them from both ends produced two banners, two blasts, two
+   * radial impulses and two passes of area damage for one kill.
+   */
   destroy(opts = {}) {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -1702,9 +1725,10 @@ export class Tank {
         0.7 + this.rng() * 0.8, 0.7 + this.rng() * 0.7, 2.2
       );
     }
-    Bus.emit('explosion', { pos: p.clone(), radius: 5.5, power: 70, source: opts.source || null });
-    Bus.emit('sfx', { name: 'tankDestroyed', pos: p, vol: 1 });
-    Bus.emit('unit:downed', { unit: this.unit || this });
+    // No `explosion` / `unit:downed` here — see the note above. A tank driven as a bare
+    // actor (no owning Unit, e.g. a set-piece wreck) still needs its own report, so that
+    // one case keeps a sound; when a Unit owns us, the Unit has already made the noise.
+    if (!this.unit) Bus.emit('sfx', { name: 'explosion', pos: p, vol: 1 });
   }
 
   /** Character-compatible clip interface. */
@@ -1730,7 +1754,7 @@ export class Tank {
     // ---- chassis ----------------------------------------------------------
     if (this.physics) {
       if (!this._externalStep) this.physics.update(dt);
-      this.physics.applyToRoot(this.root);
+      this.physics.applyToRoot(this.root, this.chassis);
     }
 
     // ---- turret / gun slew ------------------------------------------------

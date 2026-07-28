@@ -406,9 +406,13 @@ export class Ballistics {
     });
     if (hit.unit && hit.unit.takeDamage) {
       const mult = BODYPART_MULT[hit.bodypart] ?? 1;
-      hit.unit.takeDamage(p.damage * mult, {
-        source: p.owner, crit: mult > 1.6, worldPos: hit.point,
-        bodypart: hit.bodypart, weapon: p.weapon, normal: hit.normal,
+      // ARCHITECTURE.md: Unit.takeDamage(n, source, opts). `source` is the
+      // SHOOTING UNIT, not a bag of options — the game layer dereferences
+      // `source.stats`, so passing the options object here threw a TypeError on
+      // every round that reached a soldier.
+      hit.unit.takeDamage(p.damage * mult, p.owner || null, {
+        crit: mult > 1.6, worldPos: hit.point, part: hit.bodypart,
+        weapon: p.weapon, normal: hit.normal,
       });
     }
   }

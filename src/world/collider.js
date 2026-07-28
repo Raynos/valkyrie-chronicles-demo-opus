@@ -8,16 +8,95 @@
 //     min: Vector3, max: Vector3,                    // world AABB (broadphase)
 //     cover: 0..1,        // hard cover value granted when adjacent + in arc
 //     conceal: 0..1,      // accuracy penalty granted without blocking bullets
-//     solid: boolean,     // blocks movement AND bullets
-//     blocksLos: boolean, // blocks line of sight / projectiles
+//     solid: boolean,           // blocks BODIES (movement, the capsule solver)
+//     blocksLos: boolean,       // blocks SIGHT (spotting, the LOS query)
+//     blocksProjectile: boolean,// blocks BULLETS (combat tracing, ballistics)
+//     destroyed: boolean,       // see below — accessor, not a plain field
 //     destructible: boolean, hp: number, tag: string, owner: object|null }
 //
 //   { type: 'sphere', center, radius, ...same flags }
+//
+// THE THREE BLOCKING FLAGS ARE INDEPENDENT, on purpose:
+//   tall grass / a bush   blocks nothing (conceal only)
+//   barbed wire           blocks bodies, not sight, not bullets
+//   a sandbag revetment   blocks bodies and bullets — but a man crouched behind
+//                         it can still see (and be seen) over the parapet
+//   a stone wall          blocks all three
+// `blocksLos` and `blocksProjectile` therefore both default to `solid` and are
+// overridden per producer where the physical truth differs.
+//
+// DESTRUCTION is a single flag: `destroyed`. It is an accessor, not data — the
+// setter clears (and un-sets restores) every physical property in one place, so
+// no reader has to know which of six fields a given subsystem happens to check.
+// Everything downstream — src/physics collision, src/game/combat, actionMode's
+// "rebuild cover" — agrees because they are all reading the same switch.
 
 import * as THREE from 'three';
 import { V0, V1, V2, clamp } from '../core/math.js';
 
 let _nextId = 1;
+
+/**
+ * Install the `destroyed` accessor. Snapshots the pristine physical state at
+ * build time so `collider.destroyed = false` genuinely rebuilds the cover
+ * (that is what src/game/actionMode.js's engineer "rebuild" action does).
+ */
+function defineDestroyed(col) {
+  const intact = {
+    solid: col.solid,
+    blocksLos: col.blocksLos,
+    blocksProjectile: col.blocksProjectile,
+    cover: col.cover,
+    conceal: col.conceal,
+  };
+  let dead = false;
+  Object.defineProperty(col, 'destroyed', {
+    enumerable: true,
+    configurable: true,
+    get() { return dead; },
+    set(v) {
+      v = !!v;
+      if (v === dead) return;
+      dead = v;
+      if (v) {
+        col.solid = false;
+        col.blocksLos = false;
+        col.blocksProjectile = false;
+        col.cover = 0;
+        col.conceal = 0;
+      } else {
+        col.solid = intact.solid;
+        col.blocksLos = intact.blocksLos;
+        col.blocksProjectile = intact.blocksProjectile;
+        col.cover = intact.cover;
+        col.conceal = intact.conceal;
+      }
+      // src/physics caches a normalised copy keyed on `version`; bump it so the
+      // cache is rebuilt rather than serving the pre-destruction extents.
+      col.version = (col.version | 0) + 1;
+      col.owner?.onColliderDestroyed?.(col, v);
+    },
+  });
+  return col;
+}
+
+function commonFlags(col, opts) {
+  col.cover = opts.cover ?? 0;
+  col.conceal = opts.conceal ?? 0;
+  col.solid = opts.solid ?? true;
+  col.blocksLos = opts.blocksLos ?? col.solid;
+  // Anything with physical mass stops a bullet unless it says otherwise. Thin
+  // obstacles (wire) and pure-concealment volumes opt out explicitly.
+  col.blocksProjectile = opts.blocksProjectile ?? (col.solid || col.blocksLos);
+  col.destructible = opts.destructible ?? false;
+  col.hp = opts.hp ?? 0;
+  col.maxHp = opts.hp ?? 0;
+  col.tag = opts.tag || 'prop';
+  col.owner = opts.owner || null;
+  col.crouchOnly = opts.crouchOnly ?? false;
+  col.version = 0;
+  return defineDestroyed(col);
+}
 
 export function makeBox(center, half, yaw = 0, opts = {}) {
   const c = new THREE.Vector3(center.x, center.y, center.z);
@@ -30,16 +109,8 @@ export function makeBox(center, half, yaw = 0, opts = {}) {
     yaw,
     min: new THREE.Vector3(),
     max: new THREE.Vector3(),
-    cover: opts.cover ?? 0,
-    conceal: opts.conceal ?? 0,
-    solid: opts.solid ?? true,
-    blocksLos: opts.blocksLos ?? (opts.solid ?? true),
-    destructible: opts.destructible ?? false,
-    hp: opts.hp ?? 0,
-    tag: opts.tag || 'prop',
-    owner: opts.owner || null,
-    crouchOnly: opts.crouchOnly ?? false,
   };
+  commonFlags(col, opts);
   refreshAABB(col);
   return col;
 }
@@ -52,19 +123,17 @@ export function makeSphere(center, radius, opts = {}) {
     radius,
     min: new THREE.Vector3(),
     max: new THREE.Vector3(),
-    cover: opts.cover ?? 0,
-    conceal: opts.conceal ?? 0,
-    solid: opts.solid ?? true,
-    blocksLos: opts.blocksLos ?? (opts.solid ?? true),
-    destructible: opts.destructible ?? false,
-    hp: opts.hp ?? 0,
-    tag: opts.tag || 'prop',
-    owner: opts.owner || null,
-    crouchOnly: opts.crouchOnly ?? false,
   };
+  commonFlags(col, opts);
   refreshAABB(col);
   return col;
 }
+
+/** Blocks the segment shooter -> target? The one filter combat tracing uses. */
+export function blocksProjectile(c) { return !!c.blocksProjectile; }
+
+/** Blocks sight? Used by spotting / fog of war, NOT by bullets. */
+export function blocksSight(c) { return !!c.blocksLos; }
 
 export function refreshAABB(c) {
   if (c.type === 'sphere') {

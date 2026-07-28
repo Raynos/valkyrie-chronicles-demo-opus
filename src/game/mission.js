@@ -189,19 +189,24 @@ export const MISSION_VASEL = {
   // -------------------------------------------------------------------------
   // Scripted opening
   // -------------------------------------------------------------------------
+  // Camera beats are ABSOLUTE world heights, and the valley floor here is not flat: the river
+  // pool sits at y=2, the banks at y=7..9, the bridge deck at y=6. A `look` height below the
+  // terrain under it aims the shot at the dirt, which is what the first cut of this sequence
+  // did three times out of four. Every beat below is checked against the heightfield.
   opening: [
-    // High over the southern ridge, looking north down the road to the crossing.
-    { t: 0.0, type: 'camera', pos: [-6, 30, 96], look: [3, 3, 22], fov: 30, dur: 5.0 },
+    // Eye level on the lip of the south bank, looking north down the road to the crossing —
+    // the same framing as the `overview` capture, so the game opens on its own hero shot.
+    { t: 0.0, type: 'camera', pos: [-15, 10.8, 41], look: [8, 9.5, -16], fov: 40, dur: 5.0 },
     { t: 0.3, type: 'title', text: 'THE BRIDGE AT VASEL', sub: 'EW 1935 — Vasel, Gallia' },
     { t: 1.2, type: 'line', who: 'Welkin', text: 'That is the last bridge standing for forty kilometres.' },
-    // Across the bridge from the east bank.
-    { t: 4.6, type: 'camera', pos: [40, 14, 14], look: [6, 3, -8], fov: 34, dur: 5.0 },
+    // Down on the water downstream, looking straight through the arches.
+    { t: 4.6, type: 'camera', pos: [30, 5.5, 20], look: [5, 5.0, 2], fov: 34, dur: 5.0 },
     { t: 5.0, type: 'line', who: 'Alicia', text: 'And the whole town is looking straight down it.' },
-    // Their camp, in the ruins.
-    { t: 8.4, type: 'camera', pos: [34, 10, -66], look: [30, 2, -46], fov: 38, dur: 4.2 },
+    // Their camp, in the ruins — standing height in the square, not hovering over it.
+    { t: 8.4, type: 'camera', pos: [44, 12.4, -62], look: [24, 12.2, -40], fov: 38, dur: 4.2 },
     { t: 8.8, type: 'line', who: 'Imperial officer', text: 'Halten Sie die Brücke. Niemand kommt durch.' },
-    // Back to the squad on the start line.
-    { t: 12.0, type: 'camera', pos: [-4, 26, 88], look: [-2, 0, 62], fov: 34, dur: 3.0 },
+    // Back to the squad on the start line, low over the staging post.
+    { t: 12.0, type: 'camera', pos: [-6, 15.0, 86], look: [-2, 8.0, 62], fov: 34, dur: 3.0 },
     { t: 12.4, type: 'line', who: 'Welkin', text: 'Squad 7 — take that camp. Watch the square.' },
     { t: 15.0, type: 'end' },
   ],

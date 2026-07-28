@@ -270,47 +270,107 @@ function css() {
   display:flex; flex-direction:column; gap:.55em; max-height:74vh;
 }
 .vc-ru{
-  position:relative; width:14.4em; cursor:pointer;
+  position:relative; width:15.6em; cursor:pointer;
   transition:transform .22s cubic-bezier(.2,.9,.3,1.15), filter .22s ease;
   animation:vc-slide-in .42s cubic-bezier(.16,.9,.3,1) both;
 }
 .vc-ru:hover{ transform:translateX(.45em) rotate(var(--tilt,0deg)) !important; }
-.vc-ru.sel{ transform:translateX(.9em) rotate(var(--tilt,0deg)) !important; }
-.vc-ru.sel .vc-paper{ box-shadow:inset 0 0 0 1.6px rgba(163,47,52,.75), inset 0 0 20px rgba(128,96,58,.22); }
-.vc-ru.acted{ filter:saturate(.35) opacity(.66); }
+.vc-ru.sel{ transform:translateX(1.05em) rotate(var(--tilt,0deg)) !important; }
+/* Selection reads as the ribbon marker plus a warm glow bled in from the deckled
+   edge — a crisp 1.6px inset ring read as a UI outline, not as a marked page. */
+.vc-ru.sel .vc-paper{
+  box-shadow:inset 0 0 0 1.1px rgba(163,47,52,.5), inset 0 0 14px rgba(163,47,52,.26),
+    inset 0 0 26px rgba(128,96,58,.24);
+}
+/* A pencilled marginal bracket down the selected entry's fore-edge. */
+.vc-ru-mark{ position:absolute; left:-.15em; top:.12em; bottom:.12em; width:.7em;
+  opacity:0; transition:opacity .2s ease; }
+.vc-ru-mark svg{ width:100%; height:100%; }
+.vc-ru.sel .vc-ru-mark{ opacity:1; }
+/* "Acted" desaturates the page the way a pencil tick greys a completed line —
+   it must not read as a disabled control. */
+.vc-ru.acted{ filter:saturate(.42) opacity(.72); }
+.vc-ru.acted .vc-ru-por{ opacity:.8; }
 .vc-ru.downed{ filter:grayscale(.7) opacity(.5); }
-.vc-ru-in{ display:flex; gap:.5em; padding:.42em .5em; align-items:stretch; }
+.vc-ru-in{ display:flex; gap:.5em; padding:.4em .5em .46em; align-items:stretch; }
 .vc-ru-por{ width:3.5em; height:3.9em; flex:0 0 auto; position:relative; }
 .vc-ru-por svg{ width:100%; height:100%; }
-.vc-ru-body{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:.16em; }
-.vc-ru-name{ font-size:.94em; letter-spacing:.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.vc-ru-cls{ display:flex; align-items:center; gap:.3em; }
-.vc-ru-cls svg{ width:1.05em; height:1.05em; }
+.vc-ru-body{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:.14em; }
+.vc-ru-top{ display:flex; align-items:flex-start; gap:.3em; }
+.vc-ru-name{ font-size:.92em; letter-spacing:.02em; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; flex:1 1 auto; line-height:1.15; }
+.vc-ru-rank{ flex:0 0 auto; width:.82em; margin-top:.16em; opacity:.85; }
+.vc-ru-rank svg{ width:100%; height:auto; }
+.vc-ru-cls{ display:flex; align-items:center; gap:.28em; min-height:1.1em; }
+.vc-ru-cls svg{ width:1.05em; height:1.05em; flex:0 0 auto; }
+.vc-ru-cls .vc-label{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* Status marks: drawn glyphs pencilled in after the class, never chips. */
+.vc-ru-st{ display:flex; align-items:center; gap:.18em; margin-left:auto; flex:0 0 auto; }
+.vc-ru-st svg{ width:.86em; height:.86em; }
+.vc-ru-st .warn{ color:var(--red); }
+.vc-ru-st .ok{ color:#5d6b3c; }
+/* Gauge rows: a drawn glyph, the gauge itself, then a tabular figure. */
+.vc-ru-gr{ display:flex; align-items:center; gap:.3em; }
+.vc-ru-gr > svg{ width:.82em; height:.82em; flex:0 0 auto; color:var(--ink-2); }
+.vc-ru-gr .vc-g, .vc-ru-gr .vc-m{ flex:1 1 auto; min-width:0; }
+.vc-ru-gr .n{ font-size:.56em; letter-spacing:.04em; color:var(--ink-2); flex:0 0 auto;
+  min-width:4.95em; text-align:right; font-variant-numeric:lining-nums tabular-nums; }
+.vc-ru-gr .n b{ font-weight:400; color:var(--ink); font-size:1.16em; }
 /* A rubber stamp in the corner of the personnel card, clear of the name. */
 .vc-ru-stamp{
-  position:absolute; right:.34em; top:.34em; white-space:nowrap;
+  position:absolute; right:.3em; top:.3em; white-space:nowrap;
   font-variant:small-caps; letter-spacing:.16em; font-size:.52em;
-  color:var(--red); border:1.4px solid var(--red); padding:.05em .34em .07em;
-  transform:rotate(-8deg); opacity:.78; border-radius:2px;
-  background:rgba(247,239,221,.72);
+  color:var(--red); padding:.14em .5em .18em;
+  transform:rotate(-8deg); opacity:.82;
 }
+.vc-ru-stamp svg{ position:absolute; inset:0; width:100%; height:100%; }
+.vc-ru-stamp span{ position:relative; }
 .vc-ru.acted .vc-ru-name{ padding-right:3.3em; }
 .vc-ru-ribbon{ position:absolute; left:-.55em; top:.5em; width:.85em; height:2.6em; }
 
-.vc-bar{ position:relative; height:.62em; }
-.vc-bar-bg{ position:absolute; inset:0; background:rgba(51,41,31,.16); box-shadow:inset 0 0 0 1px rgba(51,41,31,.34); }
-.vc-bar-fill{
-  position:absolute; left:0; top:0; bottom:0; width:100%;
-  transition:width .32s cubic-bezier(.3,.9,.3,1);
-  filter:url(#vc-wash);
-  background:linear-gradient(180deg, rgba(255,255,255,.28), rgba(0,0,0,.14));
+/* A meter is a wash of pigment brushed into a ruled trough, not a filled div:
+   the empty run carries the paper's own grain and a fine graphite hatch, the
+   filled run is a gouache gradient with a bled edge (filter:#vc-wash). */
+/* Every meter in the book is an inkGauge / marchLine (see below); the only
+   survivor of the old CSS-bar era is the ghost of ground already given up. */
+.vc-bar-ghost{ position:absolute; left:0; top:0; bottom:0; background:rgba(163,47,52,.38);
+  transition:width .7s ease .18s; }
+
+/* ---------- drawn gauges (icons.js inkGauge / marchLine) ------------------ */
+/* Three stacked layers: hatched paper trough, pigment wash, inked rule on top. */
+.vc-g{ position:relative; width:100%; height:.72em; }
+.vc-g-back, .vc-g-face{ position:absolute; inset:0; width:100%; height:100%; }
+/* The hatch is clipped to the dry run of the trough (see icons.js inkGauge.set). */
+.vc-g-back{ z-index:1; transition:clip-path .34s cubic-bezier(.3,.9,.3,1); }
+.vc-g-face{ z-index:3; pointer-events:none; }
+.vc-g-fill{
+  position:absolute; left:0; top:0; bottom:0; z-index:2; width:100%;
+  transition:width .34s cubic-bezier(.3,.9,.3,1);
+  background-image:
+    linear-gradient(180deg, rgba(255,252,242,.40) 0%, rgba(255,250,236,.08) 42%, rgba(40,28,22,.14) 100%),
+    linear-gradient(92deg, rgba(40,28,22,.10) 0%, rgba(40,28,22,0) 16%, rgba(40,28,22,.12) 100%);
 }
-.vc-bar-fill.hp{ background-color:#7e9152; }
-.vc-bar-fill.hp.warn{ background-color:#c08a34; }
-.vc-bar-fill.hp.crit{ background-color:#a5382f; }
-.vc-bar-fill.ap{ background-color:#4b6c86; }
-.vc-bar-ghost{ position:absolute; left:0; top:0; bottom:0; background:rgba(163,47,52,.42); transition:width .7s ease .18s; }
-.vc-bar-num{ position:absolute; right:.25em; top:50%; transform:translateY(-50%); font-size:.58em; color:var(--ink-2); }
+.vc-g-nib{ position:absolute; right:-2px; top:0; width:5px; height:100%; overflow:visible; }
+.vc-g-fill.hp{ background-color:#8a9c56; }
+.vc-g-fill.warn{ background-color:#c4933a; }
+.vc-g-fill.crit{ background-color:#a94235; }
+.vc-g-fill.ap{ background-color:#6d92b1; }
+.vc-g-fill.foe{ background-color:#9c4a3f; }
+
+.vc-m{ position:relative; width:100%; height:.62em; }
+.vc-m-back{ position:absolute; inset:0; width:100%; height:100%; }
+/* Clipped rather than width-scaled: the drawn stroke must keep its own length,
+   so the wobble never stretches as the value falls. */
+.vc-m-run{
+  position:absolute; inset:0; z-index:1; clip-path:inset(0 0 0 0);
+  transition:clip-path .4s cubic-bezier(.3,.9,.3,1);
+}
+.vc-m-run svg{ position:absolute; inset:0; width:100%; height:100%; }
+/* The paced divisions are struck OVER the run, so the line still reads as a
+   stepped-off distance when the soldier is at full march. */
+.vc-m-back{ z-index:2; }
+.vc-m-pin{ position:absolute; top:-.14em; z-index:3; width:.42em; height:calc(100% + .28em);
+  transform:translateX(-50%); transition:left .4s cubic-bezier(.3,.9,.3,1); }
 
 .vc-obj{ position:absolute; top:1.6em; right:2.0em; width:20em; padding:.6em .8em .7em; }
 .vc-obj-row{ display:flex; gap:.45em; align-items:flex-start; margin-top:.3em; }
@@ -320,9 +380,25 @@ function css() {
 
 .vc-map{ position:absolute; right:2.0em; bottom:6.0em; width:22em; padding:.55em; }
 .vc-map-in{ position:relative; width:100%; aspect-ratio:4/3; }
+.vc-map-sheet{ position:absolute; inset:0; }
 .vc-map-in svg{ position:absolute; inset:0; width:100%; height:100%; }
+.vc-map-rose svg, .vc-map-bar svg{ position:static; }
 .vc-map-blips{ position:absolute; inset:0; }
 .vc-map-title{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:.28em; }
+/* north rose + scale bar: the survey is north-up, and it has to say so */
+.vc-map-rose{ position:absolute; right:.35em; top:.35em; width:3.1em; height:3.1em; opacity:.82;
+  pointer-events:none; }
+.vc-map-rose svg{ width:100%; height:100%; }
+.vc-map-bar{ position:absolute; left:.5em; bottom:.4em; display:flex; align-items:center; gap:.35em;
+  pointer-events:none; }
+.vc-map-bar svg{ width:4.6em; height:.7em; }
+.vc-map-bar span{ font-size:.56em; font-variant:small-caps; letter-spacing:.14em; color:var(--ink-2); }
+/* Survey blips are drawn SVG chevrons (icons.js unitBlip), so they carry an ink
+   outline instead of reading as a flat CSS clip-path triangle. */
+.vc-blip{ position:absolute; left:0; top:0; width:0; height:0; will-change:transform; }
+.vc-blip-in{ position:absolute; left:-6.5px; top:-6.5px; width:13px; height:13px;
+  transform-origin:50% 50%; filter:drop-shadow(0 1px 1px rgba(58,47,51,.5)); }
+.vc-blip-in svg{ position:absolute; inset:0; width:100%; height:100%; }
 
 .vc-rbtn{
   position:relative; width:14em; cursor:pointer;
@@ -337,10 +413,9 @@ function css() {
   color:#fbf2dd; font-variant:small-caps; letter-spacing:.20em; font-size:.94em;
   text-shadow:0 1px 0 rgba(60,12,16,.7); padding:0 1.5em .2em .7em; white-space:nowrap;
 }
-.vc-rbtn-t .vc-key{
-  font-size:.68em; letter-spacing:.04em; border-color:rgba(255,240,220,.6);
-  background:rgba(90,20,26,.4); color:#fbf2dd; box-shadow:0 1.2px 0 rgba(50,10,14,.5);
-}
+.vc-rbtn-t .vc-key{ opacity:.9; }
+.vc-rbtn-t .vc-key svg{ height:1.25em; }
+.vc-rbtn-t .vc-key path{ fill:rgba(90,20,26,.35); }
 .vc-endturn{ position:absolute; right:2.0em; bottom:1.5em; }
 .vc-endturn:hover{ transform:translateX(-.5em) scale(1.03); }
 .vc-btnrow{ display:flex; gap:1.0em; justify-content:flex-end; align-items:center; margin-top:1.2em; }
@@ -366,25 +441,35 @@ function css() {
   display:grid; place-items:center;
 }
 .vc-card-cost span{ position:absolute; font-size:.9em; color:#fbf2dd; text-shadow:0 1px 0 rgba(60,12,16,.6); }
+/* Every card in the strip is ruled to the same measure: the title occupies a
+   two-line box and sits on its BOTTOM line, so a name that wraps ("Demolition
+   Boost") still shares a baseline with one that does not, and every blurb starts
+   on the same rule down the row. */
 .vc-card-name{
-  font-variant:small-caps; letter-spacing:.05em; font-size:.84em; line-height:1.12;
-  min-height:2.0em; overflow-wrap:anywhere;
+  font-variant:small-caps; letter-spacing:.05em; font-size:.84em; line-height:1.14;
+  height:2.28em; display:flex; align-items:flex-end; overflow-wrap:anywhere;
 }
-.vc-card-desc{ font-size:.62em; line-height:1.3; color:var(--ink-2); min-height:3.2em; }
+.vc-card-desc{
+  font-size:.62em; line-height:1.32; color:var(--ink-2);
+  height:3.96em; overflow:hidden; hyphens:auto;
+}
 
 /* ---------- action mode ------------------------------------------------- */
 .vc-ap{ position:absolute; left:2.0em; bottom:1.9em; width:26em; padding:.5em .75em .7em; }
 .vc-ap-head{ display:flex; align-items:baseline; gap:.5em; margin-bottom:.22em; }
 .vc-ap-head b{ font-size:1.5em; font-weight:400; }
 .vc-ap-meter{ position:relative; height:1.15em; }
-.vc-ap-meter .vc-bar-fill{ filter:url(#vc-wash); }
-.vc-ap-ticks{ position:absolute; inset:0; pointer-events:none; }
+.vc-ap-meter .vc-g{ position:absolute; inset:0; height:100%; }
+.vc-ap-meter .vc-bar-ghost{ z-index:0; }
+.vc-ap-range{ margin-left:auto; letter-spacing:.13em; color:var(--ink-3); }
 .vc-ap.low .vc-ap-head b{ color:var(--red); animation:vc-throb 1.05s ease-in-out infinite; }
 
-.vc-name{ position:absolute; left:2.0em; bottom:6.9em; display:flex; align-items:center; gap:.55em; }
-.vc-badge{ position:relative; width:2.9em; height:3.1em; }
+.vc-name{ position:absolute; left:2.0em; bottom:6.9em; }
+.vc-name-in{ display:flex; align-items:center; gap:.55em; padding:.34em .95em .4em .5em; }
+.vc-badge{ position:relative; width:2.9em; height:3.1em; flex:0 0 auto; }
 .vc-badge svg{ position:absolute; inset:0; width:100%; height:100%; }
-.vc-name-t b{ font-size:1.22em; font-weight:400; display:block; line-height:1.1; }
+.vc-name-t{ padding-right:.4em; }
+.vc-name-t b{ font-size:1.22em; font-weight:400; display:block; line-height:1.1; white-space:nowrap; }
 
 .vc-ammo{ position:absolute; right:2.0em; bottom:1.9em; width:14.5em; padding:.5em .75em .65em;
   text-align:right; }
@@ -395,16 +480,34 @@ function css() {
 .vc-ammo-n small{ font-size:.55em; color:var(--ink-3); }
 .vc-reload{ margin-top:.2em; color:var(--red); font-variant:small-caps; letter-spacing:.2em; font-size:.72em; }
 
+/* The heading tape is a strip of gummed paper stuck across the top of the page,
+   not a hairline rule: bare ticks over the render read as a debug overlay. */
 .vc-compass{
-  position:absolute; top:1.7em; left:50%; transform:translateX(-50%);
+  position:absolute; top:1.5em; left:50%; transform:translateX(-50%);
   width:36em; max-width:62vw; height:4.0em; overflow:hidden;
   -webkit-mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
   mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
 }
-.vc-compass-tape{ position:absolute; top:0; left:0; height:100%; will-change:transform; }
-.vc-compass-pin{ position:absolute; top:0; transform:translateX(-50%); text-align:center; }
+.vc-compass::before{
+  content:''; position:absolute; left:0; right:0; top:.06em; height:2.2em; z-index:0;
+  background-image:var(--grain),
+    linear-gradient(180deg, rgba(250,244,228,.96) 0%, rgba(238,227,201,.94) 62%, rgba(214,197,163,.90) 100%);
+  background-blend-mode:multiply, normal;
+  background-size:160px 160px, 100% 100%;
+  box-shadow:0 1px 3px rgba(58,47,51,.26);
+  clip-path:var(--tape-clip, none);
+}
+.vc-compass-tape{ position:absolute; top:0; left:0; height:100%; will-change:transform; z-index:1; }
+.vc-compass-pin{ position:absolute; top:.16em; transform:translateX(-50%); text-align:center; }
 .vc-compass-pin svg{ width:1.1em; height:1.1em; margin:0 auto; }
 .vc-compass-pin span{ font-size:.56em; font-variant:small-caps; letter-spacing:.14em; }
+/* Heading pip: an inked caret nailed to the centre, outside the scrolling tape. */
+.vc-compass-pip{
+  position:absolute; left:50%; top:0; width:0; height:0; transform:translateX(-50%);
+  border-left:.34em solid transparent; border-right:.34em solid transparent;
+  border-top:.46em solid var(--red);
+  filter:drop-shadow(0 1px 1px rgba(58,47,51,.45));
+}
 
 .vc-alert{
   position:absolute; top:22%; left:50%; transform:translateX(-50%);
@@ -432,31 +535,69 @@ function css() {
 .vc-acc{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); }
 .vc-brackets{ position:absolute; left:50%; top:50%; width:21em; height:15em; transform:translate(-50%,-50%); }
 .vc-brackets svg{ width:100%; height:100%; }
+/* The firing solution, pinned on its own chit clear of the sight picture. */
 .vc-hit{
-  position:absolute; left:calc(50% + 6.0em); top:calc(50% - 3.2em); text-align:left;
+  position:absolute; left:calc(50% + 5.6em); top:calc(50% + 1.1em);
+  padding:.34em .6em .42em; min-width:8.2em;
 }
-.vc-hit b{ font-size:2.0em; font-weight:400; line-height:.95; display:block; }
-.vc-tcard{ position:absolute; right:2.0em; top:8.5em; width:17em; padding:.55em .7em .65em; }
+.vc-hit-in{ display:flex; align-items:center; gap:.5em; }
+.vc-hit-arc{ width:2.5em; height:2.5em; flex:0 0 auto; }
+.vc-hit-arc svg{ width:100%; height:100%; }
+.vc-hit b{ font-size:1.55em; font-weight:400; line-height:.98; display:block; }
+.vc-hit-sub{
+  font-size:.58em; font-variant:small-caps; letter-spacing:.16em; color:var(--ink-3);
+  margin-top:.1em; white-space:nowrap; min-height:1em;
+}
+.vc-tcard{ position:absolute; right:2.0em; top:8.5em; width:17.6em; padding:.55em .7em .65em; }
 .vc-tcard-head{ display:flex; align-items:center; gap:.45em; }
-.vc-tcard-head svg{ width:1.3em; height:1.3em; }
-.vc-tcard-rows{ margin-top:.35em; display:flex; flex-direction:column; gap:.24em; font-size:.76em; }
-.vc-tcard-rows div{ display:flex; justify-content:space-between; gap:1em; }
-.vc-body-fig{ width:4.4em; margin:.45em auto 0; opacity:.9; }
+.vc-tcard-head svg{ width:1.3em; height:1.3em; flex:0 0 auto; }
+.vc-tcard-head .vc-h3{ flex:1 1 auto; min-width:0; line-height:1.14; }
+.vc-tcard-hp{ margin-top:.34em; }
+.vc-tcard-hp .vc-g{ height:.82em; }
+.vc-tcard-rows{ margin-top:.4em; display:flex; flex-direction:column; gap:.2em; font-size:.76em; }
+/* leader rules, so the eye tracks label -> value the way a ruled ledger does */
+/* Leader rules between label and value are DRAWN (icons.js inkRule), not a CSS
+   dashed border — a hairline dash pattern is the classic web-page tell. */
+.vc-tcard-row{ position:relative; padding-bottom:.3em; }
+.vc-tcard-row > div{ display:flex; justify-content:space-between; align-items:baseline; gap:1em; }
+.vc-tcard-row > svg{ position:absolute; left:0; right:0; bottom:0; height:4px; width:100%; }
+.vc-tcard-row:last-child > svg{ display:none; }
+.vc-body-fig{ width:6.2em; margin:.55em auto .1em; }
 .vc-body-fig svg{ width:100%; height:auto; }
 
 /* ---------- world-space labels ------------------------------------------ */
 .vc-world{ position:absolute; inset:0; overflow:hidden; }
 .vc-wl{ position:absolute; left:0; top:0; will-change:transform; transform-origin:50% 50%; }
-.vc-nametag{ transform:translate(-50%,-100%); text-align:center; white-space:nowrap; }
-.vc-nametag .t{
-  display:inline-block; padding:.06em .5em .1em; font-size:.68em;
-  font-variant:small-caps; letter-spacing:.13em;
-  background:linear-gradient(180deg, rgba(244,236,216,.94), rgba(226,213,183,.9));
-  box-shadow:0 0 0 1px rgba(51,41,31,.5), 0 2px 5px rgba(58,47,51,.35);
-  color:var(--ink);
+/* A soldier's name is written on a torn slip of paper and underlined in ink —
+   never a hex-filled rectangle with a hairline border (rubric axis 11). */
+.vc-nametag{
+  transform:translate(-50%,-100%); text-align:center; white-space:nowrap;
+  padding:.18em .62em .26em; min-width:4.6em;
 }
-.vc-nametag.foe .t{ box-shadow:0 0 0 1px rgba(141,55,48,.85), 0 2px 5px rgba(58,47,51,.35); color:#7a2822; }
-.vc-nametag .hp{ width:5.4em; height:.28em; margin:.14em auto 0; position:relative; }
+.vc-nametag .slip{
+  position:absolute; inset:0; z-index:0;
+  background-image:var(--grain),
+    linear-gradient(168deg, rgba(250,244,228,.95) 0%, rgba(238,227,201,.93) 55%, rgba(222,207,174,.92) 100%);
+  background-blend-mode:multiply, normal;
+  background-size:160px 160px, 100% 100%;
+  filter:drop-shadow(0 1px 0 rgba(58,47,51,.18)) drop-shadow(0 3px 6px rgba(58,47,51,.34));
+}
+.vc-nametag .t{
+  position:relative; z-index:1; display:block; font-size:.68em;
+  font-variant:small-caps; letter-spacing:.13em; color:var(--ink);
+}
+.vc-nametag .rule{ position:relative; z-index:1; display:block; height:5px; margin:-.05em 0 0; }
+.vc-nametag.foe .t{ color:#7a2822; }
+.vc-nametag.foe .slip{
+  background-image:var(--grain),
+    linear-gradient(168deg, rgba(250,240,226,.95) 0%, rgba(238,218,203,.93) 55%, rgba(224,199,183,.92) 100%);
+}
+/* When a slip has been lifted out of a crowd, drop a hairline back to its owner. */
+.vc-nametag.lifted::after{
+  content:''; position:absolute; left:50%; top:100%; width:1px; height:var(--lead,0px);
+  background:linear-gradient(180deg, rgba(58,47,51,.55), rgba(58,47,51,0));
+}
+.vc-nametag .hp{ position:relative; z-index:1; width:5.6em; height:.38em; margin:.12em auto .04em; }
 .vc-dmg{ transform:translate(-50%,-50%); text-align:center; }
 .vc-dmg .n{ font-size:1.5em; color:#f6ecd4; text-shadow:0 0 .12em rgba(60,20,20,.9), 0 2px 0 rgba(60,20,20,.5); position:relative; z-index:1; }
 .vc-dmg.crit .n{ font-size:2.1em; color:#ffe9b8; }
@@ -497,8 +638,10 @@ function css() {
 .vc-chip-in svg.por{ width:100%; height:auto; }
 .vc-chip-n{ font-size:.68em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:.15em; }
 
-.vc-camps{ display:flex; gap:1.2em; align-items:flex-start; }
-.vc-camp{ flex:1 1 0; min-width:0; padding:.7em .8em .9em; }
+/* A mission with a single deployment camp must not stretch that camp into a
+   page-wide letterbox — cap it and centre the row instead. */
+.vc-camps{ display:flex; gap:1.2em; align-items:flex-start; justify-content:center; flex-wrap:wrap; }
+.vc-camp{ flex:0 1 27em; min-width:16em; max-width:32em; padding:.7em .8em .9em; }
 .vc-camp.on .vc-paper{ box-shadow:inset 0 0 0 2px rgba(163,47,52,.7), inset 0 0 16px rgba(128,96,58,.2); }
 .vc-camp-h{ display:flex; align-items:center; gap:.4em; margin-bottom:.4em; }
 .vc-camp-h svg{ width:1.3em; height:1.3em; }
@@ -529,11 +672,13 @@ function css() {
 .vc-mi .k{ font-size:1.02em; }
 
 /* ---------- dialogue ----------------------------------------------------- */
-.vc-dlg{ position:absolute; left:50%; bottom:2.0em; width:min(62em,84vw); transform:translateX(-50%);
-  animation:vc-slide-up .38s cubic-bezier(.16,.9,.3,1) both; }
+/* Sits in the same gutter as the order strip: clear of the roster on the left
+   and the tactical survey on the right, rather than sliding under both. */
+.vc-dlg{ position:absolute; left:17em; right:24.6em; bottom:2.3em; transform:none;
+  animation:vc-dlg-in .38s cubic-bezier(.16,.9,.3,1) both; }
 /* The speaker's bust rises out of the top of the box, VC-style. */
-.vc-dlg-in{ display:block; padding:.9em 1.1em 1.0em 9.6em; min-height:6.2em; }
-.vc-dlg-por{ position:absolute; left:1.0em; bottom:.15em; width:7.8em; }
+.vc-dlg-in{ display:block; padding:1.0em 1.2em 1.1em 9.4em; min-height:6.6em; }
+.vc-dlg-por{ position:absolute; left:.7em; bottom:.1em; width:8.0em; }
 .vc-dlg-por svg{ width:100%; height:auto; filter:drop-shadow(0 3px 6px rgba(58,47,51,.42)); }
 .vc-dlg-body{ min-width:0; }
 .vc-dlg-name{ display:inline-block; position:relative; margin:-1.6em 0 .35em -1.0em; padding:.14em 1.1em .18em 1.0em;
@@ -551,12 +696,10 @@ function css() {
   padding:.24em .7em; }
 .vc-lg{ display:flex; align-items:center; gap:.32em; font-size:.66em; color:var(--ink-2);
   font-variant:small-caps; letter-spacing:.1em; }
-.vc-key{
-  display:inline-grid; place-items:center; min-width:1.55em; height:1.45em; padding:0 .3em;
-  border:1.3px solid rgba(51,41,31,.62); border-radius:3px; font-size:.92em; letter-spacing:.02em;
-  box-shadow:0 1.5px 0 rgba(51,41,31,.35); background:rgba(247,239,221,.55);
-  font-variant:normal;
-}
+/* The cap is a drawn SVG (icons.js keyCap) — a CSS border-radius box read as a
+   web keyboard chip, which axis 11 of the rubric rejects outright. */
+.vc-key{ display:inline-flex; align-items:center; height:1.5em; }
+.vc-key svg{ height:1.5em; width:auto; }
 .vc-legend .vc-paper{ filter:none; box-shadow:none; opacity:.66; }
 
 /* ---------- toast -------------------------------------------------------- */
@@ -566,6 +709,11 @@ function css() {
   animation:vc-toast 2.6s cubic-bezier(.2,.9,.3,1) both; position:relative; }
 
 /* ---------- keyframes ---------------------------------------------------- */
+/* Capture mode: the harness freezes animation *mid-flight*, so a roster or an
+   order strip that happened to be rebuilt late got photographed half dealt and
+   half faded. Under ?capture the entrance choreography simply does not run. */
+.vc-still .vc-ru, .vc-still .vc-card, .vc-still .vc-cp-tok{ animation:none !important; }
+
 @keyframes vc-slide-in{
   from{ opacity:0; transform:translateX(-2.2em) rotate(-1.4deg); filter:blur(2.5px); }
   60%{ opacity:1; filter:blur(0); }
@@ -574,6 +722,11 @@ function css() {
 @keyframes vc-slide-up{
   from{ opacity:0; transform:translateX(-50%) translateY(1.6em) rotate(var(--tilt,0deg)); filter:blur(2px); }
   to{ opacity:1; transform:translateX(-50%) translateY(0) rotate(var(--tilt,0deg)); filter:blur(0); }
+}
+/* the dialogue bar is left/right anchored, so it must not translateX at all */
+@keyframes vc-dlg-in{
+  from{ opacity:0; transform:translateY(1.6em) rotate(var(--tilt,0deg)); filter:blur(2px); }
+  to{ opacity:1; transform:translateY(0) rotate(var(--tilt,0deg)); filter:blur(0); }
 }
 @keyframes vc-deal{
   from{ opacity:0; transform:translate(-9em, 4.5em) rotate(-16deg) scale(.86); }

@@ -354,7 +354,9 @@ export class Terrain {
     const cGrass = new THREE.Color(PALETTE.grass);
     const cGrassDry = new THREE.Color(PALETTE.grassDry);
     const cGrassDark = new THREE.Color(PALETTE.grassDark);
+    const cGrassLush = new THREE.Color(PALETTE.grassLush);
     const cDirt = new THREE.Color(PALETTE.dirt);
+    const cDirtDark = new THREE.Color(PALETTE.dirtDark);
     const cRock = new THREE.Color(PALETTE.rock);
     const cMud = new THREE.Color(PALETTE.mud);
     const cSand = new THREE.Color(PALETTE.sand);
@@ -375,19 +377,35 @@ export class Terrain {
         const track = layout.trackSDF(x, z);
         const vm = layout.villageMask(x, z);
 
+        // Three noise scales, each doing a different job:
+        //   field  ~90 m — which pasture this is (grazed, hay, rough)
+        //   mottle ~29 m — variation inside one field
+        //   clump  ~5 m  — the tufting you see from standing height
+        const field = fbm2(x * 0.011, z * 0.011, { octaves: 3, seed: this.seed + 733 });
         const mottle = fbm2(x * 0.035, z * 0.035, { octaves: 4, seed: this.seed + 401 });
-        const patch = fbm2(x * 0.011, z * 0.011, { octaves: 3, seed: this.seed + 733 });
+        const clump = fbm2(x * 0.19, z * 0.19, { octaves: 2, seed: this.seed + 877 });
+        const tuft = valueNoise2(x * 0.62, z * 0.62, this.seed + 1471);
 
-        // rock on steep ground and on the ridged spines
-        let rock = smoothstep(0.16, 0.42, slope) * (0.55 + mottle * 0.9);
-        // mud on the river margin and in crater bowls
-        const shore = 1 - smoothstep(hw + 0.5, hw + 5.5, river.d);
-        const wet = 1 - smoothstep(WATER_Y + 0.25, WATER_Y + 1.7, h);
-        let mud = clamp01(Math.max(shore * 0.9, wet) * (0.7 + mottle * 0.6));
-        // dirt on the road, the track, the village pad and heavy footfall
-        const roadM = 1 - smoothstep(rw * 0.72, rw + 1.6, road.d);
-        const trackM = (1 - smoothstep(1.4, 3.6, track.d)) * 0.85;
-        let dirt = clamp01(Math.max(roadM, trackM) * (0.85 + mottle * 0.3) + vm * 0.30);
+        // rock only on genuinely steep faces — a rolling pasture is not scree
+        let rock = smoothstep(0.22, 0.50, slope) * (0.5 + mottle * 0.9);
+        // Mud hugs the waterline: a narrow shingle margin, not a broad beach.
+        // The carved bank rises very gently, so a height-based wet test with any
+        // width at all paints eight metres of bare sand up both banks.
+        const shore = 1 - smoothstep(hw + 0.3, hw + 2.2, river.d);
+        const wet = 1 - smoothstep(WATER_Y + 0.05, WATER_Y + 0.42, h);
+        let mud = clamp01(Math.max(shore * 0.8, wet) * (0.55 + mottle * 0.7));
+        // Dirt on the road, the track, the village pad and heavy footfall.
+        // A country road is not a uniform ribbon of bare earth: it is two wheel
+        // RUTS with a grassed crown between them and grass creeping in from the
+        // verges, and painting that is most of what makes it read as a cart
+        // track rather than as a strip of desert laid over a meadow.
+        const rd = road.d / Math.max(0.8, rw);
+        const rut = Math.exp(-Math.pow((rd - 0.55) / 0.34, 2));
+        const roadM = (1 - smoothstep(0.88, 1.35, rd)) * (0.34 + 0.66 * rut);
+        const td = track.d / 2.4;
+        const trut = Math.exp(-Math.pow((td - 0.55) / 0.38, 2));
+        const trackM = (1 - smoothstep(0.9, 1.5, td)) * (0.28 + 0.6 * trut) * 0.9;
+        let dirt = clamp01(Math.max(roadM, trackM) * (0.85 + mottle * 0.3) + vm * 0.13);
         // crater scorch => bare, burnt earth
         let burn = 0;
         for (let c = 0; c < layout.craters.length; c++) {
@@ -403,33 +421,62 @@ export class Terrain {
         rock = clamp01(rock);
         mud = clamp01(mud * (1 - dirt * 0.5));
         dirt = clamp01(dirt * (1 - mud * 0.4));
-        let grass = clamp01(1 - Math.max(rock, Math.max(mud, dirt)));
+        const grass = clamp01(1 - Math.max(rock, Math.max(mud, dirt)));
 
         const sum = grass + dirt + rock + mud || 1;
         const g = grass / sum, d2 = dirt / sum, r2 = rock / sum, m2 = mud / sum;
         SP[k * 4] = g; SP[k * 4 + 1] = d2; SP[k * 4 + 2] = r2; SP[k * 4 + 3] = m2;
 
-        // --- bake the albedo. Sage green pasture, drying to straw on the
-        // sun-facing rises, deepening in the hollows.
-        _col.copy(cGrass).lerp(cGrassDry, clamp01(patch * 1.4 - 0.15));
-        _col.lerp(cGrassDark, clamp01(0.55 - AO[k]) * 1.5);
-        _colB.copy(cDirt).lerp(cSand, mottle * 0.5);
-        _col.lerp(_colB, d2);
-        _col.lerp(cRock, r2);
-        _col.lerp(cMud, m2);
+        const ao = AO[k];
+
+        // --- bake the albedo.
+        // Pasture first, as a patchwork of three greens: deep and blue-green in
+        // the damp hollows the water runs to, ordinary sage over most of it, and
+        // sun-bleached straw only on the dry crests. Dryness is driven by real
+        // terrain facts (height above the valley floor, convexity, sky exposure)
+        // rather than by noise alone, so the fields read as land rather than as
+        // a texture.
+        const dry = clamp01(
+          (field - 0.54) * 2.1
+          + (h - 8.0) * 0.035
+          + (ao - 0.90) * 1.3
+          + (mottle - 0.5) * 0.5
+        );
+        const damp = clamp01((0.48 - field) * 1.6 + (0.84 - ao) * 1.2 + (5.0 - h) * 0.05);
+        _col.copy(cGrass);
+        _col.lerp(cGrassLush, damp * 0.9);
+        _col.lerp(cGrassDry, dry * 0.80);
+        // Tufting: value break-up at the two scales a soldier actually sees —
+        // 5 m patches of richer and poorer grazing, and 1.6 m tussocks inside
+        // them. Without this the pasture is a billiard cloth.
+        _col.multiplyScalar(0.86 + clump * 0.30);
+        _col.lerp(cGrassLush, clamp01(tuft - 0.55) * 0.55);
+        _col.multiplyScalar(0.95 + tuft * 0.11);
+        // shaded hollows deepen toward the darkest green rather than to grey
+        _col.lerp(cGrassDark, clamp01(0.62 - ao) * 1.35);
+
+        // Road metal: dry ochre in the wheel ruts, damp umber at the edges.
+        // Kept well off `sand` — this is a cart track worn into pasture, and a
+        // bright sand ribbon through a green valley reads as a beach.
+        _colB.copy(cDirt).lerp(cSand, clamp01(mottle * 0.34 + roadM * 0.22));
+        _colB.lerp(cDirtDark, clamp01(0.62 - mottle) * 0.85);
+        _col.lerp(_colB, d2 * 0.95);
+        _col.lerp(cRock, r2 * 0.92);
+        _col.lerp(cMud, m2 * 0.9);
 
         // grain: fine value variation so the wash is never flat
-        const grain = 0.93 + valueNoise2(x * 1.4, z * 1.4, this.seed + 5) * 0.16;
+        const grain = 0.94 + valueNoise2(x * 1.4, z * 1.4, this.seed + 5) * 0.14;
         _col.multiplyScalar(grain);
 
         // scorching from the shelling — toward the warm brown-violet floor,
         // never toward black
-        if (burn > 0.001) _col.lerp(_colB.set(PALETTE.darkest), clamp01(burn) * 0.62);
+        if (burn > 0.001) _col.lerp(_colB.set(PALETTE.darkest), clamp01(burn) * 0.58);
 
-        // bake AO as a violet-shifted darkening, not a grey multiply
-        const ao = AO[k];
-        _col.lerp(shadeTint, (1 - ao) * 0.55);
-        _col.multiplyScalar(0.72 + ao * 0.34);
+        // bake AO as a violet-shifted darkening, not a grey multiply. Kept
+        // lighter than a physical AO would be: the NPR pass bands the result,
+        // and a heavy bake pushes whole hillsides down a band at once.
+        _col.lerp(shadeTint, (1 - ao) * 0.40);
+        _col.multiplyScalar(0.82 + ao * 0.22);
 
         CR[k * 3] = _col.r; CR[k * 3 + 1] = _col.g; CR[k * 3 + 2] = _col.b;
       }
@@ -493,22 +540,21 @@ export class Terrain {
    * skirt hides that gap without any stitching bookkeeping.
    */
   _buildTileGeometry(i0, j0, cells, step) {
-    const { N, cell, half, H, NX, NY, NZ, AO, SP, CR } = this;
+    const { N, cell, half, H, NX, NY, NZ, AO, CR } = this;
     const n = Math.floor(cells / step) + 1;
     const vcount = n * n;
     const skirtCount = n * 4;
     const total = vcount + skirtCount;
 
-    // `color` carries the SPLAT (r grass, g dirt, b rock, a mud) because that
-    // is what src/render/materials.js's terrain shader reads through
-    // VC_SPLAT_VCOL. The finished per-vertex albedo we bake (splat mix + AO +
-    // scorch + field patchiness) rides along in `aAlbedo` for any material that
-    // would rather be told the answer than derive it.
+    // `color` carries the finished per-vertex ALBEDO (splat mix + field
+    // patchwork + scorch + horizon AO), which is what the terrain shader reads
+    // under VC_VCOL_ALBEDO. The raw splat weights stay on the CPU in `SP` —
+    // gameplay and vegetation density read them through splatAt(), and the
+    // shader derives its own detail weights from slope and noise.
     const pos = new Float32Array(total * 3);
     const nrm = new Float32Array(total * 3);
     const uv = new Float32Array(total * 2);
-    const col = new Float32Array(total * 4);
-    const alb = new Float32Array(total * 3);
+    const col = new Float32Array(total * 3);
     const ao = new Float32Array(total);
 
     const put = (vi, gi, gj, drop) => {
@@ -521,9 +567,7 @@ export class Terrain {
       nrm[vi * 3] = NX[k]; nrm[vi * 3 + 1] = NY[k]; nrm[vi * 3 + 2] = NZ[k];
       uv[vi * 2] = (x + half) / this.size;
       uv[vi * 2 + 1] = (z + half) / this.size;
-      alb[vi * 3] = CR[k * 3]; alb[vi * 3 + 1] = CR[k * 3 + 1]; alb[vi * 3 + 2] = CR[k * 3 + 2];
-      col[vi * 4] = SP[k * 4]; col[vi * 4 + 1] = SP[k * 4 + 1];
-      col[vi * 4 + 2] = SP[k * 4 + 2]; col[vi * 4 + 3] = SP[k * 4 + 3];
+      col[vi * 3] = CR[k * 3]; col[vi * 3 + 1] = CR[k * 3 + 1]; col[vi * 3 + 2] = CR[k * 3 + 2];
       ao[vi] = AO[k];
     };
 
@@ -579,8 +623,7 @@ export class Terrain {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    g.setAttribute('color', new THREE.BufferAttribute(col, 4));
-    g.setAttribute('aAlbedo', new THREE.BufferAttribute(alb, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     g.setAttribute('aAO', new THREE.BufferAttribute(ao, 1));
     g.setIndex(idx);
     g.computeBoundingSphere();

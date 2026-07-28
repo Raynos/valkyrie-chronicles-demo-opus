@@ -23,6 +23,10 @@ const _ray = new THREE.Vector3();
 const _proj = new THREE.Vector3();
 
 // Ink-wash overlay palette, tuned to sit inside the CANVAS gouache range.
+// NOTE: these are THREE.Color, so blend them through `_c1` (a Color). A Vector3
+// cannot `.copy()` a Color — it reads .x/.y/.z, gets undefined, and every cell
+// colour comes out NaN, which the vertex-colour path rasterises as solid black.
+const _c1 = new THREE.Color();
 const COL_MOVE_NEAR = new THREE.Color(0.74, 0.88, 0.86);
 const COL_MOVE_FAR = new THREE.Color(0.40, 0.60, 0.66);
 const COL_MOVE_EDGE = new THREE.Color(0.93, 0.97, 0.95);
@@ -110,6 +114,7 @@ export class CommandMode {
   }
 
   exit() {
+    if (!this.active) return;            // idempotent: Battle.setPhase also calls this
     this.active = false;
     this.group.visible = false;
     this.clearSelection();
@@ -407,6 +412,7 @@ export class CommandMode {
       _cells.push(u.lastKnown.x, u.lastKnown.y + 0.05, u.lastKnown.z, 0.55, 0.30, 0.34, 0.5);
     }
     this._fillCellMesh(this.ghostMarks, _cells, 1.5);
+    this.ghostMarks.visible = _cells.length > 0;
   }
 
   // -------------------------------------------------------------------------
@@ -434,15 +440,15 @@ export class CommandMode {
         if (!nav.inBounds(jx, jz)) { edge = true; break; }
         if (nav.reachDist(nav.idx(jx, jz)) > range) edge = true;
       }
-      _v1.copy(COL_MOVE_NEAR).lerp(COL_MOVE_FAR, t * t);
-      if (edge) _v1.lerp(COL_MOVE_EDGE, 0.72);
+      _c1.copy(COL_MOVE_NEAR).lerp(COL_MOVE_FAR, t * t);
+      if (edge) _c1.lerp(COL_MOVE_EDGE, 0.72);
       _cells.push(
         nav.worldX(ix), nav.heightAt(nav.worldX(ix), nav.worldZ(iz)) + 0.045, nav.worldZ(iz),
-        _v1.x, _v1.y, _v1.z, edge ? 0.58 : lerp(0.34, 0.16, t),
+        _c1.r, _c1.g, _c1.b, edge ? 0.58 : lerp(0.34, 0.16, t),
       );
     }
     this._fillCellMesh(this.moveMesh, _cells, nav.cell * 1.02);
-    this.moveMesh.visible = true;
+    this.moveMesh.visible = _cells.length > 0;
     Bus.emit('command:range', { unit: u, metres: range, cells: cells.length });
   }
 
@@ -460,14 +466,18 @@ export class CommandMode {
         const v = th[i];
         if (v < maxT * 0.06) continue;
         const t = clamp01(v / maxT);
-        _v1.copy(COL_THREAT).lerp(COL_THREAT_HOT, t);
+        _c1.copy(COL_THREAT).lerp(COL_THREAT_HOT, t);
         _cells.push(
           nav.worldX(ix), nav.heightAt(nav.worldX(ix), nav.worldZ(iz)) + 0.035, nav.worldZ(iz),
-          _v1.x, _v1.y, _v1.z, lerp(0.10, 0.42, t * t),
+          _c1.r, _c1.g, _c1.b, lerp(0.10, 0.42, t * t),
         );
       }
     }
     this._fillCellMesh(this.threatMesh, _cells, nav.cell * 1.02);
+    // The threat wash is opt-in (F key / a shot asking for it). _fillCellMesh
+    // only ever hides an empty mesh — deciding to SHOW one is the caller's job,
+    // otherwise rebuilding the buffer silently turns the overlay back on.
+    this.threatMesh.visible = this.showThreat && _cells.length > 0;
   }
 
   /** Filled fans showing each spotted enemy's interception cone. */
@@ -528,7 +538,12 @@ export class CommandMode {
     return mesh;
   }
 
-  /** `data` is a flat [x,y,z, r,g,b,a] per cell; writes two triangles per cell. */
+  /**
+   * `data` is a flat [x,y,z, r,g,b,a] per cell; writes two triangles per cell.
+   * Filling a buffer is not a reason to make the mesh visible — only the caller
+   * knows whether this overlay is currently wanted — so this hides an empty
+   * mesh and otherwise leaves `visible` alone.
+   */
   _fillCellMesh(mesh, data, size) {
     const n = data.length / 7;
     if (n === 0) { mesh.geometry.setDrawRange(0, 0); mesh.visible = false; return; }
@@ -553,7 +568,6 @@ export class CommandMode {
     geo.setAttribute('color', new THREE.BufferAttribute(col, 4));
     geo.setDrawRange(0, n * 6);
     geo.computeBoundingSphere();
-    mesh.visible = n > 0;
   }
 
   _makeRing(inner, outer, color, opacity) {

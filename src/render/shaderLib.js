@@ -110,29 +110,38 @@ vec3 vcHsv2Rgb(vec3 c) {
 
 // The single most important colour rule of the CANVAS look: shade is not a
 // darker copy of the lit colour and it is certainly not grey. It is the SAME
-// pigment dragged most of the way round the wheel toward violet-blue, kept
-// saturated, and floored at a warm brown-violet so nothing ever reaches black.
+// pigment, darkened, lit only by the violet-blue sky — so it keeps its own hue
+// and merely COOLS. It is floored at a warm brown-violet so nothing hits black.
+//
+// This used to be an HSV hue ROTATION toward 265 deg, and that is the single
+// worst thing you can do to a warm palette: the shortest arc from ochre (30
+// deg) to violet-blue runs BACKWARDS through red into magenta, so every ochre
+// field, every brick wall and every straw roof turned lavender in shade and the
+// whole frame went purple. Skylight is a MULTIPLY plus a small ADD, not a hue
+// rotation, and modelling it that way gives the right answer for free:
+//   * a warm pigment lands on warm brown-violet (~350 deg, low chroma),
+//   * a green/sage pigment lands on desaturated violet-grey (~260 deg),
+// which is exactly the two behaviours the CANVAS palette wants.
 vec3 vcShadowColour(vec3 albedo, vec3 violet, vec3 floorCol) {
-  vec3 hsv = vcRgb2Hsv(albedo);
-  float target = 0.735;                       // ~265 deg, violet-blue
-  float dh = target - hsv.x;
-  dh -= floor(dh + 0.5);                      // shortest arc round the wheel
-  // A warm pigment takes the short arc BACKWARDS through magenta, which lands
-  // on pink and still reads warm. Push those further so a brick wall's shade is
-  // genuinely purple rather than a paler brick.
-  float warmth = 1.0 - smoothstep(0.14, 0.46, min(hsv.x, 1.0 - hsv.x));
-  hsv.x = fract(hsv.x + dh * mix(0.46, 0.62, warmth));
-  hsv.y = clamp(hsv.y * 0.80 + 0.17, 0.0, 0.88);
-  hsv.z = hsv.z * 0.33 + 0.032;
-  vec3 c = vcHsv2Rgb(hsv);
-  c = mix(c, violet * (0.35 + 0.9 * vcLum(c)), 0.38);
+  float l = vcLum(albedo);
+  vec3 tint = violet / max(vcLum(violet), 1e-4);   // unit-luminance skylight
+
+  // value drop + a mild pull toward the pigment's own grey (pigment in shade
+  // reads less chromatic, not more)
+  vec3 c = mix(albedo, vec3(l), 0.26) * 0.36;
+  // multiplicative skylight: cools without moving the hue much
+  c *= mix(vec3(1.0), tint, 0.44);
+  // a whisper of ADDITIVE skylight is what actually tips the hue past neutral
+  // into violet. Additive, so it dominates only where the pigment is darkest.
+  c += violet * 0.048 * (0.40 + 0.60 * l);
+
   // never darker than the warm brown-violet floor, scaled by how dark the
   // pigment itself is (a black boot still reads darker than a cream wall)
-  return max(c, floorCol * (0.42 + 0.58 * vcLum(albedo)));
+  return max(c, floorCol * (0.40 + 0.60 * l));
 }
 
 // The other half of the rule. Lit pigment must stay the SAME pigment — brighter,
-// a touch warmer, slightly less saturated. Mixing toward neutral cream is what
+// a touch warmer, barely less saturated. Mixing toward neutral cream is what
 // turns sage grass into khaki and an olive field into a desert, so the lift is
 // done in HSV and only a whisper of paper white is added on top.
 vec3 vcLitColour(vec3 albedo, vec3 cream) {
@@ -140,10 +149,10 @@ vec3 vcLitColour(vec3 albedo, vec3 cream) {
   float target = 0.105;                       // ~38 deg, straw / low sun
   float dh = target - hsv.x;
   dh -= floor(dh + 0.5);
-  hsv.x = fract(hsv.x + dh * 0.26);
-  hsv.y *= 0.84;
-  hsv.z = min(1.0, hsv.z * 1.42 + 0.11);
-  return mix(vcHsv2Rgb(hsv), cream, 0.14);
+  hsv.x = fract(hsv.x + dh * 0.13);           // a lean toward the sun, not a swap
+  hsv.y *= 0.94;
+  hsv.z = min(1.0, hsv.z * 1.36 + 0.10);
+  return mix(vcHsv2Rgb(hsv), cream, 0.075);
 }
 `;
 
@@ -228,23 +237,35 @@ export const GLSL_TONEMAP = /* glsl */`
 // A filmic curve deliberately detuned from ACES: the shoulder rolls into a
 // CREAM white point rather than pure white, and the toe lifts so the darkest
 // value in frame lands on a warm brown-violet instead of crushing to zero.
-vec3 vcCanvasTonemap(vec3 x, float exposure, vec3 paperWhite, vec3 inkBlack) {
+vec3 vcCanvasTonemap(vec3 x, float exposure, vec3 paperWhite, vec3 inkBlack, float contrast) {
   x = max(x, vec3(0.0)) * exposure;
   // Hable-ish shoulder with a softened toe.
   const float A = 0.22, B = 0.30, C = 0.10, D = 0.20, E = 0.018, F = 0.30;
   vec3 c = ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
-  // A LOW white point (~2, not the film-standard 11.2). Our scene values live
-  // in 0..1.5, and a curve built for a 11-stop HDR range compresses that into a
+  // A LOW white point (not the film-standard 11.2). Our scene values live in
+  // 0..1.8, and a curve built for an 11-stop HDR range compresses that into a
   // narrow grey wedge — which is exactly how a stylised frame turns to mud.
-  const float W = 2.05;
+  // 2.45 rather than 2.05 buys ~20% more highlight headroom, which is what
+  // keeps a bright sky graded instead of clipping to one flat cream slab; the
+  // 1.10 pre-gain at the call site puts the midtones back where they were.
+  const float W = 2.45;
   float wS = ((W * (A * W + C * B) + D * E) / (W * (A * W + B) + D * F)) - E / F;
   c = clamp(c / wS, 0.0, 1.0);
+
+  // Gouache S-curve, in a PERCEPTUAL space (an S applied to linear values
+  // crushes the shadow end into mud). This runs BEFORE the ink-floor lift so
+  // the floor still holds afterwards. Without it a banded NPR frame reads flat:
+  // all the values pile into the middle third and no amount of hue work makes
+  // that look like paint.
+  vec3 p = pow(c, vec3(0.4545));
+  p = mix(p, p * p * (3.0 - 2.0 * p), clamp(contrast, 0.0, 1.0));
+  c = pow(p, vec3(2.2));
 
   // Lift the floor to a warm brown-violet, but let the CREAM white point arrive
   // only near the top of the range. Applying it flat would drag every midtone
   // toward the same sepia and kill the sage/teal half of the palette.
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  vec3 top = mix(vec3(1.0), paperWhite, smoothstep(0.28, 1.0, l));
+  vec3 top = mix(vec3(1.0), paperWhite, smoothstep(0.45, 1.0, l));
   return inkBlack * (1.0 - c) + c * top;
 }
 `;

@@ -125,10 +125,13 @@ export function normalizeCollider(c) {
   const ver = c.version | 0;
   let n = c.__phys;
   if (n && n.version === ver) {
-    // These two flip at runtime when the world destroys a prop, and the
-    // world does not bump a version, so refresh them unconditionally.
+    // These flip at runtime as a prop is shot to pieces (a sandbag revetment
+    // sheds cover long before it dies), so refresh them unconditionally.
     n.solid = c.solid !== false;
     n.blocksLos = c.blocksLos !== false;
+    n.blocksProjectile = c.blocksProjectile !== undefined
+      ? !!c.blocksProjectile : (n.solid || n.blocksLos);
+    n.destroyed = !!c.destroyed;
     n.cover = c.cover ?? 0;
     return n;
   }
@@ -148,6 +151,8 @@ export function normalizeCollider(c) {
       destructible: false,
       solid: true,
       blocksLos: true,
+      blocksProjectile: true,
+      destroyed: false,
       hardness: 90,
       ref: c,
     };
@@ -186,10 +191,15 @@ export function normalizeCollider(c) {
   }
   n.material = c.material || c.mat || TAG_SURFACE[c.tag] || SURFACE.STONE;
   n.cover = c.cover ?? 0;
-  // The world module's own semantics: `solid` gates physical collision,
-  // `blocksLos` gates sight. A destroyed prop keeps its record but clears both.
+  // The world module's own semantics (src/world/collider.js): `solid` gates
+  // BODIES, `blocksLos` gates SIGHT, `blocksProjectile` gates BULLETS — three
+  // independent questions. `destroyed` is the single switch that clears all of
+  // them; a destroyed prop keeps its record so it can be rebuilt.
   n.solid = c.solid !== false;
   n.blocksLos = c.blocksLos !== false;
+  n.blocksProjectile = c.blocksProjectile !== undefined
+    ? !!c.blocksProjectile : (n.solid || n.blocksLos);
+  n.destroyed = !!c.destroyed;
   n.destructible = !!c.destructible;
   n.hardness = c.hardness ?? SURFACE_HARDNESS[n.material] ?? 60;
   return n;
@@ -328,6 +338,12 @@ export function rayVsCapsule(origin, dir, maxDist, p0, p1, radius, outNormal) {
  * @param {number} radius
  * @param {Array}  colliders         raw world colliders
  * @param {Hit}    out               result (untouched if no hit)
+ * @param {?function} filter         when supplied it OWNS the accept/reject
+ *   decision. THE DEFAULT GATE IS `blocksProjectile`, not `solid`: this test is
+ *   the projectile sweep (that is what the Minkowski expansion above is for),
+ *   and a bullet's question is not a body's question — barbed wire stops a man
+ *   and not a round. Callers doing a physical probe (where can I stand?) must
+ *   pass a `solid` filter; see groundUnder() in ./index.js.
  * @returns {boolean} true if something was hit
  */
 export function sweptSphereVsBoxes(origin, dir, maxDist, radius, colliders, out = _hitA, filter = null) {
@@ -336,10 +352,10 @@ export function sweptSphereVsBoxes(origin, dir, maxDist, radius, colliders, out 
   let hitAny = false;
   for (let i = 0; i < colliders.length; i++) {
     const raw = colliders[i];
-    if (raw.disabled || raw.dead) continue;
+    if (raw.disabled || raw.dead || raw.destroyed) continue;
     if (filter && !filter(raw)) continue;
     const box = normalizeCollider(raw);
-    if (!box.solid) continue;              // destroyed / non-blocking prop
+    if (!filter && !box.blocksProjectile) continue;   // wire, foliage, destroyed props
 
     // Broad phase: distance from segment to collider centre.
     closestPointOnSegment(origin, _wB.copy(origin).addScaledVector(dir, bestT), box.center, _wC);
@@ -505,7 +521,7 @@ export function capsuleVsWorld(p0, p1, radius, world, out = _capOut) {
   if (cols) {
     for (let i = 0; i < cols.length; i++) {
       const raw = cols[i];
-      if (raw.disabled || raw.dead || raw.noCollide) continue;
+      if (raw.disabled || raw.dead || raw.noCollide || raw.destroyed) continue;
       const box = normalizeCollider(raw);
       if (!box.solid) continue;
       // Closest point on the capsule axis to the collider, then on the collider.
@@ -570,7 +586,8 @@ export function lineOfSight(world, from, to, ignoreCollider = null) {
   if (cols) {
     for (let i = 0; i < cols.length; i++) {
       const raw = cols[i];
-      if (raw === ignoreCollider || raw.disabled || raw.dead || raw.noBlockLos) continue;
+      if (raw === ignoreCollider || raw.disabled || raw.dead ||
+          raw.noBlockLos || raw.destroyed) continue;
       const box = normalizeCollider(raw);
       if (!box.blocksLos) continue;
       let t;

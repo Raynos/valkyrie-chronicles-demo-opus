@@ -34,6 +34,14 @@ import { WorldLighting, updateWorldMaterials, setWindGain, PALETTE } from './wor
 
 const _dir = new THREE.Vector3();
 const _pt = new THREE.Vector3();
+const _sunDir = new THREE.Vector3();
+
+// The two ray filters. They are NOT the same question — see world/collider.js.
+// Sight is what a soldier can see over; projectile is what a round is stopped
+// by. A sandbag parapet answers "yes" to the second and "no" to the first.
+const LOS_FILTER = (c) => c.blocksLos;
+const PROJECTILE_FILTER = (c) => c.blocksProjectile;
+
 const _nav = { walkable: false, cost: 1, cover: 0, height: 0, material: 'grass', conceal: 0 };
 const _rayOut = { collider: null, distance: 0, point: new THREE.Vector3(), normal: new THREE.Vector3() };
 const _terrainHit = { point: new THREE.Vector3(), normal: new THREE.Vector3(), distance: 0 };
@@ -63,6 +71,16 @@ export class World {
     if (!scene.getObjectByName('sky') && !scene.getObjectByName('vcSky')) {
       this.sky = new Sky({ seed });
       this.root.add(this.sky.mesh);
+    }
+    // Aerial perspective. The far bank of a 180 m valley has to sit back behind
+    // the near bank or the frame is a flat cut-out, and the only thing that puts
+    // it there is atmosphere. Exponential-squared so it is invisible inside 20 m
+    // and lifts the far treeline about a third of the way to the haze colour.
+    // Adopt an existing fog rather than replacing it: the render module may own
+    // the grade and have set one already.
+    if (!scene.fog) {
+      scene.fog = new THREE.FogExp2(PALETTE.haze, 0.0026);
+      this._ownsFog = true;
     }
     this._makeLights(scene);
 
@@ -99,8 +117,12 @@ export class World {
     this.size = MAP_SIZE;
 
     this._wind = 1;
+    // `power` is HP of damage delivered AT THE EPICENTRE, falling to 0 at
+    // `radius` (docs/ARCHITECTURE.md, `explosion`). It is NOT normalised: prop
+    // HP is on the same scale, so a 46-power lance splash takes a 45 HP crate
+    // stack out and leaves a 480 HP sandbag revetment standing.
     this._offExplosion = Bus.on('explosion', (p) => {
-      if (p?.pos) this.damageArea(p.pos, p.radius ?? 5, (p.power ?? 1) * 90);
+      if (p?.pos) this.damageArea(p.pos, p.radius ?? 5, p.power ?? 0);
     });
   }
 
@@ -116,8 +138,11 @@ export class World {
   _makeLights(scene) {
     // If the render module already installed a key light, adopt it rather than
     // adding a second one — the banded NPR shading is calibrated for exactly
-    // one directional source.
+    // one directional source. src/render/lighting.js names its key light 'sun'
+    // and its sky fill 'worldFill' for exactly this handshake, so the rig and
+    // the World compose to ONE DirectionalLight in either wiring order.
     let sun = scene.getObjectByName('sun');
+    this._ownsSun = !sun;
     if (!sun) {
       sun = new THREE.DirectionalLight(WorldLighting.sunColor.getHex(), WorldLighting.sunIntensity);
       sun.name = 'sun';
@@ -139,9 +164,8 @@ export class World {
       scene.add(sun.target);
     }
     this.sun = sun;
-    WorldLighting.sunColor.copy(sun.color);
-    WorldLighting.sunIntensity = sun.intensity;
-    this._aimSun();
+    if (this._ownsSun) this._aimSun();
+    this._syncSunToMaterials();
 
     if (!scene.getObjectByName('worldFill')) {
       const hemi = new THREE.HemisphereLight(
@@ -158,6 +182,26 @@ export class World {
     this.sun.position.set(d.x * 190, d.y * 190, d.z * 190);
     this.sun.target.position.set(0, 4, 0);
     this.sun.target.updateMatrixWorld();
+  }
+
+  /**
+   * Push the ACTUAL key light into WorldLighting.
+   *
+   * The NPR fragment recovers `N·L * shadow` by dividing three's Lambert
+   * accumulation by `uSunLum`, which is derived from these three values. If the
+   * light rig owns the sun and animates time-of-day, stale values here show up
+   * as the whole world drifting a band brighter or darker, and a sun direction
+   * that disagrees with the shadow map. Cheap enough to do every frame.
+   */
+  _syncSunToMaterials() {
+    const sun = this.sun;
+    if (!sun) return;
+    if (!sun.color.equals(WorldLighting.sunColor)) WorldLighting.sunColor.copy(sun.color);
+    WorldLighting.sunIntensity = sun.intensity;
+    // Direction TOWARD the sun, taken from the light's own transform — the rig
+    // may have adopted the light after we made it and re-aimed it since.
+    _sunDir.copy(sun.position).sub(sun.target.position);
+    if (_sunDir.lengthSq() > 1e-6) WorldLighting.sunDir.copy(_sunDir.normalize());
   }
 
   // =========================================================================
@@ -349,11 +393,17 @@ export class World {
 
   /**
    * Nearest hit against terrain and world colliders.
+   *
+   * Defaults to the LINE-OF-SIGHT filter. Bullets must ask for the projectile
+   * filter — `raycast(o, d, dist, { projectile: true })` — because a sandbag
+   * wall stops a round without blocking sight, and tall grass blocks neither.
+   *
+   * @param {object} [opts] { projectile?:boolean, filter?:(collider)=>boolean }
    * @returns {{point, normal, distance, collider, material}|null} shared record
    */
   raycast(origin, dir, maxDist = 300, opts = {}) {
     _dir.set(dir.x, dir.y, dir.z).normalize();
-    const filter = opts.filter || ((c) => c.blocksLos);
+    const filter = opts.filter || (opts.projectile ? PROJECTILE_FILTER : LOS_FILTER);
     const colHit = this.grid.raycast(origin, _dir, maxDist, filter, _rayOut);
     const terHit = this.terrain.raycast(origin, _dir, maxDist, _terrainHit);
 
@@ -386,24 +436,41 @@ export class World {
   // destruction
   // =========================================================================
 
-  /** Apply blast damage to every destructible prop inside a radius. */
+  /**
+   * Apply blast damage to every destructible prop inside a radius.
+   * `amount` is HP at the epicentre — the `explosion` event's `power` — and
+   * falls off to 0 at `radius`.
+   * @returns {number} props hit
+   */
   damageArea(pos, radius, amount) {
+    if (!(amount > 0) || !(radius > 0)) return 0;
+    // Deliberately a fresh Set: `damage()` emits on the Bus and a listener may
+    // detonate something else, re-entering this method.
     const hit = new Set();
     this.grid.query(pos.x, pos.z, radius, (c) => {
-      if (!c.destructible || !c.owner || hit.has(c.owner)) return;
+      if (!c.destructible || c.destroyed || !c.owner || hit.has(c.owner)) return;
       const d = Math.hypot(c.center.x - pos.x, c.center.z - pos.z);
       if (d > radius) return;
       hit.add(c.owner);
       const falloff = 1 - smoothstep(0, radius, d);
-      this.props.damage(c, amount * falloff);
+      this.damage(c, amount * falloff);
     });
     return hit.size;
   }
 
-  /** Direct-fire damage against one collider. */
+  /**
+   * Direct-fire damage against one collider. THE single funnel for destruction:
+   * raises `cover:destroyed` exactly once, on the transition, so nobody else
+   * has to guess whether a prop just died.
+   * @returns {boolean} true if this call destroyed it
+   */
   damage(collider, amount) {
-    if (!collider?.destructible) return false;
-    return this.props.damage(collider, amount);
+    if (!collider?.destructible || collider.destroyed) return false;
+    const destroyed = this.props.damage(collider, amount);
+    if (destroyed) {
+      Bus.emit('cover:destroyed', { collider, point: collider.center.clone() });
+    }
+    return destroyed;
   }
 
   // =========================================================================
@@ -462,6 +529,8 @@ export class World {
       setWindGain(gust);
     }
 
+    // The key light may be owned by src/render's rig, which animates it.
+    this._syncSunToMaterials();
     updateWorldMaterials(dt);
     this.sky?.update(dt, camera);
     this.terrain.update(dt, camera);
@@ -479,6 +548,7 @@ export class World {
     this.water.dispose();
     this.sky?.dispose();
     this.terrain.dispose();
+    if (this._ownsFog) this.scene.fog = null;
     this.scene.remove(this.root);
   }
 }

@@ -8,6 +8,11 @@
 // Adapter note: ARCHITECTURE.md does not specify src/physics. If the integrator calls
 // setPhysics(mod) with anything exposing `raycast(origin, dir, maxDist, opts)` we delegate world
 // tracing to it; otherwise we trace terrain + World.colliders ourselves.
+//
+// Bullets ask a different question of the world than eyes do. Everything here traces with the
+// PROJECTILE filter: a sandbag revetment or a crate stack stops a round while being transparent
+// to line of sight (you shoot over the parapet you are crouched behind), and barbed wire is the
+// exact reverse. See src/world/collider.js for the three-flag vocabulary.
 
 import * as THREE from 'three';
 import { Bus } from '../core/bus.js';
@@ -24,19 +29,33 @@ export const Physics = {
   raycast: null,          // (origin, dir, maxDist, opts) -> { point, normal, distance, material } | null
   lineOfSight: null,      // (world, from, to, ignore) -> 0..1 visibility
   groundUnder: null,      // (world, x, y, z, maxDrop) -> { y, normal, material }
+  ballisticsFor: null,    // (weapon|id) -> exterior-ballistics profile | null
   gravity: 9.81,
 };
 
+// Reused options bag for the physics raycast — one per module, never per shot.
+const _physOpts = { world: null, projectile: true, sight: false };
+
 export function setPhysics(mod) {
   Physics.impl = mod || null;
-  const fn = mod?.raycast || mod?.raycastWorld || mod?.rayTest || null;
-  Physics.raycast = typeof fn === 'function' ? fn.bind(mod) : null;
+  const fn = typeof mod?.raycast === 'function' ? mod.raycast : null;
+  Physics.raycast = fn;
   // src/physics exposes `lineOfSight(world, from, to, ignore)` returning a 0..1 visibility.
   Physics.lineOfSight = typeof mod?.lineOfSight === 'function' ? mod.lineOfSight : null;
   Physics.groundUnder = typeof mod?.groundUnder === 'function' ? mod.groundUnder : null;
+  // Bridge between the three weapon namespaces (game stat block / mesh / flight model).
+  Physics.ballisticsFor = typeof mod?.ballisticsFor === 'function' ? mod.ballisticsFor : null;
   if (typeof mod?.GRAVITY === 'number') Physics.gravity = mod.GRAVITY;
   else if (typeof mod?.gravity === 'number') Physics.gravity = mod.gravity;
+  // Hand the physics module the world it is supposed to be tracing against; without
+  // this its module-level queries have nothing to trace and silently return null.
+  if (Ctx.world && typeof mod?.setPhysicsWorld === 'function') mod.setPhysicsWorld(Ctx.world);
   return Physics;
+}
+
+/** The exterior-ballistics profile for a weapon, or null if physics is not wired. */
+export function ballisticsSpec(weapon) {
+  return Physics.ballisticsFor ? Physics.ballisticsFor(weapon) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +82,11 @@ export function setCombatContext({ world, units, battle, rng }) {
   if (units !== undefined) Ctx.units = units;
   if (battle !== undefined) Ctx.battle = battle;
   if (rng !== undefined) Ctx.rng = rng;
+  // Keep the physics module's idea of the world in step, whichever order the
+  // integrator calls setPhysics() and setCombatContext() in.
+  if (world !== undefined && typeof Physics.impl?.setPhysicsWorld === 'function') {
+    Physics.impl.setPhysicsWorld(world);
+  }
   return Ctx;
 }
 
@@ -82,6 +106,10 @@ const worldHit = {
   t: 0, x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0,
   material: 'dirt', collider: null, cover: 0, destructible: false,
 };
+
+/** Frozen options for World.raycast. Hoisted: one per module, not one per shot. */
+const _worldRayOpts = Object.freeze({ projectile: true });
+const _worldSightOpts = Object.freeze({ projectile: false });
 
 const sceneHit = {
   t: 0, kind: 'none', point: new THREE.Vector3(), normal: new THREE.Vector3(0, 1, 0),
@@ -118,8 +146,18 @@ function colYaw(c) {
   return 0;
 }
 
-/** Anything the world has switched off, blown up, or marked as not blocking. */
+/**
+ * Anything the world has switched off, blown up, or marked as not blocking.
+ * `destroyed` is src/world/collider.js's single destruction switch — setting it
+ * also clears solid/blocksLos/blocksProjectile/cover, so every subsystem agrees.
+ */
 function colInert(c) { return c.noBlock || c.destroyed || c.disabled || c.dead; }
+
+/** Does this collider stop a bullet? Tolerant of colliders authored elsewhere. */
+function colStopsRound(c) {
+  if (c.blocksProjectile !== undefined) return !!c.blocksProjectile;
+  return c.solid !== false || c.blocksLos !== false;
+}
 
 /** Ray vs oriented box. Slab test in the box's local frame. Returns t or -1. */
 function rayBox(ox, oy, oz, dx, dy, dz, c, maxDist) {
@@ -207,15 +245,25 @@ function raySphereT(ox, oy, oz, dx, dy, dz, cx, cy, cz, r) {
 /**
  * Trace terrain + static colliders. Returns the shared `worldHit` record or null.
  * Terrain is marched at 0.5 m and refined with 8 bisections — plenty for 1 m grid cells.
+ *
+ * @param {boolean} [sight] ask the LINE-OF-SIGHT question instead of the bullet one.
+ *   Only the eyes-vs-bullets distinction differs: a sandbag parapet stops the round
+ *   and not the look, tall grass stops neither.
  */
-export function traceWorld(ox, oy, oz, dx, dy, dz, maxDist, world = Ctx.world) {
+export function traceWorld(ox, oy, oz, dx, dy, dz, maxDist, world = Ctx.world, sight = false) {
   let best = -1;
   let bestCollider = null;
   let bestMat = 'dirt';
 
-  if (Physics.raycast) {
+  // src/physics is authoritative when it is wired AND has a world to trace: it is the
+  // same swept test the projectiles themselves use, so a hitscan round and a simulated
+  // round cannot disagree about what stopped them.
+  if (Physics.raycast && world) {
     _o.set(ox, oy, oz); _dir.set(dx, dy, dz);
-    const h = Physics.raycast(_o, _dir, maxDist, null);
+    _physOpts.world = world;
+    _physOpts.sight = sight;
+    _physOpts.projectile = !sight;
+    const h = Physics.raycast(_o, _dir, maxDist, _physOpts);
     if (h) {
       const t = h.distance ?? h.t ?? (h.point ? _o.distanceTo(h.point) : -1);
       if (t >= 0) {
@@ -236,10 +284,12 @@ export function traceWorld(ox, oy, oz, dx, dy, dz, maxDist, world = Ctx.world) {
 
   // The World keeps a uniform-grid broadphase; use it in preference to our own linear
   // scan whenever it exists. It also knows about the bridge deck and other platforms.
+  // `projectile: true` is what makes it answer the bullet question rather than the
+  // line-of-sight one — without it, rounds pass straight through 95 solid colliders.
   if (world?.raycast) {
     _o.set(ox, oy, oz); _dir.set(dx, dy, dz);
     let h = null;
-    try { h = world.raycast(_o, _dir, maxDist); } catch { h = null; }
+    try { h = world.raycast(_o, _dir, maxDist, sight ? _worldSightOpts : _worldRayOpts); } catch { h = null; }
     if (!h) return null;
     const t = h.distance ?? _o.distanceTo(h.point);
     worldHit.t = t;
@@ -257,6 +307,7 @@ export function traceWorld(ox, oy, oz, dx, dy, dz, maxDist, world = Ctx.world) {
     for (let i = 0; i < colliders.length; i++) {
       const c = colliders[i];
       if (colInert(c)) continue;
+      if (sight ? c.blocksLos === false : !colStopsRound(c)) continue;
       let t = -1;
       if (c.type === 'sphere') {
         colCenter(c, _a);
@@ -391,7 +442,7 @@ export function hasLOS(ax, ay, az, bx, by, bz, world = Ctx.world) {
   const dist = _dir.length();
   if (dist < 0.001) return true;
   _dir.multiplyScalar(1 / dist);
-  const h = traceWorld(ax, ay, az, _dir.x, _dir.y, _dir.z, dist - 0.15, world);
+  const h = traceWorld(ax, ay, az, _dir.x, _dir.y, _dir.z, dist - 0.15, world, true);
   return !h;
 }
 
@@ -541,6 +592,23 @@ export function expectedDamage(shooter, target, weapon, opts = {}) {
   return raw * zone * am.dmg * (target.isVehicle ? am.aa : 1) * mit * dm.def;
 }
 
+/**
+ * HP of structural damage ONE round does to destructible cover, on the same scale as
+ * the `explosion` event's `power` and the props' HP.
+ *
+ * Driven by PENETRATION, not by anti-personnel damage: what a crate cares about is the
+ * round's energy, not how badly it hurts a man. That is what keeps a sniper rifle — 132
+ * damage to a soldier — from flattening a four-course sandbag revetment in five shots,
+ * while a lance or a tank shell goes through cover like it should. `spec` is the
+ * exterior-ballistics profile (src/physics); the fallback reconstructs a plausible
+ * penetration from the weapon's `pierce` when physics is not wired.
+ */
+const STRUCTURAL_PER_PEN = 0.35;
+function structuralDamage(weapon, spec) {
+  const pen = spec ? spec.pen : (16 + 120 * clamp01(weapon.pierce || 0));
+  return pen * STRUCTURAL_PER_PEN;
+}
+
 function mitigation(target, weapon) {
   const pierce = clamp01(weapon.pierce || 0);
   const def = clamp01(target.defense * (1 - pierce * 0.85));
@@ -594,9 +662,14 @@ export function fireRound(shooter, origin, dir, opts = {}) {
   _shotRes.normal.set(0, 1, 0);
 
   shooter.stats.shotsFired++;
+  // `ballistics` carries the exterior-ballistics profile this weapon maps to, so the FX
+  // layer draws a tracer at the right muzzle velocity instead of guessing (three weapon
+  // namespaces, one bridge — see WEAPONS[].ballistics in ./units.js).
+  const bspec = ballisticsSpec(weapon);
   Bus.emit('shot:fired', {
     unit: shooter, origin: _o.copy(origin).clone(), dir: _dir.copy(dir).clone(),
-    weapon, tracer: (opts.tracerForce ?? (rng() < (weapon.tracer || 0))),
+    weapon, ballistics: weapon.ballistics || null, speed: bspec?.v0 ?? null,
+    tracer: (opts.tracerForce ?? (rng() < (weapon.tracer || 0))),
   });
   Bus.emit('sfx', { name: weapon.sfx, pos: origin });
 
@@ -644,8 +717,13 @@ export function fireRound(shooter, origin, dir, opts = {}) {
       point: h.point.clone(), normal: h.normal.clone(), material: h.material,
       unit: null, part: null, crit: false, damage: 0, shooter,
     });
-    if (h.collider?.destructible && weapon.pierce > 0.5) {
-      Bus.emit('cover:destroyed', { collider: h.collider, point: h.point.clone() });
+    // Shooting cover wears it down. World.damage() is the single funnel: it applies HP,
+    // flips the collider's `destroyed` switch and raises `cover:destroyed` exactly once,
+    // on the transition — so this no longer announces a wall as destroyed while it is
+    // still standing, and a rifle can now saw through a crate stack it used to ignore.
+    if (h.collider?.destructible) {
+      const world = opts.world || Ctx.world;
+      world?.damage?.(h.collider, structuralDamage(weapon, bspec));
     }
   }
 
@@ -691,6 +769,14 @@ export function fireBurst(shooter, origin, aimDir, opts = {}) {
 
 /**
  * Radial damage with inverse-square-ish falloff and LOS occlusion from the blast centre.
+ *
+ * `power` is HP of damage AT THE EPICENTRE, falling to 0 at `radius` — the same number
+ * the `explosion` Bus event carries (docs/ARCHITECTURE.md). Destructible cover is on the
+ * same HP scale and is destroyed by exactly one owner: src/world/World listens for that
+ * event and runs damageArea(). This function used to ALSO flatten every destructible in
+ * radius itself, which both double-applied the blast and left structure meshes visible
+ * with their colliders switched off.
+ *
  * @param {THREE.Vector3} pos
  */
 export function explode(pos, radius, power, opts = {}) {
@@ -717,16 +803,10 @@ export function explode(pos, radius, power, opts = {}) {
     amt *= u.evalPotentials('defend', _defCtx).def;
     if (amt >= 1) u.takeDamage(amt, source, { crit: false, part: 'blast', worldPos: _b, kind: 'blast' });
   }
-  if (opts.destroyCover !== false && world?.colliders) {
-    for (let i = 0; i < world.colliders.length; i++) {
-      const c = world.colliders[i];
-      if (!c.destructible || c.destroyed) continue;
-      colCenter(c, _a);
-      if (_a.distanceTo(pos) < radius * 0.8) {
-        c.destroyed = true;
-        Bus.emit('cover:destroyed', { collider: c, point: _a.clone() });
-      }
-    }
+  // Cover destruction is NOT done here — see the note above. If the integrator ever runs
+  // this without a World on the Bus, `opts.destroyCover` forces the fallback.
+  if (opts.destroyCover === true && world?.damageArea) {
+    world.damageArea(pos, radius, power);
   }
 }
 

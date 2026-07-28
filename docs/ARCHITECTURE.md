@@ -82,7 +82,7 @@ export const CFG = { quality, debug, ... }   // tunables, hot-editable
 | `turn:changed` | `{ team, turn }` |
 | `mission:end` | `{ victory, turns, stats }` |
 | `order:used` | `{ order, unit }` |
-| `explosion` | `{ pos, radius, power }` |
+| `explosion` | `{ pos: Vector3 (world), radius: metres, power: HP of damage AT THE EPICENTRE falling to 0 at `radius`, source?: Unit }` — `power` is raw damage on the same scale as unit HP and destructible-prop HP, **never** a normalised 0..1. Emitted by the thing that detonates; `World` consumes it for prop destruction and must not be the one to raise it. |
 | `sfx` | `{ name, pos?, vol? }` |
 
 ## Render contract (`src/render/`)

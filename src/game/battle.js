@@ -212,6 +212,12 @@ export class Battle {
     if (this.phase === p) return;
     const from = this.phase;
     this.phase = p;
+    // The tactical map overlay belongs to the two map phases and nothing else.
+    // Taking it down here rather than at each call site means anything that
+    // drives the machine into 'action'/'result' directly — the opening script,
+    // the capture shots — cannot leave the threat wash painted across an
+    // over-the-shoulder frame. CommandMode.exit() is idempotent.
+    if (p !== 'command' && p !== 'enemy') this.commandMode?.exit();
     Bus.emit('phase:change', { from, to: p });
   }
 

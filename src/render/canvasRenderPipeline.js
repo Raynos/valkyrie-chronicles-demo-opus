@@ -19,6 +19,8 @@
 //      and object-id discontinuities, sampled through a noise flow field so the
 //      stroke wobbles, widened on silhouettes and thinned on interior creases,
 //      textured with graphite grain, plus a faint offset sketch double-stroke.
+//      Finally AERIAL PERSPECTIVE, applied on top of the linework so a hedgerow
+//      at 150 m loses its pencil as well as its contrast.
 //   6. GRADE + PAPER     — line-preserving FXAA, chromatic aberration, filmic
 //      tonemap to a cream white point, split-tone, saturation shaping, paper
 //      fibre multiply that peaks in the midtones, paper cockle, vignette.
@@ -32,6 +34,9 @@ import { getPaperTexture, getGrainTexture, getNoiseTexture } from './textures.js
 import { MaterialRegistry, getGenericPrepassMaterial, PALETTE } from './materials.js';
 
 const HALF = THREE.HalfFloatType;
+
+// See _bloom(): CFG's threshold is authored for a physical range we do not use.
+const BLOOM_THRESHOLD_SCALE = 0.55;
 
 // ------------------------------------------------------------- fullscreen
 class FsQuad {
@@ -230,6 +235,15 @@ uniform float uHorizonLine;
 uniform vec3  uInk;
 uniform vec3  uBloomTint;
 
+// aerial perspective
+uniform mat4  uViewToWorld;
+uniform vec3  uHazeColor;
+uniform float uHazeDensity;   // 1/metres
+uniform float uHazeStart;     // metres of clear air in front of the camera
+uniform float uHazeMax;
+uniform float uHazeHeight;    // metres of scale height above uHazeBase
+uniform float uHazeBase;
+
 varying vec2 vUv;
 
 // view-space ray through a uv (z == -1 plane)
@@ -386,6 +400,27 @@ void main() {
   vec3 ink = uInk * (0.55 + 0.75 * vcLum(color));
   color = mix(color, min(color, ink), a);
 
+  // ---- aerial perspective --------------------------------------------------
+  // Applied AFTER the linework, on purpose: in a painting the pencil recedes
+  // with everything else, so a hedgerow at 150 m must lose its outline as well
+  // as its contrast. Skipping the sky keeps the dome's own gradient intact.
+  {
+    float lz = texture2D(tND, uv).a;
+    float sky = step(length(texture2D(tND, uv).xyz), 0.4);
+    float dist = lz * uFar;
+    // Reconstruct world height so a hill top hazes less than the valley floor
+    // it stands in — that vertical gradient is most of what reads as "air".
+    vec3 vpos = rayAt(uv) * dist;
+    float wy = (uViewToWorld * vec4(vpos, 1.0)).y;
+    float hFall = exp(-max(wy - uHazeBase, 0.0) / max(uHazeHeight, 1.0));
+    float haze = (1.0 - exp(-max(dist - uHazeStart, 0.0) * uHazeDensity));
+    haze *= mix(0.55, 1.0, hFall) * uHazeMax * (1.0 - sky);
+    // haze both LIGHTENS and WARMS; carrying a little of the pixel's own value
+    // into the mix stops distant darks turning into flat grey cut-outs
+    vec3 hz = uHazeColor * (0.86 + 0.30 * vcLum(color));
+    color = mix(color, hz, clamp(haze, 0.0, 1.0));
+  }
+
   gl_FragColor = vec4(color, 1.0);
 }
 `;
@@ -404,6 +439,7 @@ uniform float uVignette;
 uniform float uChroma;
 uniform float uPaperStrength;
 uniform float uSaturation;
+uniform float uContrast;
 uniform float uTime;
 uniform vec3  uPaperWhite;
 uniform vec3  uInkBlack;
@@ -460,24 +496,35 @@ void main() {
 #endif
 
 #ifdef VC_CA
-  // radial chromatic fringing, essentially absent at the centre
-  vec2 ca = d * uChroma * (0.12 + r2 * 1.7);
+  // Radial chromatic fringing. The ramp is r^4, not linear: a shallow ramp puts
+  // a visible cyan/yellow fringe on every hard edge across two thirds of the
+  // frame, which on any dark silhouette reads as colour noise rather than as a
+  // lens. Only the extreme corners should show it at all.
+  vec2 ca = d * uChroma * (0.02 + r2 * r2 * 4.4);
   float rr = texture2D(tColor, uv + ca).r;
   float bb = texture2D(tColor, uv - ca).b;
   c = vec3(mix(c.r, rr, 0.85), c.g, mix(c.b, bb, 0.85));
 #endif
 
   // ---- tonemap to a cream white point --------------------------------------
-  c = vcCanvasTonemap(c, uExposure, uPaperWhite, uInkBlack);
+  // The 1.10 pre-gain pairs with the raised white point in vcCanvasTonemap: it
+  // keeps the midtones where they were while the shoulder gains headroom, which
+  // is what stops a bright sky clipping to one flat cream slab.
+  c = vcCanvasTonemap(c, uExposure * 1.10, uPaperWhite, uInkBlack, uContrast);
 
   // ---- split tone: warm brown-violet shadows, cream highlights --------------
   // Normalise both tints to unit luminance first — a split tone must move HUE,
   // not value. Tinting by a raw dark colour would drag the shadows back below
   // the warm brown-violet floor the tonemap just established.
+  //
+  // Keep this WEAK. It is the third violet term in the stack (after the shade
+  // colour and the ambient tint in materials.js) and stacking three of them
+  // multiplicatively is how 70% of the frame ended up lavender. The shadow tint
+  // here must satisfy R >= B or the whole image reads cool.
   float l = lumaOf(c);
   vec3 sT = uShadowTint / max(lumaOf(uShadowTint), 1e-4);
   vec3 hT = uHighTint / max(lumaOf(uHighTint), 1e-4);
-  c *= mix(sT, vec3(1.0), smoothstep(0.0, 0.55, l));
+  c *= mix(sT, vec3(1.0), smoothstep(0.0, 0.46, l));
   c *= mix(vec3(1.0), hT, smoothstep(0.48, 1.0, l));
 
   // ---- saturation shaping: greens go dusty, ochres get lifted ---------------
@@ -487,8 +534,10 @@ void main() {
     float greenness = exp(-dg * dg / 0.0072);
     float dO = hsv.x - 0.095;                       // ~34 deg, ochre / umber
     float ochreness = exp(-dO * dO / 0.0052);
-    hsv.y *= 1.0 - greenness * 0.26;
-    hsv.y *= 1.0 + ochreness * 0.13;
+    // Gallia is green countryside. Take the electric edge off a video-game
+    // green, do not launder it out of the palette entirely.
+    hsv.y *= 1.0 - greenness * 0.11;
+    hsv.y *= 1.0 + ochreness * 0.10;
     hsv.z *= 1.0 + ochreness * 0.030;
     hsv.y = clamp(hsv.y * uSaturation, 0.0, 1.0);
     c = vcHsv2Rgb(hsv);
@@ -632,6 +681,15 @@ export class CanvasRenderPipeline {
         uHorizonLine: { value: 0.52 },
         uInk: { value: new THREE.Color(0x35292b) },
         uBloomTint: { value: new THREE.Color(0xffdcae) },
+        uViewToWorld: { value: new THREE.Matrix4() },
+        // Warm straw-grey: the air over Gallia in the afternoon, not blue
+        // distance fog. Aerial perspective in gouache lightens AND warms.
+        uHazeColor: { value: new THREE.Color(0xd7cbac) },
+        uHazeDensity: { value: 0.0060 },
+        uHazeStart: { value: 24 },
+        uHazeMax: { value: 0.58 },
+        uHazeHeight: { value: 34 },
+        uHazeBase: { value: 0 },
       },
       vertexShader: FS_VERT, fragmentShader: COMPOSITE_FRAG,
       depthTest: false, depthWrite: false, name: 'vcComposite',
@@ -647,11 +705,15 @@ export class CanvasRenderPipeline {
         uVignette: { value: CFG.render.vignette },
         uChroma: { value: CFG.render.chroma },
         uPaperStrength: { value: CFG.render.paperStrength },
-        uSaturation: { value: 0.95 },
+        uSaturation: { value: 1.04 },
+        uContrast: { value: 0.34 },
         uTime: { value: 0 },
         uPaperWhite: { value: new THREE.Color(0xfff6e4) },
         uInkBlack: { value: PALETTE.inkFloor.clone() },
-        uShadowTint: { value: new THREE.Color(0xa79ec8) },
+        // Warm brown-violet, R > B. The old 0xa79ec8 normalised to a
+        // (1.01, 0.96, 1.21) multiplier — a 21% blue lift over everything below
+        // half value, i.e. most of the frame.
+        uShadowTint: { value: new THREE.Color(0xb3a5ac) },
         uHighTint: { value: new THREE.Color(0xfff0d2) },
         uVignetteTint: { value: new THREE.Color(0x8a6f63) },
       },
@@ -771,7 +833,13 @@ export class CanvasRenderPipeline {
     this.dof.focus = _v.distanceTo(p);
   }
 
-  setLightRig(rig) { this.lightRig = rig; }
+  setLightRig(rig) {
+    this.lightRig = rig;
+    // The rig fits its shadow frustum to the real view frustum; it needs the
+    // camera to do that, and the pipeline is the one place that reliably has
+    // both objects.
+    rig?.setCamera?.(this.camera);
+  }
 
   // ============================================================ frame
 
@@ -793,6 +861,7 @@ export class CanvasRenderPipeline {
     compU.uFar.value = cam.far;
     compU.uAspect.value = cam.aspect || (this.bw / this.bh);
     compU.uTanHalfFov.value = Math.tan(THREE.MathUtils.degToRad(cam.fov || 45) * 0.5);
+    compU.uViewToWorld.value.copy(cam.matrixWorld);
     this.mDof.uniforms.uFar.value = cam.far;
 
     const sm = r.shadowMap;
@@ -886,7 +955,12 @@ export class CanvasRenderPipeline {
     // downsample: source -> mip0 (with threshold) -> mip1 -> ...
     this.mPrefilter.uniforms.tSrc.value = srcTex;
     this.mPrefilter.uniforms.uTexel.value.set(1 / this.bw, 1 / this.bh);
-    this.mPrefilter.uniforms.uThreshold.value = CFG.render.bloomThreshold;
+    // Our scene values are stylised, not physical: a lit surface sits around
+    // 0.2 and only the sky and rim highlights pass 0.7, so the authored
+    // threshold caught nothing but the sky and the bloom read as absent. Scale
+    // it into the range the NPR shading actually produces so cream highlights
+    // bleed the way gouache does.
+    this.mPrefilter.uniforms.uThreshold.value = CFG.render.bloomThreshold * BLOOM_THRESHOLD_SCALE;
     this._quad.draw(r, this.mPrefilter, mips[0], true);
 
     for (let i = 1; i < mips.length; i++) {
@@ -928,6 +1002,19 @@ export class CanvasRenderPipeline {
       // occlude properly — the generic G-buffer material covers every group.
       const multi = Array.isArray(src);
       const ud = (multi ? (src[0] && src[0].userData) : src.userData) || {};
+      // A cutout material's shadow has to be cut out too. three cannot detect
+      // that from a ShaderMaterial (our texture is a uniform, not `.map`), so
+      // it would stamp the solid quad of every leaf card into the shadow map.
+      // materials.js builds the matching depth variant; hand it to three here,
+      // where we are already walking every visible mesh. This runs BEFORE the
+      // prepass-eligibility test on purpose — casting a shadow and appearing in
+      // the outline G-buffer are unrelated questions.
+      const wantDepth = (!multi && ud.vcShadowDepth) || undefined;
+      if (o.customDepthMaterial !== wantDepth &&
+          (wantDepth || o.customDepthMaterial?.userData?.vcIsShadowDepth)) {
+        o.customDepthMaterial = wantDepth;
+      }
+
       const skip = ud.vcNoPrepass === true || o.userData.noPrepass === true ||
                    (!multi && src.transparent === true && !ud.vcPrepass) ||
                    (!multi && src.depthWrite === false);

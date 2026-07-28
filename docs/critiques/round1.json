@@ -1,0 +1,314 @@
+{
+  "overview": {
+    "shot": "overview",
+    "verdict": "REJECT",
+    "blindPick": "real",
+    "tell": "The focal soldier is a featureless tan mannequin — capsule head with a smeared red band, tube arms ending in no hands, two tapered leg tubes with no boots or ground contact — and he is measurably softer and lower-contrast (patch meanEdge 15.3) than the houses 60 m behind him (meanEdge 28.6, stdev 40.9), so the frame's depth cues run backwards and no character reads as a person.",
+    "scores": {
+      "linework": 5,
+      "banding": 3,
+      "temperature": 4,
+      "paper": 6,
+      "hatching": 3,
+      "palette": 7,
+      "form": 3,
+      "composition": 3,
+      "materials": 3,
+      "atmosphere": 3,
+      "hud": 0,
+      "wow": 3
+    },
+    "fixes": [
+      {
+        "system": "src/render/canvasRenderPipeline.js",
+        "problem": "Aerial perspective is inverted: the most distant object in frame (village houses, ~60 m) is the sharpest and most contrasty element (patch 560,340,340x190: meanEdge 28.6, luma stdev 40.9) while the 9 m hero measures 15.3 and foreground grass 24.8. Haze is far too weak (uHazeDensity 0.0060 with uHazeStart 24 gives only ~0.22 haze at 60 m against uHazeMax 0.58), and the outline pass shrinks its sample offset with depth (depthScale = mix(2.05, 0.62, smoothstep(0,0.14,c.lz))) but never reduces ink OPACITY, so 60 m linework is as black as 9 m linework.",
+        "change": "Set uHazeDensity 0.0060 -> 0.019, uHazeStart 24 -> 8, uHazeMax 0.58 -> 0.74. In COMPOSITE_FRAG, after `float line = max(sil, crease * 0.66) * lineW * 2.0;` insert `line *= mix(1.0, 0.22, smoothstep(0.05, 0.35, c.lz));` so ink density falls with depth, and lerp uInk toward uHazeColor by the same factor so far strokes go grey-violet instead of near-black. Target: distant-house patch meanEdge below 14 and stdev below 22, i.e. under the foreground values."
+      },
+      {
+        "system": "src/world/worldMaterials.js (bandify / NPR_BODY)",
+        "problem": "There is no band quantisation on the two largest surfaces. Scanning the terrain shadow ramp at x=1010, y=880 upward gives 83,77,79,82,93,106,119,118,121,106,123,133,149,157,164 — a continuous 80->164 gradient with zero plateaus; the house stucco scan reads 160,166,160,167,167,166,167,162,163,158,163,173,177,178 with the same wander. bands=4 is being dissolved because the unbanded hemisphere/indirect term is summed into outgoingLight AFTER NPR_BODY quantises only the direct term, and uEdge 0.16 spreads each boundary across 32% of a band on top of that.",
+        "change": "Fold indirect into the quantiser input: compute `npShade = (dot(reflectedLight.directDiffuse, vec3(0.33333)) + dot(reflectedLight.indirectDiffuse, vec3(0.33333))) / (npLum * uSunLum)` and assign the banded result to outgoingLight exclusively (do not re-add indirectDiffuse afterwards). Then uEdge 0.16 -> 0.055 and uBleed 0.075 -> 0.13, and sample the bleed warp only from the LOW-frequency fibre lookup (uPaperTex at npPx*0.0021) so the boundary wanders in 30-60 px wet-edge lobes rather than dissolving per pixel. Verification: the same y=880->700 scan must show 4 plateaus each at least 12 samples long."
+      },
+      {
+        "system": "src/world/worldMaterials.js (uShadeTint / npShadeCol) + src/actors/character.js",
+        "problem": "Shade is not hue-shifted to violet-blue anywhere. Terrain shadow measures (85,80,64) — R>G>B, hue 41 deg, i.e. warm neutral brown, blue is the LOWEST channel. The hero's shadow side (129,92,57) is the same hue as his lit side (208,170,90) at 62% value, so characters are flat-lit with a pure value ramp and no terminator; the declared uShadeTint 0x584a63 never survives to screen.",
+        "change": "Raise the shade blend `mix(npBase * uShadeTint, uShadeTint, 0.30)` -> 0.55, set uShadeTint 0x584a63 -> 0x4b4270, and clamp the darkest band so blue >= red (`npShadeCol.b = max(npShadeCol.b, npShadeCol.r * 1.06)`). Route the character skin/uniform materials through the same nprUniforms/NPR_BODY path the world uses (they are currently on an unbanded ramp) with bands=3. Verification: torso scan at y=725 must show 3 plateaus and the shadow-side sample must satisfy B > R."
+      },
+      {
+        "system": "src/world/sky.js (PALETTE.skyZenith / skyHorizon / cloud thresholds)",
+        "problem": "The sky is a flat neutral grey occupying the top 40% of the frame with nothing in it. Vertical scan at x=960: y=0 (156,159,158), y=200 (156,164,161), y=400 (171,174,162) — a 15-level rise with saturation at or below 4% and B equal to G (no teal), and a 600x260 patch stdev of 4.49, meaning zero cloud form. uCloudLit 0xe4dac2 / uCloudMid 0xb9b5ac / uCloudShade 0x827f92 are defined but produce no visible mass.",
+        "change": "Set PALETTE.skyZenith to a muted teal-grey ~0x7f9ba3 and PALETTE.skyHorizon to warm cream ~0xe6d6b2, giving at least 45 luma delta zenith-to-horizon and at least 12% chroma at zenith. Lower the cloud coverage threshold in the sky FBM so 2-3 cumulus masses occupy the upper third, and band the cloud shading to 3 steps with the same bandify() the world uses so the edges read as painted, not soft-alpha. Verification: sky patch stdev above 16."
+      },
+      {
+        "system": "src/world/vegetation.js, src/world/props.js, src/world/structures.js",
+        "problem": "Untextured primitives everywhere, plus inconsistent ink. Tree trunks are flat unlit rectangles with no bark, no taper and no root flare that terminate at the terrain with no contact shadow; the concrete revetment is a single flat lavender box (138,111,120) with no aggregate, staining or damage; roofs are a flat orange gradient (187,116,85) with no tile; and grass billboards carry no outline at all — the foreground grass patch measures meanEdge 4.19 against 22.0 for the wall directly behind it, so the grass reads as 3D geometry pasted on top of a painting rather than part of it.",
+        "change": "Set userData.outlineWidth to 0.4 on the near grass LOD and route the blade material through nprUniforms with bands=3 so blades get ink and quantised shading. Replace trunk quads with a 6-sided tapered cylinder carrying a bark albedo and a root-flare skirt plus a radial contact-shadow decal. Add a tile-row normal/albedo detail to the roof material and a stucco/aggregate detail map to the revetment and house walls at roughly 0.5 m world texel with per-instance UV rotation so no tiling period is visible."
+      },
+      {
+        "system": "src/game/captureShots.js overview()",
+        "problem": "Composition is two empty regions plus a small back-turned subject. The left 35% of frame (x < 620) is a bare smeared field measuring stdev 12.99 / meanEdge 3.84 with nothing to look at, the top 40% is the flat grey sky, and the focal soldier sits dead-centre, back to camera, at lower contrast than the background — no foreground framing, no midground read, no depth layering.",
+        "change": "Yaw the shot camera about 18 deg right and drop the horizon to y = 0.62 of frame height so sky occupies under 30%. Move the hero off centre to the left third and shorten camera distance so he is roughly 0.45 of frame height. Fill the empty left band with a foreground framing element already available in the scene — place the team-0 tank (already looked up in this function) at approximately x=-16, z=30 cropped by the left edge, and add a hedgerow/fence run from src/world/layout.js along the near bank. Verification: no 400x220 patch anywhere in frame with luma stdev below 18."
+      }
+    ]
+  },
+  "firefight": {
+    "shot": "firefight",
+    "verdict": "REJECT",
+    "blindPick": "real",
+    "tell": "The foreground soldier casts no shadow whatsoever — his boots hover as two featureless dark blobs over unbroken grass with zero contact darkening, while every tree behind him lays down a long soft cast shadow, so the hero reads as a sticker pasted onto the hillside rather than a figure standing on it.",
+    "scores": {
+      "linework": 5,
+      "banding": 5,
+      "temperature": 6,
+      "paper": 4,
+      "hatching": 4,
+      "palette": 5,
+      "form": 4,
+      "composition": 4,
+      "materials": 3,
+      "atmosphere": 6,
+      "hud": 4,
+      "wow": 4
+    },
+    "fixes": [
+      {
+        "system": "src/render/lighting.js (shadow camera) + src/render/materials.js (surface shader)",
+        "problem": "The hero at x~1500,y~620 casts no visible shadow. One ortho cascade at shadowRadius:26 with sun.shadow.radius:3.2 PCF gives ~39 texels/m; a 0.28 m boot is ~11 texels and the normal-offset bias plus 12-sample blur erases the contact entirely (peter-panning). The trees, being 6 m wide, survive it, which is why they have shadows and the character does not. He is also standing in an undressed hillside that fills the right 40% of frame, so nothing else anchors him.",
+        "change": "Add a second near cascade: shadowRadius 6, shadowDistance 20, mapSize 2048 (≈170 texels/m), sun.shadow.radius 1.0, blurSamples 6, texel-snapped as the existing camera already is, selected in the shader by view depth < 14 m with a 2 m blend band. Independently add a screen-space contact shadow in the fragment stage: 10-step ray march along L in view space, max length 0.30 m, thickness threshold 0.045 m, output multiplied into the N·L term before banding — this darkens the boot/ground seam regardless of shadow-map resolution."
+      },
+      {
+        "system": "src/render/materials.js lines 483-499 (hatch block) and src/render/shaderLib.js GLSL_HATCH",
+        "problem": "bandDark = 1.0 - smoothstep(0.10, 0.55, g) admits hatching into midtones, so the same 35-degree stripe rides the LIT stucco walls, the LIT bridge face, the LIT uniform and the LIT grass at identical amplitude. Both fields use fixed angles (0.6109, -0.2618) and a constant uHatchSpacing 5.4, so the result is a machine-regular unidirectional screen at uniform ~7 px period with no crossing in most of the frame — it reads as a printed halftone, not graphite.",
+        "change": "Tighten to bandDark = 1.0 - smoothstep(0.02, 0.32, g) and bandCross = 1.0 - smoothstep(0.0, 0.16, g) so hatch exists only in the two genuinely dark bands. Inside vcHatchField, perturb per-stroke: angle += 0.14 * (noise(sPx * 0.0035) - 0.5) and spacing *= 1.0 + 0.28 * (noise(sPx * 0.0021 + 91.0) - 0.5), and modulate stroke opacity along its length by noise(sPx * 0.02) so pressure varies. Raise the cross-hatch weight from 0.94 to 1.0 but drive it from an independently seeded hash rather than the +(37,11) offset of the same field, so the two directions do not phase-lock."
+      },
+      {
+        "system": "src/render/textures.js (paper/grain field, ~line 215 onward) and its composite in src/render/canvasRenderPipeline.js",
+        "problem": "The substrate is 1-px isotropic salt noise applied at constant amplitude everywhere, including the sky (sampled #afafa8 to #c2b9ac shows full-strength speckle across an 800 px span with 408 unique values). It reads as sensor/ISO grain over a 3D render, not as cold-press fibre the scene is painted on; the rubric requires it strongest at midtones and gone in highlights.",
+        "change": "Rebuild as two octaves: octave A, value noise at 1/3.5 px stretched anisotropically 0.35 along a fixed 12-degree weave axis (the laid-paper direction); octave B, sparse slubs at 1/11 px, amplitude 0.6 of A. Composite in luma-only multiply, and gate amplitude by a midtone bell: amp = peak * exp(-pow((luma - 0.45) / 0.26, 2.0)), peak 0.075, with an extra * 0.35 for fragments whose depth is the sky dome so the sky reads as a wash, not as noise."
+      },
+      {
+        "system": "src/world/worldMaterials.js lines 45-46 (PALETTE.tileA/tileB) plus the band remap in src/render/materials.js",
+        "problem": "tileA 0xb15c42 / tileB 0xc4794f resolve on screen to #e1965d — HSV sat 0.59-0.62, val 0.88 — while the entire rest of the frame sits at sat 0.09-0.40. The roofs are the highest-chroma, highest-value objects in the image and pull the eye off the action; VC pantile is dusty brick, never traffic-cone orange.",
+        "change": "Set tileA to 0x8e5340 and tileB to 0x9c6248, and add a per-material chroma ceiling in the band-remap stage: after quantisation, convert to HSV and clamp sat to <= 0.38 and val to <= 0.74 for the tile bin specifically (pass it as a uHueClamp vec2 uniform alongside uHatch). Also exclude the tile bin from bloom contribution, or drop bloom threshold contribution for hue in [15, 35] degrees, so sun + bloom cannot re-inflate the roofs after the clamp."
+      },
+      {
+        "system": "src/world/textures.js stoneTexture (~line 295) and the stone bin in src/world/structures.js lines 409-462",
+        "problem": "The bridge occupies roughly 25% of frame and is a flat lavender field (#927b8a lit / #856e82 shaded) carrying only sparse randomly-scattered dark rectangles — no course structure, no mortar, no per-block variation, and no damage. The pier boxes at lines 453-462 take flat UV at uvScale.stone 0.42, so their vertical faces render as untextured primitives with hard 90-degree silhouettes; the waterline crosses them as a perfectly straight horizontal clip with no wet-edge or algae band.",
+        "change": "Rewrite stoneTexture as real ashlar: courses 0.34 m high, running bond with a 0.5-block offset per row, 2-px mortar line at value -0.14 between courses and -0.09 between blocks, per-block jitter of +/-0.06 in value and +/-6 degrees in hue about the base, plus a chipped-corner mask on ~12% of blocks. Switch the stone bin to triplanar sampling (world-space, blend exponent 4) instead of flat UV so pier faces and the arch soffit stay in register. Add a waterline band: multiply albedo by 0.82 and shift hue +18 degrees toward green for world-Y within 0.25 m above the water plane."
+      },
+      {
+        "system": "src/ui/hud.js and src/ui/style.js (Action Points bar and class chip)",
+        "problem": "The AP bar is a flat rounded rectangle filled with a vertical linear gradient of #718fa9 (hue 208, sat 0.33) and stroked with a 1-px black outline — a browser-default control and a saturated web blue that exists nowhere else in the palette. The class chip is a flat vector hexagon with a flat blue SVG SMG glyph. The rubric names exactly this as an automatic reject.",
+        "change": "Replace the AP fill with a horizontal ink wash from #e8dcc0 to #c08a3e, drawn through the same paper-fibre alpha mask used by the frame border (reuse the border's noise texture at 0.4 opacity) so the fill has a wet edge and a slightly darker pooled right terminus. Delete the vertical gradient and the 1-px black stroke; replace with two hand-ruled ink rules above and below at 2 px, colour #4a3526, with per-segment y-wobble of +/-0.6 px sampled every 14 px. Redraw the class chip as a stroked graphite hexagon (variable 1.5-3 px width, same wobble) with the weapon glyph in #4a3526 rather than blue fill."
+      }
+    ]
+  },
+  "closeup": {
+    "shot": "closeup",
+    "verdict": "REJECT",
+    "blindPick": "real",
+    "tell": "On the hero's cheek luminance climbs monotonically ~1 LSB per pixel across 100 px (143,149,152,154,155,154,152) with no quantised terminator anywhere on the face — it is a smooth-shaded 3D head with an edge-detect outline stroked round it, where VC's closeup would show two flat washes meeting at one hard, wobbly pigment edge under the cheekbone.",
+    "scores": {
+      "linework": 4,
+      "banding": 3,
+      "temperature": 6,
+      "paper": 4,
+      "hatching": 3,
+      "palette": 6,
+      "form": 3,
+      "composition": 5,
+      "materials": 3,
+      "atmosphere": 4,
+      "hud": 10,
+      "wow": 3
+    },
+    "fixes": [
+      {
+        "system": "src/render/materials.js:428-439 (band quantisation block)",
+        "problem": "The band-boundary noise is sampled in WORLD space: bq = vWorldPos.xz + vWorldPos.y*0.83, fed to vcFbm3(bq*0.62) and vcFbm4(bq*1.85). A head is 0.22 m across, so both fields traverse 0.14-0.40 of a cycle over the entire face — the noise is effectively CONSTANT there, the boundary shift becomes a uniform DC offset, and with a smooth-normal skull the drive never crosses a band edge. Result: the hero's face and torso render as continuous gradients (measured grain/step sd 0.72 on the cheek, mean step 1-2 LSB) while only metre-scale terrain shows any banding at all.",
+        "change": "Add a per-material uniform uBandNoiseScale (float, default 1) and change bq to `(vWorldPos.xz + vWorldPos.y*0.83) * uBandNoiseScale`. Set it in the material factory from the mesh bounding-sphere radius as `uBandNoiseScale = 4.0 / max(radius, 0.05)` so any object gets ~6-8 noise cycles across its silhouette (a 0.11 m-radius head gets ~36/m instead of 0.62/m). Additionally, for skin/cloth materials pass bands:3 and raise uKeyGain so the half-Lambert drive on a sphere spans at least 2 band boundaries between the lit brow and the jaw shadow — verify by sampling a horizontal scanline across the cheek and requiring >=2 steps of >12 LSB."
+      },
+      {
+        "system": "src/world/vegetation.js:677 _buildFlowers + matFlower at :380",
+        "problem": "Flowers are `quadCard(0.085, 0.105)` with no alpha map on matFlower (alphaTest:0.05 is a no-op with no texture), so every wildflower is an opaque axis-aligned rectangle. In the foreground they are visibly literal yellow rectangles floating in the grass; at ~45 m two flowerB (0xc4736c, scaled up to 1.12) instances render as flat saturated crimson SQUARES hanging in mid-air over the hillside at screen (1752,548) and (1770,545). They also carry `userData.outline = false` so they have no ink, and the placement `y + rngRange(0.07, 0.26)` lifts the card up to 26 cm off the terrain with no stem, so they are literally floating objects.",
+        "change": "Give matFlower a petal alpha texture (add `map: blossomTexture(...)` alongside the existing bladeTexture path in src/world/textures.js — a 5-lobe painted rosette with an inked rim) and raise alphaTest to 0.4. Replace quadCard with a 2-plane crossed card (two quads at 90 deg) so the flower does not vanish/flatten with view angle. Anchor to the ground: set the instance Y to terrain.heightAt() exactly and move the vertical offset into the geometry as a drawn stem. Pull fadeStart/fadeEnd from 34/52 to 12/26 so distant flowers dissolve before they can read as coloured pixels, and set `im.userData.outline = true` for instances within 15 m."
+      },
+      {
+        "system": "src/render/canvasRenderPipeline.js:546-566 (paper block) + src/core/config.js:20 paperStrength",
+        "problem": "pUv = uv * uResolution / (512.0 * uPixelRatio) puts only ~1.9 tiles of a 512px paper texture across a 1920px frame at pixelRatio 2, i.e. ~2 device pixels per paper texel — all cold-press tooth is gone and only a large blotchy stain survives. The amplitude is also inaudible: fibre = 1 + (paper.r-0.60)*1.15 at uPaperStrength 0.42 yields under 1% modulation; measured high-pass sd on the subject's cheek is 0.72 LSB and on the sky 0.90 LSB. The scene therefore sits ON TOP of a paper background instead of being painted INTO a sheet.",
+        "change": "Change pUv to `gl_FragCoord.xy / uPixelRatio / 256.0` so one paper texel maps to one CSS pixel regardless of resolution, and author the paper tile as a seamless 1024px cold-press scan with real 2-4 px fibre tooth (getPaperTexture in src/render/textures.js). Raise CFG.render.paperStrength to 0.85 and widen the fibre swing to (paper.r-0.5)*1.6. Change the `mid` weight from pow(1-abs(l*2-1), 0.75) to a curve that keeps >=60% strength down to l=0.25 so shadow washes keep their tooth. Target: high-pass sd of 4-6 LSB on every midtone surface INCLUDING the character."
+      },
+      {
+        "system": "src/render/canvasRenderPipeline.js:170-211 (DOF_FRAG), :499 (VC_CA), :560 (vignette), src/game/captureShots.js:726 closeup()",
+        "problem": "The frame is finished like a photograph, not a painting. The 16-tap golden-angle bokeh at maxCoC 6.5 turns the whole foreground into a smooth optical mush (measured high-pass sd drops from 2.26 to 0.83 across the focus edge, and every grass blade loses its ink). The r^4 chromatic aberration puts saturated red/blue fringes on the telegraph wires at the top-right (sampled pixels reach 176,38,41) which combine with sub-pixel wire geometry into a sparkling stipple that will crawl in motion. The vignette (uVignette 0.34 plus `c *= mix(0.74,1.0,vig)`) darkens the corners by up to 26%, a lens artefact no painted page has.",
+        "change": "In captureShots.closeup(), after aimCamera, set pipeline.dof = { enabled:true, focus:1.55, range:6, maxCoC:2.0 }. Replace the circular gather in DOF_FRAG with a 2-level wash: blur only the CHROMA and the band drive, keep the outline buffer sharp, and re-quantise the blurred result through the same 3-band ramp so out-of-focus foliage becomes soft flat shapes with ink, not bokeh. Set CFG.render.chroma to 0.0 (or gate VC_CA off entirely) and CFG.render.vignette to 0.12, dropping the extra `mix(0.74,1.0,vig)` multiply to `mix(0.90,1.0,vig)`."
+      },
+      {
+        "system": "src/actors/character.js (buildHeadgear head branch, face params at :58-72) and the weapon grip solve _solveWeaponAnchor at :1140-1170",
+        "problem": "Two form failures. (a) The second soldier at ~12 m (screen 1300,600) has NO face: the head is a blank tan oval with a flat crimson strip across the eye line where the under-brim/hair band sits, because eyes and brows are modelled geometry that falls below one pixel and there is no inked feature that survives distance. (b) The hero's right hand is a detached pink lozenge with sausage fingers resting ON TOP of the rifle stock at screen (1330,890) — no wrist, no sleeve, no visible forearm connecting it to the shoulder, and the fingers do not wrap the wrist of the stock.",
+        "change": "(a) Add a screen-space feature pass: emit a brow+upper-lash stroke and an iris dot into the outline weight channel (attachment 1, .b) from the head mesh, with a floor of 1.5 CSS px width so the eye line survives to 40 m; and clamp the shock helmet's brim edge function so its front phiMax stops at dy >= +0.31 (the same guard the scout cap uses at :336-343) so it cannot occlude the eye band. (b) In _solveWeaponAnchor, drive the hand from the weapon's grip socket rather than posing hand and rifle independently: solve the two-bone IK to the socket, then rotate the finger chain so the proximal phalanges close to a radius equal to the stock wrist (~0.021 m), and add the forearm/cuff geometry that is currently hidden behind the tunic so the arm reads as connected."
+      },
+      {
+        "system": "src/world/structures.js + src/world/worldMaterials.js (stuccoGrey 0xbfb8a8, tileA 0xb15c42, plaster 0xcfc4ae) and the boulder builder in src/world/props.js",
+        "problem": "Buildings and rocks are untextured primitives. The half-timbered house walls are a single flat lavender-grey fill with zero stucco, tile, plank or damage variation; the roofs are one flat orange with a smooth gradient and no tile courses; the foreground boulders are flat pentagons with a uniform outline and no rock face; the road/bridge deck occupies the whole middle third of the frame as an empty ochre plane with only faint horizontal streaks (an auto-reject 'empty region with nothing to look at').",
+        "change": "Give the wall/roof materials a triplanar detail map with hand-painted breakup: a stucco tooth map at ~0.6 m tiling multiplied at 0.18 strength, a tile-course map on roofs with rows every 0.14 m and a per-row ochre/umber jitter of +/-8% (author these in src/world/textures.js alongside bladeTexture). Add a per-face albedo jitter of +/-6% keyed to a hash of the face centroid so no two panels match. Replace the pentagon boulders in props.js with a displaced icosphere (2 subdivisions, ridged fbm at 0.4 m amplitude 0.06) and give them the same triplanar rock map. Scatter cart ruts, a puddle decal and 8-12 gravel/timber props along the road spline in src/world/layout.js so the mid-frame plane has drawn incident."
+      }
+    ]
+  },
+  "command": {
+    "shot": "command",
+    "verdict": "REJECT",
+    "blindPick": "real",
+    "tell": "The entire world is smeared by a depth-of-field blur while the graphite outlines composited on top stay razor-sharp and stair-stepped — soft out-of-focus fills sitting under hard in-focus ink is a thing no painting can do, and it instantly reads as a post-process stack rather than a page.",
+    "scores": {
+      "linework": 3,
+      "banding": 2,
+      "temperature": 5,
+      "paper": 4,
+      "hatching": 1,
+      "palette": 8,
+      "form": 2,
+      "composition": 4,
+      "materials": 2,
+      "atmosphere": 2,
+      "hud": 6,
+      "wow": 3
+    },
+    "fixes": [
+      {
+        "system": "src/render/canvasRenderPipeline.js",
+        "problem": "`this.dof = { enabled:false, focus:18, range:22, maxCoC:6.5 }` (line ~590) is switched on by `this.dof.enabled = (to === 'command')` (line ~619). The command camera sits far above the field, so essentially every pixel falls outside focus 18 ± range 22 and receives the full 6.5 px circle of confusion. The result is that the terrain, trees, water and bridge fills are all mush while the outline pass — which runs after the DOF blit at line ~910, `colorTex = this.dofRT.texture` — stays perfectly crisp. This single ordering is why the frame cannot pass as paint.",
+        "change": "Disable DOF for the command camera outright: change line ~619 to `this.dof.enabled = (to === 'action')`. If a focus cue is still wanted in command mode, set `focus` from a ground raycast under the cursor each frame in `setFocusPoint`, set `range` to at least the full visible depth span of the top-down frustum (camera height * 2, ~120 m), and clamp `this.dof.maxCoC` to 1.5 px so it can never exceed a hairline. Alternatively move the DOF pass to run AFTER the outline composite so ink and wash blur together."
+      },
+      {
+        "system": "src/render/materials.js",
+        "problem": "Line 439 `vec2 band = vcQuantiseBands( drive, uBands, uBandBleed, n1, n2 );` — `drive` is essentially N·L * shadow. Under a near-vertical command camera over flat ground the normal is constant, so the whole map lands inside a single band and the promised 4-band watercolour quantisation collapses to one flat wash. Sampled terrain down column x=700 steps 142→145→144→160→164→166→169→126→118→113 — a continuous gradient, zero quantisation boundaries anywhere in the frame.",
+        "change": "Fold a geometry term into `drive` before quantisation so flat ground still crosses band boundaries: `drive = NdotL * shadow * (0.72 + 0.28 * bakedAO) - 0.18 * curvature - 0.12 * cavity`, where curvature comes from the depth/normal G-buffer derivative. Drop terrain `uBands` from 4 to 3 (line 841 / the `bands: CFG.render.bands` default at line 813) so the two remaining boundaries sit further apart and are actually visible, and raise `uBandBleed` so the boundary wanders."
+      },
+      {
+        "system": "src/render/lighting.js",
+        "problem": "`shadowRadius: 26` with `sun.shadow.camera.left/right/top/bottom = ±26` (lines 124, 148-151) gives a 52 m shadow box, but the command view spans ~128 m (the Tactical Survey panel states 128 M). Nothing outside that box casts, so the frame contains zero cast shadows: the four-storey building casts nothing onto the road, the bridge parapet casts nothing onto its own deck (verifiable in the crop at 980,230–1120,330), and no tree casts onto the grass. Sun direction is unreadable, which is why the ground reads as flat vertex colour.",
+        "change": "On the transition into command mode call `setShadowRadius(72)` (it already exists and re-runs the frustum fit + `MaterialRegistry.uniforms.uShadowTexel` update at line 214), and bump `CFG.render.shadowMapSize` one rung — 2048 to 4096 at quality >= 2 — so texel stays near 0.035 m instead of degrading to 0.07 m. The existing bias formula `sun.shadow.bias = -Math.min(0.0016, (texel * 1.5 + 0.006) / depthRange)` at line 220 then recomputes correctly for the wider frustum."
+      },
+      {
+        "system": "src/render/materials.js",
+        "problem": "Lines 483-498 gate the pencil hatch behind `bandDark` — only the two darkest bands hatch. Because of the flat-ground banding collapse above, no terrain pixel ever reaches those bands, so there is not one stroke of graphite hatching anywhere in the world. The only hatching in the frame is the perfectly-parallel machine ruling inside the ability-card icon panels, which is constant-spacing SVG, not a drawn stroke.",
+        "change": "Widen the gate to `float bandDark = smoothstep(0.55, 0.25, band.x);` so the second band hatches too, and apply the same block to the terrain shader path (currently the hatch block sits only in the object shader). Keep `uHatchSpacing` at 5.4 screen px but add per-stroke length jitter by feeding `vcHatchField`'s phase from `vcHash(floor(sPx / uHatchSpacing))` so strokes start and stop at different points instead of running edge to edge."
+      },
+      {
+        "system": "src/world/structures.js + src/world/worldMaterials.js",
+        "problem": "The bridge and the four-storey building are flat untextured planes — the 40 m bridge span is one uninterrupted lavender-grey gradient (RGB ~200,196,205 across its whole length) with drawn outlines and nothing else; the building is a white-grey box with window rectangles inked on. No stone, no stucco, no timber, no damage. This is the rubric's 'untextured primitive' failure.",
+        "change": "Add a triplanar ashlar mask to the masonry material: course height 0.45 m, block length 1.2 m, mortar gap 0.03 m, generated in world space so it does not tile visibly across the span. Drive a +/-6% per-block value jitter from `vcHash(floor(worldPos.xz / blockSize))` into albedo, and feed the mortar lines into `uInkFloor` as hairline interior creases so the parapet gets the thin end of the variable-width linework instead of only the fat silhouette stroke."
+      },
+      {
+        "system": "src/ui/worldLabels.js",
+        "problem": "`track(unit, { height = 2.05, ... })` (line 98) offsets the name slip 2.05 m in WORLD space. Under the command camera's near-vertical pitch that projects to roughly 4 screen pixels, so the slip lands directly on top of the soldier it labels. In this frame the 'Alicia Melchiott' and 'Rosie Stark' slips sit over bare grass and fallen branches with no unit token visible beneath them at all — nameplates anchored to nothing, which is an automatic rejection.",
+        "change": "Branch the offset by camera mode in the update loop around line 295: instead of `V0.set(unit.pos.x, unit.pos.y + t.height, unit.pos.z)`, project `unit.pos` directly and place the slip at `out.y - 34` px in screen space with a 1 px ink leader line drawn down to the anchor. In parallel, render an actual command-mode unit token at `unit.pos` from src/game/commandMode.js — a filled facing chevron plus the class glyph already available in src/ui/icons.js, at a fixed ~22 px screen size — so the marker does not shrink to the unreadable 10 px brown smear seen on the bridge."
+      }
+    ]
+  },
+  "bridge": {
+    "shot": "bridge",
+    "verdict": "REJECT",
+    "blindPick": "real",
+    "tell": "Every arch intrados is a visible 0.30 m staircase of individually-outlined boxes — the barrel reads as a stack of laminated black-edged slabs instead of a continuous curved vault, and the piers float in front of the openings as unshaded pale cards with no contact shadow on the water.",
+    "scores": {
+      "linework": 3,
+      "banding": 4,
+      "temperature": 5,
+      "paper": 4,
+      "hatching": 2,
+      "palette": 5,
+      "form": 2,
+      "composition": 3,
+      "materials": 3,
+      "atmosphere": 3,
+      "hud": 0,
+      "wow": 2
+    },
+    "fixes": [
+      {
+        "system": "src/world/structures.js — buildBridge(), the `const step = 0.30` picket loop (~L416-445)",
+        "problem": "The spandrel, barrel vault and voussoir ring are each emitted as ~40 discrete boxes stepping along the arch. The result is a literal staircase silhouette on the intrados and a stack of parallel horizontal lamination edges inside every span — the single most damning artifact in the frame. Real VC masonry arches are continuous swept curves.",
+        "change": "Delete the stepped picket entirely. Build the spandrel face as ONE THREE.ExtrudeGeometry from a 2D THREE.Shape (deck underside -> springing -> elliptical intrados sampled with THREE.EllipseCurve at 32 divisions -> back), extruded depth 0.42 along X and mirrored to both faces. Build the barrel as ONE open CylinderGeometry(rise-radius, rise-radius, width-0.84, 32, 1, true, thetaStart=PI, thetaLength=PI) scaled non-uniformly in Y by rise/(span*0.5) to get the segmental profile. Cut the voussoir ring from the same EllipseCurve as a TubeGeometry-free extruded band offset +0.03 in X. Vertex count drops ~6x and the intrados becomes C1-continuous."
+      },
+      {
+        "system": "src/render/canvasRenderPipeline.js — id-buffer outline pass, Attachment 1 write (~L731, L1023-1029) and the plane-fit depth edge (~L255-305)",
+        "problem": "Outline weight is keyed off per-mesh object id, so every sub-box of the merged bridge stone bin emits a full-weight (uOutlineWidth 1.35) line. That is why each arch is filled with a scribble of interior black strokes and the debris pile at frame-right degenerates into spaghetti. Width is also constant, so silhouettes and interior creases score identically — the rubric's '=<3 uniform 1px edge' case.",
+        "change": "Add `userData.vcGroupId` written into the id buffer instead of mesh id, and assign every stone box produced by buildBridge the same group id so no line is drawn at box-to-box joins. Then split the width term: `fat = uOutlineWidth * (0.55 + 1.4 * silhouetteMask)` where silhouetteMask comes from the depth discontinuity magnitude (>0.5 m gap = silhouette), and clamp interior crease lines to `thin * 0.35`. Target range 0.6px (creases) to 2.6px (silhouettes) rather than the current flat 1.35."
+      },
+      {
+        "system": "src/render/lighting.js — shadow frustum fit, `shadowRadius: 26` / `shadowFar: 132` (L124-126) and the setShadowRadius ladder (L56-58)",
+        "problem": "There is not one cast shadow anywhere in this frame. The bridge is ~45 m long and the camera is pulled back to frame all three spans, so the 26 m ortho frustum snapped around the action focus does not contain the bridge, the river or the near bank. VC's signature look is long soft warm-sun shadows raking across terrain; without them the geometry has no ground contact and the piers read as floating cards.",
+        "change": "Fit the ortho frustum to the visible camera frustum each frame: project the main camera's far-clipped corners into light space, take the bounding radius, snap it to the existing ladder, and raise the ladder's top rung from 26 to 96 m (with a second cascade at 32 m for the near field if texel density suffers). Set `receiveShadow = true` on the water plane in src/world/water.js and on the terrain mesh in src/world/terrain.js. With azimuth 0.85 and the low warm sun at frame-left, the bridge must throw a full-length shadow band across the river and the near bank."
+      },
+      {
+        "system": "src/world/textures.js — stoneTexture(seed) (L294) and its finish({ repeat: 1 }) call",
+        "problem": "The masonry is a regular grid of same-size rectangles with aligned vertical joints, tiled across a 45 m deck; the repeat period is plainly visible as a checkerboard across the spandrel and again on the piers. That is an automatic rejection under 'repeating textures with an obvious tiling period', and it reads as a decal rather than coursed rubble.",
+        "change": "Randomise course height by +/-35% per course, offset each course's vertical joint phase by a hashed random 0..1 (never aligned between adjacent courses), split ~15% of blocks into doubles, darken a 1-2 px mortar recess with an AO gradient into each joint, and jitter per-block value by +/-0.06 in the pigment channel. Then drive the material triplanar in src/world/worldMaterials.js at ~0.55 m per block in WORLD units so the deck, piers and abutments share one continuous non-repeating course pattern instead of per-box UV repeats."
+      },
+      {
+        "system": "src/world/water.js — uShallow/uDeep uniforms (L203-205) and the fragment shader mix at L135-140",
+        "problem": "The river is a flat saturated turquoise band with smooth Fresnel falloff, no banding, no reflection of the bridge, and no dark contact line where the piers pierce the surface. Smooth PBR falloff scores 0 on the banding axis, and the cyan violates the muted-palette rule next to the sage/ochre bank.",
+        "change": "Desaturate PALETTE.water / waterDeep toward slate-green (roughly HSL S 0.42 -> 0.18, hue +12 deg toward green). Quantise the final water luminance through the same CFG.render.bands = 4 step function used by worldMaterials.js instead of `mix(col, uSkyColor, fres*0.30)`, using the same irregular bleed noise so the water bands match the land. Add a cheap mirrored reflection: render the bridge stone bin into a 512x256 mirror RT and blend it at 0.35 with a vertical 6 px smear, plus a 0.25 m darkened contact band at each pier waterline."
+      },
+      {
+        "system": "src/render/canvasRenderPipeline.js — paper composite, uPaperStrength 0.42 (L707) applied via `c *= mix(1.0, fibre, uPaperStrength * mid)` (L553-554)",
+        "problem": "The fibre multiply is present in the sky and in the cream highlights (visible static across the upper third, plus a horizontal seam around 35% frame height where the grain UV wraps against the sky gradient). It reads as film grain layered on a 3D render, not as paper the scene is painted on. The noise is also isotropic, so there is no cold-press tooth direction.",
+        "change": "Weight the multiply by luminance so it dies in the highlights and the sky: `mid = smoothstep(0.97, 0.62, L) * smoothstep(0.04, 0.22, L)`, and additionally scale by a sky mask from the depth buffer (depth == far -> paperStrength * 0.25). Lock tGrain to a 1:1 texel-to-pixel screen UV (`sPx / 256.0`, drop the 1.35 and 4.1 multipliers that cause the wrap seam) and regenerate the grain texture in getGrainTexture() as anisotropic cold-press: fibres elongated ~4:1 at a fixed 18 deg, two octaves, tileable at 256."
+      }
+    ]
+  },
+  "tank": {
+    "shot": "tank",
+    "verdict": "REJECT",
+    "blindPick": "real",
+    "tell": "Every cast shadow in the frame is a Gaussian-blurred grey-green blob that ramps smoothly across two lighting bands instead of landing on one irregular bleeding band boundary — and the hero tank, the closest and largest object, casts no readable shadow onto the dirt at all, so it reads as a decal pasted over the ground rather than a vehicle standing on it.",
+    "scores": {
+      "linework": 5,
+      "banding": 3,
+      "temperature": 5,
+      "paper": 5,
+      "hatching": 4,
+      "palette": 6,
+      "form": 4,
+      "composition": 5,
+      "materials": 3,
+      "atmosphere": 5,
+      "hud": 0,
+      "wow": 4
+    },
+    "fixes": [
+      {
+        "system": "src/render/lighting.js:152 + src/world/worldMaterials.js:161,260",
+        "problem": "sun.shadow.radius = 3.2 with blurSamples = 12 produces a multi-metre PCF penumbra; materials.js:820 then applies uShadowSoften = 1 and worldMaterials.js bandifies with uBleed = 0.075 using a paper fibre sampled at npPx * 0.0021 (a ~476 px feature, i.e. effectively constant across a hillside). Net result: the tree shadows on the left embankment are smooth airbrushed gradients spanning two bands with a perfectly clean edge — the single loudest 'this is a 3D renderer' tell in the frame.",
+        "change": "Set sun.shadow.radius = 1.0 and blurSamples = 4 so the shadow mask is a ~2 px transition. In worldMaterials.js change the nprUniforms default uBleed from 0.075 to 0.30, and resample npFibre at npPx * 0.018 (≈55 px feature) instead of npPx * 0.0021, and add a second octave at npPx * 0.055 mixed 0.35 into the bleed offset. The shadow boundary must then cross one band edge as a 6–15 px irregular wet edge, not a gradient."
+      },
+      {
+        "system": "src/actors/tank.js:875-1290 (hull/turret mesh material opts) + src/render/materials.js:820 makeCanvasMaterial opts",
+        "problem": "The hull is a single flat slate-green fill: no lit/shade band split (the glacis and the left side plate are within ~8% luminance of each other), no surface texture, no rivet/weld/panel-paint variation, no insignia. It is the largest object in frame and the axis-2, -3 and -9 failures all concentrate on it. Real VC armour reads as a warm cream top band against a distinctly violet side band with hand-painted panel lines and a red/white Gallian marking.",
+        "change": "On the hull/turret/skirt materials pass bands: 5, bandBleed: 1.7, hatch: 1.25, hatchSpacing: 4.2, violet: 1.4, cream: 1.25 (these opts already exist at materials.js:799-819 and are currently defaulted). Add a `detailMap` sampler to makeCanvasMaterial that multiplies albedo by a triplanar mottle in the range 0.86-1.08 at a 0.30 m world tile so the plate reads as brushed paint, and add a decal quad with the Gallian insignia on the turret cheek and hull front-left."
+      },
+      {
+        "system": "src/render/materials.js:1212 makeTerrainMaterial (uDetailScale / uDetailScale2)",
+        "problem": "detailScale 0.11 = a 9 m detail tile and detailScale2 0.031 = a 32 m tile. The dirt track in the bottom third of the frame spans about 15 m, so the finest ground detail present is roughly half the width of the visible road — which is why the path reads as a smooth airbrushed tan gradient and the grass slope as flat vertex colour. There is no aggregate, pebble, tuft or wheel-rut scale anywhere.",
+        "change": "Add uDetailScale3 = 1.6 (0.62 m tile) sampled from uGroundTex, weight it by (1.0 - smoothstep(8.0, 26.0, viewDist)) so it only lives in the near field, and fold it into `layerMod` at mix(0.86, 1.16, det3.g) for dirt and mix(0.88, 1.12, det3.r) for grass. Also route det3.b into `relief` at 0.9 * wDirt so the near track picks up real normal break-up instead of staying mirror-flat."
+      },
+      {
+        "system": "src/world/vegetation.js:677-718 (_buildFlowers) and the leaf-card meshes at :366-395",
+        "problem": "quadCard(0.085, 0.105) with a solid per-instance colour and no alpha map renders wildflowers as literal axis-aligned coloured squares — clearly visible as hard yellow rectangles at roughly (250,385), (420,655) and (30,710). Separately, every leaf card in the foreground canopy receives its own full-weight silhouette stroke from the depth-discontinuity term, so the tree reads as a pile of individually outlined stamped puffs rather than one painted mass with a single outer contour.",
+        "change": "Add getFlowerTexture() to src/render/textures.js (5-petal alpha disc, 32 px) and set alphaTest 0.45 on matFlower; randomise each instance's Y rotation over 0-2pi and tilt +/-18 degrees; set matFlower userData.vcOutline = false. For canopy cards, write a foliage flag into the outline G-buffer's unused channel at canvasRenderPipeline.js:1030 and multiply the silhouette tolerance `tol` (line 327) by 6.0 where that flag is set, so only the outer boundary of the clump strokes."
+      },
+      {
+        "system": "src/render/canvasRenderPipeline.js:302-305 (depthScale/fat/thin) and :551 (paper `mid` term)",
+        "problem": "fat = uOutlineWidth * mix(2.05, 0.62, ...) and thin = uOutlineWidth * 0.72 are close enough in the tank's depth range that the hull silhouette and its interior panel creases come out at nearly the same weight — the linework reads as a uniform contour trace, not variable-pressure graphite. Separately, paper is applied with mid = 1 - |l*2-1|, which at sky luminance ~0.8 still gives mid ≈ 0.4, so the ridged component of getPaperTexture (textures.js:174, tridge weighted 0.42) shows as long light diagonal streaks across the upper-left sky where the substrate should have vanished.",
+        "change": "Change thin to uOutlineWidth * 0.34 and raise the near end of depthScale to 2.9, then multiply the crease term by an extra mix(0.35, 1.0, grain) so interior folds break up. Drop the tridge weight at textures.js:174 from mix(t0, t1, 0.42) to 0.18 for an isotropic tooth, and multiply `mid` by (1.0 - 0.8 * sky) using the sky mask already reconstructed from tND at line 402."
+      },
+      {
+        "system": "src/world/structures.js (retaining wall + ramp meshes, :1073 region)",
+        "problem": "The right third of the frame is an untextured lavender-grey slab (~#b9b3c4 — a cool neutral that is off the sage/ochre/umber palette and the coldest thing in the image) carrying an obviously procedural pattern of scattered axis-aligned light rectangles, meeting a bare tan ramp with zero timber grain and a hard unblended intersection with the terrain. It is roughly 25% of the canvas with nothing authored in it, which is an automatic rejection under 'empty regions of frame'.",
+        "change": "Retint the wall base colour to the warm stone 0xd8c9a6 and let vcShadowColour supply the violet in shade rather than baking it into albedo. Replace the random-rect pattern with a proper coursed-block detail map (block 0.6 x 0.3 m, mortar 0.03 m, per-block value jitter +/-9%) plus edge chipping and a moss/stain gradient in the bottom 0.4 m. Give the ramp a plank map with a 0.22 m board pitch, visible end grain and 2-3 broken boards, and add a debris/dirt-spill mesh at the ramp-to-terrain junction so it does not read as two primitives intersecting."
+      }
+    ]
+  }
+}

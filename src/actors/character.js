@@ -117,7 +117,12 @@ export function makeAppearance(seed, cls, team) {
 function buildHair(b, rig, o, head, style, coveredByHat) {
   const R = head.radius, C = head.center;
   const hc = o.hairColor;
-  const thick = coveredByHat ? 1.008 : 1.035;
+  // Shell OFFSET, applied on top of the skull's own displacement (head.disp).
+  // A flat 1.035·R shell measured off the undisplaced ellipsoid ends up *inside*
+  // the cranium — the skull bulges by up to 5.8% at the crown — which is why
+  // hair was invisible on every soldier.
+  const thick = coveredByHat ? 1.016 : 1.055;
+  const D = head.disp || (() => [1, 1, 1]);
   b.setBones(BONE_GROUPS.HEAD).setColor(hc).setMottle(0.09);
 
   // u = 0 at +Z (face), 0.25 at +X (character's left), 0.5 at -Z (nape).
@@ -136,18 +141,52 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
   };
   b.addEllipsoid({
     center: [C[0], C[1] + 0.004, C[2] - 0.004],
-    radius: [R[0] * thick + 0.004, R[1] * thick + 0.005, R[2] * thick + 0.004],
+    radius: [R[0], R[1], R[2]],
     seg: seg(20), rings: seg(11), phiMax,
     displace: (dx, dy, dz, u, v) => {
       // Tufted silhouette: low-frequency lumps plus a wispy edge.
       const t = 1 + 0.030 * Math.sin(u * TAU * 5 + dy * 6) * (0.4 + v)
         + 0.018 * Math.sin(u * TAU * 11 + 1.7) * v;
-      const edge = 1 - 0.10 * smoothstep(0.78, 1.0, v);
-      return t * edge;
+      const edge = 1 - 0.06 * smoothstep(0.82, 1.0, v);
+      const k = D(dx, dy, dz);
+      const s = thick * t * edge;
+      return [k[0] * s, k[1] * s, k[2] * s];
     },
   });
 
-  if (coveredByHat) return;
+  if (coveredByHat) {
+    // A cap or a helmet still leaves the nape and the sideburns showing — that
+    // band of hair under the brim is most of what tells one soldier's head from
+    // the next, and without it every capped soldier reads as a bare egg.
+    //
+    // The band must tuck UNDER the cap at the front (or it draws across the
+    // brow) and swing low at the sides and the nape.
+    b.addEllipsoid({
+      center: [C[0], C[1] - 0.002, C[2] - 0.006],
+      radius: [R[0], R[1], R[2]],
+      seg: seg(20), rings: seg(7),
+      phiMin: 0.35,
+      phiMax: (u) => {
+        const cz = Math.cos(u * TAU);              // +1 face, -1 nape
+        return 0.405 + 0.17 * (1 - clamp01(cz)) + 0.17 * clamp01(-cz);
+      },
+      displace: (dx, dy, dz, u, v) => {
+        const k = D(dx, dy, dz);
+        const s = 1.050 * (1 + 0.022 * Math.sin(u * TAU * 6 + 0.7) * v)
+          * (1 - 0.05 * smoothstep(0.85, 1.0, v));
+        return [k[0] * s, k[1] * s, k[2] * s];
+      },
+    });
+    // Sideburn wisps in front of each ear so the hairline is not a clean arc.
+    for (const side of [1, -1]) {
+      b.addTube([
+        { p: [side * R[0] * 0.86, C[1] + R[1] * 0.24, C[2] + R[2] * 0.30], rx: 0.012, rz: 0.010 },
+        { p: [side * R[0] * 0.94, C[1] - R[1] * 0.06, C[2] + R[2] * 0.24], rx: 0.013, rz: 0.011 },
+        { p: [side * R[0] * 0.92, C[1] - R[1] * 0.30, C[2] + R[2] * 0.14], rx: 0.009, rz: 0.008 },
+      ], { seg: seg(7), capStart: 'flat', capEnd: 'round' });
+    }
+    return;
+  }
 
   // Fringe: a few short strands over the brow.
   const strands = style === 'crop' ? 3 : 5;
@@ -199,16 +238,27 @@ function gearWebbing(b, rig, o, cls) {
   b.addRoundedBox({ center: [0, beltY, 0.121 * g], size: [0.026, 0.020, 0.010], bevel: 0.004, div: 2 });
 
   // Y-straps: front lower -> over each shoulder -> back lower.
+  //
+  // The apex is derived from the deltoid cap, not from a fixed offset off the
+  // spine: the cap is the highest thing on the shoulder, and a strap routed
+  // below its crown vanishes inside it — which is exactly what happened and
+  // left every soldier with no visible webbing at all.
   b.setColor(o.leather);
   for (const side of [1, -1]) {
+    const s = side > 0 ? 'L' : 'R';
+    const ua = rig.restWorld['upperArm' + s].pos, cl = rig.restWorld['clavicle' + s].pos;
+    const apexX = Math.abs(lerp(cl.x, ua.x, 0.52));
+    const apexY = ua.y + 0.086 * g;
     b.addTube([
-      { p: [side * 0.030, beltY + 0.008, 0.115 * g], rx: 0.018, rz: 0.006 },
-      { p: [side * 0.048, lerp(beltY, cy, 0.55), 0.112 * g], rx: 0.018, rz: 0.006 },
-      { p: [side * 0.070, cy + 0.045, 0.088 * g], rx: 0.019, rz: 0.006 },
-      { p: [side * 0.098, cy + 0.098, 0.020 * g], rx: 0.020, rz: 0.007 },   // over the shoulder
-      { p: [side * 0.086, cy + 0.055, -0.078 * g], rx: 0.019, rz: 0.006 },
-      { p: [side * 0.056, lerp(beltY, cy, 0.5), -0.108 * g], rx: 0.018, rz: 0.006 },
-      { p: [side * 0.034, beltY + 0.006, -0.112 * g], rx: 0.017, rz: 0.006 },
+      { p: [side * 0.030, beltY + 0.008, 0.115 * g], rx: 0.022, rz: 0.007 },
+      { p: [side * 0.050, lerp(beltY, cy, 0.55), 0.112 * g], rx: 0.022, rz: 0.007 },
+      { p: [side * 0.076, cy + 0.052, 0.092 * g], rx: 0.023, rz: 0.007 },
+      { p: [side * apexX * 0.94, apexY - 0.018, 0.058 * g], rx: 0.024, rz: 0.008 },
+      { p: [side * apexX, apexY, 0.006 * g], rx: 0.025, rz: 0.008 },        // over the shoulder
+      { p: [side * apexX * 0.94, apexY - 0.024, -0.052 * g], rx: 0.024, rz: 0.008 },
+      { p: [side * 0.090, cy + 0.055, -0.084 * g], rx: 0.022, rz: 0.007 },
+      { p: [side * 0.058, lerp(beltY, cy, 0.5), -0.108 * g], rx: 0.021, rz: 0.007 },
+      { p: [side * 0.034, beltY + 0.006, -0.112 * g], rx: 0.020, rz: 0.007 },
     ], { seg: seg(8), capStart: 'flat', capEnd: 'flat' });
   }
 
@@ -265,30 +315,57 @@ function gearWebbing(b, rig, o, cls) {
 /** Class headgear. Returns true when hair should be suppressed on the crown. */
 function gearHead(b, rig, o, head, cls) {
   const R = head.radius, C = head.center;
+  // Every shell here is measured off the SAME displaced skull the skin uses
+  // (see buildHead's `disp`), otherwise the cranium bulge swallows it.
+  const D = head.disp || (() => [1, 1, 1]);
+  const shell = (k, extra) => (dx, dy, dz) => {
+    const d = D(dx, dy, dz);
+    const s = typeof extra === 'function' ? extra(dx, dy, dz) : 1;
+    const sx = typeof s === 'number' ? s : s[0];
+    const sy = typeof s === 'number' ? s : s[1];
+    const sz = typeof s === 'number' ? s : s[2];
+    return [d[0] * k * sx, d[1] * k * sy, d[2] * k * sz];
+  };
   b.setBones(BONE_GROUPS.HEAD).setMottle(0.05);
 
   if (cls === 'scout') {
-    // Garrison side cap: a deep cap pinched into a ridge along the crown.
+    // Garrison side cap: a deep cap pinched into a fore-and-aft ridge, sitting
+    // on the crown with a clear brim edge above the ear.
+    //
+    // phiMax is measured from the crown, so it decides how far DOWN the cap
+    // reaches. It has to stop above the brow at the front (dy ≈ +0.31) and dip
+    // over the ears and nape — a constant value large enough to look like a cap
+    // from the side reaches past the eyes at the front and renders the face as
+    // a blank shell.
+    const capEdge = (u) => {
+      const cz = Math.cos(u * TAU);              // +1 face, -1 nape
+      return 0.475 - 0.075 * clamp01(cz) + 0.075 * clamp01(-cz);
+    };
     b.setColor(o.tunic);
     b.addEllipsoid({
-      center: [C[0], C[1] + 0.012, C[2] - 0.004],
-      radius: [R[0] * 1.05, R[1] * 1.02, R[2] * 1.05], seg: seg(18), rings: seg(9),
-      phiMax: () => 0.66,
-      displace: (dx, dy) => [1 - 0.42 * clamp01(dy) * clamp01(dy), 1 + 0.05 * clamp01(dy), 1],
+      center: [C[0], C[1] + 0.010, C[2] - 0.004],
+      radius: R, seg: seg(20), rings: seg(9),
+      phiMax: capEdge,
+      displace: shell(1.075, (dx, dy) => [1 - 0.34 * clamp01(dy) * clamp01(dy), 1 + 0.06 * clamp01(dy), 1]),
     });
+    // Turn-up band around the cap's lower edge.
     b.setColor(o.tunicShade);
     b.addEllipsoid({
       center: [C[0], C[1] + 0.006, C[2] - 0.004],
-      radius: [R[0] * 1.07, R[1] * 0.98, R[2] * 1.07], seg: seg(18), rings: seg(4),
-      phiMin: 0.44, phiMax: () => 0.68,
-      displace: (dx, dy) => [1 - 0.40 * clamp01(dy) * clamp01(dy), 1, 1],
+      radius: R, seg: seg(20), rings: seg(3),
+      phiMin: 0.34, phiMax: (u) => capEdge(u) + 0.035,
+      displace: shell(1.098, (dx, dy) => [1 - 0.20 * clamp01(dy) * clamp01(dy), 1, 1]),
     });
+    // Regimental piping along the crown fold, front to back — not a band across
+    // the brow, which is where it used to sit and read as a headband.
     b.setColor(o.accent);
     b.addTube([
-      { p: [C[0] - R[0] * 0.30, C[1] + R[1] * 0.66, C[2] + R[2] * 0.86], rx: 0.010, rz: 0.008 },
-      { p: [C[0] + R[0] * 0.30, C[1] + R[1] * 0.66, C[2] + R[2] * 0.86], rx: 0.010, rz: 0.008 },
+      { p: [C[0], C[1] + R[1] * 0.62, C[2] + R[2] * 0.78], rx: 0.0062, rz: 0.0052 },
+      { p: [C[0], C[1] + R[1] * 1.02, C[2] + R[2] * 0.18], rx: 0.0072, rz: 0.0058 },
+      { p: [C[0], C[1] + R[1] * 0.94, C[2] - R[2] * 0.52], rx: 0.0068, rz: 0.0054 },
+      { p: [C[0], C[1] + R[1] * 0.60, C[2] - R[2] * 0.88], rx: 0.0055, rz: 0.0046 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
-    return false;
+    return true;
   }
 
   if (cls === 'shock' || cls === 'lancer') {
@@ -298,8 +375,8 @@ function gearHead(b, rig, o, head, cls) {
     b.setTransform(_m4.makeTranslation(C[0], C[1] - 0.020, C[2] - 0.006).multiply(_m4b.makeScale(hr[0], 1, hr[2])));
     b.addLathe([
       [1.00, 0.006], [1.05, 0.010], [1.06, 0.026], [1.00, 0.034],
-      [0.985, 0.052], [0.94, 0.082], [0.86, 0.106], [0.72, 0.126],
-      [0.50, 0.140], [0.26, 0.147], [0, 0.149],
+      [0.985, 0.056], [0.94, 0.090], [0.86, 0.118], [0.72, 0.140],
+      [0.50, 0.156], [0.26, 0.164], [0, 0.166],
     ], { seg: seg(18) });
     b.setTransform(null);
     b.setColor(mixCol(o.metal, o.tunicShade, 0.25));
@@ -324,10 +401,12 @@ function gearHead(b, rig, o, head, cls) {
   if (cls === 'engineer') {
     // Peaked service cap.
     b.setColor(o.tunic);
-    b.setTransform(_m4.makeTranslation(C[0], C[1] + 0.006, C[2] - 0.004).multiply(_m4b.makeScale(R[0] * 1.10, 1, R[2] * 1.10)));
+    // The crown must clear the top of the skull (C.y + R.y ≈ 0.126) or the head
+    // pokes straight through the cap.
+    b.setTransform(_m4.makeTranslation(C[0], C[1] + 0.006, C[2] - 0.004).multiply(_m4b.makeScale(R[0] * 1.12, 1, R[2] * 1.12)));
     b.addLathe([
-      [1.00, 0.008], [1.06, 0.014], [1.06, 0.030], [1.02, 0.052],
-      [0.96, 0.078], [0.80, 0.098], [0.44, 0.108], [0, 0.110],
+      [1.00, 0.006], [1.07, 0.014], [1.07, 0.034], [1.03, 0.064],
+      [0.97, 0.098], [0.82, 0.122], [0.46, 0.134], [0, 0.137],
     ], { seg: seg(16) });
     b.setTransform(null);
     b.setColor(o.collar);
@@ -352,9 +431,12 @@ function gearHead(b, rig, o, head, cls) {
   b.setColor(mixCol(o.tunic, o.trouser, 0.45));
   b.addEllipsoid({
     center: [C[0], C[1] + 0.010, C[2] - 0.012],
-    radius: [R[0] * 1.06, R[1] * 1.00, R[2] * 1.06], seg: seg(16), rings: seg(8),
-    phiMax: () => 0.60,
-    displace: (dx, dy, dz) => 1 + 0.04 * clamp01(-dz) * clamp01(dy),
+    radius: R, seg: seg(16), rings: seg(7),
+    phiMax: (u) => {
+      const cz = Math.cos(u * TAU);
+      return 0.455 - 0.075 * clamp01(cz) + 0.085 * clamp01(-cz);
+    },
+    displace: shell(1.070, (dx, dy, dz) => 1 + 0.04 * clamp01(-dz) * clamp01(dy)),
   });
   b.setColor(mixCol(o.tunicShade, o.trouser, 0.45));
   b.setTransform(_m4.compose(
@@ -474,6 +556,17 @@ function gearClass(b, rig, o, cls) {
 // ---------------------------------------------------------------------------
 
 const _cv = new THREE.Vector3(), _cv2 = new THREE.Vector3(), _cv3 = new THREE.Vector3();
+const _carryQ = new THREE.Quaternion();
+const _cFwd = new THREE.Vector3(), _cUp = new THREE.Vector3(), _cLeft = new THREE.Vector3();
+const _cA = new THREE.Vector3(), _cB = new THREE.Vector3();
+const _cGoal = new THREE.Vector3(), _cPole = new THREE.Vector3();
+const _cBore = new THREE.Vector3(), _cFore = new THREE.Vector3(), _cAxis = new THREE.Vector3();
+const _cShHand = new THREE.Vector3();
+const _cWQ = new THREE.Quaternion();
+// Low-ready bore, in character space: 14 degrees across the body, 26 degrees down.
+const CARRY_YAW = 0.244, CARRY_PITCH = -0.454;
+/** Exponential smoothing that is stable at any frame rate. */
+const damp = (cur, tgt, rate, dt) => tgt + (cur - tgt) * Math.exp(-rate * dt);
 const _cn = new THREE.Vector3(), _ce1 = new THREE.Vector3(), _ce2 = new THREE.Vector3();
 
 class ClothStrip {
@@ -908,11 +1001,136 @@ export class Character {
     this._bodyB = new THREE.Vector3();
     this._invRoot = new THREE.Matrix4();
     this._handTarget = new THREE.Vector3();
+    this._wSync = { px: NaN, py: NaN, pz: NaN, qx: NaN, qy: NaN, qz: NaN, qw: NaN, sx: NaN, sy: NaN, sz: NaN };
 
     this.root.scale.setScalar(this.rig.heightScale);
     if (this._groundAt) this.animator.setGroundCallback(this._groundAt);
+    this._carryW = 0;
+    this._carryF = 1;
+    // How far in front of the eye the rear sight sits when shouldered.
+    {
+      const k = this.weaponStats ? this.weaponStats.kind : 'rifle';
+      this._eyeRelief = k === 'sniper' ? 0.10 : k === 'lance' ? 0.24 : 0.14;
+    }
+    this.animator.setWeaponSolver((dt, carry, shoulder) => this._solveWeaponHold(dt, carry, shoulder));
     this.animator.play('idle', { fade: 0 });
     this.root.updateMatrixWorld(true);
+  }
+
+  /**
+   * Hold the rifle at a believable low ready whenever it is NOT shouldered.
+   *
+   * The hand->weapon transform is solved once, from the shouldered pose, so the
+   * sights line up with the eye (see _solveWeaponAnchor). That is right for
+   * aiming and badly wrong for everything else: with the right hand down at the
+   * hip the same transform threw the bore 65 degrees across the body and 44
+   * degrees down, which put the foregrip 65 cm out from the left shoulder — a
+   * 52 cm arm cannot reach that, so the support arm rendered bolt-straight with
+   * an open hand hanging 8 cm short of the wood.
+   *
+   * Rather than hand-tune every carry pose until the numbers happen to work,
+   * aim the gun hand: rotate handR in world space until the bore matches a
+   * target direction in character space. Fixes idle, walk, run, crouch and
+   * reload at once, and cannot drift out of the support arm's reach because the
+   * foregrip always ends up in front of the chest.
+   */
+  _solveWeaponHold(dt, carry, shoulder) {
+    const w = this.weapon;
+    if (!w || !this.alive) return;
+    const hold = clamp01(carry + shoulder);
+    const frac = carry + shoulder > 1e-4 ? carry / (carry + shoulder) : 1;
+    this._carryW = damp(this._carryW, hold, 10, dt);
+    this._carryF = damp(this._carryF, frac, 10, dt);
+    const cw = this._carryW, cf = this._carryF;
+    if (cw < 0.02) return;
+    const muzzle = w.userData.muzzle, fore = w.userData.foreGrip, sight = w.userData.sight;
+    if (!muzzle) return;
+
+    const bm = this.rig.boneMap;
+    const hand = bm.handR;
+    const s = this.root.scale.y || 1;
+    this.root.getWorldQuaternion(_carryQ);
+    _cFwd.set(0, 0, 1).applyQuaternion(_carryQ);
+    _cUp.set(0, 1, 0).applyQuaternion(_carryQ);
+    _cLeft.set(1, 0, 0).applyQuaternion(_carryQ);
+
+    // Desired bore. Shouldered: straight down the body's facing — the aim layer
+    // has already twisted the spine to the commanded yaw/pitch, so "forward" is
+    // the right answer. Carried: 26 degrees down, 14 degrees across the body.
+    const yaw = CARRY_YAW * cf, pitch = CARRY_PITCH * cf;
+    _cBore.copy(_cFwd).multiplyScalar(Math.cos(yaw) * Math.cos(pitch))
+      .addScaledVector(_cLeft, Math.sin(yaw) * Math.cos(pitch))
+      .addScaledVector(_cUp, Math.sin(pitch))
+      .normalize();
+
+    // Desired foregrip, blended between the two holds.
+    //
+    // Carried: in front of the chest, anchored to the LIVE shoulders so crouching
+    // and the spine's aim twist take the weapon with them, and so the grip is
+    // always inside the support arm's 52 cm reach.
+    boneWorld(bm.upperArmL, _cA);
+    boneWorld(bm.upperArmR, _cB);
+    _cFore.addVectors(_cA, _cB).multiplyScalar(0.5)
+      .addScaledVector(_cFwd, 0.355 * s)
+      .addScaledVector(_cUp, -0.205 * s)
+      .addScaledVector(_cLeft, 0.02 * s);
+
+    // Shouldered: target the TRIGGER HAND, not the handguard. The weapon's own
+    // origin is the firing grip, so putting the hand under the cheek and pointing
+    // the bore forward gives the cheek weld for free. Deriving the pose from the
+    // sight instead makes the target depend on where each weapon happens to put
+    // its sight node, and a rifle whose sight sits forward of the receiver drags
+    // the whole gun — and both arms with it — up over the character's head.
+    if (cf < 0.995) {
+      boneWorld(bm.head, _cShHand);
+      _cShHand
+        .addScaledVector(_cUp, -0.062 * s)
+        .addScaledVector(_cLeft, -0.058 * s)
+        .addScaledVector(_cFwd, 0.022 * s);
+    }
+
+    _cPole.copy(_cFwd).multiplyScalar(0.55).addScaledVector(_cUp, -0.75)
+      .addScaledVector(_cLeft, -0.35 - 0.30 * (1 - cf)).normalize();
+
+    /** Roll the wrist until the bore sits on `_cBore`. Returns the angle used. */
+    const align = () => {
+      const e = muzzle.matrixWorld.elements;
+      _cA.set(e[8], e[9], e[10]).normalize();
+      const ang = Math.acos(clamp(_cA.dot(_cBore), -1, 1)) * cw;
+      if (ang < 1e-4) return 0;
+      _cAxis.crossVectors(_cA, _cBore);
+      if (_cAxis.lengthSq() < 1e-12) return 0;
+      _cAxis.normalize();
+      hand.parent.getWorldQuaternion(_carryQ);
+      rotateBoneWorld(hand, _carryQ, _cAxis, ang);
+      hand.updateMatrixWorld(true);
+      return ang;
+    };
+
+    /** Drive the gun arm so the (already oriented) foregrip lands on `_cFore`. */
+    const place = () => {
+      hand.getWorldQuaternion(_cWQ);                 // orientation to preserve
+      boneWorld(hand, _cA);
+      const fe = fore.matrixWorld.elements;
+      _cB.set(fe[12], fe[13], fe[14]).sub(_cA);      // live grip -> foregrip
+      _cGoal.copy(_cFore).sub(_cB);
+      if (cf < 0.999) _cGoal.lerp(_cShHand, 1 - cf);
+      this.animator.solveArm(bm.upperArmR, bm.foreArmR, hand, _cGoal, _cPole, cw);
+      // Put the hand's WORLD orientation back. The two-bone solve rotates the
+      // humerus and the ulna, and the hand rides along — up to 40 degrees — which
+      // would swing the 35 cm handguard straight off the point we just placed it
+      // on. Pinning the orientation decouples the two solves completely, so
+      // align-then-place is exact in a single pass instead of an iteration that
+      // never quite converges.
+      hand.parent.getWorldQuaternion(_carryQ);
+      hand.quaternion.copy(_carryQ.invert()).multiply(_cWQ);
+      hand.updateMatrixWorld(true);
+    };
+
+    // Orientation first (align), then position (place) — in that order the two
+    // are independent and one pass lands both exactly.
+    align();
+    if (fore) place();
   }
 
   // -- construction helpers -------------------------------------------------
@@ -936,25 +1154,33 @@ export class Character {
     this.root.updateMatrixWorld(true);
 
     const hand = rig.boneMap.handR;
-    const ws = this.weapon.scale.x;
-    const sightLocal = this.weapon.userData.sight.position.clone().multiplyScalar(ws);
-
-    // Eye reference from the posed head, not the rest pose.
-    boneWorld(rig.boneMap.head, _cv);
-    const eyeY = _cv.y + head.radius[1] * 0.60;
     const kind = this.weaponStats ? this.weaponStats.kind : 'rifle';
-    const relief = kind === 'sniper' ? 0.09 : kind === 'lance' ? 0.26 : 0.13;
-    const lateral = kind === 'lance' ? -0.085 : -0.032;
-    const drop = kind === 'lance' ? 0.02 : 0;
 
-    const sightWorld = new THREE.Vector3(_cv.x + lateral, eyeY - drop, _cv.z + head.radius[2] * 0.9 + relief);
+    // The weapon's own origin IS the centre of the firing grip (see weapons.js),
+    // so the anchor's job is simply to put that origin in the closed fist and
+    // point the bore down the hand.
+    //
+    // The previous solve instead translated the weapon until its SIGHT sat at
+    // the eye, which pinned the sight picture but left the grip wherever it
+    // fell — up to 20 cm clear of the palm — so in every pose but the shouldered
+    // one the rifle visibly floated beside a hand that was gripping thin air.
+    // The sight picture is now the job of _solveWeaponHold, which drives the arm.
+    // Palm centre, expressed in handR's own bone space (via the bone's REST
+    // world frame, which is what the local offset has to be measured against).
+    const wr = rig.restWorld.handR.pos, fg = rig.restWorld.fingersR.pos;
+    const palm = new THREE.Vector3(
+      lerp(wr.x, fg.x, 0.46), lerp(wr.y, fg.y, 0.46), lerp(wr.z, fg.z, 0.46) + 0.016);
+    const restHand = new THREE.Matrix4()
+      .compose(rig.restWorld.handR.pos, rig.restWorld.handR.quat, new THREE.Vector3(1, 1, 1))
+      .invert();
+    palm.applyMatrix4(restHand);
+
     const cant = kind === 'lance' ? -0.12 : -0.05;
-    const wq = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, cant));
-    const wpos = sightWorld.clone().sub(sightLocal.clone().applyQuaternion(wq));
-    const weaponWorld = new THREE.Matrix4().compose(wpos, wq, new THREE.Vector3(1, 1, 1));
-
-    const local = new THREE.Matrix4().copy(hand.matrixWorld).invert().multiply(weaponWorld);
-    local.decompose(this.weaponAnchor.position, this.weaponAnchor.quaternion, this.weaponAnchor.scale);
+    const roll = kind === 'lance' ? 0.10 : 0.0;
+    this.weaponAnchor.position.copy(palm);
+    // Bore down the hand's rest forward, plus the usual wrist cant.
+    this.weaponAnchor.quaternion.setFromEuler(new THREE.Euler(roll, 0, cant));
+    this.weaponAnchor.scale.set(1, 1, 1);
 
     // Restore the bind pose so the cloth anchors and AO reference stay honest.
     for (const n in rig.restLocal) {
@@ -1070,9 +1296,31 @@ export class Character {
   setGroundCallback(fn) { this._groundAt = fn; this.animator.setGroundCallback(fn); return this; }
   setStance(s) { this.animator.setLocomotion(this.animator.speed, { stance: s }); return this; }
 
+  /**
+   * Refresh the world matrices if the group was moved since they were last
+   * built. The game layer sets `root.position`/`rotation` (Unit.syncActor) and
+   * then immediately asks for muzzlePoint()/headPoint() in the SAME tick, before
+   * the renderer has walked the graph — without this, every query answers with
+   * last frame's placement. That is invisible in a moving battle but it aims the
+   * scripted capture cameras at empty air and it puts tracers a frame behind the
+   * gun. The compare is seven floats; the walk only runs when it must.
+   */
+  _syncWorld() {
+    const r = this.root, c = this._wSync;
+    const p = r.position, q = r.quaternion, s = r.scale;
+    if (c.px === p.x && c.py === p.y && c.pz === p.z
+      && c.qx === q.x && c.qy === q.y && c.qz === q.z && c.qw === q.w
+      && c.sx === s.x && c.sy === s.y && c.sz === s.z) return;
+    r.updateMatrixWorld(true);
+    c.px = p.x; c.py = p.y; c.pz = p.z;
+    c.qx = q.x; c.qy = q.y; c.qz = q.z; c.qw = q.w;
+    c.sx = s.x; c.sy = s.y; c.sz = s.z;
+  }
+
   /** Muzzle flash / tracer origin, straight off the weapon bone transform. */
   muzzlePoint(out) {
     const t = out || this._muzzleOut;
+    this._syncWorld();
     const m = this.weapon && this.weapon.userData.muzzle;
     if (m) { const e = m.matrixWorld.elements; return t.set(e[12], e[13], e[14]); }
     return this.headPoint(t);
@@ -1081,6 +1329,7 @@ export class Character {
   /** Bore direction in world space (normalised). */
   aimDirection(out) {
     const t = out || this._dirOut;
+    this._syncWorld();
     const m = this.weapon && this.weapon.userData.muzzle;
     if (m) { const e = m.matrixWorld.elements; return t.set(e[8], e[9], e[10]).normalize(); }
     return t.set(0, 0, 1).applyQuaternion(this.root.quaternion).normalize();
@@ -1089,6 +1338,7 @@ export class Character {
   /** Eye-level head point — used for LOS checks and damage popups. */
   headPoint(out) {
     const t = out || this._headOut;
+    this._syncWorld();
     const bone = this.rig.boneMap.head;
     const e = bone.matrixWorld.elements;
     const s = this.root.scale.y;
@@ -1178,6 +1428,13 @@ export class Character {
       const r = 0.155 * this.appearance.girth * this.root.scale.y;
       for (const c of this.cloth) c.update(dt, this._invRoot, this._bodyA, this._bodyB, r);
     }
+
+    // The animator already walked the graph — record that so the first
+    // muzzlePoint()/headPoint() of the frame is free.
+    const c = this._wSync, p = this.root.position, q = this.root.quaternion, s = this.root.scale;
+    c.px = p.x; c.py = p.y; c.pz = p.z;
+    c.qx = q.x; c.qy = q.y; c.qz = q.z; c.qw = q.w;
+    c.sx = s.x; c.sy = s.y; c.sz = s.z;
   }
 
   /** Recoil spring, bolt cycling and the reload magazine drop. */

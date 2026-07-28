@@ -8,7 +8,9 @@
 
 import { Bus } from '../core/bus.js';
 import { h, clear, panel, clickable, label, typewriter, roman, numberWord, pad, replay } from './dom.js';
-import { icon, inkRule, ribbon, chapterVignette, terrainSketch, rankStamp } from './icons.js';
+import {
+  icon, inkRule, ribbon, chapterVignette, terrainSketch, rankStamp, keyCap, compassRose,
+} from './icons.js';
 import { portrait, portraitMarkup } from './portraits.js';
 import { reducedMotion } from './style.js';
 
@@ -20,7 +22,11 @@ export function ribbonButton(text, onClick, { w = 15, key = '', seed = 21 } = {}
   root.appendChild(ribbon({ w: 240, h: 58, seed }));
   const t = h('div', { class: 'vc-rbtn-t' });
   t.appendChild(h('span', { text }));
-  if (key) t.appendChild(h('span', { class: 'vc-key', text: key }));
+  if (key) {
+    const cap = h('span', { class: 'vc-key' });
+    cap.appendChild(keyCap(key, { seed: seed + 41, color: '#fbf2dd' }));
+    t.appendChild(cap);
+  }
   root.appendChild(t);
   clickable(root, () => { if (!root.classList.contains('off')) onClick?.(); });
   root.setEnabled = (on) => root.classList.toggle('off', !on);
@@ -163,6 +169,13 @@ export class BriefingScreen {
       pins.appendChild(pin);
     }
     mapBox.appendChild(pins);
+    // North rose — the theatre map is the same north-up survey as the in-play
+    // one (north is -Z, per src/world/layout.js), so it says so the same way.
+    const rose = h('div', {
+      style: 'position:absolute;right:.6em;top:.6em;width:3.4em;height:3.4em;opacity:.8',
+    });
+    rose.appendChild(compassRose({ size: 52 }));
+    mapBox.appendChild(rose);
     mapWrap.appendChild(mapBox);
     if (d.brief) mapWrap.appendChild(h('div', { class: 'vc-body', style: 'margin-top:.6em', text: d.brief }));
     cols.appendChild(mapWrap);
@@ -654,9 +667,12 @@ export class DialogueBar {
     clear(this.porBox);
     if (line.name || line.seed != null) {
       this.porBox.style.display = '';
+      // No frame and no ground: the bust is cut out and rises out of the top of
+      // the box. A framed portrait read as a boxed thumbnail bolted on the side.
       this.porBox.innerHTML = portraitMarkup({
         seed: line.seed != null ? line.seed : (line.name || 'narrator'),
         cls: line.cls || 'scout', team: line.team | 0, w: 100, mood: line.mood || 'calm',
+        frame: false, bg: false,
       });
     } else this.porBox.style.display = 'none';
     this.nameEl.textContent = line.name || '';

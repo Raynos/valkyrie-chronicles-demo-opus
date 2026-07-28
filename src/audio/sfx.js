@@ -256,6 +256,17 @@ export function stereoLimit(pair, thresh = 0.72) {
   return pair;
 }
 
+/** Limit *and re-fade* a decorrelated pair. The allpass chains inside
+ *  stereoize() smear tail energy forward into the last samples, so a fade
+ *  applied to the mono render no longer guarantees the buffer ends at zero —
+ *  and a buffer that ends at -50 dBFS clicks every time it is triggered. */
+export function stereoFinish(pair, sr, thresh = 0.72, inMs = 0.6, outMs = 20) {
+  stereoLimit(pair, thresh);
+  fadeEdges(pair[0], sr, inMs, outMs);
+  fadeEdges(pair[1], sr, inMs, outMs);
+  return pair;
+}
+
 export function fadeEdges(buf, sr, inMs = 0.6, outMs = 6) {
   const ni = Math.min(buf.length, Math.floor(inMs * 0.001 * sr));
   const no = Math.min(buf.length, Math.floor(outMs * 0.001 * sr));
@@ -384,6 +395,9 @@ export const IR_PRESETS = {
 // pri  = voice-steal priority (higher wins)
 // cat  = de-dup category for Bus auto-wiring
 // pv   = playback-rate jitter (± fraction) applied at trigger time
+// dd   = duplicate-suppression window in seconds (AudioEngine.play); the same
+//        sound at the same spot inside this window is one event described
+//        twice, not two events. 0 disables. Default DEDUPE_WINDOW.
 
 export const SFX_DEFS = {
   // --- weapons ---
@@ -410,8 +424,13 @@ export const SFX_DEFS = {
   // --- ordnance ---
   explosion:        { v: 3, gain: 1.15, ref: 16, roll: 0.75, max: 800, pri: 10, cat: 'boom', pv: 0.05, wet: 0.7, stereo: true },
   explosionDistant: { v: 2, gain: 0.85, ref: 40, roll: 0.5,  max: 1400, pri: 7, cat: 'boom', pv: 0.06, wet: 0.85, stereo: true },
+  explosionBig:     { v: 2, gain: 1.25, ref: 20, roll: 0.68, max: 1000, pri: 10, cat: 'boom', pv: 0.04, wet: 0.8, stereo: true },
   grenadePin:       { v: 2, gain: 0.45, ref: 4, roll: 1.6, max: 60, pri: 2, cat: 'foley', pv: 0.08, wet: 0.25 },
   grenadeBounce:    { v: 3, gain: 0.85,  ref: 5, roll: 1.5, max: 90, pri: 3, cat: 'foley', pv: 0.1, wet: 0.35 },
+  grenadeThrow:     { v: 3, gain: 0.6,  ref: 4, roll: 1.6, max: 70, pri: 3, cat: 'foley', pv: 0.08, wet: 0.2 },
+  // Incoming off-map shell. Spatialised at the impact point but with a huge
+  // reference distance — the whole valley hears a barrage coming down.
+  artilleryWhistle: { v: 2, gain: 0.95, ref: 34, roll: 0.36, max: 1200, pri: 9, cat: 'incoming', pv: 0.025, wet: 0.55 },
 
   // --- handling / foley ---
   reload:       { v: 2, gain: 0.55, ref: 4, roll: 1.6, max: 70, pri: 3, cat: 'foley', pv: 0.05, wet: 0.2 },
@@ -424,22 +443,80 @@ export const SFX_DEFS = {
   footWood:     { v: 4, gain: 0.38, ref: 3, roll: 1.85, max: 50, pri: 1, cat: 'foot', pv: 0.13, wet: 0.25 },
   footWater:    { v: 4, gain: 0.95,  ref: 3, roll: 1.85, max: 55, pri: 1, cat: 'foot', pv: 0.13, wet: 0.2 },
   cloth:        { v: 4, gain: 0.75,  ref: 3, roll: 2.0, max: 35, pri: 1, cat: 'foley', pv: 0.14, wet: 0.12 },
-  bodyFall:     { v: 3, gain: 0.75, ref: 6, roll: 1.4, max: 140, pri: 5, cat: 'foley', pv: 0.07, wet: 0.3 },
+  // `unit:downed` (derived) and an explicit `downed` sfx both land on this, a
+  // frame apart — a slightly wider window than the default collapses them.
+  bodyFall:     { v: 3, gain: 0.75, ref: 6, roll: 1.4, max: 140, pri: 5, cat: 'body', pv: 0.07, wet: 0.3, dd: 0.08 },
   trackSqueak:  { v: 4, gain: 0.6,  ref: 7, roll: 1.3, max: 180, pri: 2, cat: 'foley', pv: 0.12, wet: 0.35 },
+
+  // --- infantry action foley ---
+  vault:        { v: 3, gain: 0.8,  ref: 4, roll: 1.7, max: 60, pri: 3, cat: 'foley', pv: 0.07, wet: 0.25 },
+  ladder:       { v: 2, gain: 0.7,  ref: 4, roll: 1.7, max: 60, pri: 2, cat: 'foley', pv: 0.06, wet: 0.3 },
+  dryFire:      { v: 2, gain: 0.6,  ref: 3, roll: 1.8, max: 45, pri: 4, cat: 'foley', pv: 0.05, wet: 0.15 },
+  resupply:     { v: 2, gain: 0.75, ref: 5, roll: 1.5, max: 80, pri: 4, cat: 'foley', pv: 0.05, wet: 0.25 },
+  repair:       { v: 2, gain: 0.7,  ref: 6, roll: 1.4, max: 110, pri: 4, cat: 'foley', pv: 0.05, wet: 0.35 },
+  // Own category: a round cracking past must not gate the shot that fired it.
+  nearMiss:     { v: 3, gain: 0.7,  ref: 4, roll: 1.6, max: 90, pri: 5, cat: 'crack', pv: 0.1, wet: 0.25 },
+
+  // --- vehicles ---
+  tankHit:       { v: 3, gain: 0.7,  ref: 9,  roll: 1.1,  max: 320, pri: 6, cat: 'impact', pv: 0.06, wet: 0.5 },
+  tankHitHeavy:  { v: 2, gain: 0.85, ref: 11, roll: 1.0,  max: 420, pri: 7, cat: 'impact', pv: 0.05, wet: 0.55 },
+  // Layered *on top of* the blast the `explosion` event already fires, so it
+  // is mostly tearing metal and cook-off rather than another low-end thump.
+  tankDestroyed: { v: 2, gain: 1.0,  ref: 16, roll: 0.75, max: 750, pri: 10, cat: 'brew', pv: 0.04, wet: 0.7, stereo: true },
+  metalJam:      { v: 2, gain: 0.7,  ref: 7,  roll: 1.2,  max: 220, pri: 5, cat: 'motor', pv: 0.05, wet: 0.4 },
+  trackSnap:     { v: 2, gain: 0.85, ref: 9,  roll: 1.1,  max: 300, pri: 7, cat: 'motor', pv: 0.04, wet: 0.45 },
+  engineBlow:    { v: 2, gain: 0.9,  ref: 10, roll: 1.0,  max: 380, pri: 8, cat: 'motor', pv: 0.04, wet: 0.5 },
+  // tank.js re-emits this on ~10 consecutive frames per slew tick; the wide
+  // window turns that back into the ~2 Hz motor pulse it is meant to be.
+  turretSlew:    { v: 3, gain: 0.55, ref: 6,  roll: 1.3,  max: 150, pri: 2, cat: 'motor', pv: 0.05, wet: 0.3, dd: 0.16 },
 
   // --- UI (2D, non-spatial) ---
   uiPage:      { v: 3, gain: 1.35,  spatial: false, pri: 4, cat: 'ui', pv: 0.05 },
-  uiStamp:     { v: 2, gain: 0.65, spatial: false, pri: 5, cat: 'ui', pv: 0.04 },
+  // `order:used` (derived), the HUD's order click and battle.js' `orderUse`
+  // are three descriptions of one stamp landing; collapse them.
+  uiStamp:     { v: 2, gain: 0.65, spatial: false, pri: 5, cat: 'ui', pv: 0.04, dd: 0.14 },
   uiRibbon:    { v: 2, gain: 1.5, spatial: false, pri: 3, cat: 'ui', pv: 0.05 },
   uiTick:      { v: 3, gain: 0.34, spatial: false, pri: 2, cat: 'ui', pv: 0.07 },
   uiConfirm:   { v: 1, gain: 0.46, spatial: false, pri: 5, cat: 'ui', pv: 0.02 },
   uiCancel:    { v: 1, gain: 0.42, spatial: false, pri: 4, cat: 'ui', pv: 0.02 },
+  uiSelect:    { v: 2, gain: 0.48, spatial: false, pri: 3, cat: 'ui', pv: 0.05 },
+  uiDeny:      { v: 1, gain: 0.62, spatial: false, pri: 5, cat: 'ui', pv: 0.03 },
+  uiPlace:     { v: 2, gain: 0.58, spatial: false, pri: 4, cat: 'ui', pv: 0.05 },
+  uiDialogue:  { v: 3, gain: 0.55, spatial: false, pri: 3, cat: 'ui', pv: 0.04 },
   uiCp:        { v: 2, gain: 0.44, spatial: false, pri: 4, cat: 'ui', pv: 0.03 },
   uiAlert:     { v: 1, gain: 0.7,  spatial: false, pri: 9, cat: 'ui', pv: 0.01, stereo: true },
-  uiRankStamp: { v: 1, gain: 0.85, spatial: false, pri: 9, cat: 'ui', pv: 0.01, stereo: true },
+  // The results screen stamps once and `mission:end` stamps once, a beat
+  // apart by design — but if they collide they must not double-slam.
+  uiRankStamp: { v: 1, gain: 0.85, spatial: false, pri: 9, cat: 'ui', pv: 0.01, stereo: true, dd: 0.5 },
+
+  // --- aiming / action-mode gestures (2D: they happen at the camera) ---
+  actionEnter: { v: 1, gain: 0.8,  spatial: false, pri: 9, cat: 'sting', pv: 0.01, stereo: true },
+  aimIn:       { v: 2, gain: 0.5,  spatial: false, pri: 3, cat: 'gesture', pv: 0.05 },
+  aimOut:      { v: 2, gain: 0.6, spatial: false, pri: 3, cat: 'gesture', pv: 0.05 },
+  targetLock:  { v: 3, gain: 0.4,  spatial: false, pri: 4, cat: 'gesture', pv: 0.03, dd: 0.11 },
+
+  // --- narrative stings (2D announcements) ---
+  turnPlayer:  { v: 1, gain: 0.8,  spatial: false, pri: 9, cat: 'sting', pv: 0.01, stereo: true },
+  turnEnemy:   { v: 1, gain: 0.8,  spatial: false, pri: 9, cat: 'sting', pv: 0.01, stereo: true },
+  victory:     { v: 1, gain: 0.95, spatial: false, pri: 10, cat: 'sting', pv: 0.01, stereo: true },
+  defeat:      { v: 1, gain: 1.15,  spatial: false, pri: 10, cat: 'sting', pv: 0.01, stereo: true },
+  capture:     { v: 1, gain: 1.05,  spatial: false, pri: 8, cat: 'sting', pv: 0.02 },
+  reinforceFriendly: { v: 1, gain: 0.75, spatial: false, pri: 8, cat: 'sting', pv: 0.02 },
+  reinforceEnemy:    { v: 1, gain: 0.75, spatial: false, pri: 8, cat: 'sting', pv: 0.02 },
+  unitLost:    { v: 1, gain: 0.8,  spatial: false, pri: 9, cat: 'sting', pv: 0.01 },
+  rescue:      { v: 1, gain: 0.95, spatial: false, pri: 8, cat: 'sting', pv: 0.02 },
+  potentialGood: { v: 2, gain: 0.6, spatial: false, pri: 7, cat: 'sting', pv: 0.03 },
+  potentialBad:  { v: 2, gain: 0.6, spatial: false, pri: 7, cat: 'sting', pv: 0.03 },
 };
 
-/** Aliases so other systems can emit whatever reads naturally. */
+/**
+ * Aliases so other systems can emit whatever reads naturally.
+ *
+ * An entry belongs here only when the name is a genuine *synonym* of a sound
+ * that already exists (`tankFire` really is the tank gun). When a name names a
+ * different physical event it gets its own generator instead — half the point
+ * of the bank is that a track snapping does not sound like a rifle.
+ */
 export const SFX_ALIASES = {
   shot: 'rifle', gunshot: 'rifle', gun: 'rifle', fire: 'rifle',
   rifleShot: 'rifle', scout: 'smg', shock: 'smg', smgShot: 'smg',
@@ -465,6 +542,53 @@ export const SFX_ALIASES = {
   cp: 'uiCp', cpSpend: 'uiCp', order: 'uiStamp',
   alert: 'uiAlert', sting: 'uiAlert', warning: 'uiAlert', intercept: 'uiAlert',
   rank: 'uiRankStamp', rankStamp: 'uiRankStamp', result: 'uiRankStamp',
+
+  // --- names the game actually emits -------------------------------------
+  // Weapons. WEAPONS[*].sfx is passed through verbatim by combat.fireRound.
+  mgFire: 'mg', coax: 'mg', coaxial: 'mg',
+  tankFire: 'tankGun', mainGun: 'tankGun',
+  // A tank taking a hit is armour, not "a metal thing" — but an explicit
+  // hitArmour on an infantry-scale impact is just the metal impact.
+  hitArmour: 'impactMetal', hitArmor: 'impactMetal', armourHit: 'tankHit',
+  tankDeath: 'tankDestroyed', tankBrewUp: 'tankDestroyed', vehicleDestroyed: 'tankDestroyed',
+  jam: 'metalJam', turretJam: 'metalJam',
+  trackThrow: 'trackSnap', trackBreak: 'trackSnap',
+  engineDeath: 'engineBlow', radiatorBlow: 'engineBlow',
+  slew: 'turretSlew', turretTurn: 'turretSlew',
+
+  // Ordnance.
+  explosionLarge: 'explosionBig', bigBoom: 'explosionBig',
+  grenadeToss: 'grenadeThrow', throwGrenade: 'grenadeThrow',
+  incoming: 'artilleryWhistle', shellWhistle: 'artilleryWhistle', whistle: 'artilleryWhistle',
+
+  // Infantry action.
+  climb: 'ladder', vaultOver: 'vault',
+  emptyClick: 'dryFire', click: 'dryFire',
+  lock: 'targetLock', aimStart: 'aimIn', aimEnd: 'aimOut',
+  ammo: 'resupply', supply: 'resupply', fix: 'repair', wrench: 'repair',
+  whipCrack: 'nearMiss',
+
+  // Stings.
+  actionStart: 'actionEnter', blitz: 'actionEnter',
+  turnStart: 'turnPlayer', enemyTurn: 'turnEnemy',
+  win: 'victory', lose: 'defeat',
+  campCaptured: 'capture', flag: 'capture',
+  reinforcements: 'reinforceFriendly',
+  killed: 'unitLost', dead: 'unitLost',
+  evac: 'rescue', medic: 'rescue',
+  potential: 'potentialGood',
+  // An interception warning IS the danger sting; the `interception` Bus event
+  // plays the same buffer, and play()'s dedupe folds the pair into one.
+  interceptWarn: 'uiAlert',
+  orderUse: 'uiStamp',
+
+  // UI. The DOM layer names things with underscores; the bank is camelCase.
+  uiBack: 'uiCancel', uiCursor: 'uiTick',
+  ui_select: 'uiSelect', ui_order: 'uiStamp', ui_endturn: 'uiPage',
+  ui_place: 'uiPlace', ui_stamp: 'uiRankStamp', ui_dialogue: 'uiDialogue',
+  ui_confirm: 'uiConfirm', ui_cancel: 'uiCancel', ui_deny: 'uiDeny',
+  dialogue: 'uiDialogue', line: 'uiDialogue',
+  endTurn: 'uiPage', turnEnd: 'uiPage',
 };
 
 /** `shot:hit` payload material -> impact sound. */
@@ -797,7 +921,7 @@ const GEN = {
                     { t: 1.52, g: 0.08, lp: 310, hp: 55 }]);
     allpassChain(b, sr, [14.7, 23.3, 33.1], 0.5);
     softLimit(b, 0.66); fadeEdges(b, sr, 0.6, 40);
-    return stereoLimit(stereoize(b, sr, rng, 1), 0.66);
+    return stereoFinish(stereoize(b, sr, rng, 1), sr, 0.66, 0.6, 40);
   },
 
   // Off-map artillery: no transient at all, just a filtered rolling rumble.
@@ -815,7 +939,7 @@ const GEN = {
       f0: 260, f1: 75, curve: 1.5, attack: 0.2 });
     allpassChain(b, sr, [23.3, 37.1, 51.7], 0.58);
     softLimit(b, 0.7); fadeEdges(b, sr, 5, 60);
-    return stereoLimit(stereoize(b, sr, rng, 1.4), 0.7);
+    return stereoFinish(stereoize(b, sr, rng, 1.4), sr, 0.7, 5, 60);
   },
 
   grenadePin(sr, rng, v) {
@@ -1143,7 +1267,7 @@ const GEN = {
     noiseBurst(b, sr, rng, { dur: 0.05, amp: 0.3, type: 'lp', f0: 2400, f1: 500, curve: 22 });
     allpassChain(b, sr, [11.3, 19.1], 0.4);
     softLimit(b, 0.78); fadeEdges(b, sr, 1, 40);
-    return stereoLimit(stereoize(b, sr, rng, 0.8), 0.78);
+    return stereoFinish(stereoize(b, sr, rng, 0.8), sr, 0.78, 1, 40);
   },
 
   // End-of-mission rank stamp: a slam you feel in the desk.
@@ -1160,7 +1284,599 @@ const GEN = {
                     { t: 0.152, g: 0.11, lp: 1100 }, { t: 0.29, g: 0.06, lp: 700 }]);
     allpassChain(b, sr, [9.7, 16.3, 24.1], 0.45);
     softLimit(b, 0.72); fadeEdges(b, sr, 0.6, 35);
-    return stereoLimit(stereoize(b, sr, rng, 0.6), 0.72);
+    return stereoFinish(stereoize(b, sr, rng, 0.6), sr, 0.72, 0.6, 35);
+  },
+
+  // Selection: a steel pen nib tapping the page. Brighter and more definite
+  // than uiTick (which is only a cursor moving) but far short of uiConfirm.
+  uiSelect(sr, rng, v) {
+    const b = monoBuf(sr, 0.24);
+    const f = v === 0 ? 1174.66 : 1318.51;            // D6 / E6
+    modalHit(b, sr, rng, {
+      freqs: [f, f * 2.01, f * 3.04], t60s: [0.085, 0.052, 0.03],
+      amps: [1, 0.48, 0.22], amp: 0.5, exciteDur: 0.0009, exciteLp: 8000, dur: 0.17,
+    });
+    noiseBurst(b, sr, rng, { dur: 0.026, amp: 0.2, type: 'bp',
+      f0: 3400, f1: 2100, q: 1.6, curve: 26, hp: 1200 });   // nib on paper fibre
+    softLimit(b, 0.85); fadeEdges(b, sr, 0.4, 8);
+    return b;
+  },
+
+  // Refusal: a dead, damped double knock on the desk. Deliberately unmusical —
+  // a minor second with the ring choked out of it, so it reads as "no".
+  uiDeny(sr, rng) {
+    const b = monoBuf(sr, 0.44);
+    for (let i = 0; i < 2; i++) {
+      const t0 = i * 0.088, g = i ? 0.78 : 1;
+      modalHit(b, sr, rng, {
+        t0, freqs: [196, 233.08, 293.66], t60s: [0.07, 0.048, 0.032],
+        amps: [1, 0.6, 0.3], amp: 0.5 * g, exciteDur: 0.004, exciteLp: 1800, dur: 0.17,
+      });
+      noiseBurst(b, sr, rng, { t0, dur: 0.03, amp: 0.16 * g, type: 'lp',
+        f0: 900, f1: 300, curve: 26 });
+    }
+    tone(b, sr, { dur: 0.1, f0: 110, f1: 92, amp: 0.22, curve: 14, drive: 0.25 });
+    softLimit(b, 0.85); fadeEdges(b, sr);
+    return b;
+  },
+
+  // Deployment: a wooden unit counter set down on the paper map.
+  uiPlace(sr, rng, v) {
+    const b = monoBuf(sr, 0.32);
+    const dt = 1 + (v - 0.5) * 0.06;
+    modalHit(b, sr, rng, {
+      freqs: [412 * dt, 903 * dt, 1560 * dt], t60s: [0.05, 0.032, 0.02],
+      amps: [1, 0.55, 0.28], amp: 0.55, exciteDur: 0.0022, exciteLp: 5200, dur: 0.17,
+    });
+    noiseBurst(b, sr, rng, { dur: 0.05, amp: 0.3, type: 'bp',
+      f0: 2400, f1: 1200, q: 1.0, curve: 22, hp: 800 });     // sheet under it
+    tone(b, sr, { dur: 0.04, f0: 150, f1: 84, amp: 0.18, curve: 22 });
+    softLimit(b, 0.85); fadeEdges(b, sr);
+    return b;
+  },
+
+  // A line of dialogue arriving. Fires once per line, so it stays soft and
+  // wooden — a marimba-ish blip with the paper of the journal behind it.
+  uiDialogue(sr, rng, v) {
+    const b = monoBuf(sr, 0.36);
+    const f = [523.25, 587.33, 659.25][v % 3];
+    tone(b, sr, { dur: 0.17, f0: f, amp: 0.3, curve: 9, attack: 0.008, wave: 'tri' });
+    tone(b, sr, { t0: 0.004, dur: 0.11, f0: f * 2, amp: 0.09, curve: 13, attack: 0.006 });
+    noiseBurst(b, sr, rng, { dur: 0.045, amp: 0.12, type: 'bp',
+      f0: 2600, f1: 1500, q: 1.2, curve: 18, hp: 900 });
+    softLimit(b, 0.85); fadeEdges(b, sr, 1, 12);
+    return b;
+  },
+
+  // --- action-mode gestures ------------------------------------------------
+
+  // Dropping into BLiTZ action mode: air rushing in, then the downbeat as the
+  // camera arrives on the shoulder.
+  actionEnter(sr, rng) {
+    const b = monoBuf(sr, 1.8);
+    const hit = 0.42;
+    // Reverse-swell: negative curve makes dEnv rise into the hit.
+    noiseBurst(b, sr, rng, { dur: hit, amp: 0.2, type: 'bp',
+      f0: 300, f1: 3600, q: 1.0, curve: -1.6, attack: 0.09 });
+    tone(b, sr, { dur: hit, f0: 90, f1: 220, amp: 0.16, curve: -1.2, attack: 0.1 });
+    // Timpani + sub drop on the beat.
+    modalHit(b, sr, rng, {
+      t0: hit, freqs: [61.7, 92.5, 123.5, 185], t60s: [0.9, 0.55, 0.34, 0.2],
+      amps: [1, 0.5, 0.28, 0.14], amp: 0.55, exciteDur: 0.006, exciteLp: 1300, dur: 1.15,
+    });
+    tone(b, sr, { t0: hit, dur: 0.48, f0: 150, f1: 42, amp: 0.4, curve: 6, drive: 0.5 });
+    noiseBurst(b, sr, rng, { t0: hit, dur: 0.38, amp: 0.2, type: 'lp',
+      f0: 4200, f1: 400, curve: 10 });
+    // A bright strike so it still cuts through a firefight.
+    modalHit(b, sr, rng, {
+      t0: hit, freqs: [880, 1320, 1980], t60s: [0.4, 0.26, 0.16],
+      amps: [1, 0.5, 0.25], amp: 0.18, exciteDur: 0.0012, exciteLp: 7000, dur: 0.55,
+    });
+    allpassChain(b, sr, [9.7, 17.3], 0.4);
+    softLimit(b, 0.78); fadeEdges(b, sr, 2, 40);
+    return stereoFinish(stereoize(b, sr, rng, 0.8), sr, 0.78, 2, 40);
+  },
+
+  // The reticle snapping onto a body: two quick glints a fourth apart.
+  targetLock(sr, rng, v) {
+    const b = monoBuf(sr, 0.24);
+    const f = 1568 + v * 62;
+    modalHit(b, sr, rng, {
+      freqs: [f, f * 1.5, f * 2.02], t60s: [0.045, 0.03, 0.02],
+      amps: [1, 0.5, 0.26], amp: 0.42, exciteDur: 0.0007, exciteLp: 9000, dur: 0.1,
+    });
+    modalHit(b, sr, rng, {
+      t0: 0.038, freqs: [f * 1.335, f * 2, f * 2.7], t60s: [0.06, 0.038, 0.024],
+      amps: [1, 0.5, 0.26], amp: 0.34, exciteDur: 0.0007, exciteLp: 9000, dur: 0.14,
+    });
+    noiseBurst(b, sr, rng, { dur: 0.01, amp: 0.12, type: 'hp', f0: 6000, curve: 55 });
+    softLimit(b, 0.85); fadeEdges(b, sr, 0.4, 8);
+    return b;
+  },
+
+  // --- infantry action foley ----------------------------------------------
+
+  // Going over a wall: hand slap on the parapet, boot scuff over the lip,
+  // webbing knocking about, then the landing on the far side.
+  vault(sr, rng, v) {
+    const b = monoBuf(sr, 0.95);
+    noiseBurst(b, sr, rng, { dur: 0.05, amp: 0.5, type: 'lp',
+      f0: 1800, f1: 500, q: 0.8, curve: 22 });
+    tone(b, sr, { dur: 0.05, f0: 190, f1: 92, amp: 0.2, curve: 20 });
+    noiseBurst(b, sr, rng, { t0: 0.06, dur: 0.26, amp: 0.32, type: 'bp',
+      f0: 1500, f1: 3200, q: 0.85, curve: 4.5, attack: 0.05, hp: 700 });
+    for (let i = 0; i < 3; i++) {
+      modalHit(b, sr, rng, {
+        t0: 0.1 + rng() * 0.28,
+        freqs: [1500 + rng() * 1800, 2900 + rng() * 2000],
+        t60s: [0.04, 0.026], amps: [1, 0.5], amp: 0.07 + rng() * 0.06, dur: 0.1,
+      });
+    }
+    const lt = 0.42 + v * 0.02;
+    noiseBurst(b, sr, rng, { t0: lt, dur: 0.13, amp: 0.58, type: 'lp',
+      f0: 900, f1: 220, q: 0.85, curve: 14 });
+    tone(b, sr, { t0: lt, dur: 0.14, f0: 108, f1: 50, amp: 0.42, curve: 12, drive: 0.35 });
+    noiseBurst(b, sr, rng, { t0: lt + 0.09, dur: 0.09, amp: 0.2, type: 'lp',
+      f0: 700, f1: 200, curve: 18 });
+    softLimit(b, 0.82); fadeEdges(b, sr, 1, 14);
+    return b;
+  },
+
+  // Four rungs of a timber ladder: boot on the rung, hand sliding to the next,
+  // and the whole thing flexing underneath.
+  ladder(sr, rng, v) {
+    const b = monoBuf(sr, 1.5);
+    for (let i = 0; i < 4; i++) {
+      const t = i * (0.3 + v * 0.012) + rng() * 0.02;
+      modalHit(b, sr, rng, {
+        t0: t, freqs: [196 + i * 9, 447 + i * 14, 830 + i * 21],
+        t60s: [0.11, 0.07, 0.045], amps: [1, 0.6, 0.32],
+        amp: 0.42, exciteDur: 0.0035, exciteLp: 3600, dur: 0.3,
+      });
+      noiseBurst(b, sr, rng, { t0: t, dur: 0.04, amp: 0.18, type: 'bp',
+        f0: 2000, f1: 900, q: 1.0, curve: 26 });
+      noiseBurst(b, sr, rng, { t0: t + 0.09, dur: 0.1, amp: 0.1, type: 'bp',
+        f0: 2600, f1: 1500, q: 0.9, curve: 8, attack: 0.02, hp: 900 });
+    }
+    tone(b, sr, { t0: 0.15, dur: 0.7, f0: 88, f1: 76, amp: 0.07, curve: 2.4, attack: 0.12 });
+    softLimit(b, 0.82); fadeEdges(b, sr, 1, 16);
+    return b;
+  },
+
+  // Hammer falling on an empty chamber. All click, no ring, no powder — the
+  // absence of a gunshot is the whole point.
+  dryFire(sr, rng, v) {
+    const b = monoBuf(sr, 0.2);
+    const dt = 1 + (v - 0.5) * 0.05;
+    modalHit(b, sr, rng, {
+      freqs: [1320 * dt, 2410 * dt, 4180 * dt], t60s: [0.018, 0.012, 0.008],
+      amps: [1, 0.6, 0.3], amp: 0.6, exciteDur: 0.0008, exciteLp: 9000, dur: 0.07,
+    });
+    noiseBurst(b, sr, rng, { dur: 0.008, amp: 0.4, type: 'hp', f0: 3600, curve: 70 });
+    tone(b, sr, { dur: 0.02, f0: 420, f1: 190, amp: 0.16, curve: 34 });
+    noiseBurst(b, sr, rng, { t0: 0.004, dur: 0.05, amp: 0.08, type: 'bp',
+      f0: 2600, f1: 1900, q: 8, curve: 18 });                 // hammer spring
+    softLimit(b, 0.85); fadeEdges(b, sr, 0.4, 8);
+    return b;
+  },
+
+  // A round going past your head — much tighter and nastier than `whizz`,
+  // which is a bullet crossing the field at a distance.
+  nearMiss(sr, rng, v) {
+    const b = monoBuf(sr, 0.34);
+    const dt = 1 + (v - 1) * 0.09;
+    // The crack. A very steep envelope on a high-passed burst starves itself
+    // (the attack ramp barely finishes before the decay kills it), so the
+    // transient is carried by a broader burst and a hard pitched snap instead.
+    noiseBurst(b, sr, rng, { dur: 0.022, amp: 1.5, type: 'hp',
+      f0: 3600 * dt, q: 0.9, curve: 26, attack: 0.0003 });
+    tone(b, sr, { dur: 0.03, f0: 3400 * dt, f1: 620, amp: 0.62,
+      curve: 30, drive: 0.6, attack: 0.0004 });
+    noiseBurst(b, sr, rng, { t0: 0.001, dur: 0.05, amp: 0.9, type: 'bp',
+      f0: 5400 * dt, f1: 2600, q: 1.4, curve: 16, attack: 0.0004 });
+    // The zip of displaced air behind it, then the body of the pass.
+    noiseBurst(b, sr, rng, { t0: 0.004, dur: 0.15, amp: 0.6, type: 'bp',
+      f0: 2600 * dt, f1: 700, q: 3.4, curve: 11 });
+    noiseBurst(b, sr, rng, { t0: 0.002, dur: 0.07, amp: 0.34, type: 'lp',
+      f0: 1400, f1: 420, curve: 18 });
+    softLimit(b, 0.82); fadeEdges(b, sr, 0.5, 10);
+    return b;
+  },
+
+  // Ammo crate: the box down, brass tumbling into the pouch, canvas closing.
+  resupply(sr, rng, v) {
+    const b = monoBuf(sr, 1.15);
+    const dt = 1 + (v - 0.5) * 0.05;
+    modalHit(b, sr, rng, {
+      freqs: [186 * dt, 428 * dt, 795 * dt, 1310 * dt], t60s: [0.12, 0.08, 0.05, 0.032],
+      amps: [1, 0.6, 0.34, 0.18], amp: 0.55, exciteDur: 0.004, exciteLp: 4200, dur: 0.32,
+    });
+    tone(b, sr, { dur: 0.07, f0: 120, f1: 62, amp: 0.24, curve: 18, drive: 0.3 });
+    scatter(rng, 14, 0.11, 0.62, (t) => {
+      modalHit(b, sr, rng, {
+        t0: t, freqs: [1800 + rng() * 2400, 3400 + rng() * 2600, 5200 + rng() * 2000],
+        t60s: [0.05, 0.032, 0.02], amps: [1, 0.5, 0.25],
+        amp: 0.06 + rng() * 0.06, exciteDur: 0.0009, exciteLp: 11000, dur: 0.14,
+      });
+    });
+    noiseBurst(b, sr, rng, { t0: 0.6, dur: 0.2, amp: 0.2, type: 'bp',
+      f0: 2400, f1: 1200, q: 0.75, curve: 8, attack: 0.02, hp: 800 });
+    modalHit(b, sr, rng, {
+      t0: 0.7, freqs: [1046.5, 1568, 2093], t60s: [0.3, 0.2, 0.12],
+      amps: [1, 0.5, 0.25], amp: 0.14, exciteDur: 0.0012, exciteLp: 8000, dur: 0.4,
+    });
+    softLimit(b, 0.85); fadeEdges(b, sr, 1, 16);
+    return b;
+  },
+
+  // Engineer on the hull: three spanner strikes on armour plate, then a
+  // ratchet run. Bright and metallic so it reads over an idling engine.
+  repair(sr, rng, v) {
+    const b = monoBuf(sr, 1.5);
+    const hits = [0, 0.29 + v * 0.02, 0.6 + v * 0.03];
+    for (let i = 0; i < hits.length; i++) {
+      const g = i === 1 ? 1 : 0.82;
+      noiseBurst(b, sr, rng, { t0: hits[i], dur: 0.008, amp: 0.42 * g,
+        type: 'hp', f0: 4200, curve: 80 });
+      modalHit(b, sr, rng, {
+        t0: hits[i], freqs: [1210, 2180, 3460, 5010], t60s: [0.3, 0.2, 0.13, 0.08],
+        amps: [1, 0.65, 0.4, 0.22], amp: 0.42 * g,
+        exciteDur: 0.0015, exciteLp: 12000, dur: 0.5,
+      });
+      tone(b, sr, { t0: hits[i], dur: 0.06, f0: 280, f1: 130, amp: 0.18 * g,
+        curve: 22, drive: 0.3 });
+    }
+    for (let i = 0; i < 9; i++) {
+      modalHit(b, sr, rng, {
+        t0: 0.86 + i * 0.032, freqs: [2600, 4300], t60s: [0.012, 0.008],
+        amps: [1, 0.5], amp: 0.14, exciteDur: 0.0006, exciteLp: 10000, dur: 0.04,
+      });
+    }
+    softLimit(b, 0.82); fadeEdges(b, sr, 1, 16);
+    return b;
+  },
+
+  // --- ordnance ------------------------------------------------------------
+
+  // Throwing a grenade: the safety lever pinging away, the sleeve and the arm
+  // sweeping through the air. No detonation — the fuse handles that.
+  grenadeThrow(sr, rng, v) {
+    const b = monoBuf(sr, 0.6);
+    const dt = 1 + (v - 1) * 0.06;
+    modalHit(b, sr, rng, {
+      freqs: [3120 * dt, 4980 * dt, 6740 * dt], t60s: [0.07, 0.045, 0.028],
+      amps: [1, 0.55, 0.3], amp: 0.3, exciteDur: 0.0008, exciteLp: 12000, dur: 0.17,
+    });
+    noiseBurst(b, sr, rng, { dur: 0.24, amp: 0.38, type: 'bp',
+      f0: 900, f1: 2600, q: 0.85, curve: 2.6, attack: 0.05, hp: 500 });
+    noiseBurst(b, sr, rng, { t0: 0.05, dur: 0.2, amp: 0.15, type: 'lp',
+      f0: 1600, f1: 600, curve: 6, attack: 0.05 });
+    modalHit(b, sr, rng, {
+      t0: 0.02, freqs: [420, 910, 1580], t60s: [0.05, 0.032, 0.02],
+      amps: [1, 0.5, 0.26], amp: 0.16, exciteDur: 0.0025, exciteLp: 4200, dur: 0.14,
+    });
+    softLimit(b, 0.85); fadeEdges(b, sr, 1, 14);
+    return b;
+  },
+
+  // A heavy shell rather than a grenade: deeper, longer, more debris, and a
+  // valley return that keeps rolling well after the flash.
+  explosionBig(sr, rng, v) {
+    const b = monoBuf(sr, 4.2);
+    const dt = 1 + (v - 0.5) * 0.06;
+    noiseBurst(b, sr, rng, { dur: 0.04, amp: 0.95, type: 'hp', f0: 1700, curve: 44 });
+    noiseBurst(b, sr, rng, { dur: 1.7, amp: 0.95, type: 'lp',
+      f0: 5400, f1: 95, q: 0.8, curve: 3.4 });
+    tone(b, sr, { dur: 1.5, f0: 104 * dt, f1: 22, amp: 0.95, curve: 2.4, drive: 0.95 });
+    tone(b, sr, { dur: 2.8, f0: 44 * dt, f1: 17, amp: 0.55, curve: 1.3, drive: 0.4 });
+    tone(b, sr, { t0: 0.006, dur: 0.22, f0: 520, f1: 140, amp: 0.3, curve: 14, drive: 0.6 });
+    scatter(rng, 32, 0.26, 2.6, (t) => {
+      if (rng() < 0.4) {
+        modalHit(b, sr, rng, {
+          t0: t, freqs: [800 + rng() * 2600, 1700 + rng() * 3000],
+          t60s: [0.035, 0.022], amps: [1, 0.5], amp: 0.075, dur: 0.1,
+        });
+      } else {
+        noiseBurst(b, sr, rng, { t0: t, dur: 0.07, amp: 0.035 + rng() * 0.055,
+          type: 'lp', f0: 800 + rng() * 1400, f1: 220, curve: 15 });
+      }
+    });
+    addTaps(b, sr, [{ t: 0.214, g: 0.38, lp: 1050, hp: 65 },
+                    { t: 0.487, g: 0.26, lp: 700, hp: 60 },
+                    { t: 0.951, g: 0.16, lp: 440, hp: 55 },
+                    { t: 1.71, g: 0.09, lp: 290, hp: 50 },
+                    { t: 2.52, g: 0.045, lp: 210, hp: 48 }]);
+    allpassChain(b, sr, [16.3, 25.7, 36.1], 0.52);
+    softLimit(b, 0.62); fadeEdges(b, sr, 0.6, 50);
+    return stereoFinish(stereoize(b, sr, rng, 1.15), sr, 0.62, 0.6, 50);
+  },
+
+  // Off-map artillery on the way down. Three shells walking in, each a tone
+  // gliding downward while it *swells* (negative dEnv curve) and is then cut
+  // dead at impact — the explosion that follows is a separate voice.
+  artilleryWhistle(sr, rng, v) {
+    const b = monoBuf(sr, 2.2);
+    const shells = [[0.0, 1.0, 1.0], [0.42, 0.72, 1.14], [0.86, 0.5, 0.87]];
+    const jitter = 1 + (v - 0.5) * 0.05;
+    for (let i = 0; i < shells.length; i++) {
+      const t0 = shells[i][0], a = shells[i][1], k = shells[i][2] * jitter;
+      const dur = 1.05;
+      const f0 = 1750 * k, f1 = 360 * k;
+      tone(b, sr, { t0, dur, f0, f1, amp: 0.2 * a, curve: -1.15, attack: 0.09,
+        fm: 0.012, fmRate: 3.1 });
+      tone(b, sr, { t0, dur: dur * 0.96, f0: f0 * 2.01, f1: f1 * 2.01,
+        amp: 0.055 * a, curve: -0.9, attack: 0.1 });
+      // Air tearing round the shell body.
+      noiseBurst(b, sr, rng, { t0, dur, amp: 0.1 * a, type: 'bp',
+        f0: f0 * 1.1, f1: f1 * 1.2, q: 3.2, curve: -1.0, attack: 0.1 });
+    }
+    softLimit(b, 0.8); fadeEdges(b, sr, 4, 30);
+    return b;
+  },
+
+  // --- vehicles ------------------------------------------------------------
+
+  // The turret ring binding: gear teeth grinding against a jammed race, then
+  // the hard stop as the drive gives up.
+  metalJam(sr, rng, v) {
+    const b = monoBuf(sr, 0.9);
+    const n = Math.floor(0.32 * sr);
+    const bq = new Biquad(), bq2 = new Biquad();
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      if ((i & 31) === 0) {
+        const f = 220 + v * 30 + Math.sin(t * 40) * 60 + (rng() - 0.5) * 40;
+        bq.bandpass(sr, f, 6);
+        bq2.bandpass(sr, f * 3.1, 4);
+      }
+      const x = rng() * 2 - 1;
+      const env = Math.min(1, t / 0.04) * (1 - t) * (1 - t);
+      b[i] += (bq.process(x) * 1.2 + bq2.process(x) * 0.55) * env;
+    }
+    modalHit(b, sr, rng, {
+      t0: 0.3, freqs: [148, 337, 611, 1120], t60s: [0.2, 0.13, 0.085, 0.05],
+      amps: [1, 0.62, 0.36, 0.2], amp: 0.6, exciteDur: 0.003, exciteLp: 4200, dur: 0.42,
+    });
+    tone(b, sr, { t0: 0.3, dur: 0.12, f0: 130, f1: 58, amp: 0.4, curve: 13, drive: 0.4 });
+    noiseBurst(b, sr, rng, { t0: 0.3, dur: 0.05, amp: 0.24, type: 'bp',
+      f0: 1800, f1: 700, q: 1.0, curve: 24 });
+    softLimit(b, 0.8); fadeEdges(b, sr, 2, 18);
+    return b;
+  },
+
+  // Throwing a track: the pin shears, then the run slaps off each roadwheel
+  // in turn as it unspools and drops into the dirt.
+  trackSnap(sr, rng, v) {
+    const b = monoBuf(sr, 1.8);
+    const dt = 1 + (v - 0.5) * 0.05;
+    noiseBurst(b, sr, rng, { dur: 0.014, amp: 0.9, type: 'hp', f0: 2600, curve: 65 });
+    modalHit(b, sr, rng, {
+      freqs: [980 * dt, 1760 * dt, 2940 * dt, 4520 * dt], t60s: [0.34, 0.22, 0.14, 0.08],
+      amps: [1, 0.68, 0.42, 0.24], amp: 0.7, exciteDur: 0.0016, exciteLp: 13000, dur: 0.55,
+    });
+    tone(b, sr, { dur: 0.16, f0: 320, f1: 78, amp: 0.5, curve: 12, drive: 0.55 });
+    const slaps = [0.1, 0.19, 0.31, 0.44, 0.6, 0.79, 1.02];
+    for (let i = 0; i < slaps.length; i++) {
+      const g = Math.pow(0.82, i);
+      modalHit(b, sr, rng, {
+        t0: slaps[i],
+        freqs: [620 + rng() * 500, 1340 + rng() * 900, 2500 + rng() * 1400],
+        t60s: [0.09, 0.06, 0.038], amps: [1, 0.55, 0.3],
+        amp: 0.55 * g, exciteDur: 0.0018, exciteLp: 9000, dur: 0.22,
+      });
+      noiseBurst(b, sr, rng, { t0: slaps[i], dur: 0.06, amp: 0.18 * g,
+        type: 'lp', f0: 1200, f1: 300, curve: 18 });
+      tone(b, sr, { t0: slaps[i], dur: 0.05, f0: 150, f1: 70, amp: 0.14 * g, curve: 20 });
+    }
+    noiseBurst(b, sr, rng, { t0: 0.5, dur: 0.6, amp: 0.13, type: 'lp',
+      f0: 900, f1: 220, curve: 5, attack: 0.04 });            // dirt kicked up
+    softLimit(b, 0.78); fadeEdges(b, sr, 0.6, 20);
+    return b;
+  },
+
+  // Radiator gone: the bang, the con-rod knocking itself to a stop, coolant
+  // flashing to steam, and the block groaning down the scale.
+  engineBlow(sr, rng, v) {
+    const b = monoBuf(sr, 2.6);
+    const dt = 1 + (v - 0.5) * 0.05;
+    noiseBurst(b, sr, rng, { dur: 0.025, amp: 0.68, type: 'hp', f0: 1600, curve: 46 });
+    noiseBurst(b, sr, rng, { dur: 0.4, amp: 0.55, type: 'lp',
+      f0: 3200, f1: 220, q: 0.8, curve: 7 });
+    tone(b, sr, { dur: 0.34, f0: 190 * dt, f1: 44, amp: 0.68, curve: 6, drive: 0.7 });
+    let t = 0.14, gap = 0.075;
+    for (let i = 0; i < 9; i++) {
+      modalHit(b, sr, rng, {
+        t0: t, freqs: [286 * dt, 640 * dt, 1180 * dt, 2050 * dt],
+        t60s: [0.08, 0.05, 0.033, 0.02], amps: [1, 0.6, 0.34, 0.18],
+        amp: 0.32 * Math.pow(0.86, i), exciteDur: 0.0022, exciteLp: 5200, dur: 0.2,
+      });
+      t += gap; gap *= 1.17;
+    }
+    noiseBurst(b, sr, rng, { t0: 0.18, dur: 1.9, amp: 0.26, type: 'hp',
+      f0: 3400, curve: 1.5, attack: 0.06 });
+    noiseBurst(b, sr, rng, { t0: 0.18, dur: 1.7, amp: 0.13, type: 'bp',
+      f0: 5200, f1: 2600, q: 0.8, curve: 1.7, attack: 0.08 });
+    tone(b, sr, { t0: 0.06, dur: 1.4, f0: 96, f1: 38, amp: 0.14, curve: 2.4,
+      attack: 0.05, wave: 'saw', drive: 0.3, fm: 0.05, fmRate: 9 });
+    softLimit(b, 0.78); fadeEdges(b, sr, 1, 40);
+    return b;
+  },
+
+  // The traverse motor. Retriggered continuously while the turret moves, so
+  // it is short, quiet and enveloped to butt cleanly against itself.
+  turretSlew(sr, rng, v) {
+    const b = monoBuf(sr, 0.3);
+    const f = 320 + v * 26;
+    const parts = [[1, 0.3], [2.01, 0.14], [3.02, 0.07], [5.03, 0.03]];
+    for (let i = 0; i < parts.length; i++) {
+      tone(b, sr, { dur: 0.24, f0: f * parts[i][0], f1: f * parts[i][0] * 1.01,
+        amp: parts[i][1], curve: 1.2, attack: 0.02, fm: 0.01, fmRate: 41 });
+    }
+    noiseBurst(b, sr, rng, { dur: 0.24, amp: 0.12, type: 'bp',
+      f0: 1900, q: 2.4, curve: 1.4, attack: 0.02 });          // ring-gear teeth
+    softLimit(b, 0.85); fadeEdges(b, sr, 6, 25);
+    return b;
+  },
+
+  // A tank brewing up. The `explosion` event already supplies the blast, so
+  // this is the metal: hatches going, plate tearing, ammunition cooking off
+  // for two seconds, and the wreck settling.
+  tankDestroyed(sr, rng, v) {
+    const b = monoBuf(sr, 3.4);
+    const dt = 1 + (v - 0.5) * 0.05;
+    noiseBurst(b, sr, rng, { dur: 0.06, amp: 0.75, type: 'bp',
+      f0: 1400, f1: 420, q: 0.7, curve: 22 });
+    modalHit(b, sr, rng, {
+      freqs: [154 * dt, 341 * dt, 622 * dt, 1080 * dt, 1870 * dt],
+      t60s: [0.9, 0.62, 0.42, 0.26, 0.15], amps: [1, 0.7, 0.45, 0.26, 0.14],
+      amp: 0.7, exciteDur: 0.004, exciteLp: 9000, dur: 1.3,
+    });
+    tone(b, sr, { dur: 0.7, f0: 118 * dt, f1: 33, amp: 0.6, curve: 4.2, drive: 0.8 });
+    scatter(rng, 13, 0.28, 2.5, (t) => {
+      noiseBurst(b, sr, rng, { t0: t, dur: 0.03, amp: 0.1 + rng() * 0.14,
+        type: 'hp', f0: 1800 + rng() * 2200, curve: 34 });
+      tone(b, sr, { t0: t, dur: 0.07, f0: 260 + rng() * 200, f1: 70,
+        amp: 0.09 + rng() * 0.1, curve: 16, drive: 0.4 });
+    });
+    noiseBurst(b, sr, rng, { t0: 0.2, dur: 2.9, amp: 0.18, type: 'lp',
+      f0: 1200, f1: 420, q: 0.7, curve: 1.1, attack: 0.35 });
+    noiseBurst(b, sr, rng, { t0: 0.25, dur: 2.6, amp: 0.085, type: 'bp',
+      f0: 2600, q: 0.8, curve: 1.2, attack: 0.4 });
+    modalHit(b, sr, rng, {
+      t0: 1.35, freqs: [96, 214, 398, 690], t60s: [0.5, 0.34, 0.22, 0.13],
+      amps: [1, 0.6, 0.34, 0.18], amp: 0.32, exciteDur: 0.005, exciteLp: 3600, dur: 0.8,
+    });
+    addTaps(b, sr, [{ t: 0.164, g: 0.26, lp: 1400, hp: 70 },
+                    { t: 0.381, g: 0.15, lp: 900, hp: 65 },
+                    { t: 0.742, g: 0.08, lp: 560, hp: 60 }]);
+    softLimit(b, 0.72); fadeEdges(b, sr, 0.6, 45);
+    return stereoFinish(stereoize(b, sr, rng, 0.9), sr, 0.72, 0.6, 45);
+  },
+
+  // --- narrative stings ----------------------------------------------------
+
+  // Your turn: a rising horn call over a harp figure and a soft timpani lift.
+  turnPlayer(sr, rng) {
+    const b = monoBuf(sr, 1.9);
+    horn(b, sr, 0.0, 0.34, 220, 0.3);            // A3
+    horn(b, sr, 0.26, 0.78, 329.63, 0.34);       // E4
+    const arp = [440, 659.25, 880, 1318.51];
+    for (let i = 0; i < arp.length; i++) {
+      modalHit(b, sr, rng, {
+        t0: 0.3 + i * 0.055, freqs: [arp[i], arp[i] * 2, arp[i] * 3.01],
+        t60s: [0.5, 0.32, 0.2], amps: [1, 0.45, 0.22],
+        amp: 0.15, exciteDur: 0.0012, exciteLp: 7000, dur: 0.7,
+      });
+    }
+    modalHit(b, sr, rng, {
+      freqs: [110, 165, 220], t60s: [0.5, 0.3, 0.2], amps: [1, 0.5, 0.25],
+      amp: 0.3, exciteDur: 0.006, exciteLp: 1200, dur: 0.7,
+    });
+    softLimit(b, 0.8); fadeEdges(b, sr, 2, 40);
+    return stereoFinish(stereoize(b, sr, rng, 0.7), sr, 0.8, 2, 40);
+  },
+
+  // Their turn: the same gesture inverted — low brass falling a minor third
+  // over a dark timpani and a bed of low strings.
+  turnEnemy(sr, rng) {
+    const b = monoBuf(sr, 2.0);
+    horn(b, sr, 0.0, 0.42, 138.59, 0.32);        // C#3
+    horn(b, sr, 0.3, 0.9, 116.54, 0.34);         // A#2
+    modalHit(b, sr, rng, {
+      freqs: [58.27, 87.4, 116.54], t60s: [0.9, 0.5, 0.3], amps: [1, 0.45, 0.22],
+      amp: 0.4, exciteDur: 0.007, exciteLp: 900, dur: 1.2,
+    });
+    noiseBurst(b, sr, rng, { t0: 0.02, dur: 1.1, amp: 0.06, type: 'bp',
+      f0: 300, f1: 180, q: 1.2, curve: 2.4, attack: 0.12 });
+    softLimit(b, 0.8); fadeEdges(b, sr, 2, 45);
+    return stereoFinish(stereoize(b, sr, rng, 0.6), sr, 0.8, 2, 45);
+  },
+
+  // Mission won: two-note pickup into a C major brass chord, timpani, cymbal.
+  victory(sr, rng) {
+    const b = monoBuf(sr, 2.8);
+    horn(b, sr, 0.0, 0.16, 349.23, 0.2);         // F4
+    horn(b, sr, 0.14, 0.2, 392.0, 0.22);         // G4
+    const chord = [[261.63, 0.22], [329.63, 0.19], [392.0, 0.17], [523.25, 0.15]];
+    for (let i = 0; i < chord.length; i++) horn(b, sr, 0.3, 1.35, chord[i][0], chord[i][1]);
+    modalHit(b, sr, rng, {
+      t0: 0.3, freqs: [65.41, 98, 130.81, 196], t60s: [1.0, 0.6, 0.36, 0.2],
+      amps: [1, 0.5, 0.3, 0.15], amp: 0.48, exciteDur: 0.006, exciteLp: 1200, dur: 1.4,
+    });
+    noiseBurst(b, sr, rng, { t0: 0.3, dur: 1.5, amp: 0.12, type: 'hp',
+      f0: 4200, curve: 3.0, attack: 0.012 });
+    noiseBurst(b, sr, rng, { t0: 0.3, dur: 0.6, amp: 0.09, type: 'bp',
+      f0: 7200, q: 0.7, curve: 5, attack: 0.006 });
+    allpassChain(b, sr, [11.3, 19.1, 27.7], 0.42);
+    softLimit(b, 0.75); fadeEdges(b, sr, 2, 60);
+    return stereoFinish(stereoize(b, sr, rng, 0.9), sr, 0.75, 2, 60);
+  },
+
+  // Mission lost: three low brass notes falling away under a funeral bell.
+  defeat(sr, rng) {
+    const b = monoBuf(sr, 3.2);
+    horn(b, sr, 0.0, 1.5, 146.83, 0.24);         // D3
+    horn(b, sr, 0.55, 1.9, 116.54, 0.22);        // A#2
+    horn(b, sr, 1.1, 1.9, 87.31, 0.2);           // F2
+    modalHit(b, sr, rng, {
+      t0: 0.02, freqs: [174.61, 349.2, 523.9, 698.9], t60s: [2.2, 1.4, 0.9, 0.5],
+      amps: [1, 0.4, 0.2, 0.1], amp: 0.24, exciteDur: 0.004, exciteLp: 2600, dur: 2.6,
+    });
+    noiseBurst(b, sr, rng, { dur: 2.2, amp: 0.05, type: 'lp',
+      f0: 420, f1: 160, curve: 1.6, attack: 0.25 });
+    softLimit(b, 0.8); fadeEdges(b, sr, 3, 80);
+    return stereoFinish(stereoize(b, sr, rng, 0.8), sr, 0.8, 3, 80);
+  },
+
+  // A camp changes hands: a short bugle call, the colours snapping in the
+  // wind, and a field drum underneath.
+  capture(sr, rng) {
+    const b = monoBuf(sr, 2.0);
+    horn(b, sr, 0.0, 0.2, 392.0, 0.26);          // G4
+    horn(b, sr, 0.17, 0.24, 523.25, 0.28);       // C5
+    horn(b, sr, 0.38, 0.8, 659.25, 0.3);         // E5
+    for (let i = 0; i < 3; i++) {
+      noiseBurst(b, sr, rng, { t0: 0.5 + i * 0.17, dur: 0.13, amp: 0.15, type: 'bp',
+        f0: 1600 + i * 300, f1: 800, q: 0.9, curve: 12, attack: 0.006, hp: 600 });
+    }
+    modalHit(b, sr, rng, {
+      freqs: [98, 147, 196], t60s: [0.4, 0.25, 0.16], amps: [1, 0.5, 0.25],
+      amp: 0.28, exciteDur: 0.005, exciteLp: 1100, dur: 0.6,
+    });
+    softLimit(b, 0.82); fadeEdges(b, sr, 2, 40);
+    return b;
+  },
+
+  // A soldier is gone for good. One bell, one held cello note, nothing else.
+  unitLost(sr, rng) {
+    const b = monoBuf(sr, 2.6);
+    modalHit(b, sr, rng, {
+      freqs: [110, 219.6, 329, 440.7, 587], t60s: [1.9, 1.25, 0.8, 0.5, 0.3],
+      amps: [1, 0.42, 0.24, 0.13, 0.07], amp: 0.42,
+      exciteDur: 0.005, exciteLp: 2400, dur: 2.4,
+    });
+    horn(b, sr, 0.06, 1.5, 110, 0.14);
+    noiseBurst(b, sr, rng, { dur: 0.02, amp: 0.1, type: 'lp', f0: 1600, f1: 500, curve: 30 });
+    softLimit(b, 0.82); fadeEdges(b, sr, 2, 70);
+    return b;
+  },
+
+  // Medic evac: a rising G-C-E-G bell arpeggio — the one unambiguously
+  // hopeful sound in the bank.
+  rescue(sr, rng) {
+    const b = monoBuf(sr, 1.6);
+    const notes = [392.0, 523.25, 659.25, 783.99];
+    for (let i = 0; i < notes.length; i++) {
+      modalHit(b, sr, rng, {
+        t0: i * 0.085,
+        freqs: [notes[i], notes[i] * 2, notes[i] * 3, notes[i] * 4.01],
+        t60s: [0.75 - i * 0.08, 0.45, 0.28, 0.16], amps: [1, 0.5, 0.26, 0.13],
+        amp: 0.32 - i * 0.03, exciteDur: 0.0015, exciteLp: 6500, dur: 0.95,
+      });
+    }
+    horn(b, sr, 0.34, 0.7, 261.63, 0.1);
+    softLimit(b, 0.85); fadeEdges(b, sr, 1, 40);
+    return b;
   },
 };
 
@@ -1168,6 +1884,145 @@ const GEN = {
 // realistic cyclic rate, so a burst is one voice instead of five.
 GEN.smgBurst = (sr, rng, v) => _burst(sr, rng, v, 'smg', 5 + v, 0.082, 0.55);
 GEN.mgBurst = (sr, rng, v) => _burst(sr, rng, v, 'mg', 6 + v, 0.098, 0.85);
+
+// Mirrored pairs: one design, two readings of it.
+GEN.aimIn = (sr, rng, v) => _aimGesture(sr, rng, v, true);
+GEN.aimOut = (sr, rng, v) => _aimGesture(sr, rng, v, false);
+GEN.tankHit = (sr, rng, v) => _armourHit(sr, rng, v, false);
+GEN.tankHitHeavy = (sr, rng, v) => _armourHit(sr, rng, v, true);
+GEN.reinforceFriendly = (sr, rng) => _reinforce(sr, rng, true);
+GEN.reinforceEnemy = (sr, rng) => _reinforce(sr, rng, false);
+GEN.potentialGood = (sr, rng, v) => _potential(sr, rng, v, true);
+GEN.potentialBad = (sr, rng, v) => _potential(sr, rng, v, false);
+
+/**
+ * A brass note. Additive rather than a filtered saw: a horn's spectrum is a
+ * handful of strong low partials that die back to the fundamental as the note
+ * decays, and stacking `tone()` calls with staggered decay curves reproduces
+ * that far more cheaply — and more controllably — than a filter sweep.
+ * The shared slow vibrato is what keeps a chord of these from sounding like
+ * an organ.
+ */
+export function horn(b, sr, t0, dur, f, amp) {
+  const parts = [1, 0.42, 0.24, 0.12, 0.055];
+  for (let i = 0; i < parts.length; i++) {
+    tone(b, sr, {
+      t0, dur: dur * (1 - i * 0.08), f0: f * (i + 1), amp: amp * parts[i],
+      curve: 2.4 + i * 0.55, attack: 0.03 + i * 0.006, fm: 0.0035, fmRate: 5.4,
+    });
+  }
+}
+
+// Weapon coming up to the shoulder / going back down. Direction is carried by
+// the sweep of the cloth band and by *when* the hardware settles: on the way
+// up the rifle arrives after the movement, on the way down it leaves first.
+function _aimGesture(sr, rng, v, up) {
+  const b = monoBuf(sr, 0.5);
+  const dt = 1 + (v - 0.5) * 0.06;
+  noiseBurst(b, sr, rng, { dur: 0.2, amp: 0.3, type: 'bp',
+    f0: (up ? 1300 : 2600) * dt, f1: (up ? 2900 : 1200) * dt,
+    q: 0.8, curve: 6, attack: 0.03, hp: 700 });
+  const t = up ? 0.15 : 0.02;
+  modalHit(b, sr, rng, {
+    t0: t, freqs: [520 * dt, 1180 * dt, 2060 * dt], t60s: [0.05, 0.032, 0.02],
+    amps: [1, 0.55, 0.28], amp: up ? 0.34 : 0.22,
+    exciteDur: 0.0025, exciteLp: 5000, dur: 0.16,
+  });
+  tone(b, sr, { dur: 0.26, f0: up ? 210 : 300, f1: up ? 300 : 190,
+    amp: 0.06, curve: 5, attack: 0.05 });
+  noiseBurst(b, sr, rng, { t0: 0.02, dur: 0.16, amp: 0.09, type: 'lp',
+    f0: up ? 700 : 1400, f1: up ? 1500 : 600, curve: 8, attack: 0.03 });
+  softLimit(b, 0.85); fadeEdges(b, sr, 1, 12);
+  return b;
+}
+
+// A round on armour plate. The heavy reading is not just louder: the plate is
+// modelled bigger (lower, longer modes), the hull cavity behind it booms, and
+// spall comes off. That difference is what sells 120+ damage.
+function _armourHit(sr, rng, v, heavy) {
+  const b = monoBuf(sr, heavy ? 1.6 : 1.0);
+  const dt = 1 + (v - 0.5) * 0.07;
+  noiseBurst(b, sr, rng, { dur: heavy ? 0.016 : 0.009, amp: heavy ? 0.85 : 0.7,
+    type: 'hp', f0: heavy ? 2600 : 3800, curve: 62 });
+  modalHit(b, sr, rng, {
+    freqs: heavy
+      ? [188 * dt, 402 * dt, 731 * dt, 1284 * dt, 2137 * dt, 3410 * dt]
+      : [268 * dt, 585 * dt, 1042 * dt, 1810 * dt, 2960 * dt],
+    t60s: heavy ? [0.85, 0.6, 0.42, 0.28, 0.17, 0.1] : [0.42, 0.3, 0.2, 0.13, 0.08],
+    amps: [1, 0.7, 0.48, 0.3, 0.18, 0.1],
+    amp: heavy ? 0.78 : 0.6, exciteDur: 0.0022, exciteLp: 11000,
+    dur: heavy ? 1.2 : 0.7,
+  });
+  tone(b, sr, { dur: heavy ? 0.34 : 0.18, f0: (heavy ? 132 : 176) * dt,
+    f1: heavy ? 41 : 62, amp: heavy ? 0.6 : 0.4,
+    curve: heavy ? 7 : 12, drive: 0.5 });
+  scatter(rng, heavy ? 9 : 5, 0.02, heavy ? 0.5 : 0.28, (t) => {
+    noiseBurst(b, sr, rng, { t0: t, dur: 0.014, amp: 0.04 + rng() * 0.055,
+      type: 'hp', f0: 3800 + rng() * 3600, curve: 42 });
+  });
+  if (heavy) addTaps(b, sr, [{ t: 0.061, g: 0.2, lp: 2600 }, { t: 0.129, g: 0.11, lp: 1600 }]);
+  softLimit(b, 0.8); fadeEdges(b, sr, 0.6, 18);
+  return b;
+}
+
+// A wave arriving: an officer's pea whistle (two close tones beating against
+// each other plus a warble), a field-drum roll swelling in, and a downbeat.
+// The enemy reading drops the whistle a fourth and darkens the drum.
+function _reinforce(sr, rng, friendly) {
+  const b = monoBuf(sr, 2.3);
+  const wf = friendly ? 2350 : 1720;
+  const pea = [[1, 0.26], [1.006, 0.22], [2.02, 0.08]];
+  for (let i = 0; i < pea.length; i++) {
+    tone(b, sr, { dur: 0.42, f0: wf * pea[i][0], f1: wf * pea[i][0] * 1.02,
+      amp: pea[i][1], curve: 2.6, attack: 0.02, fm: 0.02, fmRate: 34 });
+  }
+  noiseBurst(b, sr, rng, { dur: 0.42, amp: 0.07, type: 'bp',
+    f0: wf, q: 2.2, curve: 2.6, attack: 0.02 });
+  for (let i = 0; i < 26; i++) {
+    const t = 0.4 + 1.1 * (i / 25);
+    noiseBurst(b, sr, rng, { t0: t, dur: 0.05, amp: 0.045 + 0.085 * (i / 25),
+      type: 'hp', f0: friendly ? 2200 : 1500, curve: 30 });
+  }
+  modalHit(b, sr, rng, {
+    t0: 1.5, freqs: friendly ? [110, 165, 220] : [73.4, 110, 146.8],
+    t60s: [0.5, 0.3, 0.2], amps: [1, 0.5, 0.25], amp: 0.42,
+    exciteDur: 0.006, exciteLp: 1100, dur: 0.7,
+  });
+  noiseBurst(b, sr, rng, { t0: 1.5, dur: 0.16, amp: 0.2, type: 'hp', f0: 1800, curve: 16 });
+  softLimit(b, 0.8); fadeEdges(b, sr, 2, 40);
+  return b;
+}
+
+// A Potential firing. Good: a bright open arpeggio with air above it. Bad: a
+// damped fall of a minor third with the top rolled off.
+function _potential(sr, rng, v, good) {
+  const b = monoBuf(sr, good ? 1.3 : 1.0);
+  const k = 1 + (v - 0.5) * 0.04;
+  if (good) {
+    const arp = [659.25, 987.77, 1318.51];                   // E5 B5 E6
+    for (let i = 0; i < arp.length; i++) {
+      modalHit(b, sr, rng, {
+        t0: i * 0.055, freqs: [arp[i] * k, arp[i] * k * 2, arp[i] * k * 3.01],
+        t60s: [0.6 - i * 0.09, 0.36, 0.22], amps: [1, 0.45, 0.22],
+        amp: 0.32, exciteDur: 0.0012, exciteLp: 8000, dur: 0.8,
+      });
+    }
+    noiseBurst(b, sr, rng, { t0: 0.02, dur: 0.5, amp: 0.045, type: 'hp',
+      f0: 6500, curve: 4.5, attack: 0.03 });
+  } else {
+    const arp = [415.3, 311.13];                             // G#4 -> D#4
+    for (let i = 0; i < arp.length; i++) {
+      modalHit(b, sr, rng, {
+        t0: i * 0.1, freqs: [arp[i] * k, arp[i] * k * 1.99, arp[i] * k * 2.98],
+        t60s: [0.4, 0.26, 0.16], amps: [1, 0.45, 0.2], amp: 0.32,
+        exciteDur: 0.0035, exciteLp: 3200, dur: 0.6,
+      });
+    }
+    tone(b, sr, { t0: 0.1, dur: 0.3, f0: 155.6, f1: 138, amp: 0.16, curve: 7, drive: 0.3 });
+  }
+  softLimit(b, 0.85); fadeEdges(b, sr, 1, 25);
+  return b;
+}
 
 function _burst(sr, rng, v, base, count, period, tail) {
   const single = GEN[base](sr, rng, v);

@@ -9,10 +9,23 @@
 import * as THREE from 'three';
 import { V0, clamp01, easeOutBack, easeOutCubic } from '../core/math.js';
 import { h, clear } from './dom.js';
-import { splat, captureRing } from './icons.js';
+import { splat, captureRing, inkRule, inkGauge } from './icons.js';
+import { deckleClip } from './style.js';
 
 const DMG_POOL = 28;
 const BANNER_POOL = 10;
+// How many Imperial name slips may be on the page at once (nearest win).
+const MAX_FOE_TAGS = 5;
+
+/** Stable 32-bit hash of a string, for per-name deckle seeds. */
+function hashStr(s) {
+  let x = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    x ^= s.charCodeAt(i);
+    x = Math.imul(x, 0x01000193) >>> 0;
+  }
+  return x >>> 0;
+}
 
 // Screen-space ballistics for damage numerals, in px at a 900px-tall reference.
 const DMG_GRAV = 900;
@@ -85,20 +98,43 @@ export class WorldLabels {
   track(unit, { height = 2.05, maxDist = 90, showHp = true } = {}) {
     if (!unit || this.tags.has(unit)) return;
     const foe = (unit.team | 0) === 1;
+    const name = unit.name || (foe ? 'IMPERIAL' : 'SOLDIER');
     const el = h('div', { class: 'vc-wl vc-nametag' + (foe ? ' foe' : '') });
-    const t = h('div', { class: 't', text: unit.name || (foe ? 'IMPERIAL' : 'SOLDIER') });
+
+    // A torn slip of paper with a hand-ruled underline, not a hex-filled box
+    // with a 1px border. The deckle is seeded off the name so every soldier's
+    // slip is torn differently and no two ever line up.
+    const seed = (hashStr(name) ^ 0x51ed) >>> 0;
+    const slip = h('div', { class: 'slip' });
+    slip.style.clipPath = deckleClip(seed, { perSide: 5, amp: 6 });
+    el.appendChild(slip);
+
+    const t = h('div', { class: 't', text: name });
     el.appendChild(t);
-    let fill = null;
+    // the ink rule under the name, drawn
+    const rule = inkRule({
+      w: 120, seed: seed ^ 0x2f, weight: 1.1,
+      color: foe ? '#7a2822' : '#4a3c2c',
+    });
+    rule.classList.add('rule');
+    el.appendChild(rule);
+
+    let gauge = null;
     if (showHp) {
-      const bar = h('div', { class: 'hp vc-bar' });
-      bar.appendChild(h('div', { class: 'vc-bar-bg' }));
-      fill = h('div', { class: 'vc-bar-fill hp' });
-      bar.appendChild(fill);
-      el.appendChild(bar);
+      // A drawn gauge, not a coloured div: at tag size a flat fill reads as a
+      // CSS progress bar hanging in the world.
+      gauge = inkGauge({
+        w: 96, h: 8, seed: seed ^ 0x77, segs: 4, tone: foe ? 'foe' : 'hp',
+      });
+      gauge.classList.add('hp');
+      el.appendChild(gauge);
     }
     el.style.visibility = 'hidden';
     this.layer.appendChild(el);
-    this.tags.set(unit, { el, fill, hpKey: -1, height, maxDist, name: t });
+    this.tags.set(unit, {
+      el, gauge, foe, hpKey: -1, height, maxDist, name: t,
+      w: 0, hgt: 0, lane: 0, depth: 0, x: 0, y: 0, show: false,
+    });
   }
 
   untrack(unit) {
@@ -236,6 +272,106 @@ export class WorldLabels {
     for (const id of Array.from(this.rings.keys())) this.clearCapture(id);
   }
 
+  // ------------------------------------------------------------- tag layout
+
+  /**
+   * Project, declutter and place every name tag.
+   *
+   * A squad seen head-on projects into a wall of overlapping slips, which is
+   * exactly what the frame must not look like. Nearest tag wins its spot; any
+   * tag whose box would collide is lifted a lane at a time, and one that still
+   * cannot find room is dropped rather than drawn on top of its neighbour.
+   * Tags are also culled to the frame proper — the projection's generous
+   * offscreen margin used to leave slips sliced in half by the page edge.
+   */
+  _updateTags() {
+    const out = this._out;
+    const order = this._tagOrder || (this._tagOrder = []);
+    order.length = 0;
+
+    for (const [unit, t] of this.tags) {
+      t.show = false;
+      if (!unit.pos || (unit.alive === false && !unit.downed)) continue;
+      V0.set(unit.pos.x, unit.pos.y + t.height, unit.pos.z);
+      this.project(V0, out);
+      // Imperials get a shorter leash than the squad: a slip on every enemy on
+      // the far bank turns the sky into a wall of paper.
+      const lim = t.foe ? Math.min(t.maxDist, 62) : t.maxDist;
+      if (!out.visible || out.depth > lim) continue;
+      // Measure once; the slip only changes width when the name changes.
+      if (!t.w) { t.w = t.el.offsetWidth || 84; t.hgt = t.el.offsetHeight || 26; }
+      const k = 1 - clamp01((out.depth - t.maxDist * 0.45) / (t.maxDist * 0.55));
+      const sc = 0.72 + 0.28 * k;
+      const halfW = (t.w * sc) / 2;
+      const hgt = t.hgt * sc;
+      // Cull to the frame itself, with just enough slack for the deckled edge.
+      // The slip is anchored by its BOTTOM edge, so it occupies [y - hgt, y].
+      if (out.x < halfW + 12 || out.x > this.w - halfW - 12 ||
+          out.y - hgt < 14 || out.y > this.h - 30) continue;
+      t.x = out.x; t.y = out.y; t.depth = out.depth; t.k = k; t.sc = sc;
+      t.halfW = halfW; t.rowH = hgt;
+      t.show = true;
+      order.push(t);
+    }
+
+    // nearest first — the soldier you care about keeps his place on the page
+    order.sort((a, b) => a.depth - b.depth);
+
+    // Only the nearest handful of Imperials are annotated. Beyond that the page
+    // stops being a map of the fight and becomes a list.
+    let foes = 0;
+    for (let i = 0; i < order.length; i++) {
+      if (!order[i].foe) continue;
+      if (++foes > MAX_FOE_TAGS) { order[i].show = false; order.splice(i--, 1); }
+    }
+
+    const placed = this._placedTags || (this._placedTags = []);
+    placed.length = 0;
+    for (const t of order) {
+      let lane = 0;
+      for (; lane < 3; lane++) {
+        const top = t.y - t.rowH * (lane + 1) - lane * 2;
+        let clash = false;
+        for (const p of placed) {
+          if (Math.abs(p.cx - t.x) > p.halfW + t.halfW + 4) continue;
+          if (Math.abs(p.top - top) < Math.max(p.rowH, t.rowH) * 0.92) { clash = true; break; }
+        }
+        if (!clash) break;
+      }
+      if (lane >= 3) { t.show = false; continue; }
+      // Lifting must never push a slip off the top of the page — better to sit
+      // at lane 0 (or vanish) than to be drawn sliced by the frame edge.
+      while (lane > 0 && t.y - lane * (t.rowH + 2) - t.rowH < 14) lane--;
+      if (t.y - t.rowH < 14) { t.show = false; continue; }
+      t.lane = lane;
+      placed.push({ cx: t.x, halfW: t.halfW, top: t.y - t.rowH * (lane + 1) - lane * 2, rowH: t.rowH });
+    }
+
+    for (const [unit, t] of this.tags) {
+      const el = t.el;
+      if (!t.show) {
+        if (el.style.visibility !== 'hidden') el.style.visibility = 'hidden';
+        continue;
+      }
+      const lift = t.lane * (t.rowH + 2);
+      el.style.visibility = 'visible';
+      el.style.opacity = (0.3 + 0.7 * t.k).toFixed(2);
+      el.style.transform = 'translate(' + t.x.toFixed(1) + 'px,' + (t.y - lift).toFixed(1) +
+        'px) translate(-50%,-100%) scale(' + t.sc.toFixed(3) + ')';
+      // A leader line back down to the soldier, once the slip has been lifted.
+      el.classList.toggle('lifted', t.lane > 0);
+      if (t.lane > 0) el.style.setProperty('--lead', lift.toFixed(1) + 'px');
+      if (t.gauge && unit.maxHp) {
+        const key = Math.round((unit.hp / unit.maxHp) * 100);
+        if (key !== t.hpKey) {
+          t.hpKey = key;
+          t.gauge.set(Math.max(0, key) / 100,
+            key <= 25 ? 'crit' : key <= 55 ? 'warn' : (t.foe ? 'foe' : 'hp'));
+        }
+      }
+    }
+  }
+
   // ---------------------------------------------------------------- update
 
   update(dt) {
@@ -244,36 +380,7 @@ export class WorldLabels {
     const s = this.scale;
     const out = this._out;
 
-    // --- name tags
-    for (const [unit, t] of this.tags) {
-      const el = t.el;
-      if (!unit.pos || (unit.alive === false && !unit.downed)) {
-        if (el.style.visibility !== 'hidden') el.style.visibility = 'hidden';
-        continue;
-      }
-      V0.set(unit.pos.x, unit.pos.y + t.height, unit.pos.z);
-      this.project(V0, out);
-      if (!out.visible || out.depth > t.maxDist) {
-        if (el.style.visibility !== 'hidden') el.style.visibility = 'hidden';
-        continue;
-      }
-      // Distance falloff: tags shrink and fade so a crowd does not become soup.
-      const k = 1 - clamp01((out.depth - t.maxDist * 0.45) / (t.maxDist * 0.55));
-      const sc = 0.72 + 0.28 * k;
-      el.style.visibility = 'visible';
-      el.style.opacity = (0.25 + 0.75 * k).toFixed(2);
-      el.style.transform = 'translate(' + out.x.toFixed(1) + 'px,' + out.y.toFixed(1) +
-        'px) translate(-50%,-100%) scale(' + sc.toFixed(3) + ')';
-      if (t.fill && unit.maxHp) {
-        const key = Math.round((unit.hp / unit.maxHp) * 100);
-        if (key !== t.hpKey) {
-          t.hpKey = key;
-          t.fill.style.width = Math.max(0, key) + '%';
-          t.fill.classList.toggle('warn', key <= 55 && key > 25);
-          t.fill.classList.toggle('crit', key <= 25);
-        }
-      }
-    }
+    this._updateTags();
 
     // --- damage numerals
     for (const d of this.dmg) {
@@ -322,8 +429,13 @@ export class WorldLabels {
     for (const r of this.rings.values()) {
       this.project(r.anchor, out);
       if (!out.visible) { r.el.style.visibility = 'hidden'; continue; }
-      const sc = Math.max(0.45, Math.min(1.5, 22 / Math.max(4, out.depth)));
+      const sc = Math.max(0.62, Math.min(1.5, 26 / Math.max(4, out.depth)));
       r.el.style.visibility = 'visible';
+      // A far ring shrinks its caption into an illegible smudge that reads as a
+      // debug gizmo — drop the caption, and let the ring itself fade back.
+      const small = sc < 0.82;
+      if (r.small !== small) { r.small = small; r.lab.style.display = small ? 'none' : ''; }
+      r.el.style.opacity = clamp01(1.35 - out.depth / 78).toFixed(2);
       r.el.style.transform = 'translate(' + out.x.toFixed(1) + 'px,' + out.y.toFixed(1) +
         'px) translate(-50%,-50%) scale(' + sc.toFixed(3) + ')';
     }

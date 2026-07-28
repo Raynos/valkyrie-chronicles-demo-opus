@@ -233,11 +233,33 @@ export class TankPhysics {
     if (this.dust) this.dust.updateRender();
   }
 
-  /** Write the interpolated pose onto a THREE.Object3D (the tank root). */
-  applyToRoot(root) {
-    root.position.copy(this.renderPos);
-    _e0.set(this.renderPitch, this.renderYaw, this.renderRoll, 'YXZ');
-    root.quaternion.setFromEuler(_e0);
+  /**
+   * Write the interpolated pose onto the tank.
+   *
+   * The pose is deliberately SPLIT. `root` gets only what the game layer also
+   * believes about the vehicle — the ground point and the heading — while the
+   * ride height, heave, pitch and roll go on `chassis`. Unit.syncActor rewrites
+   * root.position/rotation.y from Unit.pos every frame and lands after this, so
+   * anything else stored on root is silently thrown away; putting the ride
+   * height there is what sank the hull into the terrain by a full 0.60 m.
+   *
+   * Composition is exact: root's R_y times chassis's R_x·R_z reproduces the
+   * original YXZ euler.
+   */
+  applyToRoot(root, chassis) {
+    const gy = this._height(this.renderPos.x, this.renderPos.z);
+    root.position.set(this.renderPos.x, gy, this.renderPos.z);
+    root.rotation.set(0, this.renderYaw, 0);
+    if (chassis) {
+      // Suspension EXTENSION, not an absolute height — so it stays valid even
+      // when the game layer, not the simulation, owns where the hull is. Clamped
+      // to the real travel so a stale or un-teleported sim can never leave the
+      // tank hovering or half-buried.
+      const t = this.maxTravel;
+      chassis.position.set(0, clamp(this.renderPos.y - gy, this.rideHeight - t, this.rideHeight + t), 0);
+      _e0.set(this.renderPitch, 0, this.renderRoll, 'YXZ');
+      chassis.quaternion.setFromEuler(_e0);
+    }
   }
 
   // ------------------------------------------------------------ suspension ---

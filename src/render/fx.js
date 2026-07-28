@@ -383,6 +383,7 @@ void main() {
   }
 
   float groundY = aParams.w;
+  float rest = 0.0035 * max(length(vec3(aParams.x, aParams.y, aParams.z)), 1e-4);
   vec3 p = aOrigin.xyz + aVel.xyz * age + vec3(0.0, -4.905 * age * age, 0.0);
 
   // one damped bounce, then it lies still and stops tumbling
@@ -395,15 +396,19 @@ void main() {
     float dt2 = age - tHit;
     float vy2 = -(vy - 9.81 * tHit) * 0.32;
     float yb = groundY + vy2 * dt2 - 4.905 * dt2 * dt2;
-    p.y = max(yb, groundY + 0.0035);
+    p.y = max(yb, groundY + rest);
     p.xz = aOrigin.xz + aVel.xz * (tHit + dt2 * 0.22);
     spin = mix(age, tHit, clamp(dt2 * 3.0, 0.0, 1.0));
   }
 
-  vec3 ax = normalize(vec3(aParams.x, aParams.y, aParams.z) + vec3(1e-4));
-  mat3 R = axisRot(ax, spin * 22.0);
+  // aParams.xyz is the tumble axis whose LENGTH carries the case scale, so a
+  // 77 mm cannon case and a 7.9 mm rifle case share one instanced geometry.
+  vec3 axRaw = vec3(aParams.x, aParams.y, aParams.z);
+  float scl = max(length(axRaw), 1e-4);
+  vec3 ax = axRaw / scl;
+  mat3 R = axisRot(ax, spin * 22.0 / max(scl, 0.35));
 
-  vec3 local = R * position;
+  vec3 local = R * position * scl;
   vec4 mv = modelViewMatrix * vec4(p + local, 1.0);
   gl_Position = projectionMatrix * mv;
   vN = normalize(normalMatrix * (R * normal));
@@ -450,6 +455,36 @@ const MAT_PRESETS = {
   water:    { dust: 0xa8bcc0, sparks: 0, sparkCol: 0xdff0f2, smoke: 0.8 },
   flesh:    { dust: 0x6d2f2c, sparks: 0, sparkCol: 0x8c3a33, smoke: 0.15 },
   default:  { dust: 0x9e9384, sparks: 6, sparkCol: 0xffdca0, smoke: 0.6 },
+};
+
+// --------------------------------------------------------------- weapon look
+//
+// `shot:fired` carries `{ unit, origin, dir, weapon }`, and `weapon` arrives in
+// three different shapes depending on who fired:
+//   * src/game/combat.js  — a WEAPONS record from game/units.js: an object with
+//                           `kind`, `muzzleFlash` (0.7 .. 3.4), `tracer`,
+//                           `backblast`.
+//   * src/physics/ballistics.js — a bare profile NAME ('rifle', 'tankAP', ...).
+//   * src/actors/tank.js  — the ballistics name it was told to fire.
+// `_weaponFx()` normalises all three, so a caller can always just forward the
+// payload's `weapon` straight through.
+const MUZZLE_KIND = {
+  rifle:   { scale: 1.00, gas: 3, sparks: 5,  dirty: 0.00, case: 1.0,  bore: 0.045 },
+  smg:     { scale: 0.85, gas: 2, sparks: 4,  dirty: 0.00, case: 0.85, bore: 0.038 },
+  mg:      { scale: 0.95, gas: 3, sparks: 6,  dirty: 0.05, case: 1.0,  bore: 0.045 },
+  pistol:  { scale: 0.80, gas: 2, sparks: 3,  dirty: 0.00, case: 0.8,  bore: 0.036 },
+  sniper:  { scale: 1.15, gas: 3, sparks: 4,  dirty: 0.05, case: 1.1,  bore: 0.048 },
+  lance:   { scale: 2.20, gas: 6, sparks: 9,  dirty: 0.55, case: 0,    bore: 0.16, backblast: 1 },
+  cannon:  { scale: 3.20, gas: 9, sparks: 14, dirty: 1.00, case: 7.0,  bore: 0.20 },
+  flame:   { scale: 0.55, gas: 5, sparks: 2,  dirty: 0.25, case: 0,    bore: 0.09 },
+  thrown:  { scale: 0,    gas: 0, sparks: 0,  dirty: 0,    case: 0,    bore: 0 },
+  tool:    { scale: 0,    gas: 0, sparks: 0,  dirty: 0,    case: 0,    bore: 0 },
+};
+
+// ballistics profile name -> the kind whose muzzle behaviour it shares
+const WEAPON_ALIAS = {
+  tankAP: 'cannon', tankHE: 'cannon', mortar: 'cannon', coax: 'mg',
+  grenade: 'thrown', throw: 'thrown', toolkit: 'tool',
 };
 
 export class FxSystem {
@@ -608,47 +643,156 @@ export class FxSystem {
 
   _rand(a, b) { return a + this.rng() * (b - a); }
 
+  /**
+   * Normalise whatever `shot:fired.weapon` happens to be into a muzzle profile.
+   * Accepts a WEAPONS record, a ballistics profile name, a bare scale, or null.
+   * @returns {{scale:number, gas:number, sparks:number, dirty:number,
+   *            case:number, bore:number, backblast:number}}
+   */
+  _weaponFx(weapon) {
+    if (weapon == null) return MUZZLE_KIND.rifle;
+    if (typeof weapon === 'number') {
+      return Object.assign({}, MUZZLE_KIND.rifle, { scale: weapon });
+    }
+    if (typeof weapon === 'string') {
+      const key = WEAPON_ALIAS[weapon] || weapon;
+      return MUZZLE_KIND[key] || MUZZLE_KIND.rifle;
+    }
+    const kind = WEAPON_ALIAS[weapon.kind] || weapon.kind ||
+      WEAPON_ALIAS[weapon.weapon] || weapon.weapon;
+    const base = MUZZLE_KIND[kind] || MUZZLE_KIND.rifle;
+    // The weapon tables already publish an authored flash scale — honour it,
+    // including `0`, which is how a thrown grenade or a repair kit says "none".
+    const scale = weapon.muzzleFlash != null ? weapon.muzzleFlash : base.scale;
+    const back = weapon.backblast ? 1 : (base.backblast || 0);
+    // The common case is an authored record that agrees with its kind — return
+    // the shared profile so a burst of automatic fire allocates nothing.
+    if (scale === base.scale && back === (base.backblast || 0)) return base;
+    let cache = this._wfx || (this._wfx = new WeakMap());
+    let hit = cache.get(weapon);
+    if (!hit || hit.scale !== scale || hit.backblast !== back) {
+      hit = Object.assign({}, base, { scale, backblast: back });
+      cache.set(weapon, hit);
+    }
+    return hit;
+  }
+
+  /**
+   * Build an orthonormal frame around a firing direction.
+   * Writes right into `_r0` and up into `_r1`; returns nothing.
+   */
+  _frame(d) {
+    _r0.set(0, 1, 0);
+    if (Math.abs(d.y) > 0.94) _r0.set(1, 0, 0);
+    _r0.crossVectors(d, _r0).normalize();
+    _r1.crossVectors(_r0, d).normalize();
+  }
+
   // ============================================================== public API
 
-  /** Bright cream star at the muzzle plus a lick of propellant smoke. */
-  muzzleFlash(pos, dir) {
+  /**
+   * Bright cream star at the muzzle plus a lick of propellant smoke.
+   *
+   * Designed to be wired straight off the canonical event:
+   *   Bus.on('shot:fired', (p) => fx.muzzleFlash(p.origin, p.dir, p.weapon));
+   *
+   * @param {THREE.Vector3} pos   muzzle point (payload `origin`)
+   * @param {THREE.Vector3} dir   firing direction, need not be normalised
+   * @param {object|string|number} [weapon] payload `weapon`; a WEAPONS record,
+   *   a ballistics profile name, or a bare scale. Scale 0 draws nothing.
+   */
+  muzzleFlash(pos, dir, weapon) {
     if (!this.enabled) return;
+    const W = this._weaponFx(weapon);
+    const s = W.scale;
+    if (!(s > 0)) return;                 // thrown / tool / repair: no muzzle
     const d = _v0.copy(dir || _up).normalize();
+    const bore = W.bore;
 
     const i = this.flashPool.alloc();
     _c0.set(0xfff4d8);
     this._write(this.flashPool, i,
-      pos.x + d.x * 0.06, pos.y + d.y * 0.06, pos.z + d.z * 0.06,
-      d.x * 1.2, d.y * 1.2, d.z * 1.2,
-      this._rand(0.055, 0.085),
-      this._rand(0.26, 0.40), 0, this.rng(), 0,
+      pos.x + d.x * bore, pos.y + d.y * bore, pos.z + d.z * bore,
+      d.x * 1.2 * s, d.y * 1.2 * s, d.z * 1.2 * s,
+      this._rand(0.055, 0.085) * (1 + 0.5 * (s - 1)),
+      this._rand(0.26, 0.40) * s, 0, this.rng(), 0,
       _c0.r, _c0.g, _c0.b, 1);
 
-    // a second, smaller, hotter core so the centre punches through the bloom
+    // A second, smaller, hotter core. It is pure white at 2.6x in the fragment
+    // shader — comfortably over the 0.72 bloom threshold, so the centre always
+    // blows out to cream through the bloom chain instead of reading as a decal.
     const j = this.flashPool.alloc();
     _c0.set(0xffffff);
     this._write(this.flashPool, j,
-      pos.x + d.x * 0.10, pos.y + d.y * 0.10, pos.z + d.z * 0.10,
-      d.x * 2.0, d.y * 2.0, d.z * 2.0,
-      0.05, this._rand(0.10, 0.16), 0, this.rng(), 0,
+      pos.x + d.x * bore * 1.8, pos.y + d.y * bore * 1.8, pos.z + d.z * bore * 1.8,
+      d.x * 2.0 * s, d.y * 2.0 * s, d.z * 2.0 * s,
+      0.05, this._rand(0.10, 0.16) * s, 0, this.rng(), 0,
       _c0.r, _c0.g, _c0.b, 1);
 
     // propellant gas: pale, fast, gone in under a second
     _c0.set(0xd8d2c4);
-    for (let k = 0; k < 3; k++) {
-      const s = this.smokePool.alloc();
-      const sp = 1.6 + this.rng() * 2.4;
-      this._write(this.smokePool, s,
-        pos.x + d.x * 0.12, pos.y + d.y * 0.12, pos.z + d.z * 0.12,
+    const gas = CFG.quality <= 0 ? Math.max(1, W.gas >> 1) : W.gas;
+    for (let k = 0; k < gas; k++) {
+      const g = this.smokePool.alloc();
+      const sp = (1.6 + this.rng() * 2.4) * (0.7 + 0.5 * s);
+      this._write(this.smokePool, g,
+        pos.x + d.x * bore * 2.4, pos.y + d.y * bore * 2.4, pos.z + d.z * bore * 2.4,
         d.x * sp + this._rand(-0.5, 0.5), d.y * sp + this._rand(-0.2, 0.6), d.z * sp + this._rand(-0.5, 0.5),
-        this._rand(0.55, 0.95),
-        0.10, this._rand(0.55, 0.85), this.rng(), this._rand(-2.5, 2.5),
+        this._rand(0.55, 0.95) * (1 + 0.4 * (s - 1)),
+        0.10 * s, this._rand(0.55, 0.85) * s, this.rng(), this._rand(-2.5, 2.5),
         _c0.r, _c0.g, _c0.b, 0.42);
     }
 
+    // A heavy gun kicks a dirty ochre ring sideways off the muzzle brake — the
+    // detail that separates an 88 from a rifle at a glance.
+    if (W.dirty > 0.01 && CFG.quality > 0) {
+      this._frame(d);
+      _c0.set(0x8f7a5c);
+      const ring = Math.round(6 * W.dirty);
+      for (let k = 0; k < ring; k++) {
+        const a = (k / ring) * Math.PI * 2 + this._rand(-0.3, 0.3);
+        const ca = Math.cos(a), sa = Math.sin(a);
+        const sp = this._rand(1.6, 4.2) * s * W.dirty;
+        const g = this.smokePool.alloc();
+        this._write(this.smokePool, g,
+          pos.x + d.x * bore, pos.y + d.y * bore, pos.z + d.z * bore,
+          (_r0.x * ca + _r1.x * sa) * sp + d.x * sp * 0.35,
+          (_r0.y * ca + _r1.y * sa) * sp + d.y * sp * 0.35,
+          (_r0.z * ca + _r1.z * sa) * sp + d.z * sp * 0.35,
+          this._rand(1.1, 2.0),
+          0.12 * s, this._rand(0.6, 1.1) * s, this.rng(), this._rand(-1.4, 1.4),
+          _c0.r, _c0.g, _c0.b, 0.5 * W.dirty + 0.16);
+      }
+    }
+
+    // A lance vents its whole propellant charge out the back. Without this a
+    // fired lance reads as a rifle with a big flash.
+    if (W.backblast) {
+      _v3.copy(d).multiplyScalar(-1);
+      _c0.set(0xcfc6b4);
+      for (let k = 0; k < (CFG.quality <= 0 ? 3 : 6); k++) {
+        const sp = this._rand(3.0, 7.5);
+        const g = this.smokePool.alloc();
+        this._write(this.smokePool, g,
+          pos.x + _v3.x * 0.3, pos.y + _v3.y * 0.3, pos.z + _v3.z * 0.3,
+          _v3.x * sp + this._rand(-0.9, 0.9), _v3.y * sp + this._rand(-0.4, 0.9), _v3.z * sp + this._rand(-0.9, 0.9),
+          this._rand(0.7, 1.3),
+          0.14, this._rand(0.8, 1.5), this.rng(), this._rand(-2, 2),
+          _c0.r, _c0.g, _c0.b, 0.5);
+      }
+      const bf = this.flashPool.alloc();
+      _c0.set(0xffe9bc);
+      this._write(this.flashPool, bf,
+        pos.x + _v3.x * 0.22, pos.y + _v3.y * 0.22, pos.z + _v3.z * 0.22,
+        _v3.x * 1.6, _v3.y * 1.6, _v3.z * 1.6,
+        0.07, this._rand(0.22, 0.34), 0, this.rng(), 0,
+        _c0.r, _c0.g, _c0.b, 0.85);
+    }
+
     // muzzle sparks
-    for (let k = 0; k < 5; k++) {
-      this._spark(pos, d, 5.5, 0xffe3ae, 0.22, 0.9);
+    const sp = CFG.quality <= 0 ? Math.max(2, W.sparks >> 1) : W.sparks;
+    for (let k = 0; k < sp; k++) {
+      this._spark(pos, d, 5.5 * (0.8 + 0.3 * s), 0xffe3ae, 0.22, 0.9);
     }
   }
 
@@ -756,8 +900,10 @@ export class FxSystem {
       this._spark(pos, _v1, this._rand(6, 17), k % 3 === 0 ? 0x4a3b33 : 0xffcf86,
         this._rand(0.4, 1.5), 1.0);
     }
-
-    Bus.emit('sfx', { name: 'explosion', pos });
+    // NOTE: no `sfx` emission here. FxSystem is a *subscriber* of `explosion`,
+    // and the systems that emit `explosion` (physics/explosions.js,
+    // game/combat.js, world/props.js) already emit the matching `sfx`. Emitting
+    // one here too fired every blast twice.
   }
 
   /** A single drifting puff — engine exhaust, cover smoke, dust in the wind. */
@@ -777,27 +923,83 @@ export class FxSystem {
   }
 
   /**
-   * A short warm streak travelling from -> to.
-   * @param {THREE.Vector3} from
-   * @param {THREE.Vector3} to
-   * @param {number} speed metres/second (default 340)
+   * A short warm streak that flies from -> to. Fire-and-forget: the whole
+   * flight is integrated in the vertex shader, so this is called ONCE per shot,
+   * not once per frame. Use it for hitscan weapons, where `to` is the impact
+   * point resolved by combat.js.
+   *
+   * @param {THREE.Vector3} from muzzle point
+   * @param {THREE.Vector3} to   impact point
+   * @param {number|{speed?:number, weapon?:*, color?:number, width?:number,
+   *                 alpha?:number, life?:number}} [opts] a bare number is read
+   *   as `speed` (metres/second, default 340) for backward compatibility.
    */
-  tracer(from, to, speed = 340) {
+  tracer(from, to, opts = 340) {
     if (!this.enabled) return;
+    const o = typeof opts === 'number' ? ((_tracerOpt.speed = opts), _tracerOpt) : opts;
     _v0.copy(to).sub(from);
     const dist = _v0.length();
     if (dist < 1e-3) return;
     _v0.multiplyScalar(1 / dist);
-    const life = Math.max(0.02, dist / speed);
+
+    const W = o.weapon !== undefined ? this._weaponFx(o.weapon) : null;
+    const heft = W ? Math.max(0.7, Math.min(2.4, W.scale)) : 1;
+    const speed = o.speed || 340;
+    const life = o.life || Math.max(0.02, dist / speed);
 
     const i = this.streakPool.alloc();
-    _c0.set(0xffd89a);
+    _c0.set(o.color !== undefined ? o.color : 0xffd89a);
     this._write(this.streakPool, i,
       from.x, from.y, from.z,
       _v0.x * speed, _v0.y * speed, _v0.z * speed,
       life,
-      Math.min(3.2, dist * 0.35), 0.035, this.rng(), 0,   // length, half-width, seed, gravity scale
-      _c0.r, _c0.g, _c0.b, 1);
+      // length, half-width, seed, gravity scale
+      Math.min(3.2 * heft, dist * 0.35), (o.width !== undefined ? o.width : 0.035) * heft,
+      this.rng(), 0,
+      _c0.r, _c0.g, _c0.b, o.alpha !== undefined ? o.alpha : 1);
+  }
+
+  /**
+   * One frame's worth of an in-flight projectile's trail.
+   *
+   * A ballistic round follows a drag + gravity curve, so the single straight
+   * `tracer()` streak cannot represent a lance or a mortar honestly. Call this
+   * once per frame per live projectile, passing the segment it covered this
+   * frame — consecutive stamps tile head-to-tail into a continuous dash that
+   * follows the true path:
+   *
+   *   for (const p of ballistics.projectiles) {
+   *     if (p.tracer > 0) fx.tracerSegment(p.prev, p.renderPos, dt,
+   *                                        { weapon: p.weapon, alpha: p.tracer });
+   *   }
+   *
+   * @param {THREE.Vector3} from segment start (projectile.prev)
+   * @param {THREE.Vector3} to   segment end   (projectile.renderPos)
+   * @param {number} dt          seconds the segment covered
+   * @param {object} [opts] { weapon, color, width, alpha, length }
+   */
+  tracerSegment(from, to, dt, opts = {}) {
+    if (!this.enabled) return;
+    const life = Math.max(1 / 240, dt || 1 / 60);
+    _v0.copy(to).sub(from);
+    const seg = _v0.length();
+    if (seg < 1e-4) return;
+    const inv = 1 / life;
+
+    const W = opts.weapon !== undefined ? this._weaponFx(opts.weapon) : null;
+    const heft = W ? Math.max(0.7, Math.min(2.4, W.scale)) : 1;
+
+    const i = this.streakPool.alloc();
+    _c0.set(opts.color !== undefined ? opts.color : 0xffd89a);
+    this._write(this.streakPool, i,
+      from.x, from.y, from.z,
+      _v0.x * inv, _v0.y * inv, _v0.z * inv,
+      // Outlive the frame slightly so the dashes overlap rather than strobe.
+      life * 1.35,
+      opts.length !== undefined ? opts.length : Math.min(3.2 * heft, seg * 1.15),
+      (opts.width !== undefined ? opts.width : 0.032) * heft,
+      this.rng(), 0,
+      _c0.r, _c0.g, _c0.b, opts.alpha !== undefined ? opts.alpha : 1);
   }
 
   /** Boots, landing, a tank track biting — low brown dust close to the ground. */
@@ -842,36 +1044,70 @@ export class FxSystem {
 
   /**
    * Ejected brass. Tumbles, bounces once, settles.
-   * @param {THREE.Vector3} pos
-   * @param {THREE.Vector3} vel
-   * @param {number} [groundY] world Y the case will land on
+   *
+   * Takes the FIRING direction rather than an ejection velocity, because that
+   * is what a `shot:fired {unit, origin, dir, weapon}` payload actually carries;
+   * the case is thrown up and to the shooter's right off that frame:
+   *
+   *   Bus.on('shot:fired', (p) => fx.shellCasing(p.origin, p.dir, {
+   *     weapon: p.weapon, groundY: world.terrain.heightAt(p.origin.x, p.origin.z),
+   *   }));
+   *
+   * @param {THREE.Vector3} pos   ejection point (the muzzle point is close enough)
+   * @param {THREE.Vector3} dir   firing direction
+   * @param {object|number} [opts] `{ weapon, groundY, scale, vel }`, or a bare
+   *   number read as `groundY`. `vel` overrides the derived ejection velocity.
    */
-  shellCasing(pos, vel, groundY) {
+  shellCasing(pos, dir, opts) {
     if (!this.enabled) return;
+    const o = typeof opts === 'number' ? ((_caseOpt.groundY = opts), _caseOpt)
+      : (opts || _caseOptEmpty);
+    const W = o.weapon !== undefined ? this._weaponFx(o.weapon) : MUZZLE_KIND.rifle;
+    const scale = o.scale !== undefined ? o.scale : W.case;
+    if (!(scale > 0)) return;             // lances and thrown weapons eject nothing
+
+    const d = _v0.copy(dir || _forward).normalize();
+    this._frame(d);                       // _r0 = right, _r1 = up
+
+    // Brass leaves up and to the right, with a little forward carry. Heavier
+    // cases leave slower relative to their size, so a cannon case tips out
+    // rather than flicking away.
+    const k = 1 / Math.sqrt(Math.max(1, scale));
+    _v2.set(0, 0, 0)
+      .addScaledVector(_r0, this._rand(1.9, 2.9) * k)
+      .addScaledVector(_r1, this._rand(1.3, 2.1) * k)
+      .addScaledVector(d, this._rand(-0.15, 0.45) * k);
+    const v = o.vel || _v2;
+
     const i = this.casingPool.alloc();
-    const v = vel || _v1.set(1.6, 1.8, 0);
     _c0.set(0xc79a4e);
-    const gy = groundY !== undefined ? groundY : pos.y - 1.35;
+    const gy = o.groundY !== undefined ? o.groundY : pos.y - 1.35;
+    // aParams.xyz is a tumble axis whose LENGTH the shader reads as the case
+    // scale, so it must be a unit vector times `scale` — never a raw random.
+    _v1.set(this._rand(-1, 1), this._rand(-1, 1), this._rand(-1, 1));
+    if (_v1.lengthSq() < 1e-6) _v1.set(0, 1, 0);
+    _v1.normalize().multiplyScalar(scale);
     this._write(this.casingPool, i,
-      pos.x, pos.y, pos.z,
-      v.x + this._rand(-0.3, 0.3), v.y + this._rand(-0.15, 0.35), v.z + this._rand(-0.3, 0.3),
+      pos.x + _r0.x * 0.06, pos.y + _r0.y * 0.06, pos.z + _r0.z * 0.06,
+      v.x, v.y, v.z,
       this._rand(3.5, 5.5),
-      this._rand(-1, 1), this._rand(-1, 1), this._rand(-1, 1), gy,
+      _v1.x, _v1.y, _v1.z, gy,
       _c0.r, _c0.g, _c0.b, 1);
   }
 
   // ------------------------------------------------------------------ spark
+  // Uses its own scratch vectors: callers routinely pass `_v0`/`_v1` in as
+  // `dir`, so this must never write through the vector it was handed.
   _spark(pos, dir, speed, color, life, gravityScale, width) {
     const i = this.streakPool.alloc();
-    _v1.copy(dir)
-      .addScalar(0)
-      .add(_v2.set(this._rand(-0.55, 0.55), this._rand(-0.35, 0.55), this._rand(-0.55, 0.55)))
-      .normalize()
-      .multiplyScalar(speed * this._rand(0.45, 1.25));
+    _s0.set(this._rand(-0.55, 0.55), this._rand(-0.35, 0.55), this._rand(-0.55, 0.55))
+      .add(dir);
+    if (_s0.lengthSq() < 1e-8) _s0.copy(_up);
+    _s0.normalize().multiplyScalar(speed * this._rand(0.45, 1.25));
     _c0.set(color);
     this._write(this.streakPool, i,
       pos.x, pos.y, pos.z,
-      _v1.x, _v1.y, _v1.z,
+      _s0.x, _s0.y, _s0.z,
       life * this._rand(0.7, 1.4),
       0.6, width !== undefined ? width : 0.016, this.rng(), gravityScale,
       _c0.r, _c0.g, _c0.b, 1);
@@ -910,7 +1146,17 @@ export class FxSystem {
 const _v0 = new THREE.Vector3();
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
+const _v3 = new THREE.Vector3();
+const _r0 = new THREE.Vector3();   // frame right
+const _r1 = new THREE.Vector3();   // frame up
+const _s0 = new THREE.Vector3();   // _spark only — never aliased by a caller
 const _up = new THREE.Vector3(0, 1, 0);
+const _forward = new THREE.Vector3(0, 0, -1);
 const _c0 = new THREE.Color();
+
+// Reusable option records so the number-shorthand overloads allocate nothing.
+const _tracerOpt = { speed: 340 };
+const _caseOpt = { groundY: 0 };
+const _caseOptEmpty = {};
 
 export default FxSystem;

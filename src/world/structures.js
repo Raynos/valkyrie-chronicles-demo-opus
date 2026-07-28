@@ -743,9 +743,24 @@ export class Structures {
     this._commit();
   }
 
-  /** Push a built unit into the world at (x, z) with a yaw. */
+  /**
+   * Push a built unit into the world at (x, z) with a yaw.
+   *
+   * A building is NOT placed at the ground height of its centre point. On any
+   * slope that leaves the downhill corners hanging in the air, which is how a
+   * farmhouse ends up standing on stilts with daylight under it. Instead the
+   * whole footprint is sampled and the building is TERRACED: the finished floor
+   * sits about two thirds of the way up the fall, so the uphill side is cut
+   * into the bank and only the downhill side needs a foundation course — which
+   * is added, running well below the lowest corner. That is how a rubble-stone
+   * farmhouse actually deals with a slope, and it keeps the exposed footing to
+   * a course or two instead of a storey-high blank plinth.
+   */
   _place(built, x, z, yaw, yOffset = 0) {
-    const y = this.terrain.heightAt(x, z) + yOffset;
+    const fp = this._footprintY(x, z, yaw, built.w, built.d);
+    const cut = fp ? fp.drop * 0.36 : 0;               // how far into the bank
+    const y = (fp ? fp.hi - cut : this.terrain.heightAt(x, z)) + yOffset;
+    if (fp && fp.drop > 0.05) this._addFooting(built, fp.drop - cut, yOffset);
     const co = Math.cos(yaw), si = Math.sin(yaw);
     for (const k of BINS) {
       for (const g of built.bins[k]) {
@@ -765,6 +780,53 @@ export class Structures {
       ));
     }
     return { x, y, z, yaw };
+  }
+
+  /**
+   * Ground statistics over a rotated rectangular footprint.
+   * @returns {{hi:number, lo:number, drop:number}|null} null if the unit has no
+   *   declared footprint (wells, carts, hay bales — they sit on a point).
+   */
+  _footprintY(x, z, yaw, w, d) {
+    if (!(w > 0) || !(d > 0)) return null;
+    const co = Math.cos(yaw), si = Math.sin(yaw);
+    const hw = w * 0.5 + 0.3, hd = d * 0.5 + 0.3;
+    let hi = -Infinity, lo = Infinity;
+    const S = 4;
+    for (let j = 0; j <= S; j++) {
+      const lz = -hd + (2 * hd * j) / S;
+      for (let i = 0; i <= S; i++) {
+        const lx = -hw + (2 * hw * i) / S;
+        const h = this.terrain.heightAt(x + lx * co + lz * si, z - lx * si + lz * co);
+        if (h > hi) hi = h;
+        if (h < lo) lo = h;
+      }
+    }
+    return { hi, lo, drop: hi - lo };
+  }
+
+  /**
+   * A rubble-stone footing course that fills the wedge between the finished
+   * floor and the fall of the ground. Emitted into the unit's own bins so it is
+   * rotated and translated with the rest of the building.
+   */
+  _addFooting(built, drop, yOffset) {
+    const w = built.w + 0.5, d = built.d + 0.5;
+    // Top laps over the plinth; the bottom is measured in the unit's OWN frame,
+    // whose origin lands at (highest corner + yOffset), and pushed a further
+    // 0.7 m under the lowest corner so the course is buried rather than resting
+    // on the grass.
+    const top = 0.34;
+    const bottom = -(drop + yOffset + 0.70);
+    const h = top - bottom;
+    const g = box(w, h, d, PALETTE.stone, { y: bottom + h * 0.5, variation: 0.11 });
+    built.bins.stone.push(g);
+    // a chamfered second course, so the base reads as coursed masonry rather
+    // than as one extruded slab
+    if (drop > 0.55) {
+      built.bins.stone.push(box(w + 0.34, Math.min(0.42, h * 0.45), d + 0.34,
+        PALETTE.stoneWarm, { y: bottom + Math.min(0.42, h * 0.45) * 0.5, variation: 0.13 }));
+    }
   }
 
   // -----------------------------------------------------------------------

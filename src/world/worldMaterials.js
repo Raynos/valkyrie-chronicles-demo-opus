@@ -25,14 +25,18 @@ import { paperTexture } from './textures.js';
 // ---------------------------------------------------------------------------
 
 export const PALETTE = {
-  // ground
-  grass: 0x7d8a55,
-  grassDry: 0x9aa065,
-  grassDark: 0x5f6f47,
-  dirt: 0xa78b5c,
-  dirtDark: 0x8a6f47,
-  mud: 0x6f5e46,
-  rock: 0x938c94,
+  // ground — Gallia is green. These are the pigments BEFORE the NPR lit
+  // transform, which rotates ~26% toward straw and lifts value by 1.42; a
+  // khaki albedo comes out of that as desert sand, so the pasture greens are
+  // authored deliberately deeper and more saturated than they should look.
+  grass: 0x5e7440,
+  grassDry: 0x8d8d56,
+  grassDark: 0x3f5433,
+  grassLush: 0x4c6b3c,
+  dirt: 0x967c4e,
+  dirtDark: 0x715a37,
+  mud: 0x5b5140,
+  rock: 0x8f8b8e,
   sand: 0xc2ad83,
   // architecture
   stucco: 0xd6cab0,
@@ -55,26 +59,33 @@ export const PALETTE = {
   rust: 0x8d5a3c,
   crate: 0x9a7c4e,
   // vegetation
-  leafOak: 0x6d7c48,
-  leafPoplar: 0x7b8a4f,
-  leafWillow: 0x869053,
-  wheat: 0xc4a860,
-  wheatDark: 0xa08744,
-  reed: 0x8d9159,
-  bark: 0x6b5741,
-  barkPale: 0x8b7a63,
-  flowerA: 0xd9c25f,
-  flowerB: 0xc9736f,
-  flowerC: 0xd8d2c2,
+  leafOak: 0x53692f,
+  leafPoplar: 0x62793a,
+  leafWillow: 0x738345,
+  leafDark: 0x38492a,
+  wheat: 0xb9a565,
+  wheatDark: 0x8f7c48,
+  reed: 0x7d8a4a,
+  bark: 0x7a6349,
+  barkPale: 0x9a8a6f,
+  flowerA: 0xd6c268,
+  flowerB: 0xc4736c,
+  flowerC: 0xcfcbb6,
   // atmosphere
   shadowViolet: 0x4a3f52,
   darkest: 0x3a2f33,
   cream: 0xf3e8cf,
-  skyHorizon: 0xb9c4bd,
-  skyZenith: 0x8aa2ab,
-  skyGold: 0xe4d3a8,
-  water: 0x5e7a78,
-  waterDeep: 0x40575c,
+  // The sky must sit tonally BELOW the terrain's cream highlights or the whole
+  // upper half of the frame clips to white through the bloom and the grade.
+  skyHorizon: 0xa9b2a4,
+  skyZenith: 0x5f8098,
+  skyGold: 0xd9c599,
+  haze: 0xb0b6a8,
+  // The post grade lifts dark values toward a warm ink floor, which desaturates
+  // anything that sits deep in the toe — a "correct" dark teal river comes out
+  // of it as wet tarmac. These are authored light and saturated on purpose.
+  water: 0x5d8574,
+  waterDeep: 0x466c67,
   foam: 0xe8e4d6,
 };
 
@@ -406,15 +417,24 @@ export function makeSurfaceMaterial(opts = {}) {
 }
 
 /**
- * Terrain. The geometry's `color` attribute is a vec4 SPLAT
- * (r grass, g dirt, b rock, a mud) because that is the channel layout
- * src/render/materials.js reads under VC_SPLAT_VCOL; `aAlbedo` carries the
- * fully-baked colour for the fallback path.
+ * Terrain.
+ *
+ * The geometry's `color` attribute carries the terrain generator's fully baked
+ * per-vertex ALBEDO — the four-way material mix, field patchwork, shell
+ * scorching and horizon AO, all in one linear colour. That is the mode
+ * src/render/materials.js calls VC_VCOL_ALBEDO: it trusts the attribute for hue
+ * and keeps only the *modulation* its procedural layers produce, which is what
+ * gives the ground close-range tooth without letting a procedural slope/noise
+ * guess repaint a hand-authored valley.
+ *
+ * (The alternative, VC_SPLAT_VCOL, hands the shader the raw weights and throws
+ * the baked colour away — which is why the ground used to read as one uniform
+ * ochre wash regardless of what the generator had painted.)
  */
 export function makeTerrainSurfaceMaterial(opts = {}) {
   const m =
     tryRender(Mats.makeTerrainMaterial, {
-      splatFromVertexColor: true,
+      splatFromVertexColor: false,
       vertexColors: true,
       grass: opts.grass ?? PALETTE.grass,
       dirt: opts.dirt ?? PALETTE.dirt,
@@ -424,7 +444,12 @@ export function makeTerrainSurfaceMaterial(opts = {}) {
       // waterline too so shorelines agree even if the splat is ignored.
       mudLevel: opts.mudLevel ?? 3.1,
       mudFade: 1.6,
-      rockSlope: 0.42,
+      rockSlope: 0.40,
+      // ~1.0 m detail tile so the ground has real tooth at walking distance,
+      // over a ~36 m macro octave that breaks up the tiling from the air.
+      detailScale: 0.95,
+      detailScale2: 0.028,
+      macroScale: 0.021,
       hatch: opts.hatch ?? 0.85,
       bands: CFG.render.bands,
       outline: false,
@@ -432,8 +457,7 @@ export function makeTerrainSurfaceMaterial(opts = {}) {
     }, ['vertexColors']) ||
     makeFallbackSurface({
       color: 0xffffff,
-      vertexColors: false,
-      albedoAttr: true,
+      vertexColors: true,
       hatch: opts.hatch ?? 0.5,
       rim: 0.12,
       bands: (CFG.render.bands ?? 4) + 1,

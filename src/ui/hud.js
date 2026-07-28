@@ -23,12 +23,14 @@ import { Bus } from '../core/bus.js';
 import { CFG } from '../core/config.js';
 import { Input } from '../core/input.js';
 import { V0, V1, clamp, clamp01, damp, lerp, shortestAngle } from '../core/math.js';
-import { injectStyles, disposeStyles } from './style.js';
+import { injectStyles, disposeStyles, deckleClip } from './style.js';
 import { h, clear, panel, clickable, label, replay, pad } from './dom.js';
 import {
   icon, ribbon, cpToken, classBadge, bookmark, cornerFlourish, frameRule,
-  aimBrackets, crosshair, accuracyRing, bodyFigure, ammoPip, meterTicks, terrainSketch,
-  wobblyPath, hatchPath,
+  aimBrackets, crosshair, accuracyRing, bodyFigure, ammoPip, terrainSketch,
+  wobblyPath, hatchPath, splatPath, roughRect, inkRule, compassRose, mapScaleBar,
+  unitBlip, keyCap, inkGauge, marchLine, rankChevrons, marginBracket, contourMap,
+  dialGauge,
 } from './icons.js';
 import { portraitFor } from './portraits.js';
 import { WorldLabels } from './worldLabels.js';
@@ -66,6 +68,45 @@ const OBJ_TYPE = {
   turnLimit: 'survive', escort: 'escort', survive: 'survive',
 };
 
+const OBJ_ICON = {
+  capture: 'flag', defend: 'shield', kill: 'swords', escort: 'boot', survive: 'clock',
+};
+
+/** 'take-camp' -> 'Take camp'. Last-ditch label when a mission omits one. */
+function prettyId(id) {
+  if (!id) return '';
+  const s = String(id).replace(/[-_]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim();
+  return s ? s[0].toUpperCase() + s.slice(1) : '';
+}
+
+/**
+ * Objectives arrive in two dialects: the HUD's own `{type, text, sub}` and the
+ * mission's `{id, type, label, win, fail, done}` (see src/game/mission.js).
+ * Normalise in ONE place so every entry point agrees — previously only
+ * `_adoptMission` normalised, so a HUD constructed straight off `mission`
+ * rendered a column of pins with no text beside them.
+ */
+function normObjectives(list) {
+  if (!Array.isArray(list) || !list.length) return null;
+  const out = list.map((o) => {
+    const type = OBJ_TYPE[o.type] || (OBJ_ICON[o.type] ? o.type : 'capture');
+    return {
+      type,
+      text: o.text || o.label || o.name || prettyId(o.id),
+      sub: o.sub != null ? !!o.sub : (o.fail === true || o.win === false),
+      done: !!o.done,
+    };
+  }).filter((o) => o.text);
+  if (!out.length) return null;
+  // Win conditions first, failure conditions beneath them as fine print.
+  out.sort((a, b) => (a.sub === b.sub ? 0 : a.sub ? 1 : -1));
+  return out.slice(0, 5);
+}
+
+// Degrees of tick tape generated for the compass: three revolutions, so the
+// +-60 degree window is always fully populated whatever the heading.
+const TAPE_DEG = 1080;
+
 const LEGENDS = {
   command: [
     ['Drag', 'Pan Map'], ['Wheel', 'Zoom'], ['LMB', 'Select Unit'],
@@ -100,7 +141,10 @@ export class HUD {
 
     injectStyles();
     this.host = opts.container || document.getElementById('hud') || document.body;
-    this.root = h('div', { class: 'vc-root' });
+    // Under the capture harness the entrance choreography is switched off: the
+    // harness freezes animation at an arbitrary frame, and a roster rebuilt one
+    // frame late was being photographed half dealt.
+    this.root = h('div', { class: 'vc-root' + (CFG.capture ? ' vc-still' : '') });
     this.host.appendChild(this.root);
 
     // ---- persistent state -------------------------------------------------
@@ -119,7 +163,7 @@ export class HUD {
     this.apShown = 0;
     this.markers = [];
     this.orders = DEFAULT_ORDERS;
-    this.objectives = this.mission.objectives || [
+    this.objectives = normObjectives(this.mission.objectives) || [
       { type: 'capture', text: 'Seize the Imperial base camp.' },
       { type: 'defend', text: 'Hold the bridge until relief arrives.', sub: true },
     ];
@@ -246,9 +290,21 @@ export class HUD {
     mt.appendChild(this.mapScaleEl);
     mP.content.appendChild(mt);
     this.mapIn = h('div', { class: 'vc-map-in' });
-    this.mapIn.appendChild(terrainSketch({ w: 400, h: 300, seed: CFG.seed || 1234 }));
+    this.mapSheet = h('div', { class: 'vc-map-sheet' });
+    this.mapSheet.appendChild(terrainSketch({ w: 400, h: 300, seed: CFG.seed || 1234 }));
+    this.mapIn.appendChild(this.mapSheet);
     this.mapBlips = h('div', { class: 'vc-map-blips' });
     this.mapIn.appendChild(this.mapBlips);
+    // North rose: the survey is drawn north-up and north is -Z (layout.js).
+    // Without the arrow the reader has no way to know which way the page faces.
+    const rose = h('div', { class: 'vc-map-rose' });
+    rose.appendChild(compassRose({ size: 46 }));
+    this.mapIn.appendChild(rose);
+    const bar = h('div', { class: 'vc-map-bar' });
+    bar.appendChild(mapScaleBar({ w: 74 }));
+    this.mapBarLabel = h('span', { text: Math.round(this.mapExtent / 4) + ' m' });
+    bar.appendChild(this.mapBarLabel);
+    this.mapIn.appendChild(bar);
     mP.content.appendChild(this.mapIn);
     L.appendChild(mP.root);
 
@@ -267,10 +323,17 @@ export class HUD {
 
   _renderObjectives() {
     clear(this.objList);
-    const ICONS = { capture: 'flag', defend: 'shield', kill: 'swords', escort: 'boot', survive: 'clock' };
+    let firstSub = true;
     for (const o of this.objectives) {
+      // A hand-ruled divider separates "win" from "do not lose".
+      if (o.sub && firstSub) {
+        firstSub = false;
+        if (this.objList.childElementCount) {
+          this.objList.appendChild(inkRule({ w: 260, seed: 651, weight: 0.9 }));
+        }
+      }
       const row = h('div', { class: 'vc-obj-row' + (o.sub ? ' sub' : '') });
-      row.appendChild(icon(ICONS[o.type] || 'pin', { size: 17, width: 1.6 }));
+      row.appendChild(icon(OBJ_ICON[o.type] || 'pin', { size: 17, width: 1.6 }));
       row.appendChild(h('div', { class: o.done ? 'vc-obj-done' : '', text: o.text }));
       this.objList.appendChild(row);
     }
@@ -285,18 +348,34 @@ export class HUD {
       p.root.style.animationDelay = (i * 0.055).toFixed(3) + 's';
       const in_ = h('div', { class: 'vc-card-in' });
 
-      // illustrated art plate: wash + hatching + the order's emblem
+      // Illustrated art plate. A flat `<rect fill>` reads as a hex-filled
+      // rectangle (rubric axis 11), so the ground is a laid gouache wash: a
+      // warm-to-cool gradient, an irregular blotted pool of pigment, hatching
+      // pooled at the foot, and a hand-ruled border that overshoots its corners.
       const art = h('div', { class: 'vc-card-art' });
+      const gid = 'vc-cardwash-' + i;
       art.innerHTML =
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60" preserveAspectRatio="none">' +
-        '<rect width="100" height="60" fill="#8a7a52" fill-opacity="0.16"/>' +
-        '<path d="' + hatchPath(0, 30, 100, 30, { spacing: 4, angle: -0.85, seed: 300 + i * 7 }) +
-        '" stroke="#5d4d3b" stroke-width="0.5" opacity="0.28" fill="none"/>' +
-        '<path d="' + wobblyPath(2, 2, 98, 2, { seed: 400 + i, amp: 0.7, segs: 8 }) + ' ' +
-        wobblyPath(98, 2, 98, 58, { seed: 410 + i, amp: 0.7, segs: 6 }) + ' ' +
-        wobblyPath(98, 58, 2, 58, { seed: 420 + i, amp: 0.7, segs: 8 }) + ' ' +
-        wobblyPath(2, 58, 2, 2, { seed: 430 + i, amp: 0.7, segs: 6 }) +
-        '" fill="none" stroke="#4a3c2c" stroke-width="1" opacity="0.7"/></svg>';
+        '<defs><linearGradient id="' + gid + '" x1="0.1" y1="0" x2="0.75" y2="1">' +
+        '<stop offset="0" stop-color="#cbb98d" stop-opacity="0.30"/>' +
+        '<stop offset="0.55" stop-color="#a9a075" stop-opacity="0.22"/>' +
+        '<stop offset="1" stop-color="#7f7f78" stop-opacity="0.30"/></linearGradient></defs>' +
+        '<rect width="100" height="60" fill="url(#' + gid + ')"/>' +
+        // pigment pooled where the brush sat longest
+        '<path d="' + splatPath(62, 40, 30, { seed: 260 + i * 11, lobes: 12, rough: 0.30 }) +
+        '" fill="#6f6a4e" opacity="0.13"/>' +
+        '<path d="' + splatPath(30, 20, 22, { seed: 280 + i * 13, lobes: 11, rough: 0.36 }) +
+        '" fill="#c8b485" opacity="0.20"/>' +
+        // hatching only in the lower band, the way a shadow is laid in
+        '<path d="' + hatchPath(0, 34, 100, 26, { spacing: 3.6, angle: -0.85, seed: 300 + i * 7 }) +
+        '" stroke="#5d4d3b" stroke-width="0.5" opacity="0.26" fill="none"/>' +
+        '<path d="' + hatchPath(0, 46, 100, 14, { spacing: 3.2, angle: 0.72, seed: 340 + i * 7 }) +
+        '" stroke="#4a3c2c" stroke-width="0.4" opacity="0.16" fill="none"/>' +
+        '<path d="' + wobblyPath(2, 2, 98, 2, { seed: 400 + i, amp: 0.7, segs: 8, overshoot: 1.4 }) + ' ' +
+        wobblyPath(98, 2, 98, 58, { seed: 410 + i, amp: 0.7, segs: 6, overshoot: 1.4 }) + ' ' +
+        wobblyPath(98, 58, 2, 58, { seed: 420 + i, amp: 0.7, segs: 8, overshoot: 1.4 }) + ' ' +
+        wobblyPath(2, 58, 2, 2, { seed: 430 + i, amp: 0.7, segs: 6, overshoot: 1.4 }) +
+        '" fill="none" stroke="#4a3c2c" stroke-width="1" opacity="0.72" stroke-linecap="round"/></svg>';
       const emblem = icon(o.icon || ORDER_ICON[o.id] || 'star', { size: 34, width: 1.5, rough: true });
       emblem.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#4a3c2c';
       art.appendChild(emblem);
@@ -349,8 +428,11 @@ export class HUD {
     const L = h('div', { class: 'vc-layer vc-act vc-hidden' });
     this.actLayer = L;
 
-    // name plate + class badge
-    const np = h('div', { class: 'vc-name' });
+    // Name plate + class badge, on its own torn slip of paper. Set naked over
+    // the frame the serif ink had no ground to sit on and the class line was
+    // unreadable against dark terrain.
+    const npP = panel({ seed: 823, cls: 'vc-name', tilt: 0.5, soft: true });
+    const np = h('div', { class: 'vc-name-in' });
     this.badgeEl = h('div', { class: 'vc-badge' });
     np.appendChild(this.badgeEl);
     const nt = h('div', { class: 'vc-name-t' });
@@ -359,7 +441,8 @@ export class HUD {
     this.unitClsEl = label('Scout');
     nt.appendChild(this.unitClsEl);
     np.appendChild(nt);
-    L.appendChild(np);
+    npP.content.appendChild(np);
+    L.appendChild(npP.root);
 
     // AP meter
     const apP = panel({ seed: 821, cls: 'vc-ap', tilt: 0.25 });
@@ -370,16 +453,17 @@ export class HUD {
     head.appendChild(this.apNum);
     this.apMaxEl = h('span', { class: 'vc-label', text: '/ 0' });
     head.appendChild(this.apMaxEl);
+    this.apRangeEl = h('span', { class: 'vc-label vc-ap-range', text: '' });
+    head.appendChild(this.apRangeEl);
     apP.content.appendChild(head);
-    const meter = h('div', { class: 'vc-ap-meter vc-bar' });
-    meter.appendChild(h('div', { class: 'vc-bar-bg' }));
+    // The meter is a drawn gauge: ruled trough, hatched empty run, brushed
+    // pigment, segment ticks inked over the paint. The ghost behind it is the
+    // ground already given up this action, laid in as a red wash.
+    const meter = h('div', { class: 'vc-ap-meter' });
     this.apGhost = h('div', { class: 'vc-bar-ghost' });
     meter.appendChild(this.apGhost);
-    this.apFill = h('div', { class: 'vc-bar-fill ap' });
-    meter.appendChild(this.apFill);
-    const ticks = h('div', { class: 'vc-ap-ticks' });
-    ticks.appendChild(meterTicks({ w: 400, h: 22, count: 10, seed: 88 }));
-    meter.appendChild(ticks);
+    this.apGauge = inkGauge({ w: 460, h: 21, seed: 88, segs: 10, tone: 'ap' });
+    meter.appendChild(this.apGauge);
     apP.content.appendChild(meter);
     L.appendChild(apP.root);
 
@@ -395,8 +479,9 @@ export class HUD {
     amP.content.appendChild(this.reloadEl);
     L.appendChild(amP.root);
 
-    // compass
+    // compass — a strip of gummed paper with hand-torn long edges
     this.compass = h('div', { class: 'vc-compass' });
+    this.compass.style.setProperty('--tape-clip', deckleClip(3607, { perSide: 26, amp: 5.5 }));
     this.compassTape = h('div', { class: 'vc-compass-tape' });
     this.compass.appendChild(this.compassTape);
     // Objective pins ride a second row below the cardinal tape so they never
@@ -417,28 +502,45 @@ export class HUD {
 
   _buildCompassTape() {
     clear(this.compassTape);
-    // Two full revolutions of ticks so the tape never runs out while scrolling.
-    // Ticks are placed as a PERCENTAGE of the tape's own width — the tape is then
-    // resized in px each frame. Scaling the tape instead would squash the glyphs.
+    // THREE full revolutions of ticks, centred on the middle one.
+    //
+    // The window is +-60 degrees around the heading, and the tape is scrolled so
+    // that `yaw + 360` sits dead centre, so ticks from `yaw + 300` to `yaw + 420`
+    // must exist — i.e. up to 779.99 degrees. A two-revolution tape (0..705)
+    // stopped just short, which is why due north had NO 'N' glyph: turn the
+    // camera to face the Imperial bank and the letter you most needed vanished.
     const CARD = { 0: 'N', 45: 'NE', 90: 'E', 135: 'SE', 180: 'S', 225: 'SW', 270: 'W', 315: 'NW' };
-    for (let d = 0; d < 720; d += 15) {
-      const deg = d % 360;
+    for (let d = 0; d <= TAPE_DEG; d += 5) {
+      const deg = ((d % 360) + 360) % 360;
       const card = CARD[deg];
+      const major = deg % 15 === 0;
       const el = h('div', {
-        class: 'vc-compass-pin',
-        style: 'left:' + ((d / 720) * 100).toFixed(4) + '%;color:' + (card ? '#3a2f28' : '#6b5a44'),
+        class: 'vc-compass-pin' + (card ? ' card' : ''),
+        style: 'left:' + ((d / TAPE_DEG) * 100).toFixed(4) + '%;color:' +
+          (card ? (deg === 0 ? '#8d3730' : '#3a2f28') : '#6b5a44'),
       });
       if (card) {
         el.appendChild(h('div', {
-          style: 'font-size:.86em;font-variant:small-caps;letter-spacing:.12em;line-height:1',
+          class: 'glyph',
+          style: 'font-size:' + (deg % 90 === 0 ? '1.02em' : '.78em') +
+            ';font-variant:small-caps;letter-spacing:.14em;line-height:1',
           text: card,
         }));
       }
       el.appendChild(h('div', {
-        style: 'width:1px;height:' + (card ? 9 : 5) + 'px;margin:2px auto 0;background:currentColor;opacity:' +
-          (card ? 0.8 : 0.45),
+        class: 'tick',
+        style: 'width:' + (card ? 1.6 : major ? 1.2 : 1) + 'px;height:' +
+          (card ? 9 : major ? 6 : 3.5) +
+          'px;margin:2px auto 0;background:currentColor;opacity:' +
+          (card ? 0.9 : major ? 0.6 : 0.38),
       }));
       this.compassTape.appendChild(el);
+    }
+    // The heading pip: a small inked caret nailed to the centre of the widget,
+    // outside the scrolling tape.
+    if (!this._compassPip) {
+      this._compassPip = h('div', { class: 'vc-compass-pip' });
+      this.compass.appendChild(this._compassPip);
     }
   }
 
@@ -466,17 +568,25 @@ export class HUD {
     cross.appendChild(crosshair({ size: 240, seed: 47 }));
     L.appendChild(cross);
 
-    const hit = h('div', { class: 'vc-hit' });
-    this.hitNum = h('b', {
-      class: 'vc-num',
-      style: 'color:#f6ecd6;text-shadow:0 1px 3px rgba(40,20,16,.95)',
-      text: '0%',
-    });
-    hit.appendChild(this.hitNum);
-    hit.appendChild(h('div', {
-      class: 'vc-label', style: 'color:#e8d9b6;text-shadow:0 1px 3px rgba(40,20,16,.95)', text: 'Hit',
-    }));
-    L.appendChild(hit);
+    // The firing solution, written on a chit of paper pinned beside the sights.
+    // Set naked over the frame the numeral had no ground and collided with the
+    // target's own name slip; on paper it reads as an instrument reading.
+    const hp = panel({ seed: 837, cls: 'vc-hit', tilt: -1.4, soft: true });
+    const hitIn = h('div', { class: 'vc-hit-in' });
+    this.hitArc = h('div', { class: 'vc-hit-arc' });
+    this.hitArc.appendChild(dialGauge({ size: 46, seed: 611 }));
+    this.hitArcPath = this.hitArc.querySelector('.prog');
+    hitIn.appendChild(this.hitArc);
+    const hitTxt = h('div');
+    this.hitNum = h('b', { class: 'vc-num', text: '0%' });
+    hitTxt.appendChild(this.hitNum);
+    hitTxt.appendChild(h('div', { class: 'vc-label vc-tight', text: 'Hit' }));
+    hitIn.appendChild(hitTxt);
+    hp.content.appendChild(hitIn);
+    this.hitSub = h('div', { class: 'vc-hit-sub', text: '' });
+    hp.content.appendChild(this.hitSub);
+    this.hitPanel = hp.root;
+    L.appendChild(hp.root);
 
     const tc = panel({ seed: 831, cls: 'vc-tcard', tilt: -0.4, under: true });
     this.tcard = tc.root;
@@ -486,15 +596,14 @@ export class HUD {
     this.tcardName = h('div', { class: 'vc-h3', text: 'Imperial Soldier' });
     th.appendChild(this.tcardName);
     tc.content.appendChild(th);
-    const hpBar = h('div', { class: 'vc-bar', style: 'margin-top:.3em' });
-    hpBar.appendChild(h('div', { class: 'vc-bar-bg' }));
-    this.tcardHp = h('div', { class: 'vc-bar-fill hp' });
+    const hpBar = h('div', { class: 'vc-tcard-hp' });
+    this.tcardHp = inkGauge({ w: 250, h: 13, seed: 143, segs: 8, tone: 'foe' });
     hpBar.appendChild(this.tcardHp);
     tc.content.appendChild(hpBar);
     this.tcardRows = h('div', { class: 'vc-tcard-rows' });
     tc.content.appendChild(this.tcardRows);
     this.bodyFig = h('div', { class: 'vc-body-fig' });
-    this.bodyFig.appendChild(bodyFigure({ part: 'torso', size: 96 }));
+    this.bodyFig.appendChild(bodyFigure({ part: 'torso', size: 112 }));
     tc.content.appendChild(this.bodyFig);
     L.appendChild(tc.root);
 
@@ -529,12 +638,15 @@ export class HUD {
     if (this._legendKey === mode) return;
     this._legendKey = mode;
     clear(this.legendEl);
-    for (const [k, t] of rows) {
+    rows.forEach(([k, t], i) => {
       const g = h('div', { class: 'vc-lg' });
-      g.appendChild(h('span', { class: 'vc-key', text: k }));
+      // A drawn ink cap, not a CSS rounded rectangle with a border.
+      const cap = h('span', { class: 'vc-key' });
+      cap.appendChild(keyCap(k, { seed: 300 + i * 13 }));
+      g.appendChild(cap);
       g.appendChild(h('span', { text: t }));
       this.legendEl.appendChild(g);
-    }
+    });
   }
 
   // ======================================================================
@@ -622,11 +734,12 @@ export class HUD {
     this._on('ui:dialogue', (p) => this.say(p));
     this._on('ui:objective', (p) => {
       if (!p) return;
-      this.objectives = p.objectives || [{ type: p.type || 'capture', text: p.text || '' }];
+      this.objectives = normObjectives(p.objectives) ||
+        normObjectives([p]) || this.objectives;
       this._renderObjectives();
     });
     this._on('ui:objectives', (p) => {
-      this.objectives = (p && p.objectives) || this.objectives;
+      this.objectives = normObjectives(p && p.objectives) || this.objectives;
       this._renderObjectives();
     });
     this._on('ui:target', (p) => this.setTarget(p));
@@ -729,17 +842,12 @@ export class HUD {
       this.mapExtent = Math.max(
         (M.bounds.maxX - M.bounds.minX) || 128, (M.bounds.maxZ - M.bounds.minZ) || 128);
       this.mapScaleEl.textContent = Math.round(this.mapExtent) + ' m';
+      if (this.mapBarLabel) this.mapBarLabel.textContent = Math.round(this.mapExtent / 4) + ' m';
     }
 
     // Objectives: win conditions first, failure conditions as sub-lines.
-    if (Array.isArray(M.objectives) && M.objectives.length) {
-      this.objectives = M.objectives.map((o) => ({
-        type: OBJ_TYPE[o.type] || 'capture',
-        text: o.label || o.id || '',
-        sub: !o.win,
-      })).sort((a, b) => (a.sub === b.sub ? 0 : a.sub ? 1 : -1)).slice(0, 4);
-      this._renderObjectives();
-    }
+    const objs = normObjectives(M.objectives);
+    if (objs) { this.objectives = objs; this._renderObjectives(); }
 
     // Compass markers + capture rings from the live camps.
     const camps = (battle && battle.camps) || [];
@@ -756,6 +864,12 @@ export class HUD {
   }
 
   _onAimTarget(p) {
+    if (typeof window !== 'undefined') {
+      (window.__AIMDBG__ = window.__AIMDBG__ || []).push({
+        t: !!(p && p.target), name: p && p.target && p.target.name,
+        chance: p && p.chance, dist: p && p.distance, ret: p && p.reticlePx, part: p && p.part,
+      });
+    }
     if (!p) return;
     this.aiming = true;
     if (p.reticlePx != null && isFinite(p.reticlePx)) this.reticlePx = p.reticlePx;
@@ -835,8 +949,9 @@ export class HUD {
     const w = (B.maxX - B.minX) || 1, hgt = (B.maxZ - B.minZ) || 1;
     return camps.map((c) => ({
       x: clamp01((c.pos.x - B.minX) / w),
-      // the survey is drawn north-up, so +Z (Imperial) belongs at the top
-      y: clamp01(1 - (c.pos.z - B.minZ) / hgt),
+      // North-up survey. North is -Z (layout.js), so minZ — the Imperial bank —
+      // is the TOP edge and the Gallian deployment at +Z sits at the bottom.
+      y: clamp01((c.pos.z - B.minZ) / hgt),
       type: 'capture', team: c.owner, label: c.name ? c.name.split(' ')[0] : '',
     }));
   }
@@ -893,26 +1008,32 @@ export class HUD {
     this.tcardIcon.appendChild(icon(cls, { size: 19, width: 1.6 }));
     const hp = t.hp != null ? t.hp : u.hp, maxHp = t.maxHp != null ? t.maxHp : u.maxHp;
     if (hp != null && maxHp) {
-      const pct = clamp01(hp / maxHp) * 100;
-      this.tcardHp.style.width = pct + '%';
-      this.tcardHp.classList.toggle('warn', pct <= 55 && pct > 25);
-      this.tcardHp.classList.toggle('crit', pct <= 25);
+      const f = clamp01(hp / maxHp);
+      this.tcardHp.set(f, f <= 0.25 ? 'crit' : f <= 0.55 ? 'warn' : 'foe');
     }
+    this.tcard.classList.toggle('soft', !!t.soft);
     clear(this.tcardRows);
+    // A hard lock (the game's own ray landed on him) versus a designation (he is
+    // simply inside the sights). The reader must be able to tell them apart.
     const rows = [
+      ['Solution', t.soft ? 'Designated' : 'Locked'],
       ['Class', CLASS_NAME[cls] || 'Infantry'],
       ['Health', (hp != null ? Math.max(0, Math.round(hp)) : '—') + ' / ' + (maxHp || '—')],
       ['Distance', (t.distance != null ? Math.round(t.distance) : '—') + ' m'],
       ['Aim Point', partName(t.part)],
     ];
     if (t.cover != null) rows.push(['Cover', t.cover >= 0.99 ? 'Full' : t.cover >= 0.4 ? 'Half' : 'None']);
-    for (const [k, v] of rows) {
-      this.tcardRows.appendChild(h('div', null, h('span', { class: 'vc-label', text: k }), h('span', { text: v })));
-    }
+    rows.forEach(([k, v], i) => {
+      const row = h('div', { class: 'vc-tcard-row' });
+      row.appendChild(h('div', null,
+        h('span', { class: 'vc-label', text: k }), h('span', { text: v })));
+      row.appendChild(inkRule({ w: 220, seed: 471 + i * 23, weight: 0.85, color: '#8a7659' }));
+      this.tcardRows.appendChild(row);
+    });
     if (t.part !== this._bodyPart) {
       this._bodyPart = t.part || 'torso';
       clear(this.bodyFig);
-      this.bodyFig.appendChild(bodyFigure({ part: this._bodyPart, size: 96 }));
+      this.bodyFig.appendChild(bodyFigure({ part: this._bodyPart, size: 112 }));
     }
     if (t.hit != null) this.hitChance = clamp01(t.hit > 1 ? t.hit / 100 : t.hit);
     if (t.spread != null) this.spread = clamp01(t.spread);
@@ -1064,29 +1185,62 @@ export class HUD {
       por.appendChild(portraitFor(u, { w: 100, frame: true }));
       in_.appendChild(por);
 
+      const cls = String(u.cls || 'scout').toLowerCase();
       const body = h('div', { class: 'vc-ru-body' });
-      body.appendChild(h('div', { class: 'vc-ru-name', text: u.name || 'Soldier' }));
-      const cls = h('div', { class: 'vc-ru-cls' });
-      cls.appendChild(icon(String(u.cls || 'scout').toLowerCase(), { size: 15, width: 1.6 }));
-      cls.appendChild(h('span', { class: 'vc-label vc-tight', text: CLASS_NAME[String(u.cls || 'scout').toLowerCase()] || 'Scout' }));
-      body.appendChild(cls);
 
-      const hpBar = h('div', { class: 'vc-bar' });
-      hpBar.appendChild(h('div', { class: 'vc-bar-bg' }));
-      const hpFill = h('div', { class: 'vc-bar-fill hp' });
-      hpBar.appendChild(hpFill);
-      body.appendChild(hpBar);
+      // Name line, with veterancy chevrons ruled into the right margin. Rank is
+      // read off the soldier's potentials — the personnel file's own record —
+      // so it never contradicts anything the game shows elsewhere.
+      const top = h('div', { class: 'vc-ru-top' });
+      top.appendChild(h('div', { class: 'vc-ru-name', text: u.name || 'Soldier' }));
+      const rank = h('div', { class: 'vc-ru-rank' });
+      rank.appendChild(rankChevrons({ n: this._rankOf(u), w: 14, seed: seed + 91 }));
+      top.appendChild(rank);
+      body.appendChild(top);
 
-      const apBar = h('div', { class: 'vc-bar', style: 'height:.34em' });
-      apBar.appendChild(h('div', { class: 'vc-bar-bg' }));
-      const apFill = h('div', { class: 'vc-bar-fill ap' });
-      apBar.appendChild(apFill);
-      body.appendChild(apBar);
+      // Class line + the status marks pencilled in after it.
+      const clsRow = h('div', { class: 'vc-ru-cls' });
+      clsRow.appendChild(icon(cls, { size: 15, width: 1.6 }));
+      clsRow.appendChild(h('span', {
+        class: 'vc-label vc-tight', text: CLASS_NAME[cls] || 'Scout',
+      }));
+      const st = h('div', { class: 'vc-ru-st' });
+      clsRow.appendChild(st);
+      body.appendChild(clsRow);
+
+      // HP: a drawn gauge with segment ticks. AP: a surveyor's march line, so
+      // the two readings can never be confused for one another at a glance.
+      const hpRow = h('div', { class: 'vc-ru-gr' });
+      hpRow.appendChild(icon('hp', { size: 13, width: 1.7, rough: false }));
+      const hpG = inkGauge({ w: 132, h: 11, seed: seed + 17, segs: 6, tone: 'hp' });
+      hpRow.appendChild(hpG);
+      const hpNum = h('div', { class: 'n vc-num' }, h('b', { text: '0' }), h('span', { text: '' }));
+      hpRow.appendChild(hpNum);
+      body.appendChild(hpRow);
+
+      const apRow = h('div', { class: 'vc-ru-gr' });
+      apRow.appendChild(icon('boot', { size: 13, width: 1.7, rough: false }));
+      const apM = marchLine({ w: 132, h: 9, seed: seed + 29, paces: 9 });
+      apRow.appendChild(apM);
+      const apNum = h('div', { class: 'n vc-num' }, h('b', { text: '0' }), h('span', { text: ' m' }));
+      apRow.appendChild(apNum);
+      body.appendChild(apRow);
 
       in_.appendChild(body);
       p.content.appendChild(in_);
 
-      const stamp = h('div', { class: 'vc-ru-stamp vc-hidden', text: 'Acted' });
+      const mark = h('div', { class: 'vc-ru-mark' });
+      mark.appendChild(marginBracket({ w: 12, hgt: 60, seed: seed + 43 }));
+      p.root.appendChild(mark);
+
+      // "Acted" is a rubber stamp, so its box is inked and skewed, never a CSS
+      // border-radius rectangle.
+      const stamp = h('div', { class: 'vc-ru-stamp vc-hidden' });
+      stamp.innerHTML =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 62 22" preserveAspectRatio="none">' +
+        '<path d="' + roughRect(2, 2, 58, 18, { seed: seed + 61, amp: 0.9, segs: 4, overshoot: 1.6 }) +
+        '" fill="rgba(163,47,52,.07)" stroke="#a32f34" stroke-width="1.6" stroke-linecap="round"/></svg>' +
+        '<span>Acted</span>';
       p.root.appendChild(stamp);
       const rib = h('div', { class: 'vc-ru-ribbon vc-hidden' });
       rib.appendChild(ribbon({ w: 14, h: 44, seed: seed + 3 }));
@@ -1101,9 +1255,33 @@ export class HUD {
       });
 
       this.rosterEl.appendChild(p.root);
-      this._rosterCards.set(u, { root: p.root, hpFill, apFill, stamp, rib, hpKey: -1, apKey: -1 });
+      this._rosterCards.set(u, {
+        root: p.root, hpG, apM, hpNum, apNum, st, stamp, rib,
+        hpKey: -1, apKey: -1, stKey: '',
+      });
     });
     this._syncSelection();
+  }
+
+  /** Veterancy, 1..3 chevrons, read off the soldier's own potentials list. */
+  _rankOf(u) {
+    const n = Array.isArray(u && u.potentials) ? u.potentials.length : 0;
+    return clamp(1 + Math.floor(n / 2), 1, 3);
+  }
+
+  /**
+   * The marks a quartermaster would pencil beside a name: a shield for a soldier
+   * running under Caution, a star for an order buff, an empty magazine, a
+   * ragnaid flask when he is hurt badly enough to need one.
+   */
+  _statusOf(u) {
+    const out = [];
+    if (u.stealth) out.push(['shield', 'ok']);
+    if (Array.isArray(u.buffs) && u.buffs.length) out.push(['star', 'ok']);
+    if (u.ammo === 0) out.push(['ap', 'warn']);
+    if (u.maxHp && u.hp / u.maxHp <= 0.4) out.push(['ragnaid', 'warn']);
+    if (u.downed || u.alive === false) out.push(['skull', 'warn']);
+    return out.slice(0, 3);
   }
 
   _updateRoster() {
@@ -1112,14 +1290,30 @@ export class HUD {
         const k = Math.round(clamp01(u.hp / u.maxHp) * 100);
         if (k !== c.hpKey) {
           c.hpKey = k;
-          c.hpFill.style.width = k + '%';
-          c.hpFill.classList.toggle('warn', k <= 55 && k > 25);
-          c.hpFill.classList.toggle('crit', k <= 25);
+          c.hpG.set(k / 100, k <= 25 ? 'crit' : k <= 55 ? 'warn' : 'hp');
+          c.hpNum.firstChild.textContent = String(Math.max(0, Math.round(u.hp)));
+          c.hpNum.lastChild.textContent = '/' + Math.round(u.maxHp);
         }
       }
       if (u.maxAp) {
         const k = Math.round(clamp01(u.ap / u.maxAp) * 100);
-        if (k !== c.apKey) { c.apKey = k; c.apFill.style.width = k + '%'; }
+        if (k !== c.apKey) {
+          c.apKey = k;
+          c.apM.set(k / 100);
+          // AP is a distance in this game — report it as one.
+          const m = u.apPerMetre ? u.ap / u.apPerMetre : u.ap;
+          c.apNum.firstChild.textContent = String(Math.max(0, Math.round(m)));
+        }
+      }
+      const marks = this._statusOf(u);
+      const stKey = marks.map((m) => m[0]).join(',');
+      if (stKey !== c.stKey) {
+        c.stKey = stKey;
+        clear(c.st);
+        for (const [name, tone] of marks) {
+          const g = icon(name, { size: 13, width: 1.7, rough: false, cls: tone });
+          c.st.appendChild(g);
+        }
       }
       const acted = !!u.hasActed;
       c.stamp.classList.toggle('vc-hidden', !acted);
@@ -1152,7 +1346,30 @@ export class HUD {
     if (c) replay(c.root, 'vc-ru');
   }
 
+  /**
+   * Redraw the survey plate from the REAL ground once the world exists. Until
+   * then the panel carries a generic sketch, which is honest but says nothing
+   * about this valley; a contour that does not track the terrain under it is the
+   * single most obvious tell that the map is decoration.
+   */
+  _syncSurvey() {
+    if (this._surveyDrawn) return;
+    const w = this.battle && this.battle.world;
+    const t = w && w.terrain;
+    const sample = t && typeof t.heightAt === 'function' ? (x, z) => t.heightAt(x, z)
+      : (w && typeof w.groundHeightAt === 'function' ? (x, z) => w.groundHeightAt(x, z) : null);
+    if (!sample) return;
+    this._surveyDrawn = true;
+    clear(this.mapSheet);
+    this.mapSheet.appendChild(contourMap({
+      w: 400, hgt: 300, ext: this.mapExtent, sample,
+      seed: CFG.seed || 1234, levels: 8,
+      water: w.waterLevel != null ? w.waterLevel : 0,
+    }));
+  }
+
   _updateMap() {
+    this._syncSurvey();
     const box = this.mapBlips;
     const units = Array.isArray(this.battle.units) ? this.battle.units : [];
     const ext = this.mapExtent;
@@ -1166,18 +1383,23 @@ export class HUD {
       this._mapH = box.clientHeight || 1;
     }
     const mw = this._mapW, mh = this._mapH;
+    // The survey is drawn north-up. North is -Z (layout.js), so the *minimum*
+    // z belongs at the top of the panel and +Z (the Gallian deployment) at the
+    // bottom — screen +Y therefore runs with world +Z, no flip.
     const toX = (x) => clamp01((x + half) / ext) * mw;
-    const toY = (z) => (1 - clamp01((z + half) / ext)) * mh;   // north (+Z) at the top
+    const toY = (z) => clamp01((z + half) / ext) * mh;
 
     // grow the blip pool as needed (bounded by squad size, so this settles fast)
     while (this._blips.length < units.length) {
-      const b = h('div', { style: 'position:absolute;left:0;top:0;width:0;height:0;will-change:transform' });
-      b.appendChild(h('div', {
-        class: 'blip',
-        style: 'position:absolute;left:-5px;top:-5px;width:10px;height:10px;' +
-          'clip-path:polygon(50% 0%,100% 100%,0% 100%);' +
-          'filter:drop-shadow(0 1px 1px rgba(58,47,51,.55))',
-      }));
+      const b = h('div', { class: 'vc-blip' });
+      // Three drawn chevrons — ally / ally-selected / foe. Swapping which one is
+      // visible costs nothing and keeps every blip an inked mark with an
+      // outline rather than a flat CSS clip-path triangle.
+      const wrap = h('div', { class: 'vc-blip-in' });
+      wrap.appendChild(unitBlip({ size: 13, team: 0 }));
+      wrap.appendChild(unitBlip({ size: 13, team: 0, selected: true, seed: 5 + this._blips.length }));
+      wrap.appendChild(unitBlip({ size: 13, team: 1 }));
+      b.appendChild(wrap);
       box.appendChild(b);
       this._blips.push(b);
     }
@@ -1188,11 +1410,18 @@ export class HUD {
       const foe = (u.team | 0) === 1;
       b.style.display = '';
       b.style.transform = 'translate(' + toX(u.pos.x).toFixed(1) + 'px,' + toY(u.pos.z).toFixed(1) + 'px)';
-      const dot = b.firstChild;
-      dot.style.background = foe ? '#8d3730' : (u === this.selected ? '#a32f34' : '#37536f');
-      dot.style.transform = 'rotate(' + ((u.yaw || 0) * 180 / Math.PI).toFixed(1) + 'deg) scale(' +
-        (u === this.selected ? 1.55 : 1) + ')';
-      dot.style.opacity = u.downed ? '0.35' : '1';
+      const wrap = b.firstChild;
+      const variant = foe ? 2 : (u === this.selected ? 1 : 0);
+      if (b._variant !== variant) {
+        b._variant = variant;
+        for (let k = 0; k < 3; k++) wrap.children[k].style.display = k === variant ? '' : 'none';
+      }
+      // unit.yaw is atan2(dx, dz), i.e. 0 = facing +Z = facing SOUTH = screen
+      // down. The chevron is drawn pointing up (north), so the CSS clockwise
+      // rotation that aims it along yaw is (180 - yaw).
+      wrap.style.transform = 'rotate(' + (180 - (u.yaw || 0) * 180 / Math.PI).toFixed(1) + 'deg) scale(' +
+        (u === this.selected ? 1.45 : 1) + ')';
+      wrap.style.opacity = u.downed ? '0.35' : '1';
     }
 
     // camera wedge — the field-of-view cone drawn on the survey
@@ -1230,18 +1459,20 @@ export class HUD {
     const ap = clamp(u.ap || 0, 0, maxAp);
     // The meter drains smoothly even if the game steps AP in chunks.
     this.apShown = damp(this.apShown, ap, 14, dt);
-    const pct = clamp01(this.apShown / maxAp) * 100;
-    this.apFill.style.width = pct.toFixed(2) + '%';
+    const low = ap / maxAp < 0.2;
+    this.apGauge.set(clamp01(this.apShown / maxAp), low ? 'crit' : 'ap');
     this.apGhost.style.width = (clamp01(ap / maxAp) * 100).toFixed(2) + '%';
     const shown = Math.round(this.apShown);
     if (shown !== this._apLast) {
       this._apLast = shown;
       this.apNum.textContent = String(shown);
       this.apMaxEl.textContent = '/ ' + Math.round(maxAp);
+      // AP is spent per metre marched, so the sheet also reports the ground the
+      // soldier can still cover — the number an officer actually plans with.
+      const perM = u.apPerMetre || 1;
+      this.apRangeEl.textContent = Math.round(this.apShown / perM) + ' m of march';
     }
-    const low = ap / maxAp < 0.2;
     this.apPanel.classList.toggle('low', low);
-    this.apFill.style.backgroundColor = low ? '#a5382f' : '';
 
     // ammo can be driven by the unit directly if the game does not emit ui:ammo
     const a = u.ammo != null ? u.ammo : (u.weapon && u.weapon.ammo);
@@ -1268,12 +1499,18 @@ export class HUD {
     for (const pip of this.ammoPips.children) { pip.classList.toggle('spent', i >= live); i++; }
   }
 
-  // North is +Z: the mission places Gallia at -Z ("south bank") and the Imperial
-  // town at +Z, so the survey and the compass both have to agree with that.
+  // World convention (src/world/layout.js): +X is east, **-Z is north**. The
+  // player deploys south (+Z, ally camp at z:+62) and the Imperial town sits on
+  // the north bank (-Z, enemy camp at z:-52). The survey, the minimap wedge and
+  // the compass tape all have to agree with that, or the whole page is mirrored.
+  //
+  // Bearing is measured clockwise from north, so it decomposes as
+  //   east  = +dx
+  //   north = -dz
   _cameraHeading() {
     if (!this.camera) return 0;
     this.camera.getWorldDirection(V1);
-    return Math.atan2(V1.x, V1.z);    // 0 = +Z (north), +ve toward +X (east)
+    return Math.atan2(V1.x, -V1.z);   // 0 = -Z (north), +ve toward +X (east)
   }
 
   _updateCompass() {
@@ -1282,12 +1519,13 @@ export class HUD {
     const pxPerDeg = w / 120;         // 120 degrees of arc fit across the widget
     if (w !== this._compassW) {
       this._compassW = w;
-      this.compassTape.style.width = (720 * pxPerDeg).toFixed(1) + 'px';
+      this.compassTape.style.width = (TAPE_DEG * pxPerDeg).toFixed(1) + 'px';
     }
     let yaw = (this._cameraHeading() * 180 / Math.PI) % 360;
     if (yaw < 0) yaw += 360;
-    // Ticks sit at (deg/720) of the tape; slide so the second revolution's copy
-    // of `yaw` lands dead centre — there is always tape on both sides.
+    // Ticks sit at (deg/TAPE_DEG) of the tape; slide so the MIDDLE revolution's
+    // copy of `yaw` lands dead centre — there is a full revolution of tape on
+    // either side of it, so the window can never run off an end.
     const shift = -(yaw + 360) * pxPerDeg + w / 2;
     this.compassTape.style.transform = 'translateX(' + shift.toFixed(1) + 'px)';
 
@@ -1308,7 +1546,8 @@ export class HUD {
     for (let i = 0; i < ms.length; i++) {
       const m = ms[i], el = this.compassPins.children[i];
       if (!m.pos || !el) continue;
-      const bearing = Math.atan2(m.pos.x - cam.x, m.pos.z - cam.z);
+      // same convention as _cameraHeading: clockwise from north (-Z).
+      const bearing = Math.atan2(m.pos.x - cam.x, -(m.pos.z - cam.z));
       const rel = shortestAngle(this._cameraHeading(), bearing) * 180 / Math.PI;
       const x = w / 2 + rel * pxPerDeg;
       const inView = x > -10 && x < w + 10;
@@ -1343,19 +1582,124 @@ export class HUD {
     this.accEl.style.transform = 'translate(-50%,-50%) translate(' + sway.toFixed(2) + 'px,' +
       (sway * 0.7).toFixed(2) + 'px)';
 
-    // brackets converge with confidence
-    const k = 1 - this.spreadShown;
-    this.bracketsEl.style.transform = 'translate(-50%,-50%) scale(' + (1.28 - 0.30 * k).toFixed(3) + ')';
-    this.bracketsEl.style.opacity = (0.45 + 0.55 * k).toFixed(2);
+    this.accRadiusPx = r;
+
+    // The corner brackets frame the accuracy circle rather than sitting at a
+    // fixed size, so they mean something: they ARE the shot's dispersion box.
+    const bw = r * 2 + Math.min(innerWidth, innerHeight) * 0.11;
+    const bh = r * 2 + Math.min(innerWidth, innerHeight) * 0.075;
+    this.bracketsEl.style.width = bw.toFixed(1) + 'px';
+    this.bracketsEl.style.height = bh.toFixed(1) + 'px';
+    this.bracketsEl.style.opacity = (0.5 + 0.5 * (1 - this.spreadShown)).toFixed(2);
+
+    // If the game's own ray is not on a soldier, fall back to the man standing
+    // inside the sights. VC keeps the dossier up for whoever is under the
+    // reticle, and a blank frame in aim mode reads as a broken overlay.
+    if (!this.target || this.target.soft) {
+      this._softTimer = (this._softTimer || 0) - dt;
+      const soft = this._softTarget(r);
+      const changed = (soft && soft.unit) !== (this.target && this.target.unit);
+      if (soft && (changed || this._softTimer <= 0)) {
+        this._softTimer = 0.14;
+        this._applySoftTarget(soft);
+      } else if (!soft && this.target && this.target.soft) {
+        this.target = null;
+      }
+    }
 
     this.hitShown = damp(this.hitShown, this.hitChance, 9, dt);
     const pct = Math.round(this.hitShown * 100);
     if (pct !== this._hitLast) {
       this._hitLast = pct;
       this.hitNum.textContent = pct + '%';
-      this.hitNum.style.color = pct >= 70 ? '#dff0c8' : pct >= 40 ? '#f6e2b0' : '#f0b6a4';
+      this.hitNum.style.color = pct >= 70 ? '#4c5b2c' : pct >= 40 ? '#8a6a24' : '#8d3730';
+      if (this.hitArcPath) {
+        const len = parseFloat(this.hitArcPath.getAttribute('stroke-dasharray')) || 1;
+        this.hitArcPath.setAttribute('stroke-dashoffset', (len * (1 - this.hitShown)).toFixed(2));
+        this.hitArcPath.setAttribute('stroke',
+          pct >= 70 ? '#6b7d3f' : pct >= 40 ? '#b3873f' : '#a32f34');
+      }
     }
-    this.tcard.style.display = this.target ? '' : 'none';
+    const t = this.target;
+    const sub = !t ? '' : t.lethal ? 'Lethal' :
+      t.expectedDamage ? Math.round(t.expectedDamage) + ' expected' :
+        (t.part ? partName(t.part) : '');
+    if (sub !== this._hitSubLast) { this._hitSubLast = sub; this.hitSub.textContent = sub; }
+    // Guarded: writing display every frame forces a style recalc for nothing.
+    const shown = !!t;
+    if (shown !== this._tgtShown) {
+      this._tgtShown = shown;
+      this.hitPanel.style.display = shown ? '' : 'none';
+      this.tcard.style.display = shown ? '' : 'none';
+    }
+  }
+
+  /**
+   * Nearest live, spotted Imperial whose centre of mass projects inside the
+   * dispersion circle. Read-only: it never touches game state, and a hard target
+   * published by the game always wins.
+   * @param {number} r accuracy-circle radius in px
+   */
+  _softTarget(r) {
+    if (!this.camera) return null;
+    const units = Array.isArray(this.battle.units) ? this.battle.units : [];
+    if (!units.length) return null;
+    const W = this.labels.w || innerWidth, H = this.labels.h || innerHeight;
+    const cx = W / 2, cy = H / 2;
+    const fov = (this.camera && this.camera.fov) || 45;
+    const focal = (H * 0.5) / Math.tan((fov * Math.PI) / 360);
+    // "The sights are on him" is a question about his SILHOUETTE, not about the
+    // distance to a single point: measure to the projected feet-to-head segment
+    // and allow his own body radius plus a little slack for the reticle's sway.
+    const p = this._softPt || (this._softPt = { x: 0, y: 0, z: 0 });
+    const a = this._softA || (this._softA = { x: 0, y: 0, depth: 0, visible: false });
+    const b = this._softB || (this._softB = { x: 0, y: 0, depth: 0, visible: false });
+    let best = null, bestD = Infinity;
+    for (const u of units) {
+      if (!u || (u.team | 0) !== 1 || u.alive === false || u.downed || !u.pos) continue;
+      const sc = u.stanceScale || 1;
+      p.x = u.pos.x; p.z = u.pos.z;
+      p.y = u.pos.y + 0.10;
+      this.labels.project(p, a);
+      p.y = u.pos.y + (u.isVehicle ? 2.3 : 1.74 * sc);
+      this.labels.project(p, b);
+      if (!a.visible && !b.visible) continue;
+      const radM = typeof u.targetRadius === 'function' ? u.targetRadius()
+        : (u.isVehicle ? 1.5 : 0.42);
+      const radPx = (radM * focal) / Math.max(1, a.depth);
+      // Slack is ANGULAR, not a pixel count: "the sights are within ~2.6 degrees
+      // of him". That holds its meaning when the scope magnifies and the FOV
+      // collapses, which a fixed pixel radius does not.
+      const d = segDist(cx, cy, a.x, a.y, b.x, b.y) - radPx;
+      const slack = Math.max(r * 0.6, focal * 0.045);
+      if (d > slack || d >= bestD) continue;
+      bestD = d;
+      best = { unit: u, depth: a.depth };
+    }
+    return best;
+  }
+
+  /**
+   * Fill the dossier from a designated (not ray-locked) soldier, and estimate
+   * the hit chance the same way the ballistics does: the accuracy circle is a
+   * 90% Rayleigh radius, so P(hit) = 1 - exp(-rt^2 / 2s^2) for a target of
+   * projected radius `rt`. It is an estimate, and the card says so.
+   */
+  _applySoftTarget(s) {
+    const u = s.unit;
+    const H = this.labels.h || innerHeight;
+    const fov = (this.camera && this.camera.fov) || 45;
+    const focal = (H * 0.5) / Math.tan((fov * Math.PI) / 360);
+    const radiusM = typeof u.targetRadius === 'function' ? u.targetRadius()
+      : (u.isVehicle ? 1.5 : 0.42);
+    const rt = (radiusM * focal) / Math.max(1, s.depth);
+    const sigma = Math.max(1e-3, (this.accRadiusPx || 40) / 2.146);
+    const chance = clamp01(1 - Math.exp(-(rt * rt) / (2 * sigma * sigma)));
+    this.hitChance = clamp(chance, 0.02, 0.97);
+    this.setTarget({
+      unit: u, name: u.name, cls: u.cls, hp: u.hp, maxHp: u.maxHp,
+      distance: s.depth, hit: this.hitChance, part: 'torso', soft: true,
+    });
   }
 
   // ---------------------------------------------------------------- phases
@@ -1431,6 +1775,14 @@ export class HUD {
     this.root.remove();
     if (this.opts.disposeStyles) disposeStyles();
   }
+}
+
+/** Distance from a point to a segment, in screen pixels. */
+function segDist(px, py, x0, y0, x1, y1) {
+  const dx = x1 - x0, dy = y1 - y0;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 > 1e-6 ? clamp01(((px - x0) * dx + (py - y0) * dy) / len2) : 0;
+  return Math.hypot(px - (x0 + dx * t), py - (y0 + dy * t));
 }
 
 function partName(p) {

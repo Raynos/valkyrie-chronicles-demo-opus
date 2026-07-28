@@ -5,7 +5,8 @@
 // up at any size and stays deterministic.
 
 import { makeRng } from '../core/rng.js';
-import { svgEl } from './dom.js';
+import { clamp01 } from '../core/math.js';
+import { h, svgEl } from './dom.js';
 
 // --------------------------------------------------------------------------
 // Rough geometry primitives — the graphite hand
@@ -394,30 +395,193 @@ export function accuracyRing({ size = 260, seed = 53, color = '#f2e3c4' } = {}) 
     '</svg>');
 }
 
-/** Silhouette used for the body-part hit indicator. */
+/**
+ * The body-part hit diagram: a drawn anatomical study out of a field manual,
+ * not a stick figure. A greatcoated soldier in three-quarter stance, hatched in
+ * the shaded half, with the selected region washed in carmine and ringed.
+ */
 export function bodyFigure({ part = 'torso', size = 96, color = '#4a3c2c', hot = '#a32f34' } = {}) {
-  const w = size * 0.62, h = size;
-  const on = (p) => (p === part ? hot : color);
-  const fo = (p) => (p === part ? '0.55' : '0.10');
+  const w = size * 0.66, h = size;
   const S = (x) => (x * w).toFixed(2);
   const T = (y) => (y * h).toFixed(2);
+  const on = (p) => (p === part ? hot : color);
+  // The selected region is washed, not blocked in — the drawn silhouette has to
+  // stay readable through the carmine.
+  const fo = (p) => (p === part ? 0.15 : 0.07);
+  const sw = (p) => (p === part ? 1.9 : 1.3);
+
+  // --- outlines, drawn as closed rough silhouettes -------------------------
+  // Head: an upright oval, taller than it is wide, with a helmet brow across it.
+  const head =
+    'M' + S(0.500) + ' ' + T(0.018) +
+    'C' + S(0.622) + ' ' + T(0.018) + ' ' + S(0.658) + ' ' + T(0.072) + ' ' + S(0.652) + ' ' + T(0.118) +
+    'C' + S(0.646) + ' ' + T(0.170) + ' ' + S(0.596) + ' ' + T(0.202) + ' ' + S(0.500) + ' ' + T(0.202) +
+    'C' + S(0.404) + ' ' + T(0.202) + ' ' + S(0.354) + ' ' + T(0.170) + ' ' + S(0.348) + ' ' + T(0.118) +
+    'C' + S(0.342) + ' ' + T(0.072) + ' ' + S(0.378) + ' ' + T(0.018) + ' ' + S(0.500) + ' ' + T(0.018) + 'Z';
+  // helmet brow line so the head reads as a soldier, not an egg
+  const helmet =
+    'M' + S(0.344) + ' ' + T(0.098) +
+    'C' + S(0.362) + ' ' + T(0.020) + ' ' + S(0.638) + ' ' + T(0.020) + ' ' + S(0.656) + ' ' + T(0.098) +
+    'C' + S(0.586) + ' ' + T(0.074) + ' ' + S(0.414) + ' ' + T(0.074) + ' ' + S(0.344) + ' ' + T(0.098) + 'Z';
+  // neck, so the head is not floating over the collar
+  const neck = 'M' + S(0.452) + ' ' + T(0.196) + 'V' + T(0.232) + 'M' + S(0.548) + ' ' + T(0.196) +
+    'V' + T(0.232);
+  // Shoulders wide, a real waist, then the greatcoat flares to its hem — so the
+  // silhouette reads as a soldier and not as a gingerbread man.
+  const torso =
+    'M' + S(0.500) + ' ' + T(0.205) +
+    'C' + S(0.630) + ' ' + T(0.205) + ' ' + S(0.720) + ' ' + T(0.245) + ' ' + S(0.742) + ' ' + T(0.320) +
+    'C' + S(0.756) + ' ' + T(0.385) + ' ' + S(0.706) + ' ' + T(0.440) + ' ' + S(0.688) + ' ' + T(0.492) +
+    'C' + S(0.700) + ' ' + T(0.530) + ' ' + S(0.722) + ' ' + T(0.560) + ' ' + S(0.732) + ' ' + T(0.592) +
+    'L' + S(0.268) + ' ' + T(0.592) +
+    'C' + S(0.278) + ' ' + T(0.560) + ' ' + S(0.300) + ' ' + T(0.530) + ' ' + S(0.312) + ' ' + T(0.492) +
+    'C' + S(0.294) + ' ' + T(0.440) + ' ' + S(0.244) + ' ' + T(0.385) + ' ' + S(0.258) + ' ' + T(0.320) +
+    'C' + S(0.280) + ' ' + T(0.245) + ' ' + S(0.370) + ' ' + T(0.205) + ' ' + S(0.500) + ' ' + T(0.205) + 'Z';
+  const armL =
+    'M' + S(0.262) + ' ' + T(0.252) +
+    'C' + S(0.168) + ' ' + T(0.286) + ' ' + S(0.118) + ' ' + T(0.372) + ' ' + S(0.100) + ' ' + T(0.512) +
+    'L' + S(0.186) + ' ' + T(0.528) +
+    'C' + S(0.204) + ' ' + T(0.418) + ' ' + S(0.232) + ' ' + T(0.346) + ' ' + S(0.300) + ' ' + T(0.312) + 'Z';
+  const armR =
+    'M' + S(0.738) + ' ' + T(0.252) +
+    'C' + S(0.832) + ' ' + T(0.286) + ' ' + S(0.882) + ' ' + T(0.372) + ' ' + S(0.900) + ' ' + T(0.512) +
+    'L' + S(0.814) + ' ' + T(0.528) +
+    'C' + S(0.796) + ' ' + T(0.418) + ' ' + S(0.768) + ' ' + T(0.346) + ' ' + S(0.700) + ' ' + T(0.312) + 'Z';
+  const legs =
+    'M' + S(0.265) + ' ' + T(0.592) +
+    'L' + S(0.735) + ' ' + T(0.592) +
+    'C' + S(0.726) + ' ' + T(0.700) + ' ' + S(0.700) + ' ' + T(0.860) + ' ' + S(0.686) + ' ' + T(0.968) +
+    'L' + S(0.556) + ' ' + T(0.968) +
+    'C' + S(0.548) + ' ' + T(0.840) + ' ' + S(0.522) + ' ' + T(0.720) + ' ' + S(0.500) + ' ' + T(0.660) +
+    'C' + S(0.478) + ' ' + T(0.720) + ' ' + S(0.452) + ' ' + T(0.840) + ' ' + S(0.444) + ' ' + T(0.968) +
+    'L' + S(0.314) + ' ' + T(0.968) +
+    'C' + S(0.300) + ' ' + T(0.860) + ' ' + S(0.274) + ' ' + T(0.700) + ' ' + S(0.265) + ' ' + T(0.592) + 'Z';
+
+  const region = (d, p) =>
+    '<path d="' + d + '" fill="' + on(p) + '" fill-opacity="' + fo(p) +
+    '" stroke="' + on(p) + '" stroke-width="' + sw(p) + '"/>';
+
+  // A marker ring over the selected region, so the choice reads at a glance.
+  const RING = {
+    head: [0.50, 0.110, 0.24], torso: [0.50, 0.400, 0.40],
+    arms: [0.50, 0.395, 0.58], legs: [0.50, 0.780, 0.40], radiator: [0.50, 0.400, 0.40],
+  };
+  const rr = RING[part] || RING.torso;
+  const ring =
+    '<path d="' + roughCircle(rr[0] * w, rr[1] * h, rr[2] * w, { seed: 41, amp: w * 0.018, segs: 26 }) +
+    '" fill="none" stroke="' + hot + '" stroke-width="1.3" stroke-dasharray="4 3.2" opacity="0.85"/>';
+
   return svgEl(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" width="' + w +
     '" height="' + h + '">' +
-    '<g stroke-width="1.4" stroke-linejoin="round">' +
-    '<ellipse cx="' + S(0.5) + '" cy="' + T(0.10) + '" rx="' + S(0.17) + '" ry="' + T(0.085) +
-    '" fill="' + on('head') + '" fill-opacity="' + fo('head') + '" stroke="' + on('head') + '"/>' +
-    '<path d="M' + S(0.28) + ' ' + T(0.22) + ' H' + S(0.72) + ' L' + S(0.68) + ' ' + T(0.56) +
-    ' H' + S(0.32) + ' Z" fill="' + on('torso') + '" fill-opacity="' + fo('torso') +
-    '" stroke="' + on('torso') + '"/>' +
-    '<path d="M' + S(0.28) + ' ' + T(0.23) + ' L' + S(0.10) + ' ' + T(0.46) + ' M' + S(0.72) +
-    ' ' + T(0.23) + ' L' + S(0.90) + ' ' + T(0.46) + '" fill="none" stroke="' + on('arms') +
-    '" stroke-opacity="' + (part === 'arms' ? 1 : 0.7) + '"/>' +
-    '<path d="M' + S(0.34) + ' ' + T(0.56) + ' L' + S(0.30) + ' ' + T(0.96) + ' M' + S(0.66) +
-    ' ' + T(0.56) + ' L' + S(0.70) + ' ' + T(0.96) + '" fill="none" stroke="' + on('legs') +
-    '" stroke-opacity="' + (part === 'legs' ? 1 : 0.7) + '" stroke-width="' +
-    (part === 'legs' ? 2.4 : 1.4) + '"/>' +
+    '<defs><clipPath id="vc-bfclip-' + part + '"><path d="' + torso + '"/></clipPath></defs>' +
+    // No displacement filter here: at 96 px it chewed the outlines into mush.
+    // The character comes from the drawn curves and the hatching instead.
+    '<g stroke-linejoin="round" stroke-linecap="round">' +
+    region(legs, 'legs') + region(armL, 'arms') + region(armR, 'arms') +
+    '<path d="' + neck + '" stroke="' + color + '" stroke-width="1.1" opacity="0.8" fill="none"/>' +
+    region(torso, 'torso') + region(head, 'head') +
+    '<path d="' + helmet + '" fill="' + color + '" fill-opacity="0.16" stroke="' + on('head') +
+    '" stroke-width="1.0"/>' +
+    // pencil hatching down the shaded (left) flank of the coat
+    '<g clip-path="url(#vc-bfclip-' + part + ')">' +
+    '<path d="' + hatchPath(w * 0.22, h * 0.21, w * 0.24, h * 0.39, { spacing: 2.9, angle: -1.05, seed: 17 }) +
+    '" stroke="' + color + '" stroke-width="0.6" opacity="0.55" fill="none"/>' +
+    '<path d="' + hatchPath(w * 0.22, h * 0.40, w * 0.16, h * 0.20, { spacing: 2.6, angle: 0.62, seed: 19 }) +
+    '" stroke="' + color + '" stroke-width="0.5" opacity="0.34" fill="none"/></g>' +
+    // collar, buttoned placket and belt: the lines that make it read as a uniform
+    '<path d="' + wobblyPath(w * 0.38, h * 0.240, w * 0.50, h * 0.290, { seed: 23, amp: 0.4, segs: 4 }) + ' ' +
+    wobblyPath(w * 0.62, h * 0.240, w * 0.50, h * 0.290, { seed: 25, amp: 0.4, segs: 4 }) +
+    '" stroke="' + color + '" stroke-width="1.0" opacity="0.75" fill="none"/>' +
+    '<path d="' + wobblyPath(w * 0.50, h * 0.290, w * 0.50, h * 0.490, { seed: 27, amp: 0.4, segs: 5 }) +
+    '" stroke="' + color + '" stroke-width="0.7" opacity="0.5" fill="none"/>' +
+    '<path d="' + wobblyPath(w * 0.290, h * 0.492, w * 0.710, h * 0.492, { seed: 29, amp: 0.5, segs: 7 }) +
+    '" stroke="' + color + '" stroke-width="1.25" opacity="0.8" fill="none"/>' +
+    ring +
     '</g></svg>');
+}
+
+/**
+ * A hand-inked key cap for the controls legend. Replaces a CSS rounded-rect
+ * border, which read as a web keyboard chip rather than a drawn journal note.
+ */
+export function keyCap(text, { seed = 3, color = '#33291f' } = {}) {
+  const t = String(text || '');
+  const w = Math.max(20, 11 + t.length * 8.2), h = 20;
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" width="' + w +
+    '" height="' + h + '" class="vc-keycap">' +
+    '<path d="' + roughRect(2, 2, w - 4, h - 4, { seed, amp: 0.55, segs: 4, overshoot: 0.9 }) +
+    '" fill="rgba(247,239,221,.5)" stroke="' + color + '" stroke-width="1.15" ' +
+    'stroke-linecap="round" opacity="0.82"/>' +
+    '<text x="' + (w / 2) + '" y="' + (h * 0.70) + '" text-anchor="middle" fill="' + color +
+    '" font-size="' + (h * 0.56) + '" font-family="Georgia,serif">' +
+    t.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</text></svg>');
+}
+
+/**
+ * The north rose stamped on the tactical survey. It is not decoration: the
+ * world's north is -Z (src/world/layout.js) and the survey is drawn north-up,
+ * so the reader needs the arrow to trust the panel.
+ */
+export function compassRose({ size = 46, seed = 71, color = '#4a3c2c', accent = '#a32f34' } = {}) {
+  const c = size / 2, r = size * 0.40;
+  const needle =
+    'M' + c + ' ' + (c - r) + 'L' + (c + r * 0.26) + ' ' + (c + r * 0.20) +
+    'L' + c + ' ' + (c + r * 0.06) + 'L' + (c - r * 0.26) + ' ' + (c + r * 0.20) + 'Z';
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + size + ' ' + size + '" width="' + size +
+    '" height="' + size + '">' +
+    '<path d="' + roughCircle(c, c, r * 1.16, { seed, amp: r * 0.05, segs: 22 }) +
+    '" fill="rgba(243,232,206,.35)" stroke="' + color + '" stroke-width="0.9" opacity="0.75"/>' +
+    '<g stroke="' + color + '" stroke-width="0.7" opacity="0.55">' +
+    '<path d="M' + c + ' ' + (c - r * 1.16) + 'V' + (c - r * 0.88) + '"/>' +
+    '<path d="M' + c + ' ' + (c + r * 1.16) + 'V' + (c + r * 0.88) + '"/>' +
+    '<path d="M' + (c - r * 1.16) + ' ' + c + 'H' + (c - r * 0.88) + '"/>' +
+    '<path d="M' + (c + r * 1.16) + ' ' + c + 'H' + (c + r * 0.88) + '"/></g>' +
+    '<path d="' + needle + '" fill="' + accent + '" fill-opacity="0.85" stroke="' + color +
+    '" stroke-width="0.8" stroke-linejoin="round" filter="url(#vc-rough)"/>' +
+    '<path d="M' + c + ' ' + (c + r * 0.06) + 'L' + (c + r * 0.20) + ' ' + (c + r * 0.62) +
+    'L' + c + ' ' + (c + r * 0.50) + 'L' + (c - r * 0.20) + ' ' + (c + r * 0.62) +
+    'Z" fill="none" stroke="' + color + '" stroke-width="0.8" stroke-linejoin="round" opacity="0.8"/>' +
+    '<text x="' + c + '" y="' + (c - r * 1.22) + '" text-anchor="middle" fill="' + color +
+    '" font-size="' + (size * 0.24) + '" font-family="Georgia,serif" letter-spacing="0.5">N</text>' +
+    '</svg>');
+}
+
+/** Ruled scale bar for the survey: "|—————| 40 m", drawn by hand. */
+export function mapScaleBar({ w = 74, seed = 83, color = '#4a3c2c' } = {}) {
+  const h = 11, y = h * 0.55;
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" width="' + w +
+    '" height="' + h + '">' +
+    '<g stroke="' + color + '" stroke-width="1.1" fill="none" stroke-linecap="round" opacity="0.8">' +
+    '<path d="' + wobblyPath(2, y, w - 2, y, { seed, amp: 0.4, segs: 6 }) + '"/>' +
+    '<path d="M2 ' + (y - 3) + 'V' + (y + 3) + '"/>' +
+    '<path d="M' + (w / 2) + ' ' + (y - 2) + 'V' + (y + 2) + '"/>' +
+    '<path d="M' + (w - 2) + ' ' + (y - 3) + 'V' + (y + 3) + '"/></g></svg>');
+}
+
+/**
+ * A survey blip: an inked chevron pointing along the unit's heading, filled
+ * with the team colour. Drawn rather than clip-path'd so it carries an outline
+ * and reads at 10 px instead of looking like a flat CSS triangle.
+ */
+export function unitBlip({ size = 13, team = 0, seed = 5, selected = false } = {}) {
+  const fill = team === 1 ? '#8d3730' : (selected ? '#a32f34' : '#37536f');
+  const s = size, c = s / 2;
+  const tri = 'M' + c + ' ' + (s * 0.06) + 'L' + (s * 0.93) + ' ' + (s * 0.94) +
+    'L' + c + ' ' + (s * 0.72) + 'L' + (s * 0.07) + ' ' + (s * 0.94) + 'Z';
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + s + ' ' + s + '" width="' + s +
+    '" height="' + s + '" class="blip">' +
+    '<path d="' + tri + '" fill="' + fill + '" stroke="#2f261f" stroke-width="' +
+    (s * 0.085).toFixed(2) + '" stroke-linejoin="round" opacity="0.96"/>' +
+    (selected
+      ? '<path d="' + roughCircle(c, c * 1.05, s * 0.62, { seed, amp: s * 0.05, segs: 18 }) +
+        '" fill="none" stroke="#a32f34" stroke-width="' + (s * 0.09).toFixed(2) + '" opacity="0.9"/>'
+      : '') +
+    '</svg>');
 }
 
 /** The results-screen rank stamp: rough double ring over an ink splat. */
@@ -500,9 +664,14 @@ export function terrainSketch({ w = 320, h = 240, seed = 1234, contours = 7 } = 
   g += '<path d="' + wobblyPath(w * 0.06, h * 0.92, w * 0.94, h * 0.12,
     { seed: seed + 91, amp: h * 0.045, segs: 11 }) +
     '" fill="none" stroke="#8a6a44" stroke-width="2.2" stroke-dasharray="9 5" opacity="0.6"/>';
-  // frame
-  g += '<path d="' + roughRect(2, 2, w - 4, h - 4, { seed: seed + 5, amp: 0.9, segs: 9 }) +
-    '" fill="none" stroke="#4a3c2c" stroke-width="1.3" opacity="0.8"/>';
+  // Frame: hand-ruled with overshot corners. At 1.3 px over a 400-unit box a
+  // 0.9 amp wobble is invisible and the border reads as a CSS rectangle.
+  g += '<path d="' + roughRect(3, 3, w - 6, h - 6,
+    { seed: seed + 5, amp: 2.4, segs: 14, overshoot: 3.2 }) +
+    '" fill="none" stroke="#4a3c2c" stroke-width="1.5" stroke-linecap="round" opacity="0.82"/>';
+  g += '<path d="' + roughRect(6, 6, w - 12, h - 12,
+    { seed: seed + 23, amp: 1.6, segs: 11, overshoot: 0 }) +
+    '" fill="none" stroke="#4a3c2c" stroke-width="0.6" stroke-linecap="round" opacity="0.34"/>';
   return svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h +
     '" width="100%" height="100%" preserveAspectRatio="none">' + g + '</svg>');
 }
@@ -578,4 +747,320 @@ export function frameRule({ w = 1600, h = 900, seed = 202 } = {}) {
     '<path d="' + roughRect(13, 13, w - 26, h - 26, { seed: seed + 11, amp: 1.1, segs: 22, overshoot: 0 }) +
     '" fill="none" stroke="#4a3c2c" stroke-width="0.7" opacity="0.30"/>' +
     '</svg>');
+}
+
+// --------------------------------------------------------------------------
+// Drawn gauges — a meter in this book is INKED, never a filled <div>
+// --------------------------------------------------------------------------
+
+/**
+ * A ruled gauge trough with a brushed pigment fill.
+ *
+ * Three layers, so the reading never collapses into a CSS progress bar:
+ *   back  graphite hatch laid inside the trough (the empty run is *paper*)
+ *   fill  a gouache wash clipped to the value, with a nib where the brush lifted
+ *   face  segment ticks + a hand-ruled box drawn ON TOP of the pigment, so the
+ *         rule reads as ink over paint rather than as a border around a bar
+ *
+ * @param {{w?:number,h?:number,seed?:number,segs?:number,tone?:string}} o
+ * @returns {HTMLElement} root with `.set(frac, tone?)` attached
+ */
+export function inkGauge({ w = 200, h: hgt = 14, seed = 11, segs = 8, tone = 'hp' } = {}) {
+  const pad = 1.4;
+  const iw = w - pad * 2, ih = hgt - pad * 2;
+  const vb = ' viewBox="0 0 ' + w + ' ' + hgt + '" preserveAspectRatio="none"';
+
+  const back = svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg"' + vb + '>' +
+    '<path d="' + hatchPath(pad, pad, iw, ih, {
+      spacing: Math.max(2.2, hgt * 0.22), angle: -0.92, seed: seed + 5, amp: 0.3,
+    }) + '" stroke="#4a3c2c" stroke-width="0.6" opacity="0.34" fill="none"/>' +
+    '<path d="' + wobblyPath(pad, pad + ih * 0.22, w - pad, pad + ih * 0.22,
+      { seed: seed + 31, amp: 0.4, segs: 7 }) +
+    '" stroke="#3a2f28" stroke-width="0.7" opacity="0.16" fill="none"/></svg>');
+  back.classList.add('vc-g-back');
+
+  // Ticks are struck twice — a pale ghost under a graphite stroke — so the same
+  // rule reads whether it crosses bare paper or laid pigment.
+  let face = '';
+  for (let i = 1; i < segs; i++) {
+    const x = pad + (i / segs) * iw;
+    const tall = segs <= 6 || i % 2 === 0;
+    const d = wobblyPath(x, pad + ih * (tall ? 0.10 : 0.28), x, pad + ih * (tall ? 0.90 : 0.72),
+      { seed: seed + i * 7, amp: 0.32, segs: 2 });
+    face += '<path d="' + d + '" stroke="#f4ead2" stroke-width="' + (tall ? 1.9 : 1.5) +
+      '" opacity="' + (tall ? 0.34 : 0.22) + '" fill="none"/>' +
+      '<path d="' + d + '" stroke="#3a2f28" stroke-width="' + (tall ? 0.85 : 0.6) +
+      '" opacity="' + (tall ? 0.5 : 0.32) + '" fill="none"/>';
+  }
+  face += '<path d="' + roughRect(pad, pad, iw, ih, { seed, amp: 0.5, segs: 6, overshoot: 1.7 }) +
+    '" fill="none" stroke="#3a2f28" stroke-width="1.1" opacity="0.86" stroke-linecap="round"/>';
+  const faceEl = svgEl('<svg xmlns="http://www.w3.org/2000/svg"' + vb + '>' + face + '</svg>');
+  faceEl.classList.add('vc-g-face');
+
+  const root = h('div', { class: 'vc-g' });
+  const fill = h('div', { class: 'vc-g-fill ' + tone });
+  // The nib: where the brush was lifted the pigment pools and the edge is ragged.
+  const nib = svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 ' + hgt +
+    '" preserveAspectRatio="none"><path d="' +
+    wobblyPath(3, pad + 0.6, 3, hgt - pad - 0.6, { seed: seed + 61, amp: 0.7, segs: 4 }) +
+    '" stroke="rgba(40,28,22,.44)" stroke-width="2.1" fill="none" stroke-linecap="round"/></svg>');
+  nib.classList.add('vc-g-nib');
+  fill.appendChild(nib);
+  root.appendChild(back);
+  root.appendChild(fill);
+  root.appendChild(faceEl);
+
+  let last = -1, lastTone = tone;
+  root.set = (frac, t) => {
+    const v = clamp01(frac);
+    if (t && t !== lastTone) { lastTone = t; fill.className = 'vc-g-fill ' + t; }
+    const k = Math.round(v * 400);
+    if (k === last) return;
+    last = k;
+    fill.style.width = (v * 100).toFixed(2) + '%';
+    fill.style.opacity = v < 0.004 ? '0' : '1';
+    // Hatching belongs to the DRY part of the trough only: laid under the wash
+    // it turned the pigment into a hatched swatch instead of a laid colour.
+    back.style.clipPath = 'inset(0 0 0 ' + (v * 100).toFixed(2) + '%)';
+  };
+  root.set(1);
+  return root;
+}
+
+/**
+ * A surveyor's march line — the AP readout. Deliberately NOT a bar: AP in this
+ * game is a *distance*, so it is drawn as a chained pace-line with a pin at the
+ * head of the run, the way a route is stepped off on a field map.
+ * @returns {HTMLElement} root with `.set(frac)` attached
+ */
+export function marchLine({ w = 150, h: hgt = 10, seed = 21, paces = 9 } = {}) {
+  const y = hgt * 0.56;
+  let g = '';
+  for (let i = 0; i < paces; i++) {
+    const x0 = 2 + (i / paces) * (w - 8) + 1.2;
+    const x1 = 2 + ((i + 0.62) / paces) * (w - 8);
+    g += '<path d="' + wobblyPath(x0, y, x1, y, { seed: seed + i * 5, amp: 0.35, segs: 2 }) +
+      '" stroke="#4a3c2c" stroke-width="0.9" opacity="0.42" fill="none" stroke-linecap="round"/>';
+  }
+  for (let i = 0; i <= paces; i += 3) {
+    const x = 2 + (i / paces) * (w - 8);
+    g += '<path d="M' + x.toFixed(1) + ' ' + (y - hgt * 0.26) + 'V' + (y + hgt * 0.26) +
+      '" stroke="#4a3c2c" stroke-width="0.8" opacity="0.42"/>';
+  }
+  const back = svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + hgt +
+    '" preserveAspectRatio="none">' + g + '</svg>');
+  back.classList.add('vc-m-back');
+
+  const runSvg = svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + hgt +
+    '" preserveAspectRatio="none"><path d="' +
+    wobblyPath(2, y, w - 6, y, { seed: seed + 71, amp: 0.55, segs: Math.max(6, w / 18) }) +
+    '" stroke="#8fa6b8" stroke-width="3.4" fill="none" stroke-linecap="round" opacity="0.55"/>' +
+    '<path d="' + wobblyPath(2, y - 0.5, w - 6, y - 0.5,
+      { seed: seed + 73, amp: 0.5, segs: Math.max(6, w / 18) }) +
+    '" stroke="#3a5872" stroke-width="2.1" fill="none" stroke-linecap="round"/></svg>');
+  const run = h('div', { class: 'vc-m-run' });
+  run.appendChild(runSvg);
+
+  const pin = svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 ' + hgt + '">' +
+    '<path d="M4.5 ' + (hgt * 0.10) + 'V' + (hgt * 0.94) + '" stroke="#3a5872" stroke-width="1.8" ' +
+    'stroke-linecap="round"/><path d="M4.5 ' + (hgt * 0.14) + 'l3.6 1.6-3.6 1.7Z" fill="#3a5872"/></svg>');
+  pin.classList.add('vc-m-pin');
+
+  const root = h('div', { class: 'vc-m' });
+  root.appendChild(back);
+  root.appendChild(run);
+  root.appendChild(pin);
+  let last = -1;
+  root.set = (frac) => {
+    const v = clamp01(frac);
+    const k = Math.round(v * 300);
+    if (k === last) return;
+    last = k;
+    run.style.clipPath = 'inset(0 ' + ((1 - v) * 100).toFixed(2) + '% 0 0)';
+    pin.style.left = (v * 100).toFixed(2) + '%';
+    pin.style.opacity = v < 0.01 ? '0' : '1';
+  };
+  root.set(1);
+  return root;
+}
+
+/**
+ * A drawn dial — an inked arc that fills clockwise from the bottom-left. The
+ * moving arc carries class `prog`; set its `stroke-dashoffset` to drive it.
+ */
+export function dialGauge({ size = 46, seed = 61, color = '#4a3c2c', ink = '#a32f34' } = {}) {
+  const c = size / 2, r = size * 0.38;
+  const span = Math.PI * 1.5;                       // 270 degrees, gap at the foot
+  const a0 = Math.PI * 0.75;
+  const pt = (a) => [(c + Math.cos(a) * r).toFixed(2), (c + Math.sin(a) * r).toFixed(2)];
+  const [x0, y0] = pt(a0), [x1, y1] = pt(a0 + span);
+  const arc = 'M' + x0 + ' ' + y0 + 'A' + r.toFixed(2) + ' ' + r.toFixed(2) +
+    ' 0 1 1 ' + x1 + ' ' + y1;
+  const len = r * span;
+  let ticks = '';
+  for (let i = 0; i <= 4; i++) {
+    const a = a0 + (i / 4) * span;
+    const [ix, iy] = pt(a);
+    ticks += '<path d="M' + ix + ' ' + iy + 'L' +
+      (c + Math.cos(a) * r * 1.24).toFixed(2) + ' ' + (c + Math.sin(a) * r * 1.24).toFixed(2) +
+      '" stroke="' + color + '" stroke-width="1" opacity="0.5"/>';
+  }
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + size + ' ' + size +
+    '" width="' + size + '" height="' + size + '">' +
+    '<path d="' + roughCircle(c, c, r * 1.34, { seed, amp: 0.5, segs: 22 }) +
+    '" fill="none" stroke="' + color + '" stroke-width="0.8" opacity="0.35"/>' +
+    ticks +
+    '<path d="' + arc + '" fill="none" stroke="' + color +
+    '" stroke-width="3.2" opacity="0.22" stroke-linecap="round"/>' +
+    '<path class="prog" d="' + arc + '" fill="none" stroke="' + ink +
+    '" stroke-width="3.2" stroke-linecap="round" stroke-dasharray="' + len.toFixed(2) +
+    '" stroke-dashoffset="' + len.toFixed(2) + '"/></svg>');
+}
+
+/** A pencilled marginal bracket — the mark a reader leaves beside a line. */
+export function marginBracket({ w = 12, hgt = 60, seed = 41, color = '#a32f34' } = {}) {
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + hgt +
+    '" preserveAspectRatio="none"><path d="' +
+    wobblyPath(w - 1.5, 2, 2.5, 5, { seed, amp: 0.7, segs: 3 }) + ' ' +
+    wobblyPath(2.5, 5, 2.5, hgt - 5, { seed: seed + 7, amp: 0.9, segs: 8 }) + ' ' +
+    wobblyPath(2.5, hgt - 5, w - 1.5, hgt - 2, { seed: seed + 13, amp: 0.7, segs: 3 }) +
+    '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round" ' +
+    'opacity="0.85"/></svg>');
+}
+
+/** Veterancy chevrons, drawn with a nib rather than stamped from a font. */
+export function rankChevrons({ n = 1, w = 15, seed = 33, color = '#7a6244' } = {}) {
+  const rows = Math.max(1, Math.min(3, n | 0));
+  const h0 = 4.2, gap = 3.4;
+  let g = '';
+  for (let i = 0; i < rows; i++) {
+    const y = 2 + i * gap;
+    g += '<path d="' + wobblyPath(1.5, y + h0, w / 2, y, { seed: seed + i * 9, amp: 0.32, segs: 3 }) + ' ' +
+      wobblyPath(w / 2, y, w - 1.5, y + h0, { seed: seed + i * 9 + 4, amp: 0.32, segs: 3 }) +
+      '" stroke="' + color + '" stroke-width="1.35" fill="none" stroke-linecap="round"/>';
+  }
+  return svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' +
+    (2 + rows * gap + h0) + '" width="' + w + '">' + g + '</svg>');
+}
+
+/**
+ * Contour survey drawn from REAL sampled terrain, so the page agrees with the
+ * ground under it. `sample(x, z)` returns a height in metres; the extent is a
+ * square of `ext` metres centred on the origin, north (-Z) at the top.
+ */
+export function contourMap({
+  w = 400, hgt = 300, ext = 128, sample = null, seed = 1234, levels = 7, water = 0,
+} = {}) {
+  const N = 48, M = 36;
+  const grid = new Float32Array(N * M);
+  let lo = Infinity, hi = -Infinity;
+  for (let j = 0; j < M; j++) {
+    for (let i = 0; i < N; i++) {
+      const x = (i / (N - 1) - 0.5) * ext;
+      const z = (j / (M - 1) - 0.5) * ext;
+      let v = 0;
+      try { v = sample ? sample(x, z) : 0; } catch { v = 0; }
+      if (!isFinite(v)) v = 0;
+      grid[j * N + i] = v;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
+  if (!isFinite(lo) || hi - lo < 0.2) { lo = 0; hi = 1; }
+
+  const rng = makeRng((seed >>> 0) || 1);
+  const px = (i) => (i / (N - 1)) * w;
+  const py = (j) => (j / (M - 1)) * hgt;
+  // Marching squares, one polyline segment per crossed cell edge. Segments are
+  // emitted individually with a little per-segment wander so the contour reads
+  // as a drawn line rather than a plotted one.
+  let g = '';
+  for (let L = 1; L <= levels; L++) {
+    const iso = lo + ((hi - lo) * L) / (levels + 1);
+    const major = L % 2 === 0;
+    let d = '';
+    for (let j = 0; j < M - 1; j++) {
+      for (let i = 0; i < N - 1; i++) {
+        const a = grid[j * N + i], b = grid[j * N + i + 1];
+        const c = grid[(j + 1) * N + i + 1], e = grid[(j + 1) * N + i];
+        const pts = [];
+        const cut = (v0, v1, x0, y0, x1, y1) => {
+          if ((v0 < iso) === (v1 < iso)) return;
+          const t = (iso - v0) / (v1 - v0 || 1e-6);
+          pts.push([x0 + (x1 - x0) * t, y0 + (y1 - y0) * t]);
+        };
+        cut(a, b, px(i), py(j), px(i + 1), py(j));
+        cut(b, c, px(i + 1), py(j), px(i + 1), py(j + 1));
+        cut(c, e, px(i + 1), py(j + 1), px(i), py(j + 1));
+        cut(e, a, px(i), py(j + 1), px(i), py(j));
+        for (let k = 0; k + 1 < pts.length; k += 2) {
+          const [x0, y0] = pts[k], [x1, y1] = pts[k + 1];
+          const mx = (x0 + x1) / 2 + (rng() - 0.5) * 1.5;
+          const my = (y0 + y1) / 2 + (rng() - 0.5) * 1.5;
+          d += 'M' + x0.toFixed(1) + ' ' + y0.toFixed(1) +
+            'Q' + mx.toFixed(1) + ' ' + my.toFixed(1) + ' ' + x1.toFixed(1) + ' ' + y1.toFixed(1);
+        }
+      }
+    }
+    if (d) {
+      g += '<path d="' + d + '" fill="none" stroke="#6b5a44" stroke-width="' +
+        (major ? 1.05 : 0.68) + '" opacity="' + (major ? 0.62 : 0.38) +
+        '" stroke-linecap="round"/>';
+    }
+  }
+
+  // Water: everything at or below the river level, laid in as a pale wash with a
+  // firmer bank line — the same marching-squares crossing, filled from below.
+  if (water) {
+    // Fill: one unstroked path (a stroke would draw every internal cell edge and
+    // the river would read as graph paper). Bank: the iso-line at water level,
+    // drawn separately as a firm, slightly wandering pen line.
+    let fill = '';
+    for (let j = 0; j < M - 1; j++) {
+      for (let i = 0; i < N - 1; i++) {
+        const mid = (grid[j * N + i] + grid[j * N + i + 1] +
+          grid[(j + 1) * N + i + 1] + grid[(j + 1) * N + i]) * 0.25;
+        if (mid < water) {
+          fill += 'M' + (px(i) - 1.1).toFixed(1) + ' ' + (py(j) - 1.1).toFixed(1) +
+            'H' + (px(i + 1) + 1.1).toFixed(1) + 'V' + (py(j + 1) + 1.1).toFixed(1) +
+            'H' + (px(i) - 1.1).toFixed(1) + 'Z';
+        }
+      }
+    }
+    let bank = '';
+    for (let j = 0; j < M - 1; j++) {
+      for (let i = 0; i < N - 1; i++) {
+        const a = grid[j * N + i], b = grid[j * N + i + 1];
+        const c = grid[(j + 1) * N + i + 1], e = grid[(j + 1) * N + i];
+        const pts = [];
+        const cut = (v0, v1, x0, y0, x1, y1) => {
+          if ((v0 < water) === (v1 < water)) return;
+          const t = (water - v0) / (v1 - v0 || 1e-6);
+          pts.push([x0 + (x1 - x0) * t, y0 + (y1 - y0) * t]);
+        };
+        cut(a, b, px(i), py(j), px(i + 1), py(j));
+        cut(b, c, px(i + 1), py(j), px(i + 1), py(j + 1));
+        cut(c, e, px(i + 1), py(j + 1), px(i), py(j + 1));
+        cut(e, a, px(i), py(j + 1), px(i), py(j));
+        for (let k = 0; k + 1 < pts.length; k += 2) {
+          const [x0, y0] = pts[k], [x1, y1] = pts[k + 1];
+          bank += 'M' + x0.toFixed(1) + ' ' + y0.toFixed(1) +
+            'L' + x1.toFixed(1) + ' ' + y1.toFixed(1);
+        }
+      }
+    }
+    g = (fill ? '<path d="' + fill + '" fill="#6d8f96" fill-opacity="0.26" stroke="none"/>' : '') +
+      g + (bank ? '<path d="' + bank + '" fill="none" stroke="#41636a" stroke-width="1.35" ' +
+        'stroke-opacity="0.72" stroke-linecap="round"/>' : '');
+  }
+
+  // A wash of tone under the line work, so the survey has value as well as line.
+  g = '<rect width="' + w + '" height="' + hgt + '" fill="#cbbb93" fill-opacity="0.16"/>' + g;
+
+  return svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + hgt +
+    '" preserveAspectRatio="none" style="width:100%;height:100%">' + g + '</svg>');
 }

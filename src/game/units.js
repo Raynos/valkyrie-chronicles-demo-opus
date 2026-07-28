@@ -56,58 +56,84 @@ export function bindWorldHooks(world) {
 // `settled`    fraction of `spread` remaining once the reticle has fully converged
 // `settle`     seconds of holding still to converge
 // `range`      metres at which accuracy is still 100%; falls off to 0.25 at maxRange
+//
+// CROSS-NAMESPACE IDs. Three modules name weapons and none of them agree, because
+// none of them are naming the same thing: this table is the gameplay stat block, and
+//   `ballistics` -> src/physics/ballistics.js WEAPON_BALLISTICS  (flight model: v0,
+//                   drag, penetration, tracer, explosive payload)
+//   `mesh`       -> src/actors/weapons.js WEAPONS                (geometry the soldier
+//                   is actually holding; null where the actor carries no separate gun)
+//   `sfx`        -> src/audio/sfx.js SFX                         (report)
+// These three fields are the ONLY bridge; nothing renames anyone else's ids. Keep them
+// in step with src/physics/index.js GAME_WEAPON_BALLISTICS.
 // ---------------------------------------------------------------------------
 
 export const WEAPONS = {
   // --- Gallian (player, team 0) --------------------------------------------
   ZM_KAR8: {
-    id: 'ZM_KAR8', name: 'ZM Kar 8', kind: 'rifle', shots: 4, rpm: 430,
+    id: 'ZM_KAR8', name: 'ZM Kar 8', kind: 'rifle',
+    ballistics: 'rifle', mesh: 'gallianRifle',
+    shots: 4, rpm: 430,
     apDamage: 27, aaDamage: 4, accuracy: 0.63, range: 26, maxRange: 46,
     spread: 0.0225, settled: 0.22, settle: 1.05, recoil: 0.0052, magAttacks: 5,
     tracer: 0.34, sfx: 'rifle', muzzleFlash: 0.9, canFireMoving: false, pierce: 0.0,
   },
   ZM_MP: {
-    id: 'ZM_MP', name: 'ZM MP', kind: 'smg', shots: 11, rpm: 780,
+    id: 'ZM_MP', name: 'ZM MP', kind: 'smg',
+    ballistics: 'smg', mesh: 'smg',
+    shots: 11, rpm: 780,
     apDamage: 15, aaDamage: 2, accuracy: 0.52, range: 15, maxRange: 30,
     spread: 0.041, settled: 0.34, settle: 0.75, recoil: 0.0031, magAttacks: 4,
     tracer: 0.28, sfx: 'smg', muzzleFlash: 0.7, canFireMoving: false, pierce: 0.0,
   },
   ZM_LANCE: {
-    id: 'ZM_LANCE', name: 'ZM Lance 3', kind: 'lance', shots: 1, rpm: 20,
+    id: 'ZM_LANCE', name: 'ZM Lance 3', kind: 'lance',
+    ballistics: 'lance', mesh: 'lance',
+    shots: 1, rpm: 20,
     apDamage: 92, aaDamage: 330, accuracy: 0.55, range: 11, maxRange: 19,
     spread: 0.021, settled: 0.18, settle: 1.6, recoil: 0.02, magAttacks: 2,
     tracer: 1, sfx: 'lance', muzzleFlash: 2.2, canFireMoving: false, pierce: 1.0,
     splash: 3.2, splashPower: 46, backblast: true,
   },
   ZM_RIFLE_E: {
-    id: 'ZM_RIFLE_E', name: 'ZM Kar 5', kind: 'rifle', shots: 3, rpm: 380,
+    id: 'ZM_RIFLE_E', name: 'ZM Kar 5', kind: 'rifle',
+    ballistics: 'rifle', mesh: 'gallianRifleB',
+    shots: 3, rpm: 380,
     apDamage: 21, aaDamage: 3, accuracy: 0.58, range: 22, maxRange: 38,
     spread: 0.026, settled: 0.26, settle: 1.0, recoil: 0.0048, magAttacks: 5,
     tracer: 0.3, sfx: 'rifle', muzzleFlash: 0.85, canFireMoving: false, pierce: 0.0,
   },
   ZM_SG: {
-    id: 'ZM_SG', name: 'ZM SG', kind: 'sniper', shots: 1, rpm: 32,
+    id: 'ZM_SG', name: 'ZM SG', kind: 'sniper',
+    ballistics: 'sniper', mesh: 'sniperRifle',
+    shots: 1, rpm: 32,
     apDamage: 132, aaDamage: 22, accuracy: 0.88, range: 70, maxRange: 130,
     spread: 0.0125, settled: 0.055, settle: 2.1, recoil: 0.011, magAttacks: 3,
     tracer: 0.6, sfx: 'sniper', muzzleFlash: 1.3, canFireMoving: false, pierce: 0.35,
     scope: 4.2,
   },
   ZM_TANK_HE: {
-    id: 'ZM_TANK_HE', name: '88mm HE', kind: 'cannon', shots: 1, rpm: 12,
+    id: 'ZM_TANK_HE', name: '88mm HE', kind: 'cannon',
+    ballistics: 'tankHE', mesh: null,
+    shots: 1, rpm: 12,
     apDamage: 210, aaDamage: 190, accuracy: 0.74, range: 44, maxRange: 95,
     spread: 0.011, settled: 0.09, settle: 1.5, recoil: 0.03, magAttacks: 6,
     tracer: 1, sfx: 'tankGun', muzzleFlash: 3.4, canFireMoving: false, pierce: 0.6,
     splash: 5.2, splashPower: 120, arc: 0.055,
   },
   ZM_TANK_AP: {
-    id: 'ZM_TANK_AP', name: '88mm AP', kind: 'cannon', shots: 1, rpm: 12,
+    id: 'ZM_TANK_AP', name: '88mm AP', kind: 'cannon',
+    ballistics: 'tankAP', mesh: null,
+    shots: 1, rpm: 12,
     apDamage: 120, aaDamage: 340, accuracy: 0.78, range: 55, maxRange: 110,
     spread: 0.008, settled: 0.06, settle: 1.5, recoil: 0.03, magAttacks: 4,
     tracer: 1, sfx: 'tankGun', muzzleFlash: 3.0, canFireMoving: false, pierce: 1.0,
     splash: 2.0, splashPower: 40,
   },
   ZM_COAX: {
-    id: 'ZM_COAX', name: 'Coaxial MG', kind: 'mg', shots: 14, rpm: 620,
+    id: 'ZM_COAX', name: 'Coaxial MG', kind: 'mg',
+    ballistics: 'coax', mesh: null,
+    shots: 14, rpm: 620,
     apDamage: 13, aaDamage: 1, accuracy: 0.56, range: 24, maxRange: 42,
     spread: 0.030, settled: 0.30, settle: 0.6, recoil: 0.002, magAttacks: 8,
     tracer: 0.4, sfx: 'mgFire', muzzleFlash: 0.8, canFireMoving: false, pierce: 0.0,
@@ -115,40 +141,52 @@ export const WEAPONS = {
 
   // --- Imperial (enemy, team 1) --------------------------------------------
   VB_GW: {
-    id: 'VB_GW', name: 'VB Gew 2', kind: 'rifle', shots: 4, rpm: 400,
+    id: 'VB_GW', name: 'VB Gew 2', kind: 'rifle',
+    ballistics: 'rifle', mesh: 'gallianRifleB',
+    shots: 4, rpm: 400,
     apDamage: 24, aaDamage: 4, accuracy: 0.60, range: 25, maxRange: 44,
     spread: 0.024, settled: 0.24, settle: 1.05, recoil: 0.005, magAttacks: 5,
     tracer: 0.34, sfx: 'rifle', muzzleFlash: 0.9, canFireMoving: false, pierce: 0.0,
   },
   VB_MP: {
-    id: 'VB_MP', name: 'VB MP 3', kind: 'smg', shots: 10, rpm: 730,
+    id: 'VB_MP', name: 'VB MP 3', kind: 'smg',
+    ballistics: 'smg', mesh: 'smg',
+    shots: 10, rpm: 730,
     apDamage: 14, aaDamage: 2, accuracy: 0.50, range: 14, maxRange: 28,
     spread: 0.044, settled: 0.36, settle: 0.75, recoil: 0.003, magAttacks: 4,
     tracer: 0.28, sfx: 'smg', muzzleFlash: 0.7, canFireMoving: false, pierce: 0.0,
   },
   VB_LANCE: {
-    id: 'VB_LANCE', name: 'VB Lanze', kind: 'lance', shots: 1, rpm: 20,
+    id: 'VB_LANCE', name: 'VB Lanze', kind: 'lance',
+    ballistics: 'lance', mesh: 'lance',
+    shots: 1, rpm: 20,
     apDamage: 86, aaDamage: 300, accuracy: 0.52, range: 10, maxRange: 18,
     spread: 0.023, settled: 0.2, settle: 1.6, recoil: 0.02, magAttacks: 2,
     tracer: 1, sfx: 'lance', muzzleFlash: 2.2, canFireMoving: false, pierce: 1.0,
     splash: 3.0, splashPower: 42, backblast: true,
   },
   VB_SG: {
-    id: 'VB_SG', name: 'VB SG', kind: 'sniper', shots: 1, rpm: 30,
+    id: 'VB_SG', name: 'VB SG', kind: 'sniper',
+    ballistics: 'sniper', mesh: 'sniperRifle',
+    shots: 1, rpm: 30,
     apDamage: 118, aaDamage: 20, accuracy: 0.84, range: 62, maxRange: 120,
     spread: 0.014, settled: 0.06, settle: 2.2, recoil: 0.011, magAttacks: 3,
     tracer: 0.6, sfx: 'sniper', muzzleFlash: 1.3, canFireMoving: false, pierce: 0.35,
     scope: 4.0,
   },
   VB_TANK: {
-    id: 'VB_TANK', name: '75mm KwK', kind: 'cannon', shots: 1, rpm: 11,
+    id: 'VB_TANK', name: '75mm KwK', kind: 'cannon',
+    ballistics: 'tankHE', mesh: null,
+    shots: 1, rpm: 11,
     apDamage: 190, aaDamage: 300, accuracy: 0.70, range: 42, maxRange: 90,
     spread: 0.013, settled: 0.1, settle: 1.6, recoil: 0.03, magAttacks: 6,
     tracer: 1, sfx: 'tankGun', muzzleFlash: 3.2, canFireMoving: false, pierce: 0.9,
     splash: 4.6, splashPower: 105, arc: 0.05,
   },
   VB_COAX: {
-    id: 'VB_COAX', name: 'Hull MG', kind: 'mg', shots: 12, rpm: 600,
+    id: 'VB_COAX', name: 'Hull MG', kind: 'mg',
+    ballistics: 'coax', mesh: null,
+    shots: 12, rpm: 600,
     apDamage: 12, aaDamage: 1, accuracy: 0.54, range: 22, maxRange: 40,
     spread: 0.032, settled: 0.32, settle: 0.6, recoil: 0.002, magAttacks: 8,
     tracer: 0.4, sfx: 'mgFire', muzzleFlash: 0.8, canFireMoving: false, pierce: 0.0,
@@ -157,9 +195,37 @@ export const WEAPONS = {
 
 export const GRENADE = {
   id: 'GRENADE', name: 'Fragmentation Grenade', kind: 'grenade',
+  ballistics: 'grenade', mesh: 'grenade',
   apDamage: 0, aaDamage: 0, splash: 4.4, splashPower: 88, aaSplashPower: 30,
   fuse: 3.2, throwSpeed: 15.5, sfx: 'grenadeThrow',
 };
+
+/**
+ * The exterior-ballistics id for anything in this table (or GRENADE). This is the
+ * lookup src/physics/index.js `ballisticsFor()` resolves against WEAPON_BALLISTICS —
+ * without it a Unit's weapon can never select a flight model and every simulated
+ * round falls back to the plain rifle profile.
+ * @param {object|string} w  a WEAPONS entry or its id
+ * @returns {string|null}
+ */
+export function weaponBallisticsId(w) {
+  if (!w) return null;
+  if (typeof w === 'string') {
+    const e = WEAPONS[w] || (w === GRENADE.id ? GRENADE : null);
+    return e ? e.ballistics || null : null;
+  }
+  return w.ballistics || null;
+}
+
+/** The src/actors/weapons.js mesh id for a weapon, or null if it has no held model. */
+export function weaponMeshId(w) {
+  if (!w) return null;
+  if (typeof w === 'string') {
+    const e = WEAPONS[w] || (w === GRENADE.id ? GRENADE : null);
+    return e ? e.mesh || null : null;
+  }
+  return w.mesh || null;
+}
 
 // ---------------------------------------------------------------------------
 // Classes
@@ -448,6 +514,12 @@ export function rollPotentials(seed, cls) {
 // ---------------------------------------------------------------------------
 // Stance
 // ---------------------------------------------------------------------------
+
+// HP of blast damage a brewing-up tank delivers at the epicentre — the `power`
+// convention of the `explosion` Bus event (docs/ARCHITECTURE.md). Enough to kill an
+// unarmoured soldier standing against the hull (scout hp 62) and to level the crates
+// and drums around it, but a 480 HP sandbag revetment survives at the blast edge.
+export const TANK_DEATH_POWER = 130;
 
 export const STANCE = { STAND: 0, CROUCH: 1, PRONE: 2 };
 const STANCE_HEIGHT = [1.0, 0.64, 0.34];
@@ -752,7 +824,15 @@ export class Unit {
     Bus.emit('unit:healed', { unit: this, amount: n });
   }
 
-  /** 0 HP: vehicles brew up immediately, infantry go DOWN and bleed for 3 turns. */
+  /**
+   * 0 HP: vehicles brew up immediately, infantry go DOWN and bleed for 3 turns.
+   *
+   * THE GAME LAYER IS THE SOLE OWNER of a unit's death events. The visual actor is
+   * told to play its death animation and does the wreck/scorch/track-throwing that
+   * goes with it, but it must not raise `unit:downed` or `explosion` of its own —
+   * doing that gave every tank kill two death banners, two blasts, two impulses and
+   * two area-damage passes (see src/actors/tank.js destroy()).
+   */
   goDown(source = null) {
     if (this.downed || !this.alive) return;
     if (this.isVehicle) {
@@ -760,8 +840,10 @@ export class Unit {
       this.hp = 0;
       Bus.emit('unit:downed', { unit: this });
       Bus.emit('unit:dead', { unit: this, cause: 'destroyed', source });
-      Bus.emit('explosion', { pos: this.pos.clone(), radius: 7, power: 130 });
-      Bus.emit('sfx', { name: 'tankDeath', pos: this.pos });
+      // `power` is HP of damage at the epicentre, falling to 0 at `radius`: a brewing-up
+      // tank is lethal to infantry beside it and levels the light cover around it.
+      Bus.emit('explosion', { pos: this.pos.clone(), radius: 7, power: TANK_DEATH_POWER, source });
+      Bus.emit('sfx', { name: 'explosion', pos: this.pos, vol: 1 });
       this.actor?.play?.('death');
       if (source) source.stats.kills++;
       return;

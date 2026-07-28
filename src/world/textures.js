@@ -49,6 +49,36 @@ function toDetail(g, size, { strength = 0.3, contrast = 1.0 } = {}) {
   g.putImageData(img, 0, 0);
 }
 
+/**
+ * Same idea as `toDetail`, but for a CUT-OUT map: the alpha channel is the
+ * silhouette and must survive untouched, and the mean is weighted by alpha so
+ * the transparent surround does not drag it to black.
+ *
+ * This is load-bearing. Foliage albedo is `mix(rootColor, tipColor) * map`, so a
+ * map that carries its own green multiplies one leaf colour by another and the
+ * canopy comes out four times too dark — which is exactly how a stand of oaks
+ * turns into a cluster of black blobs.
+ */
+function toDetailCutout(g, size, { strength = 0.32, contrast = 1.0, lift = 0.12 } = {}) {
+  const img = g.getImageData(0, 0, size, size);
+  const d = img.data;
+  const lum = new Float32Array(size * size);
+  let mean = 0, wsum = 0;
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    lum[p] = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
+    const a = d[i + 3] / 255;
+    mean += lum[p] * a; wsum += a;
+  }
+  mean = wsum > 1e-3 ? Math.max(1e-4, mean / wsum) : 0.5;
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    let v = 1 + (lum[p] / mean - 1) * contrast;
+    v = Math.max(1 - strength, Math.min(1 + lift, v));
+    const b = Math.min(255, (v * 255) | 0);
+    d[i] = d[i + 1] = d[i + 2] = b;
+  }
+  g.putImageData(img, 0, 0);
+}
+
 function finish(c, { repeat = 1, aniso = 8, srgb = true } = {}) {
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
@@ -106,13 +136,19 @@ export function leafClusterTexture(species = 'oak', seed = 5) {
       g.fill();
     }
 
-    // punch alpha holes so light reads through the canopy
+    // A few alpha holes so light reads through the canopy — but only a few, and
+    // biased to the OUTSIDE of the cluster. Holes punched through the middle of
+    // the mass show sky where there should be leaf, and a canopy full of those
+    // is exactly what makes a tree read as scrub.
     g.globalCompositeOperation = 'destination-out';
-    for (let i = 0; i < 34; i++) {
-      const cx = rng() * S, cy = rng() * S;
-      const rad = S * (0.012 + rng() * 0.05);
+    for (let i = 0; i < 14; i++) {
+      const a = rng() * TAU;
+      const rr = 0.26 + rng() * 0.26;
+      const cx = S * (0.5 + Math.cos(a) * rr);
+      const cy = S * (0.5 + Math.sin(a) * rr);
+      const rad = S * (0.010 + rng() * 0.030);
       const grad = g.createRadialGradient(cx, cy, 0, cx, cy, rad);
-      grad.addColorStop(0, 'rgba(0,0,0,0.95)');
+      grad.addColorStop(0, 'rgba(0,0,0,0.9)');
       grad.addColorStop(1, 'rgba(0,0,0,0)');
       g.fillStyle = grad;
       g.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
@@ -131,6 +167,8 @@ export function leafClusterTexture(species = 'oak', seed = 5) {
       g.stroke();
     }
 
+    // Value-only: the leaf HUE belongs to the material's root/tip ramp.
+    toDetailCutout(g, S, { strength: 0.34, contrast: 1.15, lift: 0.16 });
     const t = finish(c, { repeat: 1 });
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     return t;
@@ -148,8 +186,10 @@ export function bladeTexture(kind = 'grass', seed = 3) {
     const wheat = kind === 'wheat';
     for (let y = 0; y < S; y++) {
       const v = 1 - y / S;                    // 1 at tip
+      // The EAR is the top fifth of a wheat stem, not the top two thirds: a
+      // long fat head reads as a leaf, and a field of leaves is not a crop.
       let half = wheat
-        ? (v > 0.62 ? 0.30 * Math.sin((v - 0.62) / 0.38 * Math.PI) + 0.06 : 0.055)
+        ? (v > 0.80 ? 0.20 * Math.sin((v - 0.80) / 0.20 * Math.PI) + 0.035 : 0.032)
         : 0.19 * Math.pow(1 - v, 0.55) + 0.012;
       half *= S;
       const cx = S * 0.5;
@@ -163,16 +203,18 @@ export function bladeTexture(kind = 'grass', seed = 3) {
       g.fillRect(cx - half, y, half * 2, 1);
     }
     if (wheat) {
+      // awns: the bristles standing off the ear
       g.strokeStyle = 'rgba(212,188,120,0.85)';
       g.lineWidth = 1;
-      for (let i = 0; i < 9; i++) {
-        const y = 4 + rng() * 22;
+      for (let i = 0; i < 11; i++) {
+        const y = 2 + rng() * 9;
         g.beginPath();
-        g.moveTo(S * 0.5, y + 8);
-        g.lineTo(S * 0.5 + (rng() - 0.5) * 26, y);
+        g.moveTo(S * 0.5, y + 6);
+        g.lineTo(S * 0.5 + (rng() - 0.5) * 17, y);
         g.stroke();
       }
     }
+    toDetailCutout(g, S, { strength: 0.26, contrast: 1.0, lift: 0.14 });
     const t = finish(c);
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     return t;

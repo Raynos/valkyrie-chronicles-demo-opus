@@ -56,6 +56,10 @@ export class Explosions {
   /**
    * @param {object} o { pos, radius, power, source?, weapon?, normal?,
    *                     damage?, falloffExp?, noDamage? }
+   *   `power` is HP of damage AT THE EPICENTRE, falling to 0 at `radius` — the
+   *   convention documented for the `explosion` Bus event in
+   *   docs/ARCHITECTURE.md. Destructible prop HP is on the same scale, which is
+   *   what makes the blast that kills a crate stack leave a revetment standing.
    * @returns {object} report { pos, radius, power, affected: [{unit,dist,factor,los,dir}] }
    */
   detonate(o) {
@@ -109,9 +113,13 @@ export class Explosions {
         if (rec.dir.lengthSq() < 1e-6) rec.dir.set(0, 1, 0); else rec.dir.normalize();
         report.affected.push(rec);
         if (u.takeDamage) {
-          u.takeDamage(dmg, {
-            source: o.source || null, crit: false, worldPos: _target.clone(),
-            explosion: true, weapon: o.weapon, dir: rec.dir,
+          // ARCHITECTURE.md: Unit.takeDamage(n, source) — `source` is the unit
+          // that caused it, NOT an options bag. Passing the bag as arg 2 made
+          // this throw on `source.stats.damageDealt` for every blast that
+          // caught anybody.
+          u.takeDamage(dmg, o.source || null, {
+            crit: false, part: 'blast', kind: 'blast',
+            worldPos: _target, weapon: o.weapon, dir: rec.dir,
           });
         }
       }

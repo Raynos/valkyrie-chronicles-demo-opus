@@ -44,10 +44,17 @@ const ANIMATED = BONE_NAMES.filter((n) => n !== 'root' && n !== 'headTop' &&
   !n.startsWith('fingers') && !n.startsWith('thumb'));
 
 // Reusable carry poses so the clips below stay readable.
-// Low ready: both hands on the weapon, muzzle forward and down.
+//
+// Low ready: both hands on the weapon, muzzle forward and down. The elbows are
+// deliberately WELL flexed. The support hand has to reach the foregrip, and the
+// left arm is only 52 cm long: at the old 58-degree gun-elbow the foregrip
+// landed 64 cm from the left shoulder, so the support arm locked out straight
+// with the hand hanging in mid-air 8 cm short of the wood. Keeping the gun
+// elbow near 85 degrees tucks the weapon in against the chest where a soldier
+// at low ready actually carries it, and the support hand lands on the grip.
 const CARRY = {
-  cR: [3, -2, -2], uR: [20, -8, 9], fR: [58, 12, 0], wR: [-6, 0, 10],
-  cL: [5, 2, 3], uL: [30, -18, -12], fL: [76, 16, 0], wL: [2, 0, 8],
+  cR: [3, -2, -2], uR: [14, -8, 9], fR: [84, 12, 0], wR: [-6, 0, 10],
+  cL: [5, 2, 3], uL: [22, -18, -12], fL: [92, 16, 0], wL: [2, 0, 8],
 };
 // Shouldered: cheek weld, right elbow up, torso bladed to the right.
 const AIMED = {
@@ -80,11 +87,11 @@ export const CLIP_DEFS = {
   idleAlert: {
     dur: 4.4, loop: true, stride: 0, speed: 0, hands: 'weapon', mirror: 0,
     keys: [
-      [0.00, P(CARRY, { uR: [30, -8, 6], fR: [74, 12, 0], uL: [38, -20, -14], fL: [86, 16, 0], h: [2, 0, 0], hP: [0, -0.012, 0.01], s1: [4, 0, 0], s2: [2.5, 0, 0], s3: [1, 0, 0], nk: [-3, 0, 0], hd: [1, 0, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
-      [0.28, P(CARRY, { uR: [30, -8, 6], fR: [74, 12, 0], uL: [38, -20, -14], fL: [86, 16, 0], h: [2, 0, 0], hP: [0, -0.014, 0.01], s1: [4, 4, 0], s2: [2.5, 5, 0], s3: [1, 5, 0], nk: [-3, 6, 0], hd: [0, 12, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
-      [0.54, P(CARRY, { uR: [30, -8, 6], fR: [74, 12, 0], uL: [38, -20, -14], fL: [86, 16, 0], h: [2, 0, 0], hP: [0, -0.010, 0.01], s1: [4, 0, 0], s2: [2.5, 0, 0], s3: [1, 0, 0], nk: [-3, 0, 0], hd: [2, -2, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
-      [0.78, P(CARRY, { uR: [30, -8, 6], fR: [74, 12, 0], uL: [38, -20, -14], fL: [86, 16, 0], h: [2, 0, 0], hP: [0, -0.014, 0.01], s1: [4, -5, 0], s2: [2.5, -6, 0], s3: [1, -6, 0], nk: [-3, -7, 0], hd: [0, -14, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
-      [1.00, P(CARRY, { uR: [30, -8, 6], fR: [74, 12, 0], uL: [38, -20, -14], fL: [86, 16, 0], h: [2, 0, 0], hP: [0, -0.012, 0.01], s1: [4, 0, 0], s2: [2.5, 0, 0], s3: [1, 0, 0], nk: [-3, 0, 0], hd: [1, 0, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
+      [0.00, P(CARRY, { uR: [24, -8, 6], fR: [92, 12, 0], uL: [32, -20, -14], fL: [98, 16, 0], h: [2, 0, 0], hP: [0, -0.012, 0.01], s1: [4, 0, 0], s2: [2.5, 0, 0], s3: [1, 0, 0], nk: [-3, 0, 0], hd: [1, 0, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
+      [0.28, P(CARRY, { uR: [24, -8, 6], fR: [92, 12, 0], uL: [32, -20, -14], fL: [98, 16, 0], h: [2, 0, 0], hP: [0, -0.014, 0.01], s1: [4, 4, 0], s2: [2.5, 5, 0], s3: [1, 5, 0], nk: [-3, 6, 0], hd: [0, 12, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
+      [0.54, P(CARRY, { uR: [24, -8, 6], fR: [92, 12, 0], uL: [32, -20, -14], fL: [98, 16, 0], h: [2, 0, 0], hP: [0, -0.010, 0.01], s1: [4, 0, 0], s2: [2.5, 0, 0], s3: [1, 0, 0], nk: [-3, 0, 0], hd: [2, -2, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
+      [0.78, P(CARRY, { uR: [24, -8, 6], fR: [92, 12, 0], uL: [32, -20, -14], fL: [98, 16, 0], h: [2, 0, 0], hP: [0, -0.014, 0.01], s1: [4, -5, 0], s2: [2.5, -6, 0], s3: [1, -6, 0], nk: [-3, -7, 0], hd: [0, -14, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
+      [1.00, P(CARRY, { uR: [24, -8, 6], fR: [92, 12, 0], uL: [32, -20, -14], fL: [98, 16, 0], h: [2, 0, 0], hP: [0, -0.012, 0.01], s1: [4, 0, 0], s2: [2.5, 0, 0], s3: [1, 0, 0], nk: [-3, 0, 0], hd: [1, 0, 0], tL: [4, 0, -1.5], kL: [-10, 0, 0], ftL: [6, 0, 0], tR: [-2, 0, 1.5], kR: [-6, 0, 0], ftR: [8, 0, 0] })],
     ],
   },
 
@@ -92,15 +99,15 @@ export const CLIP_DEFS = {
   walk: {
     dur: 1.06, loop: true, stride: 1.38, speed: 1.30, hands: 'weapon', mirror: 0.5,
     keys: [
-      [0.00, P(CARRY, { h: [2, -5, 0], hP: [0, -0.018, 0], s1: [3, 1.5, 0], s2: [2, 3, 0], s3: [1, 5, -1], nk: [-2, -3, 0], hd: [0, -6, 0], cL: [5, 2, 2], uL: [30, -18, -12], uR: [22, -8, 9], tL: [22, 1, -2], kL: [-6, 0, 0], ftL: [-4, 0, 0], toL: [0, 0, 0] })],
-      [0.13, P(CARRY, { h: [2, -3, 1.5], hP: [0, -0.012, 0], s1: [3, 1, 0], s2: [2, 2, 0], s3: [1, 3, -1.5], nk: [-2, -2, 0], hd: [0, -4, 0], uL: [32, -18, -12], uR: [20, -8, 9], tL: [12, 1, -2], kL: [-14, 0, 0], ftL: [2, 0, 0] })],
-      [0.265, P(CARRY, { h: [2, 0, 3], hP: [0.016, 0.004, 0], s1: [3, 0, -1], s2: [2, 0, -1.5], s3: [1, 0, -2], nk: [-2, 0, 1], hd: [0, 0, 0], cL: [6, 2, 4], uL: [30, -18, -12], uR: [18, -8, 9], tL: [-2, 0, -1], kL: [-6, 0, 0], ftL: [8, 0, 0] })],
-      [0.40, P(CARRY, { h: [2, 3, 2], hP: [0.010, -0.002, 0], s1: [3, -1, 0], s2: [2, -2, 0], s3: [1, -3, -1], nk: [-2, 2, 0], hd: [0, 4, 0], uL: [28, -18, -12], uR: [18, -8, 9], tL: [-16, -1, -1], kL: [-8, 0, 0], ftL: [9, 0, 0], toL: [12, 0, 0] })],
-      [0.50, P(CARRY, { h: [2, 5, 0], hP: [0, -0.017, 0], s1: [3, -1.5, 0], s2: [2, -3, 0], s3: [1, -5, 1], nk: [-2, 3, 0], hd: [0, 6, 0], uL: [26, -18, -12], uR: [20, -8, 9], tL: [-22, -2, 0], kL: [-34, 0, 0], ftL: [26, 0, 0], toL: [30, 0, 0] })],
-      [0.63, P(CARRY, { h: [2, 4, -1.5], hP: [0, -0.008, 0], s1: [3, -1, 0], s2: [2, -2, 0], s3: [1, -3, 1.5], nk: [-2, 2, 0], hd: [0, 4, 0], uL: [26, -18, -12], uR: [22, -8, 9], tL: [-2, -2, 1], kL: [-44, 0, 0], ftL: [54, 0, 0], toL: [8, 0, 0] })],
-      [0.75, P(CARRY, { h: [2, 2, -3], hP: [-0.014, 0.002, 0], s1: [3, 0, 1], s2: [2, 0, 1.5], s3: [1, 0, 2], nk: [-2, 0, -1], hd: [0, 0, 0], uL: [28, -18, -12], uR: [22, -8, 9], tL: [16, -1, 0], kL: [-36, 0, 0], ftL: [30, 0, 0], toL: [0, 0, 0] })],
-      [0.88, P(CARRY, { h: [2, -2, -1.5], hP: [-0.006, -0.006, 0], s1: [3, 0.5, 0], s2: [2, 1, 0], s3: [1, 2, 0], nk: [-2, -1, 0], hd: [0, -2, 0], uL: [30, -18, -12], uR: [22, -8, 9], tL: [26, 0, -1], kL: [-14, 0, 0], ftL: [0, 0, 0] })],
-      [1.00, P(CARRY, { h: [2, -5, 0], hP: [0, -0.018, 0], s1: [3, 1.5, 0], s2: [2, 3, 0], s3: [1, 5, -1], nk: [-2, -3, 0], hd: [0, -6, 0], cL: [5, 2, 2], uL: [30, -18, -12], uR: [22, -8, 9], tL: [22, 1, -2], kL: [-6, 0, 0], ftL: [-4, 0, 0], toL: [0, 0, 0] })],
+      [0.00, P(CARRY, { h: [2, -5, 0], hP: [0, -0.018, 0], s1: [3, 1.5, 0], s2: [2, 3, 0], s3: [1, 5, -1], nk: [-2, -3, 0], hd: [0, -6, 0], cL: [5, 2, 2], uL: [22, -18, -12], uR: [16, -8, 9], tL: [22, 1, -2], kL: [-6, 0, 0], ftL: [-4, 0, 0], toL: [0, 0, 0] })],
+      [0.13, P(CARRY, { h: [2, -3, 1.5], hP: [0, -0.012, 0], s1: [3, 1, 0], s2: [2, 2, 0], s3: [1, 3, -1.5], nk: [-2, -2, 0], hd: [0, -4, 0], uL: [24, -18, -12], uR: [14, -8, 9], tL: [12, 1, -2], kL: [-14, 0, 0], ftL: [2, 0, 0] })],
+      [0.265, P(CARRY, { h: [2, 0, 3], hP: [0.016, 0.004, 0], s1: [3, 0, -1], s2: [2, 0, -1.5], s3: [1, 0, -2], nk: [-2, 0, 1], hd: [0, 0, 0], cL: [6, 2, 4], uL: [22, -18, -12], uR: [12, -8, 9], tL: [-2, 0, -1], kL: [-6, 0, 0], ftL: [8, 0, 0] })],
+      [0.40, P(CARRY, { h: [2, 3, 2], hP: [0.010, -0.002, 0], s1: [3, -1, 0], s2: [2, -2, 0], s3: [1, -3, -1], nk: [-2, 2, 0], hd: [0, 4, 0], uL: [24, -18, -12], uR: [12, -8, 9], tL: [-16, -1, -1], kL: [-8, 0, 0], ftL: [9, 0, 0], toL: [12, 0, 0] })],
+      [0.50, P(CARRY, { h: [2, 5, 0], hP: [0, -0.017, 0], s1: [3, -1.5, 0], s2: [2, -3, 0], s3: [1, -5, 1], nk: [-2, 3, 0], hd: [0, 6, 0], uL: [22, -18, -12], uR: [14, -8, 9], tL: [-22, -2, 0], kL: [-34, 0, 0], ftL: [26, 0, 0], toL: [30, 0, 0] })],
+      [0.63, P(CARRY, { h: [2, 4, -1.5], hP: [0, -0.008, 0], s1: [3, -1, 0], s2: [2, -2, 0], s3: [1, -3, 1.5], nk: [-2, 2, 0], hd: [0, 4, 0], uL: [22, -18, -12], uR: [16, -8, 9], tL: [-2, -2, 1], kL: [-44, 0, 0], ftL: [54, 0, 0], toL: [8, 0, 0] })],
+      [0.75, P(CARRY, { h: [2, 2, -3], hP: [-0.014, 0.002, 0], s1: [3, 0, 1], s2: [2, 0, 1.5], s3: [1, 0, 2], nk: [-2, 0, -1], hd: [0, 0, 0], uL: [24, -18, -12], uR: [16, -8, 9], tL: [16, -1, 0], kL: [-36, 0, 0], ftL: [30, 0, 0], toL: [0, 0, 0] })],
+      [0.88, P(CARRY, { h: [2, -2, -1.5], hP: [-0.006, -0.006, 0], s1: [3, 0.5, 0], s2: [2, 1, 0], s3: [1, 2, 0], nk: [-2, -1, 0], hd: [0, -2, 0], uL: [22, -18, -12], uR: [16, -8, 9], tL: [26, 0, -1], kL: [-14, 0, 0], ftL: [0, 0, 0] })],
+      [1.00, P(CARRY, { h: [2, -5, 0], hP: [0, -0.018, 0], s1: [3, 1.5, 0], s2: [2, 3, 0], s3: [1, 5, -1], nk: [-2, -3, 0], hd: [0, -6, 0], cL: [5, 2, 2], uL: [22, -18, -12], uR: [16, -8, 9], tL: [22, 1, -2], kL: [-6, 0, 0], ftL: [-4, 0, 0], toL: [0, 0, 0] })],
     ],
   },
 
@@ -109,14 +116,14 @@ export const CLIP_DEFS = {
   run: {
     dur: 0.74, loop: true, stride: 2.30, speed: 3.10, hands: 'weapon', mirror: 0.5,
     keys: [
-      [0.00, P(CARRY, { h: [4, -8, 0], hP: [0, -0.012, 0.01], s1: [9, 3, 0], s2: [5, 5, 0], s3: [3, 8, -2], nk: [-6, -5, 0], hd: [-2, -9, 0], uR: [26, -10, 8], fR: [66, 12, 0], uL: [36, -20, -14], fL: [88, 16, 0], tL: [30, 2, -2], kL: [-22, 0, 0], ftL: [-2, 0, 0] })],
-      [0.14, P(CARRY, { h: [4, -4, 3], hP: [0.012, -0.048, 0.01], s1: [10, 1, 0], s2: [6, 2, 0], s3: [3, 4, -3], nk: [-6, -2, 0], hd: [-2, -5, 0], uR: [22, -10, 8], fR: [62, 12, 0], uL: [34, -20, -14], fL: [86, 16, 0], tL: [18, 1, -2], kL: [-42, 0, 0], ftL: [24, 0, 0] })],
-      [0.30, P(CARRY, { h: [4, 3, 3], hP: [0.010, -0.010, 0.01], s1: [10, -1, 0], s2: [6, -2, 0], s3: [3, -4, -2], nk: [-6, 2, 0], hd: [-2, 5, 0], uR: [24, -10, 8], fR: [64, 12, 0], uL: [34, -20, -14], fL: [88, 16, 0], tL: [-12, -1, -1], kL: [-30, 0, 0], ftL: [24, 0, 0], toL: [16, 0, 0] })],
+      [0.00, P(CARRY, { h: [4, -8, 0], hP: [0, -0.012, 0.01], s1: [9, 3, 0], s2: [5, 5, 0], s3: [3, 8, -2], nk: [-6, -5, 0], hd: [-2, -9, 0], uR: [20, -10, 8], fR: [88, 12, 0], uL: [30, -20, -14], fL: [100, 16, 0], tL: [30, 2, -2], kL: [-22, 0, 0], ftL: [-2, 0, 0] })],
+      [0.14, P(CARRY, { h: [4, -4, 3], hP: [0.012, -0.048, 0.01], s1: [10, 1, 0], s2: [6, 2, 0], s3: [3, 4, -3], nk: [-6, -2, 0], hd: [-2, -5, 0], uR: [16, -10, 8], fR: [84, 12, 0], uL: [28, -20, -14], fL: [98, 16, 0], tL: [18, 1, -2], kL: [-42, 0, 0], ftL: [24, 0, 0] })],
+      [0.30, P(CARRY, { h: [4, 3, 3], hP: [0.010, -0.010, 0.01], s1: [10, -1, 0], s2: [6, -2, 0], s3: [3, -4, -2], nk: [-6, 2, 0], hd: [-2, 5, 0], uR: [18, -10, 8], fR: [86, 12, 0], uL: [28, -20, -14], fL: [100, 16, 0], tL: [-12, -1, -1], kL: [-30, 0, 0], ftL: [24, 0, 0], toL: [16, 0, 0] })],
       [0.36, P(CARRY, { h: [4, 6, 1], hP: [0.004, 0.008, 0.01], s1: [9, -2, 0], s2: [5, -4, 0], s3: [3, -6, 0], nk: [-6, 3, 0], hd: [-2, 7, 0], uR: [26, -10, 8], fR: [68, 12, 0], uL: [34, -20, -14], fL: [90, 16, 0], tL: [-28, -2, 0], kL: [-55, 0, 0], ftL: [55, 0, 0], toL: [34, 0, 0] })],
-      [0.46, P(CARRY, { h: [4, 8, -1], hP: [0, 0.034, 0.01], s1: [9, -3, 0], s2: [5, -5, 0], s3: [3, -8, 2], nk: [-6, 5, 0], hd: [-2, 9, 0], uR: [28, -10, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [92, 16, 0], tL: [-6, -2, 1], kL: [-104, 0, 0], ftL: [107, 0, 0], toL: [6, 0, 0] })],
-      [0.64, P(CARRY, { h: [4, 4, -3], hP: [-0.012, 0.006, 0.01], s1: [10, 0, 0], s2: [6, 0, 0], s3: [3, 0, 3], nk: [-6, 0, 0], hd: [-2, 0, 0], uR: [28, -10, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [90, 16, 0], tL: [46, -1, 0], kL: [-92, 0, 0], ftL: [54, 0, 0], toL: [0, 0, 0] })],
-      [0.85, P(CARRY, { h: [4, -5, -1], hP: [-0.004, -0.010, 0.01], s1: [9, 2, 0], s2: [5, 3, 0], s3: [3, 5, 0], nk: [-6, -3, 0], hd: [-2, -6, 0], uR: [26, -10, 8], fR: [66, 12, 0], uL: [36, -20, -14], fL: [88, 16, 0], tL: [38, 1, -1], kL: [-42, 0, 0], ftL: [12, 0, 0] })],
-      [1.00, P(CARRY, { h: [4, -8, 0], hP: [0, -0.012, 0.01], s1: [9, 3, 0], s2: [5, 5, 0], s3: [3, 8, -2], nk: [-6, -5, 0], hd: [-2, -9, 0], uR: [26, -10, 8], fR: [66, 12, 0], uL: [36, -20, -14], fL: [88, 16, 0], tL: [30, 2, -2], kL: [-22, 0, 0], ftL: [-2, 0, 0] })],
+      [0.46, P(CARRY, { h: [4, 8, -1], hP: [0, 0.034, 0.01], s1: [9, -3, 0], s2: [5, -5, 0], s3: [3, -8, 2], nk: [-6, 5, 0], hd: [-2, 9, 0], uR: [22, -10, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [104, 16, 0], tL: [-6, -2, 1], kL: [-104, 0, 0], ftL: [107, 0, 0], toL: [6, 0, 0] })],
+      [0.64, P(CARRY, { h: [4, 4, -3], hP: [-0.012, 0.006, 0.01], s1: [10, 0, 0], s2: [6, 0, 0], s3: [3, 0, 3], nk: [-6, 0, 0], hd: [-2, 0, 0], uR: [22, -10, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [102, 16, 0], tL: [46, -1, 0], kL: [-92, 0, 0], ftL: [54, 0, 0], toL: [0, 0, 0] })],
+      [0.85, P(CARRY, { h: [4, -5, -1], hP: [-0.004, -0.010, 0.01], s1: [9, 2, 0], s2: [5, 3, 0], s3: [3, 5, 0], nk: [-6, -3, 0], hd: [-2, -6, 0], uR: [20, -10, 8], fR: [88, 12, 0], uL: [30, -20, -14], fL: [100, 16, 0], tL: [38, 1, -1], kL: [-42, 0, 0], ftL: [12, 0, 0] })],
+      [1.00, P(CARRY, { h: [4, -8, 0], hP: [0, -0.012, 0.01], s1: [9, 3, 0], s2: [5, 5, 0], s3: [3, 8, -2], nk: [-6, -5, 0], hd: [-2, -9, 0], uR: [20, -10, 8], fR: [88, 12, 0], uL: [30, -20, -14], fL: [100, 16, 0], tL: [30, 2, -2], kL: [-22, 0, 0], ftL: [-2, 0, 0] })],
     ],
   },
 
@@ -138,25 +145,25 @@ export const CLIP_DEFS = {
   crouchIdle: {
     dur: 3.4, loop: true, stride: 0, speed: 0, hands: 'weapon', mirror: 0, hipDrop: 0.24,
     keys: [
-      [0.00, P(CARRY, { h: [10, 0, 0], hP: [0, -0.24, -0.04], s1: [12, 0, 0], s2: [7, 0, 0], s3: [3, 0, 0], nk: [-8, 0, 0], hd: [-2, 0, 0], uR: [26, -8, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [86, 16, 0], tL: [46, 2, -6], kL: [-88, 0, 0], ftL: [42, 0, 0], tR: [42, -2, 6], kR: [-84, 0, 0], ftR: [42, 0, 0] })],
-      [0.5, P(CARRY, { h: [10, 0, 0], hP: [0, -0.226, -0.04], s1: [13, 0, 0], s2: [8, 0, 0], s3: [2, 0, 0], nk: [-9, 0, 0], hd: [-1, 0, 0], uR: [26, -8, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [86, 16, 0], tL: [45, 2, -6], kL: [-86, 0, 0], ftL: [41, 0, 0], tR: [41, -2, 6], kR: [-82, 0, 0], ftR: [41, 0, 0] })],
-      [1.00, P(CARRY, { h: [10, 0, 0], hP: [0, -0.24, -0.04], s1: [12, 0, 0], s2: [7, 0, 0], s3: [3, 0, 0], nk: [-8, 0, 0], hd: [-2, 0, 0], uR: [26, -8, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [86, 16, 0], tL: [46, 2, -6], kL: [-88, 0, 0], ftL: [42, 0, 0], tR: [42, -2, 6], kR: [-84, 0, 0], ftR: [42, 0, 0] })],
+      [0.00, P(CARRY, { h: [10, 0, 0], hP: [0, -0.24, -0.04], s1: [12, 0, 0], s2: [7, 0, 0], s3: [3, 0, 0], nk: [-8, 0, 0], hd: [-2, 0, 0], uR: [20, -8, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [98, 16, 0], tL: [46, 2, -6], kL: [-88, 0, 0], ftL: [42, 0, 0], tR: [42, -2, 6], kR: [-84, 0, 0], ftR: [42, 0, 0] })],
+      [0.5, P(CARRY, { h: [10, 0, 0], hP: [0, -0.226, -0.04], s1: [13, 0, 0], s2: [8, 0, 0], s3: [2, 0, 0], nk: [-9, 0, 0], hd: [-1, 0, 0], uR: [20, -8, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [98, 16, 0], tL: [45, 2, -6], kL: [-86, 0, 0], ftL: [41, 0, 0], tR: [41, -2, 6], kR: [-82, 0, 0], ftR: [41, 0, 0] })],
+      [1.00, P(CARRY, { h: [10, 0, 0], hP: [0, -0.24, -0.04], s1: [12, 0, 0], s2: [7, 0, 0], s3: [3, 0, 0], nk: [-8, 0, 0], hd: [-2, 0, 0], uR: [20, -8, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [98, 16, 0], tL: [46, 2, -6], kL: [-88, 0, 0], ftL: [42, 0, 0], tR: [42, -2, 6], kR: [-84, 0, 0], ftR: [42, 0, 0] })],
     ],
   },
 
   crouchWalk: {
     dur: 1.24, loop: true, stride: 0.62, speed: 0.50, hands: 'weapon', mirror: 0.5, hipDrop: 0.22,
     keys: [
-      [0.00, P(CARRY, { h: [11, -4, 0], hP: [0, -0.228, -0.03], s1: [13, 2, 0], s2: [8, 3, 0], s3: [3, 4, -1], nk: [-9, -2, 0], hd: [-2, -4, 0], uR: [26, -8, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [86, 16, 0], tL: [62, 2, -6], kL: [-72, 0, 0], ftL: [6, 0, 0] })],
-      [0.25, P(CARRY, { h: [11, 0, 2], hP: [0.012, -0.216, -0.03], s1: [13, 0, -1], s2: [8, 0, -1], s3: [3, 0, -2], nk: [-9, 0, 1], hd: [-2, 0, 0], uR: [26, -8, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [86, 16, 0], tL: [40, 1, -5], kL: [-84, 0, 0], ftL: [44, 0, 0] })],
-      [0.50, P(CARRY, { h: [11, 4, 0], hP: [0, -0.234, -0.03], s1: [13, -2, 0], s2: [8, -3, 0], s3: [3, -4, 1], nk: [-9, 2, 0], hd: [-2, 4, 0], uR: [26, -8, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [86, 16, 0], tL: [16, -1, -4], kL: [-96, 0, 0], ftL: [76, 0, 0], toL: [22, 0, 0] })],
-      [0.72, P(CARRY, { h: [11, 2, -2], hP: [-0.010, -0.222, -0.03], s1: [13, 0, 1], s2: [8, 0, 1], s3: [3, 0, 2], nk: [-9, 0, -1], hd: [-2, 0, 0], uR: [26, -8, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [86, 16, 0], tL: [50, -1, -5], kL: [-110, 0, 0], ftL: [60, 0, 0] })],
-      [1.00, P(CARRY, { h: [11, -4, 0], hP: [0, -0.228, -0.03], s1: [13, 2, 0], s2: [8, 3, 0], s3: [3, 4, -1], nk: [-9, -2, 0], hd: [-2, -4, 0], uR: [26, -8, 8], fR: [70, 12, 0], uL: [36, -20, -14], fL: [86, 16, 0], tL: [62, 2, -6], kL: [-72, 0, 0], ftL: [6, 0, 0] })],
+      [0.00, P(CARRY, { h: [11, -4, 0], hP: [0, -0.228, -0.03], s1: [13, 2, 0], s2: [8, 3, 0], s3: [3, 4, -1], nk: [-9, -2, 0], hd: [-2, -4, 0], uR: [20, -8, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [98, 16, 0], tL: [62, 2, -6], kL: [-72, 0, 0], ftL: [6, 0, 0] })],
+      [0.25, P(CARRY, { h: [11, 0, 2], hP: [0.012, -0.216, -0.03], s1: [13, 0, -1], s2: [8, 0, -1], s3: [3, 0, -2], nk: [-9, 0, 1], hd: [-2, 0, 0], uR: [20, -8, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [98, 16, 0], tL: [40, 1, -5], kL: [-84, 0, 0], ftL: [44, 0, 0] })],
+      [0.50, P(CARRY, { h: [11, 4, 0], hP: [0, -0.234, -0.03], s1: [13, -2, 0], s2: [8, -3, 0], s3: [3, -4, 1], nk: [-9, 2, 0], hd: [-2, 4, 0], uR: [20, -8, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [98, 16, 0], tL: [16, -1, -4], kL: [-96, 0, 0], ftL: [76, 0, 0], toL: [22, 0, 0] })],
+      [0.72, P(CARRY, { h: [11, 2, -2], hP: [-0.010, -0.222, -0.03], s1: [13, 0, 1], s2: [8, 0, 1], s3: [3, 0, 2], nk: [-9, 0, -1], hd: [-2, 0, 0], uR: [20, -8, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [98, 16, 0], tL: [50, -1, -5], kL: [-110, 0, 0], ftL: [60, 0, 0] })],
+      [1.00, P(CARRY, { h: [11, -4, 0], hP: [0, -0.228, -0.03], s1: [13, 2, 0], s2: [8, 3, 0], s3: [3, 4, -1], nk: [-9, -2, 0], hd: [-2, -4, 0], uR: [20, -8, 8], fR: [90, 12, 0], uL: [30, -20, -14], fL: [98, 16, 0], tL: [62, 2, -6], kL: [-72, 0, 0], ftL: [6, 0, 0] })],
     ],
   },
 
   proneIdle: {
-    dur: 4.0, loop: true, stride: 0, speed: 0, hands: 'weapon', mirror: 0, ik: false, hipDrop: 0.76,
+    dur: 4.0, loop: true, stride: 0, speed: 0, hands: 'weapon', mirror: 0, ik: false, hipDrop: 0.76, carry: false,
     keys: [
       [0.00, { h: [84, 0, 0], hP: [0, -0.762, 0.10], s1: [-4, 0, 0], s2: [-4, 0, 0], s3: [-6, 0, 0], nk: [-16, 0, 0], hd: [-16, 0, 0], cR: [8, -4, -4], uR: [-34, -22, -46], fR: [92, 30, 0], wR: [0, -8, 8], cL: [8, 4, 4], uL: [-28, -30, 40], fL: [86, -26, 0], wL: [0, 8, -6], tL: [-6, 0, -8], kL: [-14, 0, 0], ftL: [20, 0, 0], tR: [-4, 0, 8], kR: [-10, 0, 0], ftR: [14, 0, 0] }],
       [0.50, { h: [84, 0, 0], hP: [0, -0.756, 0.10], s1: [-3, 0, 0], s2: [-3, 0, 0], s3: [-5, 0, 0], nk: [-16, 0, 0], hd: [-16, 0, 0], cR: [9, -4, -4], uR: [-34, -22, -46], fR: [92, 30, 0], wR: [0, -8, 8], cL: [9, 4, 4], uL: [-28, -30, 40], fL: [86, -26, 0], wL: [0, 8, -6], tL: [-6, 0, -8], kL: [-14, 0, 0], ftL: [20, 0, 0], tR: [-4, 0, 8], kR: [-10, 0, 0], ftR: [14, 0, 0] }],
@@ -165,7 +172,7 @@ export const CLIP_DEFS = {
   },
 
   proneCrawl: {
-    dur: 2.2, loop: true, stride: 0.50, speed: 0.28, hands: 'free', mirror: 0.5, ik: false, hipDrop: 0.76,
+    dur: 2.2, loop: true, stride: 0.50, speed: 0.28, hands: 'free', mirror: 0.5, ik: false, hipDrop: 0.76, carry: false,
     keys: [
       [0.00, { h: [84, -8, 0], hP: [0, -0.756, 0.10], s1: [-4, 4, 0], s2: [-4, 5, 0], s3: [-6, 7, 0], nk: [-16, -4, 0], hd: [-16, -6, 0], cL: [10, 6, 6], uL: [-56, -26, 34], fL: [56, -22, 0], cR: [6, -3, -3], uR: [-16, -20, -50], fR: [104, 28, 0], tL: [-14, 0, -14], kL: [-52, 0, 0], ftL: [24, 0, 0], tR: [4, 0, 10], kR: [-6, 0, 0], ftR: [10, 0, 0] }],
       [0.28, { h: [84, -4, 0], hP: [0, -0.748, 0.10], s1: [-4, 2, 0], s2: [-4, 3, 0], s3: [-6, 4, 0], nk: [-16, -2, 0], hd: [-16, -3, 0], cL: [10, 5, 6], uL: [-32, -28, 38], fL: [78, -24, 0], cR: [6, -3, -3], uR: [-30, -20, -48], fR: [96, 28, 0], tL: [-8, 0, -12], kL: [-30, 0, 0], ftL: [18, 0, 0], tR: [-2, 0, 9], kR: [-10, 0, 0], ftR: [12, 0, 0] }],
@@ -177,7 +184,7 @@ export const CLIP_DEFS = {
 
   // Shouldered, bladed stance, subtle breathing sway on the muzzle.
   aimIdle: {
-    dur: 3.0, loop: true, stride: 0, speed: 0, hands: 'weapon', mirror: 0,
+    dur: 3.0, loop: true, stride: 0, speed: 0, hands: 'weapon', mirror: 0, shouldered: true,
     keys: [
       [0.00, P(AIMED, { h: [2, -7, 0], hP: [0, -0.020, 0.012], s1: [5, -4, 0], s2: [3, -5, 0], s3: [1, -5, 0], nk: [-4, 8, 0], hd: [1, 8, 2], tL: [8, 2, -3], kL: [-14, 0, 0], ftL: [6, 0, 0], tR: [-10, -6, 4], kR: [-14, 0, 0], ftR: [24, 0, 0] })],
       [0.34, P(AIMED, { h: [2, -7, 0], hP: [0, -0.023, 0.012], s1: [5.6, -4, 0], s2: [3.4, -5, 0], s3: [0.4, -5, 0], nk: [-4, 8, 0], hd: [1.4, 8, 2], uR: [56.8, -12, -32], uL: [50.6, -26, -24], tL: [8, 2, -3], kL: [-14, 0, 0], ftL: [6, 0, 0], tR: [-10, -6, 4], kR: [-14, 0, 0], ftR: [24, 0, 0] })],
@@ -191,7 +198,7 @@ export const CLIP_DEFS = {
   // leaves the legs entirely to whatever locomotion clip is underneath.
 
   fire: {
-    dur: 0.30, once: true, upper: true, hands: 'weapon', mirror: 0,
+    dur: 0.30, once: true, upper: true, hands: 'weapon', mirror: 0, shouldered: true,
     keys: [
       [0.00, P(AIMED, { s1: [5, -4, 0], s2: [3, -5, 0], s3: [1, -5, 0], nk: [-4, 8, 0], hd: [1, 8, 2] })],
       [0.13, P(AIMED, { uR: [50, -12, -32], fR: [104, 4, 0], wR: [-8, -6, 4], uL: [45, -26, -24], fL: [80, 22, 0], cR: [1, -8, -4], s1: [1, -4, 0], s2: [-1, -5, 0], s3: [-4, -5, 0], nk: [-1, 8, 0], hd: [-4, 8, 2] })],
@@ -219,7 +226,7 @@ export const CLIP_DEFS = {
   },
 
   throwGrenade: {
-    dur: 1.30, once: true, upper: true, hands: 'free', mirror: 0,
+    dur: 1.30, once: true, upper: true, hands: 'free', mirror: 0, carry: false,
     keys: [
       [0.00, P(CARRY, { s1: [3, 0, 0], s2: [2, 0, 0], s3: [1, 0, 0] })],
       // Cook: right arm cocks back behind the ear, torso winds up.
@@ -233,7 +240,7 @@ export const CLIP_DEFS = {
   },
 
   hitLight: {
-    dur: 0.46, once: true, upper: true, hands: 'weapon', mirror: 0,
+    dur: 0.46, once: true, upper: true, hands: 'weapon', mirror: 0, carry: false,
     keys: [
       [0.00, P(CARRY, {})],
       [0.16, P(CARRY, { uR: [10, -4, 14], fR: [44, 10, 0], uL: [18, -14, -6], fL: [58, 12, 0], s1: [-7, 3, 3], s2: [-6, 4, 4], s3: [-5, 5, 5], nk: [8, -3, -3], hd: [10, -5, -4], cR: [-4, -2, -3], cL: [-2, 2, 1] })],
@@ -245,7 +252,7 @@ export const CLIP_DEFS = {
   // --- full-body one-shots -------------------------------------------------
 
   hitHeavy: {
-    dur: 0.86, once: true, hands: 'weapon', mirror: 0,
+    dur: 0.86, once: true, hands: 'weapon', mirror: 0, carry: false,
     keys: [
       [0.00, P(CARRY, { h: [2, 0, 0], hP: [0, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
       [0.14, P(CARRY, { uR: [2, -4, 18], fR: [36, 8, 0], uL: [10, -12, -4], fL: [46, 10, 0], h: [-12, 6, 4], hP: [0, -0.04, -0.09], s1: [-14, 4, 5], s2: [-12, 5, 6], s3: [-10, 6, 7], nk: [16, -4, -5], hd: [18, -6, -6], cR: [-8, -3, -5], tL: [16, 2, -3], kL: [-24, 0, 0], ftL: [8, 0, 0], tR: [-16, -2, 3], kR: [-14, 0, 0], ftR: [30, 0, 0] })],
@@ -257,7 +264,7 @@ export const CLIP_DEFS = {
 
   // Forward collapse: knees buckle, torso folds, the body rolls onto its side.
   death: {
-    dur: 1.55, once: true, hold: true, hands: 'free', mirror: 0, ik: false,
+    dur: 1.55, once: true, hold: true, hands: 'free', mirror: 0, ik: false, carry: false,
     keys: [
       [0.00, P(CARRY, { h: [2, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
       [0.12, { cR: [-4, -2, -6], uR: [-14, -6, 4], fR: [30, 8, 0], wR: [-6, 0, 4], cL: [2, 2, 4], uL: [-10, -8, -6], fL: [26, 10, 0], h: [-8, 2, 2], hP: [0, -0.02, 0], s1: [-8, 2, 2], s2: [-7, 2, 2], s3: [-6, 3, 3], nk: [10, -2, -2], hd: [12, -3, -3], tL: [4, 0, -2], kL: [-14, 0, 0], ftL: [10, 0, 0], tR: [2, 0, 2], kR: [-10, 0, 0], ftR: [8, 0, 0] }],
@@ -270,7 +277,7 @@ export const CLIP_DEFS = {
 
   // Blown backwards: arms fly up, back arches, lands supine.
   deathBack: {
-    dur: 1.70, once: true, hold: true, hands: 'free', mirror: 0, ik: false,
+    dur: 1.70, once: true, hold: true, hands: 'free', mirror: 0, ik: false, carry: false,
     keys: [
       [0.00, P(CARRY, { h: [2, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
       [0.14, { cR: [-8, -4, -10], uR: [-56, -10, 10], fR: [42, 8, 0], cL: [-6, 4, 8], uL: [-52, -12, -12], fL: [38, 10, 0], h: [-20, -4, -2], hP: [0, -0.03, -0.10], s1: [-18, -3, -2], s2: [-16, -3, -2], s3: [-14, -4, -3], nk: [20, 3, 2], hd: [24, 4, 3], tL: [20, 0, -2], kL: [-18, 0, 0], ftL: [-2, 0, 0], tR: [8, 0, 2], kR: [-10, 0, 0], ftR: [2, 0, 0] }],
@@ -282,7 +289,7 @@ export const CLIP_DEFS = {
   },
 
   cheer: {
-    dur: 1.9, loop: true, hands: 'free', mirror: 0,
+    dur: 1.9, loop: true, hands: 'free', mirror: 0, carry: false,
     keys: [
       [0.00, { cR: [4, -2, 6], uR: [-146, -10, 24], fR: [26, 8, 0], wR: [-6, 0, 8], cL: [4, 2, 6], uL: [-150, 10, -22], fL: [24, -8, 0], wL: [-6, 0, -8], h: [-4, 0, 0], hP: [0, 0.012, 0], s1: [-6, 0, 0], s2: [-5, 0, 0], s3: [-4, 0, 0], nk: [8, 0, 0], hd: [10, 0, 0], tL: [-4, 0, -3], kL: [4, 0, 0], ftL: [0, 0, 0] }],
       [0.26, { cR: [2, -2, 2], uR: [-108, -10, 18], fR: [58, 8, 0], wR: [-6, 0, 8], cL: [2, 2, 2], uL: [-112, 10, -16], fL: [56, -8, 0], wL: [-6, 0, -8], h: [2, 0, 0], hP: [0, -0.055, 0], s1: [2, 0, 0], s2: [2, 0, 0], s3: [1, 0, 0], nk: [-2, 0, 0], hd: [0, 0, 0], tL: [22, 0, -3], kL: [-38, 0, 0], ftL: [16, 0, 0] }],
@@ -293,7 +300,7 @@ export const CLIP_DEFS = {
   },
 
   salute: {
-    dur: 1.9, once: true, hands: 'right', mirror: 0,
+    dur: 1.9, once: true, hands: 'right', mirror: 0, carry: false,
     keys: [
       [0.00, P(CARRY, { h: [1, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
       [0.24, { cR: [10, -6, 8], uR: [46, -30, -68], fR: [126, 26, 0], wR: [-14, 0, 22], cL: [2, 2, 2], uL: [-4, -4, -4], fL: [16, 6, 0], wL: [0, 0, 4], h: [0, 0, 0], s1: [-3, 0, 0], s2: [-3, 0, 0], s3: [-2, 0, 0], nk: [1, 0, 0], hd: [2, 0, 0], tL: [-3, 0, -2], kL: [2, 0, 0], ftL: [1, 0, 0], tR: [-3, 0, 2], kR: [2, 0, 0], ftR: [1, 0, 0] }],
@@ -305,7 +312,7 @@ export const CLIP_DEFS = {
 
   // Hand-plant vault over a waist-high wall.
   vaultLow: {
-    dur: 1.05, once: true, hands: 'right', mirror: 0, ik: false,
+    dur: 1.05, once: true, hands: 'right', mirror: 0, ik: false, carry: false,
     keys: [
       [0.00, P(CARRY, { h: [6, 0, 0], hP: [0, -0.04, 0], s1: [10, 0, 0], s2: [6, 0, 0], s3: [3, 0, 0], tL: [24, 0, -2], kL: [-36, 0, 0], ftL: [12, 0, 0], tR: [-6, 0, 2], kR: [-14, 0, 0], ftR: [20, 0, 0] })],
       [0.22, { cR: [4, -3, -2], uR: [-14, -8, 8], fR: [64, 12, 0], wR: [-8, 0, 12], cL: [12, 6, 10], uL: [-84, -14, -18], fL: [26, 12, 0], wL: [16, 0, 0], h: [18, 0, 0], hP: [0, -0.20, 0.16], s1: [22, 0, 0], s2: [14, 0, 0], s3: [8, 0, 0], nk: [-12, 0, 0], hd: [-6, 0, 0], tL: [64, 0, -4], kL: [-92, 0, 0], ftL: [28, 0, 0], tR: [46, 0, 4], kR: [-84, 0, 0], ftR: [38, 0, 0] }],
@@ -318,7 +325,7 @@ export const CLIP_DEFS = {
 
   // Vertical ladder: hands alternate above the head, feet on the rungs.
   climbLadder: {
-    dur: 1.30, loop: true, hands: 'free', mirror: 0.5, ik: false,
+    dur: 1.30, loop: true, hands: 'free', mirror: 0.5, ik: false, carry: false,
     keys: [
       [0.00, { cL: [14, 8, 16], uL: [-158, 8, -14], fL: [22, -6, 0], wL: [-8, 0, -6], cR: [6, -4, -4], uR: [-96, -6, 6], fR: [58, 8, 0], wR: [-8, 0, 6], h: [2, 0, 0], hP: [0, 0, 0.06], s1: [4, 2, 0], s2: [3, 3, 0], s3: [2, 4, 0], nk: [-4, -2, 0], hd: [-6, -3, 0], tL: [76, 0, -6], kL: [-92, 0, 0], ftL: [16, 0, 0], tR: [26, 0, 6], kR: [-52, 0, 0], ftR: [26, 0, 0] }],
       [0.25, { cL: [12, 6, 12], uL: [-150, 8, -12], fL: [30, -6, 0], wL: [-8, 0, -6], cR: [8, -6, -6], uR: [-128, -6, 8], fR: [34, 8, 0], wR: [-8, 0, 6], h: [2, 0, 0], hP: [0, 0.05, 0.06], s1: [4, 1, 0], s2: [3, 1, 0], s3: [2, 2, 0], nk: [-4, -1, 0], hd: [-6, -1, 0], tL: [50, 0, -6], kL: [-72, 0, 0], ftL: [22, 0, 0], tR: [50, 0, 6], kR: [-72, 0, 0], ftR: [22, 0, 0] }],
@@ -330,7 +337,7 @@ export const CLIP_DEFS = {
 
   // Kneeling on the right knee, working over a casualty / a tank tread.
   healKneel: {
-    dur: 2.6, loop: true, hands: 'free', mirror: 0, ik: false, hipDrop: 0.455,
+    dur: 2.6, loop: true, hands: 'free', mirror: 0, ik: false, hipDrop: 0.455, carry: false,
     keys: [
       [0.00, { cR: [8, -4, -2], uR: [56, -18, -6], fR: [72, 16, 0], wR: [-14, 0, 12], cL: [8, 4, 2], uL: [62, -22, -12], fL: [66, 18, 0], wL: [-10, 0, 8], h: [16, 0, 0], hP: [0, -0.455, -0.02], s1: [14, 0, 0], s2: [10, 0, 0], s3: [6, 0, 0], nk: [-14, 0, 0], hd: [-14, 0, 0], tL: [85, 2, -6], kL: [-85, 0, 0], ftL: [0, 0, 0], tR: [2, -2, 6], kR: [-100, 0, 0], ftR: [64, 0, 0], toR: [42, 0, 0] }],
       [0.30, { cR: [9, -4, -2], uR: [62, -18, -4], fR: [80, 16, 0], wR: [-18, 0, 14], cL: [8, 4, 2], uL: [64, -22, -12], fL: [70, 18, 0], wL: [-12, 0, 8], h: [16, 0, 0], hP: [0, -0.458, -0.02], s1: [15, 0, 0], s2: [11, 0, 0], s3: [7, 0, 0], nk: [-15, 0, 0], hd: [-16, 0, 0], tL: [85, 2, -6], kL: [-85, 0, 0], ftL: [0, 0, 0], tR: [2, -2, 6], kR: [-100, 0, 0], ftR: [64, 0, 0], toR: [42, 0, 0] }],
@@ -356,7 +363,9 @@ export const CLIP_META = (() => {
     m[k] = {
       dur: d.dur, loop: !!d.loop, once: !!d.once, hold: !!d.hold, upper: !!d.upper,
       stride: d.stride || 0, speed: d.speed || 0, hands: d.hands || 'weapon',
-      ik: d.ik !== false, hipDrop: d.hipDrop || 0,
+      ik: d.ik !== false, hipDrop: d.hipDrop || 0, shouldered: !!d.shouldered,
+      // Does the low-ready carry solver get to place the weapon in this pose?
+      carry: d.carry !== undefined ? !!d.carry : (d.hands || 'weapon') === 'weapon',
     };
   }
   return m;
@@ -676,6 +685,10 @@ export class Animator {
     this.handWeight = 0;
     this._handW = 0;
 
+    // Weapon carry stabiliser: see setWeaponSolver().
+    this._weaponSolver = null;
+    this._holdCarry = 0; this._holdShoulder = 0;
+
     // Snapshot of the pure animation pose. THREE's PropertyMixer only writes a
     // bound property back when its accumulated value *changed*, so a bone whose
     // track is constant would never be reset and every procedural layer below
@@ -815,6 +828,44 @@ export class Animator {
   /** World-space target for the support hand (weapon foregrip). */
   setHandTarget(v, w = 1) { this.handTarget = v; this.handWeight = v ? w : 0; return this; }
 
+  /**
+   * Register a callback that gets to correct the weapon-bearing hand after the
+   * aim layer and before the support-hand IK. `fn(dt, carryWeight)` where
+   * carryWeight is 1 when the pose is a two-handed carry and 0 when the rifle
+   * is shouldered. See Character._solveCarry.
+   */
+  setWeaponSolver(fn) { this._weaponSolver = fn || null; return this; }
+
+  /**
+   * How much of the current blend is a two-handed low-ready carry, 0..1.
+   * Summed from the live action weights so it is exact through every cross-fade
+   * rather than snapping at a clip change; shouldered clips subtract, so raising
+   * the rifle hands control back to the keyframes and the aim layer.
+   */
+  get carryWeight() { this._weighHold(); return this._holdCarry; }
+
+  /** Weight of the active clips that hold the rifle SHOULDERED. */
+  get shoulderWeight() { this._weighHold(); return this._holdShoulder; }
+
+  _weighHold() {
+    let carry = 0, sh = 0;
+    const add = (name, w) => {
+      const m = CLIP_META[name];
+      if (!m || !(w > 0)) return;
+      if (m.shouldered) sh += w; else if (m.carry) carry += w;
+    };
+    for (const e of this._loco) add(e.name, e.action.getEffectiveWeight());
+    if (this._override) add(this._override.name, this._override.w);
+    if (this._overlay) add(this._overlay.name, this._overlay.w);
+    this._holdCarry = clamp01(carry);
+    this._holdShoulder = clamp01(sh);
+  }
+
+  /** Public two-bone IK so the weapon solver can place the gun arm. */
+  solveArm(upper, lower, end, targetW, poleDir, weight) {
+    this._solve2Bone(upper, lower, end, targetW, poleDir, weight);
+  }
+
   get handsMode() {
     if (this._override) return CLIP_META[this._override.name].hands;
     if (this._overlay && this._overlay.w > 0.5) return CLIP_META[this._overlay.name].hands;
@@ -892,6 +943,15 @@ export class Animator {
     this.charRoot.updateMatrixWorld(true);
     if (lod < 3) { this._applyAim(dt); this.charRoot.updateMatrixWorld(true); }
     if (lod < 2 && this.lookTarget) { this._applyLook(dt); this.charRoot.updateMatrixWorld(true); }
+
+    // Weapon carry stabiliser — must run AFTER the aim layer (which rotates the
+    // whole shoulder girdle) and BEFORE the support-hand IK, which chases the
+    // foregrip this puts in place.
+    if (lod < 2 && this._weaponSolver) {
+      this._weighHold();
+      this._weaponSolver(dt, this._holdCarry, this._holdShoulder);
+      this.charRoot.updateMatrixWorld(true);
+    }
 
     const meta = CLIP_META[this._override ? this._override.name : this.current];
     if (this.ikEnabled && lod < 2 && this.groundAt && meta && meta.ik) {
@@ -1165,9 +1225,24 @@ export class Animator {
     this._handW = damp(this._handW, this.handWeight, 12, dt);
     if (this._handW < 0.02) return;
     const bm = this.rig.boneMap;
+
+    // Fade the solve out when the grip is beyond the arm. _solve2Bone clamps an
+    // unreachable goal onto the reach sphere, which locks the elbow dead
+    // straight and leaves an open hand hanging in mid-air short of the wood —
+    // far more damaging than simply keeping the animated bend.
+    boneWorld(bm.upperArmL, _p0);
+    boneWorld(bm.foreArmL, _p1);
+    boneWorld(bm.handL, _p2);
+    const reach = _p0.distanceTo(_p1) + _p1.distanceTo(_p2);
+    const d = _p0.distanceTo(this.handTarget);
+    let w = this._handW;
+    const usable = reach * 0.965;
+    if (d > usable) w *= clamp01(1 - (d - usable) / (reach * 0.13));
+    if (w < 0.02) return;
+
     this.charRoot.getWorldQuaternion(_wq3);
     _tmp.set(0.35, -0.5, 0.6).applyQuaternion(_wq3).normalize();   // elbow pole: down/out
-    this._solve2Bone(bm.upperArmL, bm.foreArmL, bm.handL, this.handTarget, _tmp, this._handW);
+    this._solve2Bone(bm.upperArmL, bm.foreArmL, bm.handL, this.handTarget, _tmp, w);
   }
 
   dispose() {

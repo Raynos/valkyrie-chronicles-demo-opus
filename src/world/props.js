@@ -24,6 +24,11 @@ import { burlapTexture, woodTexture, barbedWireTexture, stoneTexture } from './t
 import { makeBox } from './collider.js';
 import { WATER_Y } from './layout.js';
 
+// HP of blast damage a drum delivers at the epicentre — the `power` convention
+// documented for the `explosion` Bus event. Enough to set off its neighbours
+// (drum hp 20, crates hp 45) without levelling a sandbag revetment.
+const DRUM_BLAST_POWER = 55;
+
 const BINS = ['sandbag', 'wood', 'metal', 'stone'];
 function newBins() {
   const b = {};
@@ -82,7 +87,11 @@ export function buildSandbagWall(rng, length, courses = 4, curve = 0.18) {
     colliders.push({
       cx: x, cy: top * 0.5, cz: z,
       hx: length / segs * 0.5, hy: top * 0.5, hz: bagD * 0.62, yaw: 0,
-      opts: { cover: 1, conceal: 0.15, solid: true, blocksLos: false, tag: 'sandbag', destructible: true, hp: 120 },
+      // Sand stops rifle rounds dead; you can still see over the parapet.
+      opts: {
+        cover: 1, conceal: 0.15, solid: true, blocksLos: false, blocksProjectile: true,
+        tag: 'sandbag', destructible: true, hp: 120,
+      },
     });
   }
   return { bins, colliders, height: top };
@@ -110,7 +119,9 @@ export function buildHedgehog(rng) {
   bins.metal.push(collar);
   const colliders = [{
     cx: 0, cy: 0.55, cz: 0, hx: 0.85, hy: 0.55, hz: 0.85, yaw: 0,
-    opts: { cover: 0.5, solid: true, blocksLos: false, tag: 'hedgehog' },
+    // Open girder work: it will stop a round that hits a beam, but the volume
+    // is mostly air, so it is not a bullet screen.
+    opts: { cover: 0.5, solid: true, blocksLos: false, blocksProjectile: false, tag: 'hedgehog' },
   }];
   return { bins, colliders };
 }
@@ -130,7 +141,7 @@ export function buildDragonTooth(rng) {
     bins,
     colliders: [{
       cx: 0, cy: h * 0.5, cz: 0, hx: 0.55, hy: h * 0.5, hz: 0.55, yaw: 0,
-      opts: { cover: 0.7, solid: true, blocksLos: false, tag: 'tooth' },
+      opts: { cover: 0.7, solid: true, blocksLos: false, blocksProjectile: true, tag: 'tooth' },
     }],
   };
 }
@@ -162,7 +173,10 @@ export function buildCrateStack(rng) {
   }
   colliders.push({
     cx: 0, cy: y * 0.5, cz: 0, hx: maxW * 0.55, hy: y * 0.5, hz: 0.38, yaw: 0,
-    opts: { cover: 0.7, solid: true, blocksLos: false, tag: 'crates', destructible: true, hp: 45 },
+    opts: {
+      cover: 0.7, solid: true, blocksLos: false, blocksProjectile: true,
+      tag: 'crates', destructible: true, hp: 45,
+    },
   });
   return { bins, colliders, height: y };
 }
@@ -185,7 +199,7 @@ export function buildOilDrum(rng, tipped = false) {
       cx: 0, cy: (tipped ? r : h * 0.5), cz: 0,
       hx: tipped ? h * 0.5 : r, hy: tipped ? r : h * 0.5, hz: r, yaw: 0,
       opts: {
-        cover: 0.5, solid: true, blocksLos: false, tag: 'drum',
+        cover: 0.5, solid: true, blocksLos: false, blocksProjectile: true, tag: 'drum',
         destructible: true, hp: 20, explosive: true,
       },
     }],
@@ -210,7 +224,7 @@ export function buildSignpost(rng, arms = 2) {
     bins,
     colliders: [{
       cx: 0, cy: h * 0.5, cz: 0, hx: 0.16, hy: h * 0.5, hz: 0.16, yaw: 0,
-      opts: { cover: 0.15, solid: false, blocksLos: false, tag: 'sign' },
+      opts: { cover: 0.15, solid: false, blocksLos: false, blocksProjectile: false, tag: 'sign' },
     }],
   };
 }
@@ -233,7 +247,8 @@ export function buildTelegraphPole(rng) {
     ],
     colliders: [{
       cx: 0, cy: h * 0.5, cz: 0, hx: 0.2, hy: h * 0.5, hz: 0.2, yaw: 0,
-      opts: { cover: 0.3, solid: true, blocksLos: false, tag: 'pole' },
+      // Creosoted timber: a rifle round does not go through it.
+      opts: { cover: 0.3, solid: true, blocksLos: false, blocksProjectile: true, tag: 'pole' },
     }],
   };
 }
@@ -389,7 +404,8 @@ export class Props {
     this.rng = makeRng(this.seed ^ 0xdead);
     this.colliders = [];
     this.footprints = [];
-    this.destructibles = [];       // { mesh, colliders, hp, kind, sunk }
+    this.destructibles = [];       // { mesh, colliders, hp, kind, sunk, pos }
+    this._cookoff = [];            // queued drum detonations, flushed in update()
     this.occupiedTest = opts.occupied || (() => false);
 
     this.group = new THREE.Group();
@@ -469,7 +485,7 @@ export class Props {
   _placeDestructible(built, x, z, yaw, kind, hp, yOverride = null) {
     const bins = newBins();
     const cols = [];
-    this._place(built, x, z, yaw, bins, cols, yOverride);
+    const groundY = this._place(built, x, z, yaw, bins, cols, yOverride);
     const geoms = [];
     for (const k of BINS) for (const g of bins[k]) geoms.push({ k, g });
     if (!geoms.length) return null;
@@ -487,11 +503,38 @@ export class Props {
     mesh.userData.outline = true;
     mesh.name = `prop:${kind}`;
     this.group.add(mesh);
-    const rec = { mesh, colliders: cols, hp, maxHp: hp, kind, sunk: 0, origin: mesh.position.clone() };
+    // The geometry is baked in world space, so mesh.position stays at the
+    // origin and is NOT where the prop is. Anything that needs a world position
+    // for this prop (the drum cook-off blast, its sfx) must use `rec.pos`.
+    const rec = {
+      mesh, colliders: cols, hp, maxHp: hp, kind, sunk: 0,
+      origin: mesh.position.clone(),
+      pos: new THREE.Vector3(x, groundY + 0.5, z),
+      /** Called by the collider's `destroyed` setter — see world/collider.js. */
+      onColliderDestroyed: (c, dead) => this._onColliderDestroyed(rec, dead),
+    };
     for (const c of cols) { c.owner = rec; this.colliders.push(c); }
     this.destructibles.push(rec);
     this.footprints.push({ x, z, r: 2.2 });
     return rec;
+  }
+
+  /**
+   * A prop's collider flipped `destroyed`. Keeps the visual in step with the
+   * collision state in ONE place, in both directions — an engineer rebuilding
+   * cover clears the flag and the mesh has to come back with it.
+   */
+  _onColliderDestroyed(rec, dead) {
+    if (dead) {
+      if (rec.hp > 0) rec.hp = 0;
+      if (rec.kind !== 'sandbag') rec.mesh.visible = false;
+      return;
+    }
+    rec.hp = rec.maxHp;
+    rec.sunk = 0;
+    rec.mesh.visible = true;
+    rec.mesh.position.copy(rec.origin);
+    rec.mesh.updateMatrix();
   }
 
   // -----------------------------------------------------------------------
@@ -654,7 +697,12 @@ export class Props {
               { x: (p.x + prev.x) * 0.5, y: (y + prev.y) * 0.5 + 0.5, z: (p.z + prev.z) * 0.5 },
               { x: seg * 0.5, y: 0.5, z: 0.28 },
               Math.atan2(p.z - prev.z, p.x - prev.x),
-              { cover: 0.25, conceal: 0, solid: true, blocksLos: false, tag: 'wire', destructible: true, hp: 30 }
+              // Wire entangles bodies and stops nothing else: three strands of
+              // 3 mm steel are not cover, they are a delay.
+              {
+                cover: 0.25, conceal: 0, solid: true, blocksLos: false, blocksProjectile: false,
+                tag: 'wire', destructible: true, hp: 30,
+              }
             ));
           }
         }
@@ -832,33 +880,58 @@ export class Props {
    * sinks and the cover value falls with it, so a wall that has been raked with
    * MG fire stops protecting the man behind it before it disappears. Drums
    * detonate.
+   *
+   * @param {object} collider  any collider belonging to the prop
+   * @param {number} amount    HP of damage (the same scale as `explosion.power`)
+   * @returns {boolean} true ONLY on the frame the prop is destroyed, so the
+   *   caller can raise `cover:destroyed` exactly once.
    */
   damage(collider, amount) {
     const rec = collider?.owner;
-    if (!rec || rec.hp <= 0) return false;
+    if (!rec || rec.hp <= 0 || !(amount > 0)) return false;
     rec.hp -= amount;
     const f = clamp01(1 - rec.hp / rec.maxHp);
     if (rec.kind === 'sandbag') {
       const sink = f * 0.55;
+      rec.sunk = sink;
       rec.mesh.position.copy(rec.origin).setY(rec.origin.y - sink);
       rec.mesh.updateMatrix();
       for (const c of rec.colliders) c.cover = lerp(1, 0.4, f);
     }
     if (rec.hp > 0) return false;
+    rec.hp = 0;
     if (rec.kind === 'drum') {
-      Bus.emit('explosion', { pos: rec.mesh.position.clone(), radius: 5.5, power: 1.0 });
-      Bus.emit('sfx', { name: 'explosion', pos: rec.mesh.position.clone() });
+      // Cook-off. Queued rather than emitted inline: `damage()` runs inside a
+      // ColliderGrid.query callback (World.damageArea) and a nested blast would
+      // re-enter that iteration. Props.update() flushes it a beat later, which
+      // also makes a fuel dump ripple instead of going up as one flat bang.
+      this._cookoff.push({
+        pos: rec.pos.clone(), radius: 5.5, power: DRUM_BLAST_POWER, t: 0.12,
+      });
     }
     if (rec.kind !== 'sandbag') {
-      rec.mesh.visible = false;
-      for (const c of rec.colliders) { c.solid = false; c.cover = 0; c.blocksLos = false; }
+      // ONE switch: the accessor clears solid/blocksLos/blocksProjectile/cover
+      // and hides the mesh through onColliderDestroyed.
+      for (const c of rec.colliders) c.destroyed = true;
     } else {
+      // A shot-out revetment settles into a low mound: still a body-blocker and
+      // still stops rounds, but it is no longer full cover.
       for (const c of rec.colliders) c.cover = 0.4;
     }
     return true;
   }
 
-  update() { /* props are static; destruction is event-driven via damage() */ }
+  update(dt = 0) {
+    if (!this._cookoff.length) return;
+    for (let i = this._cookoff.length - 1; i >= 0; i--) {
+      const b = this._cookoff[i];
+      b.t -= dt;
+      if (b.t > 0) continue;
+      this._cookoff.splice(i, 1);
+      Bus.emit('explosion', { pos: b.pos, radius: b.radius, power: b.power });
+      Bus.emit('sfx', { name: 'explosion', pos: b.pos });
+    }
+  }
 
   dispose() {
     for (const m of this.meshes) m.geometry.dispose();

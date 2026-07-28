@@ -34,9 +34,26 @@ const _prevLp = { x: 0, y: 0, z: 0 };
 
 const EMPTY = {};
 
+// battle.js PHASES = ['briefing','deploy','command','action','enemy','result'].
+// Every one of them needs a cue: 'menu' is the contemplative waltz the briefing
+// wants, and laying out a deployment is the same head-space as command mode.
+// ('result' is listed for completeness but mission:end picks victory/defeat.)
 const MUSIC_FOR_PHASE = {
+  briefing: 'menu', deploy: 'command',
   command: 'command', action: 'action', enemy: 'action', result: 'victory',
 };
+
+// Duplicate suppression. Several subsystems legitimately describe one physical
+// event twice — the canonical Bus event *and* an explicit `sfx` — so the same
+// buffer arrives twice in a frame. Two copies of a one-shot a few ms apart at
+// the same spot is not two events; it is one event 6 dB hot and comb-filtered.
+const DEDUPE_WINDOW = 0.05;   // seconds
+const DEDUPE_DIST2 = 4;       // metres², i.e. 2 m apart still counts as "here"
+
+// The blast reports the `explosion` Bus handler is authoritative for. An
+// explicit `sfx` naming one of these in the same frame is the same detonation
+// described a second time, so it yields to the derived (radius-aware) play.
+const BLAST_KEYS = ['explosion', 'explosionBig', 'explosionDistant'];
 
 /**
  * One playback slot. Node chain is built once and reused; only the
@@ -193,6 +210,9 @@ export class AudioEngine {
     this._tankBuffers = null;
     this._warned = new Set();
     this._lastCat = new Map();       // de-dup: category -> ctx time of last play
+    this._lastPlay = new Map();      // de-dup: sound key -> { t, p, x, y, z }
+    this._derived = new Map();       // canonical-event sounds pending a flush
+    this._derivedJobs = [];          // scratch for _flushDerived (no per-frame alloc)
     this._space = 'outdoor';
     this._heat = 0;                  // combat intensity 0..1, drives ducking
     this._unwire = [];
@@ -299,7 +319,8 @@ export class AudioEngine {
     // --- bake --------------------------------------------------------------
     // Sounds that could be needed in the first second are rendered now; the
     // rest stream in over the following frames inside a per-frame time budget.
-    const urgent = ['uiTick', 'uiConfirm', 'uiCancel', 'uiPage', 'uiStamp',
+    const urgent = ['uiTick', 'uiConfirm', 'uiCancel', 'uiSelect', 'uiDeny',
+      'uiPage', 'uiStamp', 'uiPlace', 'uiDialogue',
       'rifle', 'smg', 'impactDirt', 'impactFlesh', 'footGrass'];
     for (const name of Object.keys(SFX_DEFS)) {
       const def = SFX_DEFS[name];
@@ -341,6 +362,9 @@ export class AudioEngine {
     this.music?.dispose();
     this.ambience?.dispose();
     this._bank.clear();
+    this._derived.clear();
+    this._lastPlay.clear();
+    this._lastCat.clear();
     this.ready = false;
     try { this.ctx?.close(); } catch (e) { /* already closed */ }
   }
@@ -416,6 +440,13 @@ export class AudioEngine {
       return null;
     }
     const def = SFX_DEFS[key];
+
+    // A canonical Bus event already queued this exact sound for the end of the
+    // frame (see _defer). That derived play knows the blast radius and the
+    // listener range, so it wins and this explicit duplicate is dropped.
+    if (this._derived.size && this._derivedSupersedes(key)) return null;
+    if (this._isDuplicate(key, def, o.pos)) return null;
+
     // Bake lazily and *per variant* — never render a whole family inline, that
     // is what the frame-budgeted queue is for.
     const arr = this._bank.get(key) || this._bake(key, 0);
@@ -468,6 +499,77 @@ export class AudioEngine {
     const p = def.pri ?? 1;
     if (p >= 5) this._heat = Math.min(1, this._heat + (p >= 9 ? 0.55 : 0.2));
     return voice;
+  }
+
+  /**
+   * True when this exact sound was already triggered at effectively this spot
+   * inside its de-dup window — i.e. two emitters described one event. Records
+   * the play as a side effect when it is *not* a duplicate.
+   *
+   * Positions are compared, not just names, so two riflemen firing on the same
+   * frame from different bits of the field still both sound. `def.dd = 0`
+   * opts a sound out entirely.
+   */
+  _isDuplicate(key, def, pos) {
+    const w = def.dd ?? DEDUPE_WINDOW;
+    const now = this.ctx.currentTime;
+    const rec = this._lastPlay.get(key);
+    if (rec) {
+      if (w > 0 && now - rec.t < w) {
+        if (!pos && !rec.p) return true;
+        if (pos && rec.p) {
+          const dx = pos.x - rec.x, dy = pos.y - rec.y, dz = pos.z - rec.z;
+          if (dx * dx + dy * dy + dz * dz < DEDUPE_DIST2) return true;
+        }
+      }
+      rec.t = now; rec.p = !!pos;
+      if (pos) { rec.x = pos.x; rec.y = pos.y; rec.z = pos.z; }
+    } else {
+      // Copy the coordinates out — callers pass live meshes' `.position`.
+      this._lastPlay.set(key, {
+        t: now, p: !!pos, x: pos ? pos.x : 0, y: pos ? pos.y : 0, z: pos ? pos.z : 0,
+      });
+    }
+    return false;
+  }
+
+  /**
+   * Queue a sound derived from a canonical Bus event, to be played at the end
+   * of the frame. Deferring it is what lets the derived play — which sees the
+   * whole payload — take priority over an explicit `sfx` for the same physical
+   * event, which is always emitted *after* the canonical one.
+   *
+   * `supersedes` lists the exact resolved keys this entry stands in for. It is
+   * deliberately a key list and not a category: `explosion` and `tankGun` are
+   * both `cat: 'boom'`, and a detonation must never swallow a tank firing.
+   */
+  _defer(id, supersedes, fn) { this._derived.set(id, { supersedes, fn }); }
+
+  /** True when a blast report of any size has sounded within `w` seconds. */
+  _recentBlast(w = 0.1) {
+    const now = this.ctx.currentTime;
+    for (let i = 0; i < BLAST_KEYS.length; i++) {
+      const r = this._lastPlay.get(BLAST_KEYS[i]);
+      if (r && now - r.t < w) return true;
+    }
+    return false;
+  }
+
+  _derivedSupersedes(key) {
+    for (const e of this._derived.values()) {
+      if (e.supersedes.indexOf(key) >= 0) return true;
+    }
+    return false;
+  }
+
+  _flushDerived() {
+    if (!this._derived.size) return;
+    const jobs = this._derivedJobs;
+    for (const e of this._derived.values()) jobs.push(e.fn);
+    // Clear before running: the thunks call play(), which consults _derived.
+    this._derived.clear();
+    for (let i = 0; i < jobs.length; i++) jobs[i]();
+    jobs.length = 0;
   }
 
   /**
@@ -707,6 +809,10 @@ export class AudioEngine {
       }
     }
 
+    // Sounds inferred from canonical events fire here, once every explicit
+    // `sfx` for this frame has had its chance to supersede them.
+    this._flushDerived();
+
     this._pumpBake(4);
   }
 
@@ -763,8 +869,12 @@ export class AudioEngine {
     on('shot:fired', (p) => {
       if (!p || !this.ready || this._recent('gun')) return;
       const w = p.weapon;
-      const name = (typeof w === 'string' && (WEAPON_SFX[w] || w))
-        || WEAPON_SFX[w?.type] || WEAPON_SFX[w?.name] || WEAPON_SFX[p.unit?.cls] || 'rifle';
+      // A weapon definition names its own sound; combat.js emits that same
+      // name explicitly a line later, so resolving to anything else here
+      // would fire two *different* gunshots for one round.
+      const name = (typeof w === 'string' ? (WEAPON_SFX[w] || w) : w?.sfx)
+        || WEAPON_SFX[w?.kind] || WEAPON_SFX[w?.type] || WEAPON_SFX[w?.name]
+        || WEAPON_SFX[p.unit?.cls] || 'rifle';
       this.play(name, { pos: p.origin || p.unit?.pos });
     });
 
@@ -778,15 +888,27 @@ export class AudioEngine {
       }
     });
 
+    // The blast. This is the *only* place a blast report is chosen, because
+    // this is the only place that knows the radius and the range: emitters
+    // that also send an explicit `sfx` (explosions.js sends `explosionBig`,
+    // render/fx.js used to send `explosion`) are suppressed by play() while
+    // this is pending, so a detonation is one report, sized correctly.
     on('explosion', (p) => {
-      if (!p || !this.ready || this._recent('boom', 0.12)) return;
+      if (!p || !this.ready) return;
       const r = p.radius || 5;
-      // Past ~130 m the direct blast is gone and all that arrives is the
-      // filtered roll off the valley — a different sound, not a quieter one.
-      const far = p.pos ? this._dist(p.pos) > 130 : false;
-      this.play(far ? 'explosionDistant' : 'explosion',
-        { pos: p.pos, vol: Math.min(1.35, 0.6 + r * 0.06) });
-      if (!far && r > 7) this.play('impactDirt', { pos: p.pos, delay: 0.9, vol: 0.5 });
+      const pos = p.pos;
+      this._defer('explosion', BLAST_KEYS, () => {
+        // Two detonations inside 100 ms mask each other anyway — but gate on
+        // *blasts*, not on the whole 'boom' category, or a tank firing in the
+        // same frame would silence the shell that just landed next to it.
+        if (this._recentBlast(0.1)) return;
+        // Past ~130 m the direct blast is gone and all that arrives is the
+        // filtered roll off the valley — a different sound, not a quieter one.
+        const far = pos ? this._dist(pos) > 130 : false;
+        const name = far ? 'explosionDistant' : (r >= 6 ? 'explosionBig' : 'explosion');
+        this.play(name, { pos, vol: Math.min(1.35, 0.6 + r * 0.06) });
+        if (!far && r > 7) this.play('impactDirt', { pos, delay: 0.9, vol: 0.5 });
+      });
     });
 
     on('unit:downed', (p) => {

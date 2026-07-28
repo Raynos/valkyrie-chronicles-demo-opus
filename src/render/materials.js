@@ -71,6 +71,10 @@ function shared() {
     uSunDirW:    { value: new THREE.Vector3(0.42, 0.74, 0.32).normalize() },
     uSunDirV:    { value: new THREE.Vector3(0, 0, 1) },
     uSunColor:   { value: new THREE.Color(0xffe9c8) },
+    // World size of one shadow-map texel. lighting.js republishes this whenever
+    // the shadow frustum resizes; the vertex stage turns it into a slope-scaled
+    // normal-offset bias. See VC_SHADOW_COORD below.
+    uShadowTexel: { value: 0.02 },
     uKeyGain:    { value: 0.62 },
     uFillGain:   { value: 0.30 },
     uCream:      { value: PALETTE.cream },
@@ -95,8 +99,9 @@ function shared() {
 // Uniform names that are shared by reference across every material.
 const SHARED_KEYS = [
   'uTime', 'uResolution', 'uPixelRatio', 'uCamPos', 'uSunDirW', 'uSunDirV',
-  'uSunColor', 'uKeyGain', 'uFillGain', 'uCream', 'uViolet', 'uInkFloor',
-  'uGraphite', 'uWind', 'uPaperTex', 'uHatchTex', 'uBlotchTex', 'uNoiseTex', 'uFar',
+  'uSunColor', 'uShadowTexel', 'uKeyGain', 'uFillGain', 'uCream', 'uViolet',
+  'uInkFloor', 'uGraphite', 'uWind', 'uPaperTex', 'uHatchTex', 'uBlotchTex',
+  'uNoiseTex', 'uFar',
 ];
 
 function bindShared(uniforms) {
@@ -110,6 +115,40 @@ function bindShared(uniforms) {
 // the identical code path with `prepass:true`, which is the only way animated
 // geometry (skinned soldiers, wind-blown grass) can produce a G-buffer that
 // actually lines up with the colour pass.
+
+// ------------------------------------------------- normal-offset shadow bias
+// Replaces three's <shadowmap_vertex>. three offsets the shadow lookup along
+// the surface normal by a CONSTANT `shadowNormalBias`, which is a bad trade on
+// terrain: sized for a facet that faces the sun it leaks, and sized for a facet
+// at a grazing angle it peter-pans everything else off the ground.
+//
+// The correct scale is one shadow texel times tan(acos(N·L)) — the depth a
+// surface climbs across one texel of the shadow map. `uShadowTexel` is the
+// world size of that texel (published by lighting.js whenever the frustum
+// resizes) and `uSunDirW` points at the key light, so both terms are available
+// here for free.
+//
+// Only the DIRECTIONAL shadow is handled: the rig guarantees exactly one
+// shadow-casting light and it is the sun. If a point/spot light ever starts
+// casting, restore `#include <shadowmap_vertex>` for those loops.
+const VC_SHADOW_COORD = /* glsl */`
+#if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+  {
+    vec3 swn = inverseTransformDirection( transformedNormal, viewMatrix );
+    float ndl = clamp( dot( swn, uSunDirW ), 0.0, 1.0 );
+    // tan(acos(ndl)); the max() stops a silhouette facet launching the sample
+    // into the next county
+    float slopeK = min( sqrt( max( 1.0 - ndl * ndl, 0.0 ) ) / max( ndl, 0.15 ), 3.2 );
+    vec4 shadowWorldPosition = worldPosition
+      + vec4( swn * ( uShadowTexel * ( 1.25 + slopeK * 1.45 ) ), 0.0 );
+    #pragma unroll_loop_start
+    for ( int i = 0; i < NUM_DIR_LIGHT_SHADOWS; i ++ ) {
+      vDirectionalShadowCoord[ i ] = directionalShadowMatrix[ i ] * shadowWorldPosition;
+    }
+    #pragma unroll_loop_end
+  }
+#endif
+`;
 
 function buildVertex({ prepass = false, wind = false, needNoise = false } = {}) {
   return /* glsl */`
@@ -128,6 +167,7 @@ ${prepass ? '' : '#include <shadowmap_pars_vertex>\n#include <fog_pars_vertex>'}
 ${needNoise ? GLSL_HASH + GLSL_NOISE : ''}
 
 uniform float uTime;
+${prepass ? '' : 'uniform float uShadowTexel;\nuniform vec3 uSunDirW;'}
 ${wind ? 'uniform vec4 uWind;\nuniform float uBladeHeight;\nuniform float uSway;\nuniform float uWindSpeed;\nuniform vec2 uFade;' : ''}
 
 varying vec3 vViewPos;
@@ -196,7 +236,7 @@ ${wind ? WIND_BLOCK : ''}
   vViewPos = mvPosition.xyz;
   vViewNormal = transformedNormal;
 
-${prepass ? '' : '  #include <shadowmap_vertex>\n  #include <fog_vertex>'}
+${prepass ? '' : VC_SHADOW_COORD + '  #include <fog_vertex>'}
 }
 `;
 }
@@ -402,23 +442,28 @@ const NPR_SHADE_BODY = /* glsl */`
 
   // ---- two-tone temperature grading ---------------------------------------
   vec3 shadeCol = vcShadowColour( albedo, uViolet, uInkFloor );
-  vec3 midCol   = albedo * 0.96 + shadeCol * 0.11;
+  vec3 midCol   = albedo * 0.94 + shadeCol * 0.13;
   vec3 litCol   = vcLitColour( albedo, uCream );
 
-  // The ramp is pushed so the bottom TWO bands are unambiguously the violet
-  // shade colour. A cast shadow that is merely a darker copy of the lit tone is
-  // the difference between "toon shader" and "gouache".
-  vec3 col = mix( shadeCol, midCol, smoothstep( 0.16, 0.64, g ) );
+  // The ramp: the bottom band is the cool shade colour, the middle bands are
+  // the pigment itself, the top is the sunlit lift. The mid band has to READ AS
+  // ITS ALBEDO — if the shade colour reaches into it, every surface in the
+  // frame takes the shade's temperature and the whole image goes one colour.
+  vec3 col = mix( shadeCol, midCol, smoothstep( 0.10, 0.50, g ) );
   col = mix( col, litCol, smoothstep( 0.52, 1.0, g ) );
 
   // Warm the lit half with the key's own colour — but a low sun normalised to
   // unit luminance is a ~2x multiplier on red, which stains the entire frame
   // orange. Pull it back toward white before it is applied.
   vec3 keyTint = mix( vec3( 1.0 ), keyCol / max( vcLum( keyCol ) + 1e-4, 1e-4 ), 0.55 );
-  col *= mix( vec3( 1.0 ), keyTint, 0.50 * smoothstep( 0.12, 0.9, g ) );
+  col *= mix( vec3( 1.0 ), keyTint, 0.55 * smoothstep( 0.12, 0.9, g ) );
 
-  vec3 ambTint = ambientCol / max( ambientLum + 1e-4, 1e-4 );
-  col = mix( col, col * ambTint, 0.42 * ( 1.0 - smoothstep( 0.0, 0.62, g ) ) );
+  // Ambient tint in the dark end. Normalised AND pulled halfway to white first:
+  // the raw sky fill is a strong blue multiplier, and applying it at full
+  // strength on top of an already-cooled shade colour is a second violet pass
+  // stacked on the first.
+  vec3 ambTint = mix( vec3( 1.0 ), ambientCol / max( ambientLum + 1e-4, 1e-4 ), 0.55 );
+  col = mix( col, col * ambTint, 0.30 * ( 1.0 - smoothstep( 0.0, 0.55, g ) ) );
 
   // wet edge dries darker where the wash pooled
   col *= 1.0 - pool * 0.19 * uBandBleed * ( 1.12 - g * 0.5 );
@@ -520,6 +565,74 @@ ${alphaTest ? `  float a = uOpacity${map ? ' * texture2D( uMap, vUvC * uMapRepea
   gMeta = uMeta;
 }
 `;
+}
+
+// ================================================ shadow-map depth variant
+// three renders the shadow map with its own MeshDepthMaterial, and that
+// material knows nothing about a ShaderMaterial's uniforms. For alpha-cutout
+// foliage the consequence is catastrophic: our cutout texture lives in
+// `uniforms.uMap`, so `material.map` is undefined, so three's `getDepthMaterial`
+// never takes its cutout branch and stamps the FULL OPAQUE QUAD of every leaf
+// card into the shadow map. Two crossed 3 m quads per canopy cluster then throw
+// solid parallelogram slabs across the whole terrain — which is exactly the
+// "shadow acne" the frame was covered in, and no amount of depth bias touches
+// it because it is not acne, it is a correct shadow of the wrong geometry.
+//
+// The fix is a real custom depth material generated from the SAME vertex code,
+// so the cutout, the instancing, the skinning and the wind sway are all
+// reproduced exactly. `canvasRenderPipeline` assigns it to
+// `mesh.customDepthMaterial`, which three honours ahead of its own.
+//
+// The output must be `packDepthToRGBA` because the shadow map is an RGBA8
+// target written with `depthPacking: RGBADepthPacking`.
+function shadowDepthFragment({ alphaTest = false, map = false } = {}) {
+  return /* glsl */`
+#include <common>
+#include <packing>
+
+uniform float uOpacity;
+${alphaTest ? 'uniform float uAlphaTest;' : ''}
+${map ? 'uniform sampler2D uMap;\nuniform vec2 uMapRepeat;' : ''}
+
+varying vec3 vViewPos;
+varying vec3 vViewNormal;
+varying vec3 vWorldPos;
+varying vec3 vWorldNormal;
+varying vec2 vUvC;
+varying vec2 vAux;
+
+void main() {
+${alphaTest ? `  float a = uOpacity${map ? ' * texture2D( uMap, vUvC * uMapRepeat ).a' : ''};
+  if ( a < uAlphaTest ) discard;` : ''}
+  gl_FragColor = packDepthToRGBA( gl_FragCoord.z );
+}
+`;
+}
+
+function attachShadowDepth(mat, vertOpts, fragOpts, extraUniforms) {
+  const s = shared();
+  const uniforms = Object.assign({ uTime: s.uTime }, extraUniforms || {});
+
+  const sd = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: buildVertex(Object.assign({}, vertOpts, { prepass: true })),
+    fragmentShader: shadowDepthFragment(fragOpts),
+    lights: false,
+    fog: false,
+    side: mat.side,
+    name: (mat.name || 'vc') + ':shadow',
+  });
+  if (mat.defines) {
+    sd.defines = Object.assign({}, mat.defines);
+    delete sd.defines.VC_LOW;
+    // The distance fade is a CAMERA effect. In the shadow pass `cameraPosition`
+    // is the light, so leaving it in would make a blade's shadow depend on how
+    // far the sun is rather than how far the player is.
+    delete sd.defines.VC_FADE;
+  }
+  sd.userData.vcIsShadowDepth = true;
+  mat.userData.vcShadowDepth = sd;
+  return sd;
 }
 
 function attachPrepass(mat, vertOpts, fragOpts, extraUniforms) {
@@ -633,6 +746,7 @@ export const MaterialRegistry = {
   dispose() {
     for (const m of this.materials) {
       m.userData.vcPrepass?.dispose();
+      m.userData.vcShadowDepth?.dispose();
       m.dispose();
     }
     this.materials.clear();
@@ -746,6 +860,8 @@ export function makeCanvasMaterial(opts = {}) {
       uPixelRatio: { value: 1 },
       uKeyGain: { value: 0.62 },
       uFillGain: { value: 0.30 },
+      uShadowTexel: { value: 0.02 },
+      uSunDirW: { value: new THREE.Vector3(0, 1, 0) },
       uCream: { value: new THREE.Color() },
       uViolet: { value: new THREE.Color() },
       uInkFloor: { value: new THREE.Color() },
@@ -844,6 +960,15 @@ ${NPR_SHADE_BODY}
         o.map ? { uMap: uniforms.uMap, uMapRepeat: uniforms.uMapRepeat } : {})
       : null);
 
+  // Only cutout surfaces need a hand-written shadow depth pass; a solid mesh is
+  // served correctly by three's own MeshDepthMaterial.
+  if (o.alphaTest > 0) {
+    attachShadowDepth(mat, { needNoise: false },
+      { alphaTest: true, map: !!o.map },
+      Object.assign({ uAlphaTest: uniforms.uAlphaTest, uOpacity: uniforms.uOpacity },
+        o.map ? { uMap: uniforms.uMap, uMapRepeat: uniforms.uMapRepeat } : {}));
+  }
+
   return MaterialRegistry.register(mat);
 }
 
@@ -927,6 +1052,8 @@ export function makeGrassMaterial(opts = {}) {
       uPixelRatio: { value: 1 },
       uKeyGain: { value: 0.62 },
       uFillGain: { value: 0.30 },
+      uShadowTexel: { value: 0.02 },
+      uSunDirW: { value: new THREE.Vector3(0, 1, 0) },
       uCream: { value: new THREE.Color() },
       uViolet: { value: new THREE.Color() },
       uInkFloor: { value: new THREE.Color() },
@@ -1022,16 +1149,27 @@ ${NPR_SHADE_BODY}
   mat.userData.vcOutlineWidth = 0;
   mat.userData.vcKind = 'grass';
 
+  const windUniforms = {
+    uWind: uniforms.uWind,
+    uWindSpeed: uniforms.uWindSpeed,
+    uFade: uniforms.uFade,
+    uBladeHeight: uniforms.uBladeHeight,
+    uSway: uniforms.uSway,
+  };
+
   attachPrepass(mat, { wind: true, needNoise: true },
     { alphaTest: o.alphaTest > 0, map: !!o.map },
-    Object.assign({
-      uWind: uniforms.uWind,
-      uWindSpeed: uniforms.uWindSpeed,
-      uFade: uniforms.uFade,
-      uBladeHeight: uniforms.uBladeHeight,
-      uSway: uniforms.uSway,
-    }, o.alphaTest > 0 ? { uAlphaTest: uniforms.uAlphaTest, uOpacity: uniforms.uOpacity } : {},
-    o.map ? { uMap: uniforms.uMap, uMapRepeat: uniforms.uMapRepeat } : {}));
+    Object.assign({}, windUniforms,
+      o.alphaTest > 0 ? { uAlphaTest: uniforms.uAlphaTest, uOpacity: uniforms.uOpacity } : {},
+      o.map ? { uMap: uniforms.uMap, uMapRepeat: uniforms.uMapRepeat } : {}));
+
+  // Leaf and bush cards are this material with a cutout texture; without a
+  // matching depth pass their shadow is the solid quad, not the leaf.
+  attachShadowDepth(mat, { wind: true, needNoise: true },
+    { alphaTest: o.alphaTest > 0, map: !!o.map },
+    Object.assign({ uOpacity: uniforms.uOpacity }, windUniforms,
+      o.alphaTest > 0 ? { uAlphaTest: uniforms.uAlphaTest } : {},
+      o.map ? { uMap: uniforms.uMap, uMapRepeat: uniforms.uMapRepeat } : {}));
 
   return MaterialRegistry.register(mat);
 }
@@ -1131,6 +1269,8 @@ export function makeTerrainMaterial(opts = {}) {
       uPixelRatio: { value: 1 },
       uKeyGain: { value: 0.62 },
       uFillGain: { value: 0.30 },
+      uShadowTexel: { value: 0.02 },
+      uSunDirW: { value: new THREE.Vector3(0, 1, 0) },
       uCream: { value: new THREE.Color() },
       uViolet: { value: new THREE.Color() },
       uInkFloor: { value: new THREE.Color() },

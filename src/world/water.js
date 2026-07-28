@@ -21,12 +21,14 @@ const VERT = /* glsl */ `
 attribute float aDepth;
 attribute vec2  aFlow;
 attribute float aArc;
+attribute float aObstacle;
 
 uniform float uTime;
 
 varying float vDepth;
 varying vec2  vFlow;
 varying float vArc;
+varying float vObst;
 varying vec2  vAcross;
 varying vec3  vWorld;
 varying vec3  vView;
@@ -46,6 +48,7 @@ void main() {
   vDepth = aDepth;
   vFlow = aFlow;
   vArc = aArc;
+  vObst = aObstacle;
   vAcross = vec2(uv.x, uv.y);
   vec4 mv = viewMatrix * wp;
   vView = -mv.xyz;
@@ -62,6 +65,9 @@ uniform float uTime;
 uniform vec3  uShallow;
 uniform vec3  uDeep;
 uniform vec3  uFoam;
+uniform vec3  uBed;
+uniform vec3  uHaze;
+uniform float uFogDensity;
 uniform vec3  uSunDir;
 uniform vec3  uSunColor;
 uniform vec3  uSkyColor;
@@ -70,6 +76,7 @@ uniform float uBands;
 varying float vDepth;
 varying vec2  vFlow;
 varying float vArc;
+varying float vObst;
 varying vec2  vAcross;
 varying vec3  vWorld;
 varying vec3  vView;
@@ -99,43 +106,78 @@ void main() {
 
   float turb = clamp((n1.b * 0.5 + n2.b * 0.3 + n3.a * 0.4), 0.0, 1.0);
 
-  // --- depth colour. Shallow water shows the ochre bed; the channel goes
-  // teal-slate. Quantised into washes with soft edges.
-  float dq = band(clamp(vDepth / 1.9, 0.0, 1.0), uBands, 0.16);
+  // --- depth colour. The bed is a warm sand that reads THROUGH the shallows;
+  // the channel proper settles to a teal-slate. Quantised into washes with soft
+  // edges so it belongs to the same painting as the ground.
+  float dNorm = clamp(vDepth / 1.75, 0.0, 1.0);
+  // The quantiser boundary wanders with the flow noise, so the depth washes are
+  // torn contours in the current rather than clean bathymetry lines.
+  float dq = band(clamp(dNorm + (n3.b - 0.5) * 0.13, 0.0, 1.0), uBands, 0.17);
   vec3 col = mix(uShallow, uDeep, dq);
-  col = mix(col, col * vec3(1.06, 1.02, 0.94), turb * 0.5);
+  // Silt fingers: the bed shows through in wandering streaks, not a clean ramp.
+  float silt = (1.0 - smoothstep(0.10, 0.85, dNorm)) * smoothstep(0.30, 0.75, n3.b);
+  col = mix(col, uBed, clamp(silt * 0.62 + (1.0 - dNorm) * 0.26, 0.0, 0.74));
+  // current: quantised value drift along the flow so the channel visibly moves
+  float cur = band(clamp(turb * 1.25, 0.0, 1.0), 3.0, 0.24);
+  col *= 0.82 + cur * 0.40;
+  col = mix(col, col * vec3(1.07, 1.02, 0.93), turb * 0.45);
 
   // --- surface normal from the warp field, for glints only
-  vec3 N = normalize(vec3(warp.x * 5.0, 1.0, warp.y * 5.0));
+  vec3 N = normalize(vec3(warp.x * 7.0, 1.0, warp.y * 7.0));
   vec3 V = normalize(vView);
   vec3 H = normalize(uSunDir + V);
-  float spec = pow(max(dot(N, H), 0.0), 34.0);
-  // Quantised glints: two hard steps, so highlights read as flicked gouache.
-  float glint = step(0.28, spec) * 0.55 + step(0.62, spec) * 0.45;
+  float spec = pow(max(dot(N, H), 0.0), 16.0);
+  // Quantised glints: two hard steps, so highlights read as flicked gouache
+  // rather than as a specular sheen.
+  float glint = step(0.42, spec) * 0.5 + step(0.74, spec) * 0.5;
   // Break the glint field up with turbulence so it sparkles along the ripples.
-  glint *= smoothstep(0.35, 0.72, turb);
-  col += glint * uSunColor * 0.9;
+  glint *= smoothstep(0.42, 0.78, turb);
+  col += glint * uSunColor * 0.75;
 
   // Sky is only lightly reflected — the CANVAS look prefers local colour over
   // mirror behaviour.
   float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.5);
   col = mix(col, uSkyColor, fres * 0.30);
 
-  // --- foam. A noisy band wherever the water gets shallow (that is, wherever
-  // the carved bed rises into the surface), plus lace where flow is turbulent.
-  float shore = 1.0 - smoothstep(0.02, 0.42, vDepth);
-  float lace = smoothstep(0.42, 0.86, n3.b + n1.a * 0.45 - shore * 0.25);
-  float foam = clamp(shore * (0.45 + lace * 0.9), 0.0, 1.0);
-  foam += smoothstep(0.55, 0.95, vDepth) * lace * 0.10;   // midstream riffles
-  col = mix(col, uFoam, clamp(foam, 0.0, 0.92));
+  // --- wetness mask. The ribbon is built WIDER than the carved channel so its
+  // edges bury themselves in the banks, which means a good part of it lies over
+  // ground that is not under water at all. Everything below only applies where
+  // there is genuinely water, or the surface paints a white foam slab across
+  // the dry shingle.
+  float wet = smoothstep(0.0, 0.09, vDepth);
+
+  // --- foam. A tight noisy band right at the waterline, plus lace where the
+  // flow is turbulent, plus a standing wave broken around every bridge pier.
+  float shore = (1.0 - smoothstep(0.03, 0.26, vDepth)) * wet;
+  float lace = smoothstep(0.46, 0.88, n3.b + n1.a * 0.4 - shore * 0.2);
+  float foam = clamp(shore * (0.35 + lace * 0.75), 0.0, 0.85);
+  foam += smoothstep(0.55, 0.95, vDepth) * lace * 0.14;   // midstream riffles
+  // pier wash: aObstacle is 1 hard against a pier and dies off downstream
+  float pier = vObst * wet * (0.40 + 0.55 * smoothstep(0.25, 0.75, turb));
+  foam = max(foam, clamp(pier, 0.0, 0.9));
+  col = mix(col, uFoam, clamp(foam, 0.0, 0.88));
+
+  // Hold the pigment: the depth washes, the silt and the sky reflection all
+  // pull toward neutral, and a neutral river reads as wet tarmac.
+  float wlum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col = mix(vec3(wlum), col, 1.28);
 
   // --- paper grain over everything, screen-space so it belongs to the page
   float fibre = texture2D(uPaperTex, gl_FragCoord.xy * 0.0023).r;
-  col *= 0.82 + fibre * 0.34;
+  col *= 0.84 + fibre * 0.30;
 
-  // Shallow water is more transparent so the muddy bed reads through it.
-  float alpha = mix(0.62, 0.955, smoothstep(0.0, 0.85, vDepth));
-  alpha = max(alpha, foam * 0.95);
+  // --- aerial perspective, matched to the scene fog so the far reach of the
+  // river recedes with the bank it runs through instead of staying vivid.
+  float vd = length(vView);
+  col = mix(col, uHaze, clamp(1.0 - exp(-pow(vd * uFogDensity, 2.0)), 0.0, 0.85));
+
+  // Shallow water is nearly clear so the warm bed reads straight through it;
+  // the channel is only ever three-quarters opaque, which is what keeps a
+  // painted river from looking like a sheet of teal plastic.
+  float alpha = mix(0.30, 0.80, smoothstep(0.0, 1.05, vDepth));
+  alpha = max(alpha, foam * 0.9);
+  alpha *= wet;
+  if (alpha < 0.02) discard;
 
   gl_FragColor = vec4(col, alpha);
 }
@@ -158,9 +200,12 @@ export class Water {
         uFlowTex: { value: flowNoiseTexture(256, 61) },
         uPaperTex: { value: paperTexture(512, 77) },
         uTime: { value: 0 },
-        uShallow: { value: new THREE.Color(PALETTE.water).lerp(new THREE.Color(PALETTE.sand), 0.42) },
+        uShallow: { value: new THREE.Color(PALETTE.water).lerp(new THREE.Color(PALETTE.sand), 0.22) },
         uDeep: { value: new THREE.Color(PALETTE.waterDeep) },
+        uBed: { value: new THREE.Color(PALETTE.sand).lerp(new THREE.Color(PALETTE.dirt), 0.35) },
         uFoam: { value: new THREE.Color(PALETTE.foam) },
+        uHaze: { value: new THREE.Color(PALETTE.haze) },
+        uFogDensity: { value: 0.0026 },
         uSunDir: { value: WorldLighting.sunDir },
         uSunColor: { value: new THREE.Color(WorldLighting.sunColor) },
         uSkyColor: { value: new THREE.Color(PALETTE.skyHorizon) },
@@ -169,8 +214,10 @@ export class Water {
       vertexShader: VERT,
       fragmentShader: FRAG,
       transparent: true,
-      depthWrite: true,
-      side: THREE.FrontSide,
+      // The ribbon is a single sheet: a camera that dips to the waterline, or a
+      // soldier fording the shallows, must still see a surface above them.
+      depthWrite: false,
+      side: THREE.DoubleSide,
     });
 
     this.mesh = new THREE.Mesh(geo, this.material);
@@ -207,8 +254,9 @@ export class Water {
         tx /= tl; tz /= tl;
         const arc = poly.cum[i] + tl * f;
         const t = arc / poly.length;
-        // Widen well past the carved channel; the banks will bury the excess.
-        const w = L.riverHalfWidth(t) + 7.5;
+        // Widen past the carved channel; the banks bury the excess, and the
+        // shader discards anything that ends up over dry ground anyway.
+        const w = L.riverHalfWidth(t) + 10.5;
         rows.push({ x, z, tx, tz, arc, w });
       }
     }
@@ -220,7 +268,7 @@ export class Water {
         const j = i - 1;
         let tx = poly.x[i] - poly.x[j], tz = poly.z[i] - poly.z[j];
         const tl = Math.hypot(tx, tz) || 1;
-        rows.push({ x, z, tx: tx / tl, tz: tz / tl, arc: poly.cum[i], w: L.riverHalfWidth(1) + 7.5 });
+        rows.push({ x, z, tx: tx / tl, tz: tz / tl, arc: poly.cum[i], w: L.riverHalfWidth(1) + 10.5 });
       }
     }
 
@@ -232,6 +280,8 @@ export class Water {
     const dep = new Float32Array(R * C);
     const flw = new Float32Array(R * C * 2);
     const arcA = new Float32Array(R * C);
+    const obs = new Float32Array(R * C);
+    const piers = this._pierPoints();
 
     for (let r = 0; r < R; r++) {
       const row = rows[r];
@@ -253,6 +303,20 @@ export class Water {
         flw[k * 2] = row.tx;
         flw[k * 2 + 1] = row.tz;
         arcA[k] = row.arc;
+        // Standing wash around the bridge piers: tight on the upstream cutwater,
+        // trailing into a wake on the lee side.
+        let o = 0;
+        for (let p = 0; p < piers.length; p++) {
+          const P = piers[p];
+          const dx = x - P.x, dz = z - P.z;
+          const along = dx * row.tx + dz * row.tz;        // + is downstream
+          const side = Math.abs(dx * -row.tz + dz * row.tx);
+          const reach = along > 0 ? 5.5 : 2.2;
+          const f = (1 - clamp01(Math.abs(along) / reach)) *
+                    (1 - clamp01((side - P.r) / (along > 0 ? 2.4 : 1.3)));
+          if (f > o) o = f;
+        }
+        obs[k] = o * o;
       }
     }
 
@@ -261,7 +325,10 @@ export class Water {
       for (let c = 0; c < C - 1; c++) {
         const a = r * C + c, b = r * C + c + 1;
         const d = (r + 1) * C + c, e = (r + 1) * C + c + 1;
-        idx.push(a, e, b, a, d, e);
+        // Wind the quads so the geometric normal points UP. (across x flow) is
+        // left-handed about +Y here, so the naive order faces the riverbed and
+        // FrontSide culling made the whole river invisible.
+        idx.push(a, b, e, a, e, d);
       }
     }
 
@@ -272,11 +339,31 @@ export class Water {
     g.setAttribute('aDepth', new THREE.BufferAttribute(dep, 1));
     g.setAttribute('aFlow', new THREE.BufferAttribute(flw, 2));
     g.setAttribute('aArc', new THREE.BufferAttribute(arcA, 1));
+    g.setAttribute('aObstacle', new THREE.BufferAttribute(obs, 1));
     g.setIndex(idx);
     g.computeBoundingSphere();
     g.computeBoundingBox();
     this.rows = rows;
     return g;
+  }
+
+  /**
+   * World positions of the bridge piers, mirroring buildBridge()'s pier layout
+   * so the foam breaks exactly where the masonry stands in the stream.
+   */
+  _pierPoints() {
+    const b = this.layout.bridge;
+    if (!b || !(b.length > 0)) return [];
+    const spans = 3, pierW = 1.5;
+    const span = (b.length - pierW * (spans - 1) - 4.0) / spans;
+    if (!(span > 0)) return [];
+    const co = Math.cos(b.yaw), si = Math.sin(b.yaw);
+    const out = [];
+    for (let s = 1; s < spans; s++) {
+      const zc = -b.length * 0.5 + 2.0 + s * span + (s - 0.5) * pierW;
+      out.push({ x: b.x + zc * si, z: b.z + zc * co, r: b.width * 0.5 + 0.4 });
+    }
+    return out;
   }
 
   /** Surface height including the swell — for splash VFX and boats. */
