@@ -6,8 +6,6 @@
 
 import * as THREE from 'three';
 import { Bus } from '../core/bus.js';
-import { clamp01 } from '../core/math.js';
-import { explode } from './combat.js';
 
 const _v = new THREE.Vector3();
 
@@ -97,7 +95,8 @@ export const ORDERS = {
     filter: () => true,
     apply(battle) {
       battle.reconTurns = 2;
-      for (const u of battle.units) if (u.team === 1) { u.spotted = true; u.lastKnown.copy(u.pos); }
+      // Let refreshFog do the flipping so `enemy:spotted` fires for the HUD markers.
+      battle.refreshFog();
       Bus.emit('recon:full', { turns: 2 });
       return true;
     },
@@ -107,7 +106,7 @@ export const ORDERS = {
     id: 'fireSupport', name: 'Fire Support', cost: 3, target: 'area', icon: '*',
     desc: 'Off-map battery walks four shells across the marked ground.',
     filter: () => true,
-    apply(battle, target, opts) {
+    apply(battle, target) {
       const pos = target?.isVector3 ? target : (target?.pos || _v.set(0, 0, 0));
       battle.queueBarrage(pos, 4, 6.5, 95);
       return true;

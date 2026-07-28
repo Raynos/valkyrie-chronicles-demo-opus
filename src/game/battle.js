@@ -28,8 +28,6 @@ import { CommandMode } from './commandMode.js';
 import { EnemyAI } from './ai.js';
 import { MISSION_VASEL } from './mission.js';
 
-const _v0 = new THREE.Vector3();
-
 export const PHASES = ['briefing', 'deploy', 'command', 'action', 'enemy', 'result'];
 
 export class Battle {
@@ -181,9 +179,17 @@ export class Battle {
     if (Battle.actorFactory) return Battle.actorFactory(u, spec);
     try {
       if (u.isVehicle) {
-        return new Tank({ team: u.team, name: u.name, seed: u.seed, variant: spec.variant });
+        return new Tank({
+          team: u.team, name: u.name, seed: u.seed, variant: spec.variant,
+          world: this.world, scene: this.scene, hp: u.maxHp,
+        });
       }
-      return new Character({ class: u.cls, team: u.team, name: u.name, seed: u.seed });
+      return new Character({
+        class: u.cls, team: u.team, name: u.name, seed: u.seed,
+        // Lets the rig foot-plant on the heightfield instead of floating over it.
+        ground: (x, z) => this.groundY(x, z),
+        quality: CFG.quality,
+      });
     } catch (e) {
       console.warn('[battle] actor construction failed, using placeholder', e);
       const g = new THREE.Group();
@@ -193,6 +199,7 @@ export class Battle {
   }
 
   groundY(x, z) {
+    if (this.world?.groundHeightAt) return this.world.groundHeightAt(x, z);
     if (this.world?.terrain?.heightAt) return this.world.terrain.heightAt(x, z);
     return 0;
   }
@@ -224,6 +231,18 @@ export class Battle {
 
   deploySlots() {
     const out = [];
+    // The world author knows where the ground is flat and walkable; prefer its zone.
+    if (this.world?.deployPositions && !this._deployDirty) {
+      const n = (this.mission.deployMax ?? 6) + 3;
+      let pts = null;
+      try { pts = this.world.deployPositions(0, n, 2.7); } catch { pts = null; }
+      if (pts && pts.length) {
+        for (let i = 0; i < pts.length; i++) {
+          out.push({ camp: this.camps[0]?.id ?? 'hq', index: i, pos: pts[i].clone ? pts[i].clone() : pts[i] });
+        }
+        return out;
+      }
+    }
     for (const c of this.camps) {
       if (!c.deploy || c.owner !== 0) continue;
       const n = this.mission.slotsPerCamp ?? 6;

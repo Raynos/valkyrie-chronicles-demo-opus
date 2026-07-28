@@ -34,6 +34,7 @@ export const WorldHooks = {
 export function bindWorldHooks(world) {
   const seed = CFG.seed | 0;
   WorldHooks.grassAt =
+    world?.concealmentAt?.bind(world) ||
     world?.grassAt?.bind(world) ||
     world?.vegetationAt?.bind(world) ||
     ((x, z) => clamp01((fbm2(x * 0.045, z * 0.045, { octaves: 3, seed: seed + 17 }) - 0.42) * 3.1));

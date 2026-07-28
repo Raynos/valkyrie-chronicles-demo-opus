@@ -41,15 +41,17 @@ function newBins() {
  * squashed and wobbled blob, which is what stops a stack of identical
  * primitives from reading as a stack of identical primitives.
  */
-export function buildSandbagWall(rng, length, courses = 3, curve = 0.18) {
+export function buildSandbagWall(rng, length, courses = 4, curve = 0.18) {
   const bins = newBins();
   const colliders = [];
-  const bagW = 0.62, bagH = 0.26, bagD = 0.38;
+  const bagW = 0.62, bagH = 0.28, bagD = 0.40;
   const parts = [];
   const perCourse = Math.max(2, Math.round(length / bagW));
+  // The bottom course is bedded slightly into the ground, as it would be.
+  const sink = 0.08;
   let top = 0;
   for (let c = 0; c < courses; c++) {
-    const y = c * bagH * 0.92 + bagH * 0.5;
+    const y = c * bagH * 0.94 + bagH * 0.5 - sink;
     top = y + bagH * 0.5;
     const inset = c * 0.055;
     const off = (c % 2) * bagW * 0.5;
@@ -419,9 +421,31 @@ export class Props {
     });
   }
 
+  /**
+   * Average ground level over a wall footprint and how uneven it is.
+   * Cover is measured against the ground the DEFENDER stands on, so the level
+   * is taken from a strip just behind the parapet, not from its centre.
+   */
+  _levelBehind(x, z, yaw, len) {
+    const co = Math.cos(yaw), si = Math.sin(yaw);
+    let sum = 0, n = 0, lo = Infinity, hi = -Infinity;
+    for (let i = -2; i <= 2; i++) {
+      const lx = (i / 2) * len * 0.5;
+      for (const lz of [-1.1, -0.2]) {
+        const wx = x + lx * co + lz * si;
+        const wz = z - lx * si + lz * co;
+        const h = this.terrain.heightAt(wx, wz);
+        sum += h; n++;
+        if (h < lo) lo = h;
+        if (h > hi) hi = h;
+      }
+    }
+    return { y: sum / n, spread: hi - lo };
+  }
+
   /** Ground a local-space build at (x,z,yaw) and file its geometry + colliders. */
-  _place(built, x, z, yaw, into = this.bins, colliderSink = this.colliders) {
-    const y = this.terrain.heightAt(x, z);
+  _place(built, x, z, yaw, into = this.bins, colliderSink = this.colliders, yOverride = null) {
+    const y = yOverride !== null ? yOverride : this.terrain.heightAt(x, z);
     const co = Math.cos(yaw), si = Math.sin(yaw);
     for (const k of BINS) {
       for (const g of built.bins[k]) {
@@ -442,10 +466,10 @@ export class Props {
   }
 
   /** Free-standing destructible: own mesh, own collider set. */
-  _placeDestructible(built, x, z, yaw, kind, hp) {
+  _placeDestructible(built, x, z, yaw, kind, hp, yOverride = null) {
     const bins = newBins();
     const cols = [];
-    this._place(built, x, z, yaw, bins, cols);
+    this._place(built, x, z, yaw, bins, cols, yOverride);
     const geoms = [];
     for (const k of BINS) for (const g of bins[k]) geoms.push({ k, g });
     if (!geoms.length) return null;
@@ -488,7 +512,7 @@ export class Props {
           z: b.z + dz - Math.sin(b.yaw) * lateral * 5.5,
           yaw: b.yaw + (side > 0 ? Math.PI : 0),
           len: rngRange(rng, 3.4, 5.2),
-          courses: 3,
+          courses: 4,
         });
       }
     }
@@ -500,20 +524,24 @@ export class Props {
       specs.push({
         x: V.x + Math.cos(a) * r, z: V.z + Math.sin(a) * r,
         yaw: a + Math.PI * 0.5,
-        len: rngRange(rng, 3.0, 4.6), courses: rng() < 0.4 ? 4 : 3,
+        len: rngRange(rng, 3.0, 4.6), courses: rng() < 0.4 ? 5 : 4,
       });
     }
     // a forward post on the southern ridge
-    specs.push({ x: -26, z: 46, yaw: Math.PI * 0.92, len: 4.6, courses: 3 });
-    specs.push({ x: 12, z: 40, yaw: Math.PI * 1.05, len: 3.8, courses: 3 });
+    specs.push({ x: -26, z: 46, yaw: Math.PI * 0.92, len: 4.6, courses: 4 });
+    specs.push({ x: 12, z: 40, yaw: Math.PI * 1.05, len: 3.8, courses: 4 });
 
     for (const s of specs) {
       if (!this.terrain.inBounds(s.x, s.z)) continue;
       if (this.terrain.heightAt(s.x, s.z) < WATER_Y + 0.5) continue;
-      if (this.terrain.maxSlopeNear(s.x, s.z, 2.5) > 0.5) continue;
       if (this.occupiedTest(s.x, s.z)) continue;
+      // Troops dig in on ground they can actually revet: reject anything the
+      // parapet would either float over or bury itself in.
+      const lvl = this._levelBehind(s.x, s.z, s.yaw, s.len);
+      if (lvl.spread > 0.85) continue;
+      if (this.terrain.slopeAt(s.x, s.z) > 0.42) continue;
       const built = buildSandbagWall(rng, s.len, s.courses, rngRange(rng, 0.10, 0.26));
-      this._placeDestructible(built, s.x, s.z, s.yaw, 'sandbag', 120 * s.courses);
+      this._placeDestructible(built, s.x, s.z, s.yaw, 'sandbag', 120 * s.courses, lvl.y);
 
       // supplies behind the parapet
       const bx = s.x - Math.sin(s.yaw) * 1.5;

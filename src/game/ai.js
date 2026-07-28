@@ -161,7 +161,14 @@ export class EnemyAI {
     this.actionT = 0;
     this.pathIndex = 1;
     this._speed = 0;
+    this._stuck = 0;
+    this._repathed = false;
     unit.beginAction();
+    // Budget the sortie from the length of the walk, not a flat number — a scout crossing
+    // sixty metres must not be cut off halfway by the watchdog.
+    let planLen = 0;
+    if (plan?.path) for (let i = 1; i < plan.path.length; i++) planLen += plan.path[i].distanceTo(plan.path[i - 1]);
+    this.maxActionTime = 7 + (planLen / Math.max(1.5, unit.classDef.speed.walk)) * 1.8;
     unit.setStance?.(plan.crouch ? STANCE.CROUCH : STANCE.STAND);
     this.battle.interception?.setMover(unit);
     this.state = plan.path && plan.path.length > 1 ? STATE.MOVING : STATE.SETTLING;
@@ -239,9 +246,27 @@ export class EnemyAI {
     if (paid < moved - 1e-4) { u.ap = 0; }
 
     if (moved < step * 0.15) {
-      // Stuck against geometry — nudge the waypoint index rather than grinding.
-      this.pathIndex++;
-    }
+      // Blocked. Give it a few frames to slide along the obstacle before doing anything
+      // drastic — one unlucky frame against a sandbag must not end the whole sortie.
+      this._stuck++;
+      // Every detour buys a little more of the watchdog's patience.
+      if (this._stuck === 8 || this._stuck === 23) this.maxActionTime += 3.5;
+      if (this._stuck === 8) {
+        // Try to step around: shove the intermediate waypoint sideways.
+        const side = ((this._stuck / 8) | 0) % 2 ? 1 : -1;
+        _v1.set(-_v0.z * side * 2.4, 0, _v0.x * side * 2.4).add(u.pos);
+        _v1.y = this.nav ? this.nav.heightAt(_v1.x, _v1.z) : u.pos.y;
+        p.path.splice(this.pathIndex, 0, _v1.clone());
+      } else if (this._stuck > 22) {
+        if (!this._repathed && p.dest) {
+          // One full re-path from where we actually ended up.
+          this._repathed = true;
+          const np = this.nav?.findPath(u.pos, p.dest, { threatWeight: 0.4 });
+          if (np && np.length > 1) { p.path = np; this.pathIndex = 1; this._stuck = 0; return; }
+        }
+        this.pathIndex = p.path.length;      // give up and take the shot from here
+      }
+    } else this._stuck = 0;
 
     this._speed = dt > 1e-5 ? moved / dt : 0;
     u.speed = this._speed;
@@ -435,6 +460,10 @@ export class EnemyAI {
     const nav = this.nav;
     const role = ROLE[u.cls] || ROLE.shock;
     const baseHeight = u.pos.y;
+    // A dug-in garrison should feel dug in. The mission decides who is attacking, and how far
+    // an objective is allowed to pull a soldier before the gradient flattens out.
+    const aggression = b.mission?.aggression?.[u.team] ?? 1;
+    const pushRange = b.mission?.pushRange?.[u.team] ?? Infinity;
 
     /**
      * Cheap positional desirability of a cell. Absolute values here are meaningless — what
@@ -451,9 +480,12 @@ export class EnemyAI {
       s -= walked * role.travel;
 
       if (goal) {
-        const dg = Math.hypot(x - goal.x, z - goal.z);
-        s -= dg * role.goal;
-        if (goal.isCamp && dg < (goal.radius || 6)) s += 140;
+        // Saturating at `pushRange` removes the gradient past that distance, so a garrison
+        // stops trying to walk the length of the map and holds good ground instead.
+        const dg = Math.min(Math.hypot(x - goal.x, z - goal.z), pushRange);
+        s -= dg * role.goal * aggression;
+        // Standing inside a capturable camp wins missions; nothing outscores it.
+        if (goal.isCamp && dg < (goal.radius || 6)) s += 340;
       }
 
       let nearest = 1e6, nearestU = null;
@@ -538,7 +570,7 @@ export class EnemyAI {
   /** Expected value of shooting from `pos`; the LOS traces live here. */
   evaluateFirePosition(u, pos, enemies) {
     const out = _eval;
-    out.value = 0; out.target = null; out.cover = 0;
+    out.value = 0; out.target = null; out.cover = 0; out.losCount = 0;
     if (u.attackUsed || u.ammo <= 0) {
       out.cover = this.nav ? this.nav.coverAtCell(pos.x, pos.z) : 0;
       return out;
@@ -552,6 +584,7 @@ export class EnemyAI {
       if (d > w.maxRange) continue;
       e.centerPoint(_v1);
       if (!hasLOS(pos.x, eyeY, pos.z, _v1.x, _v1.y, _v1.z, this.world)) continue;
+      out.losCount++;
       // Evaluate as if we were standing there. `_logicalOnly` makes muzzlePoint/headPoint
       // derive from `pos` instead of the rigged mesh, which has not moved.
       const sx = u.pos.x, sy = u.pos.y, sz = u.pos.z;
@@ -568,6 +601,10 @@ export class EnemyAI {
       v *= 1 - clamp01(f.cover) * 0.5;
       if (v > bestV) { bestV = v; bestT = e; }
     }
+    // A marksman's whole job is owning sightlines. Reward a better field of fire even with
+    // nothing currently in the crosshairs — and make a blind position actively unacceptable,
+    // otherwise low threat and high ground walk the sniper off the back of the map.
+    if (u.classDef.overwatch) bestV += out.losCount > 0 ? out.losCount * 9 : -70;
     out.value = bestV;
     out.target = bestT;
     out.cover = this.nav ? this.nav.coverAtCell(pos.x, pos.z) : 0;
@@ -610,6 +647,17 @@ export class EnemyAI {
    */
   pickObjective(u, enemies) {
     const b = this.battle;
+    // A camp of ours with hostiles closing on it outranks everything else — but only for
+    // soldiers near enough to do something about it, so the whole line does not run home.
+    for (const c of b.camps) {
+      if (c.owner !== u.team) continue;
+      if (Math.hypot(c.pos.x - u.pos.x, c.pos.z - u.pos.z) > 45) continue;
+      for (const e of enemies) {
+        if (e.pos.distanceToSquared(c.pos) < 900) {
+          return { x: c.pos.x, z: c.pos.z, isCamp: false, defend: true, camp: c };
+        }
+      }
+    }
     // Lancers hunt armour above all else.
     if (u.cls === 'lancer') {
       let tank = null, bd = 1e9;
@@ -639,9 +687,16 @@ export class EnemyAI {
       const bias = c.owner === (this.team === 1 ? 0 : 1) ? 0.7 : 1.0;
       if (d * bias < bd) { bd = d * bias; camp = c; }
     }
-    if (camp && u.classDef.canCapture) {
+    // Only march on an enemy camp that is realistically within reach this mission; a garrison
+    // told to hold a crossing should not go on a hundred-metre walk past the whole battle.
+    const reach = b.mission?.pushRange?.[u.team] ?? Infinity;
+    if (camp && u.classDef.canCapture
+        && Math.hypot(camp.pos.x - u.pos.x, camp.pos.z - u.pos.z) <= reach) {
       return { x: camp.pos.x, z: camp.pos.z, isCamp: true, radius: camp.radius, camp };
     }
+    // Otherwise fall back to the line the mission told this side to hold.
+    const hold = b.mission?.holdPoints?.[u.team];
+    if (hold) return { x: hold[0], z: hold[1], isCamp: false, hold: true };
     // Otherwise converge on the enemy schwerpunkt.
     if (enemies.length) {
       _v0.set(0, 0, 0);
@@ -689,7 +744,7 @@ const ROLE = {
 const _cand = [];
 const _top = [];
 const _order = [];
-const _eval = { value: 0, target: null, cover: 0 };
+const _eval = { value: 0, target: null, cover: 0, losCount: 0 };
 
 export { STATE as AI_STATE, ROLE as AI_ROLES };
 export default EnemyAI;

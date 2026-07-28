@@ -231,8 +231,21 @@ function css() {
 .vc-corner.tr{ top:.7em; right:.7em; transform:scaleX(-1); }
 .vc-corner.bl{ bottom:.7em; left:.7em; transform:scaleY(-1); }
 .vc-corner.br{ bottom:.7em; right:.7em; transform:scale(-1); }
-.vc-bookmark{ position:absolute; top:0; left:27em; width:2.4em; z-index:3; }
-.vc-rule{ margin:.4em 0 .5em; }
+.vc-bookmark{ position:absolute; top:0; left:27em; width:2.4em; }
+.vc-rule{ margin:.6em 0 .55em; }
+
+/* ---------- stacking order ----------------------------------------------- */
+/* frame < world labels < mode HUDs < reticle < dialogue < pages < toasts */
+.vc-frame{ z-index:0; }
+.vc-bookmark{ z-index:1; }
+.vc-world{ z-index:2; }
+.vc-layer{ z-index:4; }
+.vc-tgt{ z-index:5; }
+.vc-legend{ z-index:6; }
+.vc-alert{ z-index:14; }
+.vc-dlg{ z-index:16; }
+.vc-screens{ z-index:20; }
+.vc-toasts{ z-index:26; }
 
 /* ---------- generic layers ---------------------------------------------- */
 .vc-layer{ position:absolute; inset:0; }
@@ -276,12 +289,12 @@ function css() {
 /* A rubber stamp in the corner of the personnel card, clear of the name. */
 .vc-ru-stamp{
   position:absolute; right:.34em; top:.34em; white-space:nowrap;
-  font-variant:small-caps; letter-spacing:.2em; font-size:.56em;
-  color:var(--red); border:1.5px solid var(--red); padding:.05em .38em .07em;
+  font-variant:small-caps; letter-spacing:.16em; font-size:.52em;
+  color:var(--red); border:1.4px solid var(--red); padding:.05em .34em .07em;
   transform:rotate(-8deg); opacity:.78; border-radius:2px;
   background:rgba(247,239,221,.72);
 }
-.vc-ru.acted .vc-ru-name{ padding-right:4.2em; }
+.vc-ru.acted .vc-ru-name{ padding-right:3.3em; }
 .vc-ru-ribbon{ position:absolute; left:-.55em; top:.5em; width:.85em; height:2.6em; }
 
 .vc-bar{ position:relative; height:.62em; }
@@ -520,7 +533,7 @@ function css() {
   animation:vc-slide-up .38s cubic-bezier(.16,.9,.3,1) both; }
 /* The speaker's bust rises out of the top of the box, VC-style. */
 .vc-dlg-in{ display:block; padding:.9em 1.1em 1.0em 9.6em; min-height:6.2em; }
-.vc-dlg-por{ position:absolute; left:1.0em; bottom:-.2em; width:7.8em; }
+.vc-dlg-por{ position:absolute; left:1.0em; bottom:.15em; width:7.8em; }
 .vc-dlg-por svg{ width:100%; height:auto; filter:drop-shadow(0 3px 6px rgba(58,47,51,.42)); }
 .vc-dlg-body{ min-width:0; }
 .vc-dlg-name{ display:inline-block; position:relative; margin:-1.6em 0 .35em -1.0em; padding:.14em 1.1em .18em 1.0em;
@@ -612,8 +625,13 @@ function css() {
   .vc-obj{ width:16em; }
 }
 @media (max-width:1400px){
-  .vc-roster{ left:1.0em; }
-  .vc-ru{ width:12.6em; }
+  .vc-roster{ left:1.0em; gap:.42em; }
+  .vc-ru{ width:13.2em; }
+  .vc-orders{ left:15.4em; right:22.6em; gap:.45em; }
+  .vc-card-name{ font-size:.74em; letter-spacing:.02em; }
+  .vc-card-desc{ font-size:.58em; }
+  .vc-map{ width:20em; }
+  .vc-ap{ width:22em; }
 }
 
 /* ---------- reduced motion ----------------------------------------------- */

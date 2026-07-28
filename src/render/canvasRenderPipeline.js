@@ -321,7 +321,12 @@ void main() {
     idE = max(idE, step(0.006, length(s3.id - c.id)));
     idE = max(idE, step(0.006, length(s4.id - c.id)));
 
-    lineW = max(lineW, max(max(s1.w, s2.w), max(s3.w, s4.w)));
+    // The stroke belongs to the OUTLINED object, drawn just inside its own
+    // silhouette; the far side gets only a faint outer halo. Taking a plain
+    // max() here would draw the full line on both sides of every boundary,
+    // which is what turns grass in front of a wall into black scribble.
+    float nbW = max(max(s1.w, s2.w), max(s3.w, s4.w));
+    lineW = max(lineW, nbW * 0.42);
 
     // terrain silhouetted against the sky still wants a horizon stroke even
     // though the ground itself is not an outlined object
@@ -456,7 +461,7 @@ void main() {
 
 #ifdef VC_CA
   // radial chromatic fringing, essentially absent at the centre
-  vec2 ca = d * uChroma * (0.25 + r2 * 4.0) * uResolution.x * uTexel.x;
+  vec2 ca = d * uChroma * (0.12 + r2 * 1.7);
   float rr = texture2D(tColor, uv + ca).r;
   float bb = texture2D(tColor, uv - ca).b;
   c = vec3(mix(c.r, rr, 0.85), c.g, mix(c.b, bb, 0.85));
@@ -482,9 +487,9 @@ void main() {
     float greenness = exp(-dg * dg / 0.0072);
     float dO = hsv.x - 0.095;                       // ~34 deg, ochre / umber
     float ochreness = exp(-dO * dO / 0.0052);
-    hsv.y *= 1.0 - greenness * 0.44;
-    hsv.y *= 1.0 + ochreness * 0.24;
-    hsv.z *= 1.0 + ochreness * 0.045;
+    hsv.y *= 1.0 - greenness * 0.26;
+    hsv.y *= 1.0 + ochreness * 0.13;
+    hsv.z *= 1.0 + ochreness * 0.030;
     hsv.y = clamp(hsv.y * uSaturation, 0.0, 1.0);
     c = vcHsv2Rgb(hsv);
   }
@@ -646,7 +651,7 @@ export class CanvasRenderPipeline {
         uTime: { value: 0 },
         uPaperWhite: { value: new THREE.Color(0xfff6e4) },
         uInkBlack: { value: PALETTE.inkFloor.clone() },
-        uShadowTint: { value: new THREE.Color(0xb9a4b3) },
+        uShadowTint: { value: new THREE.Color(0xa79ec8) },
         uHighTint: { value: new THREE.Color(0xfff0d2) },
         uVignetteTint: { value: new THREE.Color(0x8a6f63) },
       },
@@ -959,15 +964,19 @@ export class CanvasRenderPipeline {
   // and setProgram honours `uniformsNeedUpdate` per draw call, so this is a
   // correct (if unusual) way to get per-object data through a shared material.
   _ensureHook(o) {
-    if (o.userData.__vcHooked) return;
-    o.userData.__vcHooked = true;
+    // Re-wrap if another system has replaced onBeforeRender since we hooked —
+    // silently losing the hook would make this object inherit whatever id the
+    // previously drawn mesh wrote, and the outline weights would go wrong.
+    if (o.onBeforeRender === o.userData.__vcHookFn) return;
 
-    const id = (++this._idCounter) * 37 + 11;    // spread ids so neighbours differ
-    o.userData.__vcIdR = ((id & 255) + 1) / 256;
-    o.userData.__vcIdG = (((id >> 8) & 255) + 1) / 256;
+    if (o.userData.__vcIdR === undefined) {
+      const id = (++this._idCounter) * 37 + 11;   // spread ids so neighbours differ
+      o.userData.__vcIdR = ((id & 255) + 1) / 256;
+      o.userData.__vcIdG = (((id >> 8) & 255) + 1) / 256;
+    }
 
     const prev = o.onBeforeRender;
-    o.onBeforeRender = function vcMetaHook(renderer, scene, camera, geometry, material, group) {
+    const hook = function vcMetaHook(renderer, scene, camera, geometry, material, group) {
       if (prev) prev.call(this, renderer, scene, camera, geometry, material, group);
       if (!material || !material.userData || material.userData.vcIsPrepass !== true) return;
       const um = material.uniforms.uMeta;
@@ -975,6 +984,8 @@ export class CanvasRenderPipeline {
       um.value.set(this.userData.__vcIdR, this.userData.__vcIdG, this.userData.__vcMetaW || 0, 1);
       material.uniformsNeedUpdate = true;
     };
+    o.onBeforeRender = hook;
+    o.userData.__vcHookFn = hook;
   }
 
   dispose() {

@@ -25,12 +25,12 @@ const _e0 = new THREE.Euler();
 
 /** Rolling resistance coefficient per surface — mud eats a tank's top speed. */
 const ROLL_RESIST = {
-  dirt: 0.075, grass: 0.062, stone: 0.045, brick: 0.05,
+  dirt: 0.075, grass: 0.062, rock: 0.05, mud: 0.155, stone: 0.045, brick: 0.05,
   wood: 0.05, metal: 0.04, sandbag: 0.14, water: 0.22, flesh: 0.1,
 };
 /** Track-to-ground friction coefficient. */
 const GRIP = {
-  dirt: 1.05, grass: 0.95, stone: 0.8, brick: 0.85,
+  dirt: 1.05, grass: 0.95, rock: 0.78, mud: 0.52, stone: 0.8, brick: 0.85,
   wood: 0.75, metal: 0.6, sandbag: 0.7, water: 0.45, flesh: 0.9,
 };
 
@@ -71,7 +71,14 @@ export class TankPhysics {
     this.maxSpeed = opts.maxSpeed ?? 9.4;    // m/s (~34 km/h)
     this.maxReverse = opts.maxReverse ?? 4.2;
     this.trackAuthority = opts.trackAuthority ?? this.mass * 6.5; // N per m/s slip
-    this.maxTrackForce = opts.maxTrackForce ?? this.mass * 4.4;   // engine limit
+    this.maxTrackForce = opts.maxTrackForce ?? this.mass * 4.4;   // clutch limit
+    /**
+     * Sustained engine power, W. This is what actually sets the top speed on a
+     * grade: force available at speed v is P/v, so a climb that needs more
+     * tractive effort than the engine can deliver at 9 m/s simply gets driven
+     * slower. Without it the tank climbs a 40% slope at full speed.
+     */
+    this.enginePower = opts.enginePower ?? this.mass * 14.5;      // ~190 kW at 13 t
     this.brakeForce = this.mass * 6.0;
     this.pivotRate = opts.pivotRate ?? 0.95; // rad/s neutral-steer max
 
@@ -90,6 +97,9 @@ export class TankPhysics {
     this.heaveVel = 0;
     this.airborne = false;
     this.groundNormal = new THREE.Vector3(0, 1, 0);
+    /** Ground gradient in hull axes: rise per metre forward / to the right. */
+    this.gradeFwd = 0;
+    this.gradeLat = 0;
     this.surface = SURFACE.GRASS;
     this.accelLocal = new THREE.Vector3();   // measured, for load transfer
 
@@ -117,7 +127,6 @@ export class TankPhysics {
           force: 0,
           contact: true,
           groundY: 0,
-          normal: new THREE.Vector3(0, 1, 0),
         });
       }
     }
@@ -154,8 +163,6 @@ export class TankPhysics {
     }
     this._markAccum = [0, 0];
     this._dustAccum = 0;
-
-    this._colliderPush = new THREE.Vector3();
   }
 
   // ------------------------------------------------------------- controls ---
@@ -186,7 +193,7 @@ export class TankPhysics {
   _surfaceAt(x, z) {
     const t = this.world && this.world.terrain;
     if (t && t.materialAt) return t.materialAt(x, z) || SURFACE.DIRT;
-    if (t && t.slopeAt) return t.slopeAt(x, z) > 0.6 ? SURFACE.STONE : SURFACE.GRASS;
+    if (t && t.slopeAt) return t.slopeAt(x, z) > 0.6 ? SURFACE.ROCK : SURFACE.GRASS;
     return SURFACE.GRASS;
   }
 
@@ -245,7 +252,12 @@ export class TankPhysics {
     const cr = Math.cos(this.roll), sr = Math.sin(this.roll);
 
     let Fsum = 0, Tpitch = 0, Troll = 0, contacts = 0;
-    let nx = 0, ny = 0, nz = 0;
+    // Ground-plane fit accumulators (hull-local): front/rear and left/right
+    // mean ground heights under the probes. Fitting the plane the tank is
+    // actually sitting on beats averaging six point normals — it is free
+    // (the heights are already sampled), allocation-free, and far less noisy
+    // over rough ground.
+    let hF = 0, nF = 0, hR = 0, nR = 0, hL = 0, nL = 0, hRt = 0, nRt = 0;
 
     for (let i = 0; i < this.probes.length; i++) {
       const p = this.probes[i];
@@ -264,6 +276,8 @@ export class TankPhysics {
 
       const gy = this._height(wx, wz);
       p.groundY = gy;
+      if (p.z > 0.1) { hF += gy; nF++; } else if (p.z < -0.1) { hR += gy; nR++; }
+      if (p.side === 0) { hL += gy; nL++; } else { hRt += gy; nRt++; }
       const length = wy - gy;                       // suspension extension
       const rate = (length - p.prevLength) / h;
       p.prevLength = length;
@@ -293,14 +307,19 @@ export class TankPhysics {
       Fsum += f;
       Tpitch += -p.z * f;
       Troll += p.x * f;
-
-      terrainNormalInto(this.world && this.world.terrain, wx, wz, p.normal);
-      nx += p.normal.x; ny += p.normal.y; nz += p.normal.z;
     }
+
+    // Ground gradient in hull-local axes: metres of rise per metre travelled
+    // forward (+Z) and per metre to the right (+X).
+    const zSpan = this.trackLength * 0.84;
+    this.gradeFwd = (nF && nR) ? (hF / nF - hR / nR) / zSpan : 0;
+    this.gradeLat = (nL && nRt) ? (hRt / nRt - hL / nL) / this.gauge : 0;
 
     this.airborne = contacts === 0;
     if (contacts > 0) {
-      this.groundNormal.set(nx, ny, nz).normalize();
+      // World-space normal, for the FX and camera layers.
+      const lnx = -this.gradeLat, lnz = -this.gradeFwd;
+      this.groundNormal.set(lnx * cy + lnz * sy, 1, -lnx * sy + lnz * cy).normalize();
       this.surface = this._surfaceAt(this.pos.x, this.pos.z);
     }
 
@@ -403,6 +422,13 @@ export class TankPhysics {
     let FL = clamp(this.trackAuthority * 0.5 * slipL, -capL, capL);
     let FR = clamp(this.trackAuthority * 0.5 * slipR, -capR, capR);
 
+    // Engine power ceiling, applied only where the track is doing positive
+    // work. Retardation (engine braking, reversing direction) isn't limited by
+    // available power, so it must not be clamped here.
+    const powerCap = (this.enginePower * 0.5) / Math.max(1.2, Math.abs(vz));
+    if (FL * actL > 0) FL = clamp(FL, -powerCap, powerCap);
+    if (FR * actR > 0) FR = clamp(FR, -powerCap, powerCap);
+
     // Braking / handbrake: force opposing the actual patch velocity.
     if (this.brake > 0 || this.handbrake) {
       const bf = (this.handbrake ? 1 : this.brake) * this.brakeForce * 0.5;
@@ -419,14 +445,15 @@ export class TankPhysics {
     let Fz = FL + FR;
     let Tz = (FR - FL) * half;
 
-    // Slope resistance: the component of gravity along the hull's forward axis.
-    // This is what makes the tank bog down climbing and run away downhill.
-    const gn = this.groundNormal;
-    const fwdX = sy, fwdZ = cy;
-    const slopeAlong = -(gn.x * fwdX + gn.z * fwdZ);      // >0 when nose-up
-    Fz += this.mass * 9.81 * slopeAlong * (this.airborne ? 0 : 1);
-    const slopeLat = -(gn.x * cy - gn.z * sy);
-    let Fx = this.mass * 9.81 * slopeLat * (this.airborne ? 0 : 1);
+    // Slope resistance: the component of gravity along the ground plane. This
+    // is what makes the tank bog down climbing and run away downhill. Climbing
+    // means gradeFwd > 0, which must produce a force pointing BACKWARDS.
+    const gz = this.gradeFwd, gx = this.gradeLat;
+    const airFactor = this.airborne ? 0 : 1;
+    const slopeAlong = -gz / Math.sqrt(1 + gz * gz);
+    Fz += this.mass * 9.81 * slopeAlong * airFactor;
+    const slopeLat = -gx / Math.sqrt(1 + gx * gx);
+    let Fx = this.mass * 9.81 * slopeLat * airFactor;
 
     // Lateral grip: tracks resist sideslip hard, but not infinitely — get a
     // heavy vehicle sliding across a slope and it will keep sliding.
@@ -461,7 +488,7 @@ export class TankPhysics {
     const demand = clamp01(Math.abs(this.throttle) + Math.abs(this.steer) * 0.55);
     const targetRpm = clamp01(0.16 + demand * 0.55 + speedFrac * 0.4);
     this.engineRpm = damp(this.engineRpm, targetRpm, 3.4, h);
-    this.engineLoad = damp(this.engineLoad, clamp01(demand + Math.max(0, slopeAlong) * 2.2), 2.2, h);
+    this.engineLoad = damp(this.engineLoad, clamp01(demand + Math.max(0, gz) * 2.2), 2.2, h);
 
     // Track surface speeds drive the link animation and the wheel spin.
     this.trackSpeed[0] = this.trackHealth[0] > 0.05 ? cmdL * 0.35 + actL * 0.65 : 0;
@@ -581,7 +608,8 @@ export class TankPhysics {
     }
 
     if (this.dust) {
-      const dryness = this.surface === SURFACE.WATER ? 0 : this.surface === SURFACE.GRASS ? 0.55 : 1;
+      const dryness = this.surface === SURFACE.WATER || this.surface === SURFACE.MUD ? 0
+        : this.surface === SURFACE.GRASS ? 0.55 : 1;
       const slipTotal = Math.abs(this.trackSpeed[0] - this.localVel.z) +
                         Math.abs(this.trackSpeed[1] - this.localVel.z);
       const rate = (speed * 1.5 + slipTotal * 1.2) * dryness;
@@ -626,21 +654,6 @@ function shortest(a, b) {
   return d;
 }
 
-function terrainNormalInto(terrain, x, z, out) {
-  if (terrain && terrain.normalAt) {
-    const n = terrain.normalAt(x, z);
-    out.set(n.x, n.y, n.z);
-    if (out.lengthSq() < 1e-6) out.set(0, 1, 0);
-    return out;
-  }
-  if (terrain && terrain.heightAt) {
-    const e = 0.45;
-    out.set(terrain.heightAt(x - e, z) - terrain.heightAt(x + e, z), 2 * e,
-      terrain.heightAt(x, z - e) - terrain.heightAt(x, z + e)).normalize();
-    return out;
-  }
-  return out.set(0, 1, 0);
-}
 
 // ============================================================================
 //  Ground decals — track imprints
@@ -747,7 +760,8 @@ export class TrackMarks {
     this.aParam[i * 4 + 2] = this.rng();
     this.aParam[i * 4 + 3] = 0;
     // Stone barely takes an imprint; dirt and sandbags take a deep one.
-    const soft = surface === SURFACE.STONE || surface === SURFACE.BRICK ? 0.28 : 1;
+    const soft = (surface === SURFACE.STONE || surface === SURFACE.BRICK ||
+                  surface === SURFACE.ROCK) ? 0.28 : surface === SURFACE.MUD ? 1.3 : 1;
     this.age[i] = 0;
     this.alive[i] = 1;
     this.aFade[i] = clamp01(strength * soft);

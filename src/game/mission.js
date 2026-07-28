@@ -3,10 +3,17 @@
 // The playable mission. Squad 7 holds the south bank of the Vasel river; the Imperials own the
 // ruined mill town on the north bank and the only crossing still standing. Take their camp.
 //
-// Coordinate frame: the river runs east-west along z ~ 0, the bridge crosses it at x ~ 0.
-// South (negative z) is Gallian, north (positive z) is Imperial. Every authored position is
-// snapped to the nearest walkable nav cell by Battle.addUnit, so the mission survives whatever
-// the terrain generator actually produced for this seed.
+// COORDINATE FRAME — this must agree with src/world/layout.js, which carves the terrain:
+//   +X is east, -Z is NORTH. The player deploys SOUTH, at positive Z (ally zone ~ (-2, 62)).
+//   The river runs west-east across z ~ 4..6; the road crosses it on the stone bridge at
+//   roughly (4, 5). The ruined village pad is centred (30, -40) r 26 and the Imperial base
+//   camp sits inside it at (30, -46). Landmarks: windmill knoll (-42,-48), southern ridge
+//   (-34, 58) — the deployment overlook and the best ground for your own marksman — and the
+//   eastern rise (64,-26), which is where their sniper will be looking down from.
+//   Playable extent is MAP_SIZE 180, i.e. +/-90 m.
+//
+// Every authored position is snapped to the nearest walkable nav cell by Battle.addUnit, so
+// the mission survives whatever the heightfield actually produced for this seed.
 
 import * as THREE from 'three';
 import { Bus } from '../core/bus.js';
@@ -17,7 +24,7 @@ export const MISSION_VASEL = {
   chapter: 'Chapter 4',
   subtitle: 'EW 1935 — Vasel, Gallia',
 
-  bounds: { minX: -104, maxX: 104, minZ: -104, maxZ: 104 },
+  bounds: { minX: -88, maxX: 88, minZ: -88, maxZ: 88 },
   navCell: 1.5,
 
   cpPlayer: 7,
@@ -26,6 +33,15 @@ export const MISSION_VASEL = {
   slotsPerCamp: 8,
   autoDeploy: true,
   rankTurns: { A: 6, B: 10, C: 15 },
+  // Squad 7 is attacking; the garrison is dug in and only counter-attacks locally. This
+  // scales how hard each side's AI is pulled toward the objective it does not yet hold.
+  aggression: { 0: 1.0, 1: 0.5 },
+  // How far an objective is allowed to pull a soldier. Squad 7 must cross the whole valley;
+  // the Imperials only chase what comes within reach of the ground they are holding.
+  pushRange: { 0: 999, 1: 52 },
+  // Where a side falls back to when it has no reachable objective: the north bridgehead,
+  // the point where the road leaves the span and enters the ruins.
+  holdPoints: { 1: [8, -14] },
   baseExp: 1120,
   baseDucats: 5200,
   timeOfDay: 0.34,               // late morning, long soft shadows toward the north-east
@@ -51,12 +67,14 @@ export const MISSION_VASEL = {
   // -------------------------------------------------------------------------
   camps: [
     {
+      // The ally deployment zone from layout.js.
       id: 'gallian', name: 'Gallian Staging Post',
-      pos: [-6, -56], radius: 8.0, owner: 0, deploy: true,
+      pos: [-2, 62], radius: 9.0, owner: 0, deploy: true,
     },
     {
+      // layout.objectives 'camp', inside the ruined village on the north bank.
       id: 'imperial', name: 'Imperial Base Camp',
-      pos: [14, 52], radius: 8.0, owner: 1, deploy: true,
+      pos: [30, -46], radius: 9.0, owner: 1, deploy: true,
     },
   ],
 
@@ -65,37 +83,37 @@ export const MISSION_VASEL = {
   // -------------------------------------------------------------------------
   roster: [
     {
-      cls: 'tank', name: 'Edelweiss', team: 0, pos: [-6, -50], yaw: 0,
+      cls: 'tank', name: 'Edelweiss', team: 0, pos: [-1, 56], yaw: Math.PI,
       commander: true, deployable: false, variant: 'edelweiss', hpScale: 1.0,
       bio: 'Lt. Welkin Gunther commanding. The heart of Squad 7 — lose it and the mission is over.',
     },
     {
-      cls: 'scout', name: 'Alicia Melchiott', team: 0, pos: [-12, -52], yaw: 0,
+      cls: 'scout', name: 'Alicia Melchiott', team: 0, pos: [-8, 58], yaw: Math.PI,
       potentials: ['natureLover', 'hardWorker', 'fancyFootwork'],
       bio: 'Baker, town watch volunteer, and the fastest pair of legs in the squad.',
     },
     {
-      cls: 'scout', name: 'Edy Nelson', team: 0, pos: [-1, -53], yaw: 0,
+      cls: 'scout', name: 'Edy Nelson', team: 0, pos: [4, 59], yaw: Math.PI,
       potentials: ['fancyFootwork', 'nightOwl', 'pacifist'],
       bio: 'Wants to be a star. Will not stop talking about it.',
     },
     {
-      cls: 'shock', name: 'Rosie Stark', team: 0, pos: [3, -52], yaw: 0,
+      cls: 'shock', name: 'Rosie Stark', team: 0, pos: [2, 64], yaw: Math.PI,
       potentials: ['braveHeart', 'campDefender', 'undertaker'],
       bio: 'Lounge singer. Hits like a howitzer. Do not get on her wrong side.',
     },
     {
-      cls: 'lancer', name: 'Largo Potter', team: 0, pos: [-10, -57], yaw: 0,
+      cls: 'lancer', name: 'Largo Potter', team: 0, pos: [-7, 66], yaw: Math.PI,
       potentials: ['tankHunter', 'ironWill', 'chronicPain'],
       bio: 'Career soldier, farmer, and the only man here who can open a tank like a tin.',
     },
     {
-      cls: 'engineer', name: 'Isara Gunther', team: 0, pos: [-4, -59], yaw: 0,
+      cls: 'engineer', name: 'Isara Gunther', team: 0, pos: [-2, 69], yaw: Math.PI,
       potentials: ['fieldMedic', 'hardWorker', 'pollenAllergy'],
       bio: 'Darcsen engineer. Built half of the Edelweiss with her own hands.',
     },
     {
-      cls: 'sniper', name: 'Marina Wulfstan', team: 0, pos: [8, -58], yaw: 0,
+      cls: 'sniper', name: 'Marina Wulfstan', team: 0, pos: [-16, 64], yaw: Math.PI,
       potentials: ['sharpshooter', 'mountainBorn', 'loneWolf'],
       bio: 'Speaks to nobody. Has never needed a second shot.',
     },
@@ -105,26 +123,26 @@ export const MISSION_VASEL = {
   // Imperial garrison — 10 infantry + 1 medium tank
   // -------------------------------------------------------------------------
   enemies: [
-    // Bridgehead picket — the first thing you meet.
-    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [-2, 9], yaw: Math.PI, potentials: ['campDefender'] },
-    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [5, 12], yaw: Math.PI, potentials: ['braveHeart'] },
-    { cls: 'scout', name: 'Imperial Späher', team: 1, pos: [-11, 14], yaw: Math.PI, potentials: ['natureLover'] },
+    // Bridgehead picket, dug in on the north bank where the road leaves the bridge.
+    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [3, -6], yaw: 0, potentials: ['campDefender'] },
+    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [10, -10], yaw: 0, potentials: ['braveHeart'] },
+    { cls: 'scout', name: 'Imperial Späher', team: 1, pos: [-6, -3], yaw: 0, potentials: ['natureLover'] },
 
-    // Mill-town line.
-    { cls: 'lancer', name: 'Imperial Lanzentruppe', team: 1, pos: [10, 22], yaw: Math.PI, potentials: ['tankHunter'] },
-    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [-9, 27], yaw: Math.PI },
-    { cls: 'scout', name: 'Imperial Späher', team: 1, pos: [21, 25], yaw: Math.PI - 0.7, potentials: ['fancyFootwork'] },
+    // The mill-town line: the first row of ruins along the road into the village.
+    { cls: 'lancer', name: 'Imperial Lanzentruppe', team: 1, pos: [15, -21], yaw: 0, potentials: ['tankHunter'] },
+    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [6, -24], yaw: 0 },
+    { cls: 'scout', name: 'Imperial Späher', team: 1, pos: [27, -17], yaw: -0.6, potentials: ['fancyFootwork'] },
 
-    // Church tower marksman on the high ground east of the square.
-    { cls: 'sniper', name: 'Imperial Scharfschütze', team: 1, pos: [26, 38], yaw: Math.PI, potentials: ['mountainBorn', 'sharpshooter'] },
+    // Marksman on the eastern rise, looking straight down the village approach.
+    { cls: 'sniper', name: 'Imperial Scharfschütze', team: 1, pos: [50, -28], yaw: 0.6, potentials: ['mountainBorn', 'sharpshooter'] },
 
     // Camp garrison.
-    { cls: 'lancer', name: 'Imperial Lanzentruppe', team: 1, pos: [9, 46], yaw: Math.PI },
-    { cls: 'engineer', name: 'Imperial Pionier', team: 1, pos: [18, 55], yaw: Math.PI, potentials: ['fieldMedic'] },
-    { cls: 'shock', name: 'Hauptmann Jaeger', team: 1, pos: [15, 50], yaw: Math.PI, ace: true, hpScale: 1.6, aimScale: 1.2, potentials: ['campDefender', 'braveHeart', 'undertaker'] },
+    { cls: 'lancer', name: 'Imperial Lanzentruppe', team: 1, pos: [23, -41], yaw: 0 },
+    { cls: 'engineer', name: 'Imperial Pionier', team: 1, pos: [35, -52], yaw: 0, potentials: ['fieldMedic'] },
+    { cls: 'shock', name: 'Hauptmann Jaeger', team: 1, pos: [30, -48], yaw: 0, ace: true, hpScale: 1.6, aimScale: 1.2, potentials: ['campDefender', 'braveHeart', 'undertaker'] },
 
     // The armour, sitting behind the square where it can cover the whole approach.
-    { cls: 'tank', name: 'Imperial Medium', team: 1, pos: [16, 40], yaw: Math.PI, variant: 'imperial' },
+    { cls: 'tank', name: 'Imperial Medium', team: 1, pos: [25, -33], yaw: 0, variant: 'lupus' },
   ],
 
   // -------------------------------------------------------------------------
@@ -172,14 +190,18 @@ export const MISSION_VASEL = {
   // Scripted opening
   // -------------------------------------------------------------------------
   opening: [
-    { t: 0.0, type: 'camera', pos: [-4, 26, -108], look: [2, 2, -20], fov: 30, dur: 5.0 },
+    // High over the southern ridge, looking north down the road to the crossing.
+    { t: 0.0, type: 'camera', pos: [-6, 30, 96], look: [3, 3, 22], fov: 30, dur: 5.0 },
     { t: 0.3, type: 'title', text: 'THE BRIDGE AT VASEL', sub: 'EW 1935 — Vasel, Gallia' },
     { t: 1.2, type: 'line', who: 'Welkin', text: 'That is the last bridge standing for forty kilometres.' },
-    { t: 4.6, type: 'camera', pos: [30, 18, -6], look: [4, 3, 26], fov: 34, dur: 5.0 },
+    // Across the bridge from the east bank.
+    { t: 4.6, type: 'camera', pos: [40, 14, 14], look: [6, 3, -8], fov: 34, dur: 5.0 },
     { t: 5.0, type: 'line', who: 'Alicia', text: 'And the whole town is looking straight down it.' },
-    { t: 8.4, type: 'camera', pos: [18, 9, 62], look: [14, 2, 46], fov: 38, dur: 4.2 },
+    // Their camp, in the ruins.
+    { t: 8.4, type: 'camera', pos: [34, 10, -66], look: [30, 2, -46], fov: 38, dur: 4.2 },
     { t: 8.8, type: 'line', who: 'Imperial officer', text: 'Halten Sie die Brücke. Niemand kommt durch.' },
-    { t: 12.0, type: 'camera', pos: [-6, 34, -74], look: [-6, 0, -50], fov: 34, dur: 3.0 },
+    // Back to the squad on the start line.
+    { t: 12.0, type: 'camera', pos: [-4, 26, 88], look: [-2, 0, 62], fov: 34, dur: 3.0 },
     { t: 12.4, type: 'line', who: 'Welkin', text: 'Squad 7 — take that camp. Watch the square.' },
     { t: 15.0, type: 'end' },
   ],

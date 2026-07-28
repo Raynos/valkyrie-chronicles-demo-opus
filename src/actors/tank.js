@@ -29,6 +29,7 @@ const _vb = new THREE.Vector3();
 const _vc = new THREE.Vector3();
 const _one = new THREE.Vector3(1, 1, 1);
 const _zAxis = new THREE.Vector3(0, 0, 1);
+const SIDES = [-1, 1];
 const _yAxis = new THREE.Vector3(0, 1, 0);
 
 // ============================================================================
@@ -406,14 +407,14 @@ function makeScorchTexture(seed, size = 128) {
 //  Materials
 // ============================================================================
 
-/** Wrap makeCanvasMaterial and forward a texture if the NPR shader takes one. */
+/**
+ * All tank surfaces go through the shared NPR material so the banding, hatching
+ * and outline pass stay coherent with the rest of the frame. `map` is honoured
+ * by makeCanvasMaterial (it sets VC_MAP), so the procedural armour pigment
+ * multiplies into the shader's albedo before quantisation.
+ */
 function npr(opts) {
-  const m = makeCanvasMaterial(opts);
-  if (opts.map && m) {
-    if (m.uniforms && m.uniforms.map) m.uniforms.map.value = opts.map;
-    else if ('map' in m) m.map = opts.map;
-  }
-  return m;
+  return makeCanvasMaterial(opts);
 }
 
 // ============================================================================
@@ -508,6 +509,7 @@ export class Tank {
     this.world = cfg.world || null;
     this.physics = null;
     this._externalStep = false;
+    this._physicsHost = null;
     if (this.world) {
       this.physics = new TankPhysics(this, this.world, {
         scene: cfg.scene || null,
@@ -521,6 +523,7 @@ export class Tank {
       });
       if (cfg.physics && cfg.physics.addStepper) {
         cfg.physics.addStepper(this.physics);
+        this._physicsHost = cfg.physics;
         this._externalStep = true;
       }
       this.ballistics = (cfg.physics && cfg.physics.ballistics) || null;
@@ -558,11 +561,11 @@ export class Tank {
     this.mat = {
       paint: mk('paint', {
         color: PAL.paint, roughness: 0.78, hatch: 1.0, rim: 0.55, paper: 1.0,
-        outlineWidth: 1.25, map: paintTex,
+        outlineWidth: 1.25, map: paintTex, mapRepeat: [3, 2.5],
       }),
       metal: mk('metal', {
         color: PAL.darkMetal, roughness: 0.62, hatch: 1.0, rim: 0.85, paper: 0.85,
-        outlineWidth: 1.1, map: metalTex,
+        outlineWidth: 1.1, map: metalTex, mapRepeat: [2, 2],
       }),
       track: mk('track', {
         color: PAL.track, roughness: 0.7, hatch: 0.9, rim: 0.7, paper: 0.8,
@@ -1000,7 +1003,7 @@ export class Tank {
       this.turret.add(base);
       B.metal.push(place(new THREE.CylinderGeometry(0.035, 0.045, 0.08, 6), -0.62, 0.40, -0.72));
       let parent = base;
-      const segs = byQ([3, 5, 5]);
+      const segs = byQ([2, 3, 4]);
       for (let i = 0; i < segs; i++) {
         const node = new THREE.Object3D();
         node.position.y = i === 0 ? 0.04 : 0.32;
@@ -1197,23 +1200,19 @@ export class Tank {
     }
     const sprocketGeo = mergeGeos(sprocketParts);
 
-    this.idlers = [];
-    this.sprockets = [];
-    for (const s of [-1, 1]) {
-      const im = new THREE.Mesh(idlerGeo, this.mat.metal);
-      im.position.set(s * halfG, this.idlerY, this.idlerZ);
-      im.castShadow = true;
-      im.userData.outline = true;
-      this.root.add(im);
-      this.idlers.push(im);
-
-      const sm = new THREE.Mesh(sprocketGeo, this.mat.metal);
-      sm.position.set(s * halfG, this.sprocketY, this.sprocketZ);
-      sm.castShadow = true;
-      sm.userData.outline = true;
-      this.root.add(sm);
-      this.sprockets.push(sm);
+    // Left/right are identical apart from the X offset, so one instanced draw
+    // each rather than four separate meshes.
+    this.idlerMesh = new THREE.InstancedMesh(idlerGeo, this.mat.metal, 2);
+    this.sprocketMesh = new THREE.InstancedMesh(sprocketGeo, this.mat.metal, 2);
+    for (const m of [this.idlerMesh, this.sprocketMesh]) {
+      m.castShadow = true;
+      m.userData.outline = true;
+      m.frustumCulled = false;
+      this.root.add(m);
     }
+    this.idlerMesh.name = 'idlers';
+    this.sprocketMesh.name = 'sprockets';
+    this.idlerX = [-halfG, halfG];
 
     // ---- return rollers ---------------------------------------------------
     this.rollerR = 0.095;
@@ -1255,6 +1254,7 @@ export class Tank {
     // The path is rebuilt every frame from the live wheel positions; size the
     // instance buffer from the slack (rest) loop length so the shoes tile
     // end-to-end with no visible gaps.
+    this.arcSegs = byQ([3, 5, 7]);
     this.pathN = byQ([40, 72, 96]);
     this._pathZ = new Float32Array(this.pathN);
     this._pathY = new Float32Array(this.pathN);
@@ -1662,7 +1662,7 @@ export class Tank {
     this.smoking = true;
     if (this.mat.grille && this.mat.grille.color) this.mat.grille.color.setHex(PAL.hot);
     Bus.emit('sfx', { name: 'engineBlow', pos: this.weakPointWorldPos(_va), vol: 1 });
-    Bus.emit('unit:critical', { unit: opts.source ? this.unit || this : this.unit || this, part: 'radiator' });
+    Bus.emit('unit:critical', { unit: this.unit || this, part: 'radiator', source: opts.source || null });
   }
 
   /** Kill the tank: burning wreck, thrown tracks, drooping barrel. */
@@ -1804,11 +1804,23 @@ export class Tank {
     this.wheelMesh.instanceMatrix.needsUpdate = true;
     this.tyreMesh.instanceMatrix.needsUpdate = true;
 
-    // Idlers and sprockets counter-rotate with the track.
+    // Idlers and sprockets turn faster than the road wheels: same track speed,
+    // smaller radius.
     for (let s = 0; s < 2; s++) {
-      this.idlers[s].rotation.x = spin[s] * (this.wheelRadius / this.idlerR);
-      this.sprockets[s].rotation.x = spin[s] * (this.wheelRadius / this.sprocketR);
+      _va.set(this.idlerX[s], this.idlerY, this.idlerZ);
+      _es.set(spin[s] * (this.wheelRadius / this.idlerR), 0, 0, 'XYZ');
+      _qs.setFromEuler(_es);
+      _m4.compose(_va, _qs, _one);
+      this.idlerMesh.setMatrixAt(s, _m4);
+
+      _va.set(this.idlerX[s], this.sprocketY, this.sprocketZ);
+      _es.set(spin[s] * (this.wheelRadius / this.sprocketR), 0, 0, 'XYZ');
+      _qs.setFromEuler(_es);
+      _m4.compose(_va, _qs, _one);
+      this.sprocketMesh.setMatrixAt(s, _m4);
     }
+    this.idlerMesh.instanceMatrix.needsUpdate = true;
+    this.sprocketMesh.instanceMatrix.needsUpdate = true;
     // Return rollers.
     let r = 0;
     for (let s = 0; s < 2; s++) {
@@ -1875,47 +1887,54 @@ export class Tank {
   _buildTrackPath(side) {
     const off = this.physics ? this.physics.wheelOffset : null;
     const Z = this._pathZ, Y = this._pathY;
+    const cap = this.pathN;
     const sag = this.trackSag[side];
     let n = 0;
-
-    const push = (z, y) => { if (n < this.pathN) { Z[n] = z; Y[n] = y; n++; } };
+    // Inlined rather than a closure — this runs twice a frame, forever, and a
+    // per-call closure is a per-frame allocation.
 
     // 1. Bottom run: idler bottom -> under each road wheel -> sprocket bottom.
-    push(this.idlerZ, this.idlerY - this.idlerR);
-    for (let i = 0; i < this.wheelCount; i++) {
+    if (n < cap) { Z[n] = this.idlerZ; Y[n] = this.idlerY - this.idlerR; n++; }
+    for (let i = 0; i < this.wheelCount && n < cap; i++) {
       const dy = off ? off[side * this.wheelCount + i] : 0;
-      push(this.wheelZ[i], this.axleY + dy - this.wheelRadius);
+      Z[n] = this.wheelZ[i]; Y[n] = this.axleY + dy - this.wheelRadius; n++;
     }
-    push(this.sprocketZ, this.sprocketY - this.sprocketR);
+    if (n < cap) { Z[n] = this.sprocketZ; Y[n] = this.sprocketY - this.sprocketR; n++; }
 
     // 2. Sprocket wrap: bottom -> rear -> top.
-    const arcSegs = byQ([3, 5, 7]);
-    for (let i = 1; i <= arcSegs; i++) {
+    const arcSegs = this.arcSegs;
+    for (let i = 1; i <= arcSegs && n < cap; i++) {
       const a = -Math.PI / 2 - (i / arcSegs) * Math.PI;
-      push(this.sprocketZ + Math.cos(a) * this.sprocketR,
-        this.sprocketY + Math.sin(a) * this.sprocketR);
+      Z[n] = this.sprocketZ + Math.cos(a) * this.sprocketR;
+      Y[n] = this.sprocketY + Math.sin(a) * this.sprocketR;
+      n++;
     }
 
-    // 3. Top run: over the return rollers, forward, with a little catenary sag
-    //    between supports (and a lot of it if the track has been thrown).
-    const topSupports = [];
-    for (let i = this.rollerZ.length - 1; i >= 0; i--) {
-      topSupports.push([this.rollerZ[i], this.rollerY + this.rollerR]);
-    }
+    // 3. Top run: rearmost return roller forward to the idler, with a little
+    //    catenary sag between supports — and a lot of it once the track has
+    //    been thrown and the run is hanging off the rollers.
     let prevZ = this.sprocketZ, prevY = this.sprocketY + this.sprocketR;
-    for (const [rz, ry] of topSupports) {
-      // Midpoint sag between the previous support and this one.
-      push((prevZ + rz) * 0.5, (prevY + ry) * 0.5 - 0.028 - sag * 0.42);
-      push(rz, ry - sag * 0.16);
-      prevZ = rz; prevY = ry;
+    const topY = this.rollerY + this.rollerR;
+    for (let i = this.rollerZ.length - 1; i >= 0 && n < cap - 1; i--) {
+      const rz = this.rollerZ[i];
+      Z[n] = (prevZ + rz) * 0.5;
+      Y[n] = (prevY + topY) * 0.5 - 0.028 - sag * 0.42;
+      n++;
+      Z[n] = rz; Y[n] = topY - sag * 0.16; n++;
+      prevZ = rz; prevY = topY;
     }
-    push((prevZ + this.idlerZ) * 0.5, (prevY + (this.idlerY + this.idlerR)) * 0.5 - 0.03 - sag * 0.36);
+    if (n < cap) {
+      Z[n] = (prevZ + this.idlerZ) * 0.5;
+      Y[n] = (prevY + (this.idlerY + this.idlerR)) * 0.5 - 0.03 - sag * 0.36;
+      n++;
+    }
 
     // 4. Idler wrap: top -> front -> bottom, closing the loop.
-    for (let i = 0; i < arcSegs; i++) {
+    for (let i = 0; i < arcSegs && n < cap; i++) {
       const a = Math.PI / 2 - (i / arcSegs) * Math.PI;
-      push(this.idlerZ + Math.cos(a) * this.idlerR,
-        this.idlerY + Math.sin(a) * this.idlerR);
+      Z[n] = this.idlerZ + Math.cos(a) * this.idlerR;
+      Y[n] = this.idlerY + Math.sin(a) * this.idlerR;
+      n++;
     }
 
     // Cumulative arc length, closing back onto point 0.
@@ -1978,7 +1997,8 @@ export class Tank {
     this._exhaustAccum += dt * (2.5 + rpm * 14 + load * 10);
     while (this._exhaustAccum >= 1) {
       this._exhaustAccum -= 1;
-      for (const sx of [-1, 1]) {
+      for (let k = 0; k < 2; k++) {
+        const sx = SIDES[k];
         _va.set(sx * 0.92, 0.70, -2.36);
         this.root.localToWorld(_va);
         _vb.set(0, 0.6, -1).transformDirection(this.root.matrixWorld);
@@ -2031,7 +2051,10 @@ export class Tank {
       }
     }
 
-    for (const ps of this.puffSystems) { ps.step(dt); ps.updateRender(); }
+    for (let i = 0; i < this.puffSystems.length; i++) {
+      const ps = this.puffSystems[i];
+      ps.step(dt); ps.updateRender();
+    }
 
     // Decal fade-in on fresh damage.
     if (this._decalDirty) {
@@ -2149,6 +2172,10 @@ export class Tank {
   // ==========================================================================
 
   dispose() {
+    if (this._physicsHost) {
+      this._physicsHost.removeStepper(this.physics);
+      this._physicsHost = null;
+    }
     this.root.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
     });

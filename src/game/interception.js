@@ -59,6 +59,15 @@ export class InterceptionSystem {
     this.maxConcurrent = 6;              // readability cap — the nearest N shooters engage
   }
 
+  /** Seconds a shooter needs to draw a bead. Caution (and a prone target) buys you time. */
+  acquireTimeFor(m) {
+    let t = this.acquireTime;
+    if (m.stealth) t *= 2.8;
+    if (m.stance === 2) t *= 1.6;
+    else if (m.stance === 1) t *= 1.25;
+    return t;
+  }
+
   /** Called by actionMode / ai when a unit starts or stops moving under fire. */
   setMover(unit) {
     if (this.mover === unit) return;
@@ -124,7 +133,7 @@ export class InterceptionSystem {
         st.target = m;
         st.acquireT = 0;
         st.roundsLeft = 0;
-        st.nextBurstAt = this.time + this.acquireTime * (0.6 + this.rng() * 0.9);
+        st.nextBurstAt = this.time + this.acquireTimeFor(m) * (0.6 + this.rng() * 0.9);
         Bus.emit('interception', { shooter: e, target: m, first: true });
         Bus.emit('sfx', { name: 'interceptWarn', pos: e.pos });
       }
@@ -191,7 +200,7 @@ export class InterceptionSystem {
       return;
     }
 
-    if (!aligned || st.acquireT < this.acquireTime) return;
+    if (!aligned || st.acquireT < this.acquireTimeFor(m)) return;
     if (this.time < st.nextBurstAt) return;
     // Stationary, well-covered targets get shot at far less — VC rewards hugging sandbags.
     if (!targetMoving) {
@@ -262,7 +271,7 @@ export class InterceptionSystem {
       if (e.pos.distanceToSquared(unit.pos) > 60 * 60) continue;
       if (!unitsHaveLOS(e, unit, this.battle.world)) continue;
       const st = icp(e);
-      st.acquireT = Math.max(st.acquireT, this.acquireTime);
+      st.acquireT = Math.max(st.acquireT, this.acquireTimeFor(unit));
       if (st.target === unit) st.nextBurstAt = Math.min(st.nextBurstAt, this.time + 0.15);
     }
   }

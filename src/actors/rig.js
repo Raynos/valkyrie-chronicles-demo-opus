@@ -186,7 +186,6 @@ export function makeRig(opts = {}) {
 
   // --- scale the canonical table into this body's proportions -------------
   const worldPos = new Map();
-  const shoulderY = HIP_Y + (1.362 - HIP_Y) * P.torso;
   for (const d of BONE_DEFS) {
     let [x, y, z] = d.pos;
     const isArm = /^(clavicle|upperArm|foreArm|hand|fingers|thumb)/.test(d.name);
@@ -208,7 +207,6 @@ export function makeRig(opts = {}) {
     }
     worldPos.set(d.name, new THREE.Vector3(x, y, z));
   }
-  void shoulderY;
 
   // --- tails / directions -------------------------------------------------
   const childOf = new Map();
@@ -291,8 +289,10 @@ export function makeRig(opts = {}) {
     bone.updateMatrix();
   }
 
+  // NOTE: height variation is applied by the caller to the character Group,
+  // never to the root bone — scaling a bone would be cancelled out by the
+  // bind-pose inverses and have no visible effect.
   const root = boneMap.root;
-  root.scale.setScalar(extra);
   root.updateMatrixWorld(true);
 
   const skeleton = new THREE.Skeleton(bones);
@@ -306,7 +306,7 @@ export function makeRig(opts = {}) {
     skeleton,
     proportions: P,
     bodyType,
-    heightScale: extra,
+    heightScale: P.height * extra,
     variantKey: `${bodyType}`,
     index: BONE_NAMES.reduce((a, n, i) => ((a[n] = i), a), Object.create(null)),
   };
@@ -347,6 +347,7 @@ export class MeshBuilder {
     this._c = [1, 1, 1];
     this._mottle = 0.06;
     this._xf = null;
+    this._nmat = null;
   }
 
   get vertexCount() { return this.pos.length / 3; }
@@ -362,15 +363,22 @@ export class MeshBuilder {
 
   setColor(c) { this._c = c; return this; }
   setMottle(m) { this._mottle = m; return this; }
-  /** Optional Matrix4 applied to every subsequent primitive. */
-  setTransform(m) { this._xf = m || null; return this; }
+  /**
+   * Optional Matrix4 applied to every subsequent primitive. The matching
+   * inverse-transpose is cached here so non-uniform scales (elliptical belts,
+   * squashed helmets) still get correct normals.
+   */
+  setTransform(m) {
+    this._xf = m || null;
+    if (m) { if (!this._nmat) this._nmat = new THREE.Matrix3(); this._nmat.getNormalMatrix(m); }
+    return this;
+  }
 
   vert(px, py, pz, nx, ny, nz, u, vv, c) {
     if (this._xf) {
       _v.set(px, py, pz).applyMatrix4(this._xf);
       px = _v.x; py = _v.y; pz = _v.z;
-      _nm.setFromMatrix4(this._xf);
-      _n.set(nx, ny, nz).applyMatrix3(_nm).normalize();
+      _n.set(nx, ny, nz).applyMatrix3(this._nmat).normalize();
       nx = _n.x; ny = _n.y; nz = _n.z;
     }
     this.pos.push(px, py, pz);
@@ -777,7 +785,7 @@ export class MeshBuilder {
     for (let vi = 0; vi < n; vi++) {
       const cand = resolved[this.vgroup[vi]];
       pv.set(this.pos[vi * 3], this.pos[vi * 3 + 1], this.pos[vi * 3 + 2]);
-      let cnt = 0, sum = 0, best = 0;
+      let cnt = 0, best = 0;
       for (let k = 0; k < cand.length && k < 16; k++) {
         const c = cand[k];
         let d;
@@ -796,7 +804,6 @@ export class MeshBuilder {
         }
         const w = c.ws / Math.pow(d + c.soft, p);
         wbuf[cnt] = w; ibuf[cnt] = c.i; cnt++;
-        sum += w;
         if (w > best) best = w;
       }
       // Cull negligible influences, then keep the strongest four.
@@ -814,7 +821,6 @@ export class MeshBuilder {
       if (tot <= 0) { sw[vi * 4] = 1; tot = 1; si[vi * 4] = 1; }
       const inv = 1 / tot;
       sw[vi * 4] *= inv; sw[vi * 4 + 1] *= inv; sw[vi * 4 + 2] *= inv; sw[vi * 4 + 3] *= inv;
-      void sum;
     }
 
     const g = new THREE.BufferGeometry();
@@ -1130,7 +1136,7 @@ function buildNeck(b, rig, o) {
   const ny = rig.restWorld.neck.pos.y, hy = rig.restWorld.head.pos.y;
   b.setBones(NECK).setColor(o.skin).setMottle(0.035);
   b.addTube([
-    { p: [0, ny - 0.02, 0.002], rx: 0.056, rz: 0.052 },
+    { p: [0, ny - 0.02, 0.002], rx: 0.058, rz: 0.054 },
     { p: [0, ny + 0.03, 0.004], rx: 0.050, rz: 0.047 },
     { p: [0, hy + 0.005, 0.006], rx: 0.047, rz: 0.046 },
   ], { seg: seg(12) });
@@ -1145,8 +1151,10 @@ function buildNeck(b, rig, o) {
 export function buildHead(b, rig, o, f) {
   const hb = rig.restWorld.head.pos;
   const hs = rig.proportions.head;
-  const cx = 0, cy = hb.y + 0.079 * hs, cz = hb.z + 0.004;
-  const R = [0.0835 * f.width * hs, 0.1035 * f.length * hs, 0.0965 * f.depth * hs];
+  // Deliberately oversized: VC's stylised-realistic proportion is ~6.9 heads
+  // tall, not the ~8 heads a strictly anatomical skull on this skeleton gives.
+  const cx = 0, cy = hb.y + 0.074 * hs, cz = hb.z + 0.004;
+  const R = [0.100 * f.width * hs, 0.132 * f.length * hs, 0.118 * f.depth * hs];
 
   b.setBones(HEAD).setColor(o.skin).setMottle(0.03);
   b.addEllipsoid({
@@ -1185,10 +1193,10 @@ export function buildHead(b, rig, o, f) {
   // Nose.
   const nz = cz + R[2] * 0.92, nyTop = cy + R[1] * 0.10;
   b.addTube([
-    { p: [0, nyTop, nz - 0.012], rx: 0.011, rz: 0.010 },
-    { p: [0, nyTop - 0.028 * f.length, nz + 0.004 * f.nose], rx: 0.0105, rz: 0.012 * f.nose },
-    { p: [0, nyTop - 0.050 * f.length, nz + 0.011 * f.nose], rx: 0.0135, rz: 0.016 * f.nose },
-    { p: [0, nyTop - 0.062 * f.length, nz + 0.006 * f.nose], rx: 0.0145, rz: 0.012 * f.nose },
+    { p: [0, nyTop, nz - 0.014], rx: 0.013, rz: 0.012 },
+    { p: [0, nyTop - 0.034 * f.length, nz + 0.005 * f.nose], rx: 0.0125, rz: 0.014 * f.nose },
+    { p: [0, nyTop - 0.060 * f.length, nz + 0.013 * f.nose], rx: 0.0162, rz: 0.019 * f.nose },
+    { p: [0, nyTop - 0.074 * f.length, nz + 0.007 * f.nose], rx: 0.0174, rz: 0.014 * f.nose },
   ], { seg: seg(9), capEnd: 'round' });
 
   // Ears.
@@ -1199,7 +1207,7 @@ export function buildHead(b, rig, o, f) {
       new THREE.Vector3(1, 1, 1));
     b.setTransform(m);
     b.addEllipsoid({
-      radius: [0.020, 0.030 * f.ear, 0.011], seg: seg(9), rings: seg(7),
+      radius: [0.024, 0.036 * f.ear, 0.013], seg: seg(9), rings: seg(7),
       displace: (dx, dy, dz) => [1, 1, dz > 0 ? 1 - 0.45 * clamp01(1 - Math.hypot(dx, dy) * 1.5) : 1],
     });
     b.setTransform(null);
@@ -1212,10 +1220,10 @@ export function buildHead(b, rig, o, f) {
     const m = new THREE.Matrix4().compose(new THREE.Vector3(side * eyeX, eyeY, eyeZ), rot, new THREE.Vector3(1, 1, 1));
     b.setTransform(m);
     b.setColor(PALETTE.eyeWhite).setMottle(0);
-    b.addEllipsoid({ radius: [0.0135 * f.eye, 0.0088 * f.eye, 0.006], seg: seg(10), rings: seg(6) });
+    b.addEllipsoid({ radius: [0.0172 * f.eye, 0.0112 * f.eye, 0.007], seg: seg(10), rings: seg(6) });
     b.setColor(f.eyeColor);
     b.setTransform(new THREE.Matrix4().compose(new THREE.Vector3(side * eyeX, eyeY, eyeZ + 0.0035), rot, new THREE.Vector3(1, 1, 1)));
-    b.addEllipsoid({ radius: [0.0062 * f.eye, 0.0068 * f.eye, 0.0035], seg: seg(9), rings: seg(5) });
+    b.addEllipsoid({ radius: [0.0080 * f.eye, 0.0088 * f.eye, 0.0042], seg: seg(9), rings: seg(5) });
     b.setTransform(null);
   }
 
@@ -1224,9 +1232,9 @@ export function buildHead(b, rig, o, f) {
   for (const side of [1, -1]) {
     const y = cy + R[1] * (0.155 + f.browHeight * 0.05);
     b.addTube([
-      { p: [side * (eyeX - 0.011), y - 0.002, eyeZ + 0.0006], rx: 0.004, rz: 0.0035 },
-      { p: [side * eyeX, y + 0.0035, eyeZ + 0.0016], rx: 0.0048, rz: 0.004 },
-      { p: [side * (eyeX + 0.013), y + 0.001, eyeZ - 0.003], rx: 0.0036, rz: 0.003 },
+      { p: [side * (eyeX - 0.014), y - 0.002, eyeZ + 0.0008], rx: 0.005, rz: 0.0044 },
+      { p: [side * eyeX, y + 0.0044, eyeZ + 0.0020], rx: 0.0060, rz: 0.005 },
+      { p: [side * (eyeX + 0.016), y + 0.001, eyeZ - 0.004], rx: 0.0045, rz: 0.0038 },
     ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
   }
 
@@ -1234,9 +1242,9 @@ export function buildHead(b, rig, o, f) {
   b.setColor(PALETTE.lip).setMottle(0.02);
   const my = cy - R[1] * 0.53;
   b.addTube([
-    { p: [-0.013 * f.width, my + 0.002, cz + R[2] * 0.68], rx: 0.0035, rz: 0.003 },
-    { p: [0, my, cz + R[2] * 0.80], rx: 0.005, rz: 0.0042 },
-    { p: [0.013 * f.width, my + 0.002, cz + R[2] * 0.68], rx: 0.0035, rz: 0.003 },
+    { p: [-0.016 * f.width, my + 0.002, cz + R[2] * 0.68], rx: 0.0044, rz: 0.0038 },
+    { p: [0, my, cz + R[2] * 0.80], rx: 0.0062, rz: 0.0052 },
+    { p: [0.016 * f.width, my + 0.002, cz + R[2] * 0.68], rx: 0.0044, rz: 0.0038 },
   ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
 
   b.setMottle(0.06);

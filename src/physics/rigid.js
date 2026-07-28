@@ -218,7 +218,10 @@ export class RigidBodySim {
     this.bodies.length = 0;
   }
 
-  /** Wake and push every body within `radius` of `pos`. Used by Explosions. */
+  /**
+   * Wake and push every body within `radius`. Used by Explosions.
+   * @param {number} power impulse magnitude at the centre, in N·s.
+   */
   applyRadialImpulse(pos, radius, power) {
     const r2 = radius * radius;
     for (let i = 0; i < this.bodies.length; i++) {
@@ -229,15 +232,27 @@ export class RigidBodySim {
       if (d2 > r2) continue;
       const d = Math.sqrt(d2);
       const falloff = 1 - d / radius;
+      // Direction first, magnitude second — conflating the two is how you end
+      // up launching crates into orbit.
       if (d < 1e-4) _v.set(0, 1, 0); else _v.divideScalar(d);
-      _v.y += 0.45;                     // explosions loft debris
-      _v.normalize().multiplyScalar(power * falloff * falloff);
+      _v.y += 0.5;                          // blasts loft debris
+      _v.normalize();
+      const j = power * falloff * falloff;  // N·s
       b.wake();
-      b.vel.addScaledVector(_v, b.invMass);
-      // Random-ish spin: derived from the offset so it stays deterministic.
-      _tmp.set(_v.z * 0.6, _v.x * 0.4 - _v.z * 0.3, -_v.x * 0.6)
-        .multiplyScalar(power * falloff * b.invMass * 0.6);
-      b.angVel.add(_tmp);
+      // Terminal speed cap: a shell casing next to a howitzer round should
+      // still be a shell casing afterwards, not a bullet.
+      const dv = Math.min(j * b.invMass, 16);
+      b.vel.addScaledVector(_v, dv);
+      // Tumble: the blast strikes one face off-centre. The lever arm is
+      // derived from the body id so repeated runs match exactly.
+      const s = ((Math.imul(b.id, 2654435761) >>> 0) / 4294967296) - 0.5;
+      _tmp.set(-_v.z, 0, _v.x);
+      if (_tmp.lengthSq() < 1e-8) _tmp.set(1, 0, 0);
+      _tmp.normalize().multiplyScalar(b.radius * 0.7 * s * 2);
+      _tmp2.copy(_v).multiplyScalar(Math.min(j, 16 / Math.max(1e-6, b.invMass)));
+      _tmp.cross(_tmp2);
+      b._applyAngularImpulse(_tmp);
+      clampSpin(b);
     }
   }
 
@@ -262,6 +277,7 @@ export class RigidBodySim {
       b.vel.multiplyScalar(Math.max(0, 1 - b.linearDamping * h * 60 * 0.0166));
       b.angVel.multiplyScalar(Math.max(0, 1 - b.angularDamping * h * 60 * 0.0166));
       b.pos.addScaledVector(b.vel, h);
+      clampSpin(b);
       if (b.angVel.lengthSq() > 1e-10) {
         const w = b.angVel;
         _q.set(w.x * h * 0.5, w.y * h * 0.5, w.z * h * 0.5, 0).multiply(b.quat);
@@ -343,6 +359,7 @@ export class RigidBodySim {
       const raw = cols[i];
       if (raw.disabled || raw.dead || raw.noCollide) continue;
       const box = normalizeCollider(raw);
+      if (!box.solid) continue;
       // Broad phase.
       if (b.pos.distanceToSquared(box.center) >
           (b.radius + box.boundRadius + 0.2) * (b.radius + box.boundRadius + 0.2)) continue;
@@ -490,6 +507,11 @@ export class RigidBodySim {
    * on debris only needs to look plausible, and this keeps it O(n).
    */
   _bodyPairs(h) {
+    // Nothing awake -> nothing to pair. Skips the Map churn on the common case
+    // of a battlefield full of settled debris.
+    let awake = 0;
+    for (let i = 0; i < this.bodies.length; i++) if (!this.bodies[i].sleeping) awake++;
+    if (awake < 2) return;
     const grid = this._grid;
     grid.clear();
     const cell = this._cell;
@@ -550,10 +572,23 @@ export class RigidBodySim {
   }
 }
 
+/**
+ * Hard cap on spin. A quaternion integrated with an explicit Euler step goes
+ * unstable well before this, and nothing in this game legitimately spins at
+ * 40 rad/s (that is 380 rpm) for more than an instant.
+ */
+const MAX_SPIN = 40;
+function clampSpin(b) {
+  const w2 = b.angVel.lengthSq();
+  if (w2 > MAX_SPIN * MAX_SPIN) b.angVel.multiplyScalar(MAX_SPIN / Math.sqrt(w2));
+}
+
 function terrainNormal(terrain, x, z, out) {
   if (terrain.normalAt) {
-    const n = terrain.normalAt(x, z);
-    out.set(n.x, n.y, n.z);
+    // Prefer the out-param form (allocation-free); fall back to the return
+    // value for implementations that only honour the contract's signature.
+    const n = terrain.normalAt(x, z, out);
+    if (n && n !== out) out.set(n.x, n.y, n.z);
     if (out.lengthSq() < 1e-6) out.copy(UP);
     return out;
   }

@@ -234,6 +234,24 @@ export function traceWorld(ox, oy, oz, dx, dy, dz, maxDist, world = Ctx.world) {
     return null;
   }
 
+  // The World keeps a uniform-grid broadphase; use it in preference to our own linear
+  // scan whenever it exists. It also knows about the bridge deck and other platforms.
+  if (world?.raycast) {
+    _o.set(ox, oy, oz); _dir.set(dx, dy, dz);
+    let h = null;
+    try { h = world.raycast(_o, _dir, maxDist); } catch { h = null; }
+    if (!h) return null;
+    const t = h.distance ?? _o.distanceTo(h.point);
+    worldHit.t = t;
+    worldHit.x = h.point.x; worldHit.y = h.point.y; worldHit.z = h.point.z;
+    worldHit.nx = h.normal?.x ?? 0; worldHit.ny = h.normal?.y ?? 1; worldHit.nz = h.normal?.z ?? 0;
+    worldHit.material = h.material || 'dirt';
+    worldHit.collider = h.collider || null;
+    worldHit.cover = h.collider?.cover ?? 1;
+    worldHit.destructible = !!h.collider?.destructible;
+    return worldHit;
+  }
+
   const colliders = world?.colliders;
   if (colliders) {
     for (let i = 0; i < colliders.length; i++) {
@@ -252,20 +270,24 @@ export function traceWorld(ox, oy, oz, dx, dy, dz, maxDist, world = Ctx.world) {
     }
   }
 
-  // Terrain march
+  // Terrain march. Sphere-traced: the step is a fraction of the current clearance above the
+  // heightfield, so a 130 m sniper ray costs ~30 samples instead of 260 and the tail of a
+  // near-miss over open ground is nearly free. Refined with 8 bisections at the crossing.
   const terrain = world?.terrain;
   if (terrain?.heightAt) {
     const limit = best >= 0 ? best : maxDist;
-    const step = 0.5;
+    let t = 0;
     let prevT = 0;
-    let prevAbove = oy - terrain.heightAt(ox, oz);
-    if (prevAbove < 0) prevAbove = 0.001;   // started underground: ignore
-    for (let t = step; t <= limit; t += step) {
-      const px = ox + dx * t, py = oy + dy * t, pz = oz + dz * t;
+    let clearance = oy - terrain.heightAt(ox, oz);
+    if (clearance < 0) clearance = 0.001;         // started underground: do not self-hit
+    for (let iter = 0; iter < 256 && t < limit; iter++) {
+      const step = clamp(clearance * 0.72, 0.3, 8);
+      const nt = Math.min(t + step, limit);
+      const px = ox + dx * nt, py = oy + dy * nt, pz = oz + dz * nt;
       const above = py - terrain.heightAt(px, pz);
       if (above <= 0) {
-        let lo = prevT, hi = t;
-        for (let k = 0; k < 8; k++) {
+        let lo = prevT, hi = nt;
+        for (let k = 0; k < 10; k++) {
           const mid = (lo + hi) * 0.5;
           const mx = ox + dx * mid, my = oy + dy * mid, mz = oz + dz * mid;
           if (my - terrain.heightAt(mx, mz) <= 0) hi = mid; else lo = mid;
@@ -273,7 +295,9 @@ export function traceWorld(ox, oy, oz, dx, dy, dz, maxDist, world = Ctx.world) {
         if (best < 0 || hi < best) { best = hi; bestCollider = null; bestMat = 'dirt'; }
         break;
       }
-      prevT = t; prevAbove = above;
+      prevT = nt;
+      t = nt;
+      clearance = above;
     }
   }
 
@@ -358,6 +382,10 @@ export function hasLOS(ax, ay, az, bx, by, bz, world = Ctx.world) {
   if (Physics.lineOfSight) {
     _a.set(ax, ay, az); _b.set(bx, by, bz);
     return Physics.lineOfSight(world, _a, _b, null) > 0.35;
+  }
+  if (world?.lineOfSight) {
+    _a.set(ax, ay, az); _b.set(bx, by, bz);
+    return !!world.lineOfSight(_a, _b);
   }
   _dir.set(bx - ax, by - ay, bz - az);
   const dist = _dir.length();
@@ -526,7 +554,6 @@ function mitigation(target, weapon) {
 // ---------------------------------------------------------------------------
 
 const _jd = new THREE.Vector3();
-const _up = new THREE.Vector3(0, 1, 0);
 const _right = new THREE.Vector3();
 const _upl = new THREE.Vector3();
 

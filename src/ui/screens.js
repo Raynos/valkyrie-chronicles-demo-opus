@@ -64,10 +64,10 @@ export class ChapterCard {
     p.paper.style.filter =
       'url(#vc-deckle) drop-shadow(0 3px 0 rgba(58,47,51,.16)) drop-shadow(0 16px 34px rgba(40,30,34,.55))';
     const inner = h('div', { class: 'vc-chapter-in' });
-    inner.appendChild(h('div', {
-      class: 'vc-chapter-num',
-      text: 'Chapter ' + (d.chapter != null ? numberWord(d.chapter) : 'One'),
-    }));
+    // `chapter` may be a number (4) or an authored string ('Chapter 4').
+    const chapterLine = typeof d.chapter === 'string' ? d.chapter
+      : 'Chapter ' + (d.chapter != null ? numberWord(d.chapter) : 'One');
+    inner.appendChild(h('div', { class: 'vc-chapter-num', text: chapterLine }));
     inner.appendChild(h('div', { class: 'vc-h1 vc-it', text: d.title || 'An Unwritten Page' }));
     if (d.place) inner.appendChild(h('div', { class: 'vc-label', style: 'margin-top:.5em', text: d.place }));
     const ill = h('div', { class: 'vc-chapter-ill' });
@@ -133,8 +133,10 @@ export class BriefingScreen {
 
     // masthead
     const head = h('div', { style: 'display:flex;align-items:flex-end;justify-content:space-between;gap:2em' });
+    const chapterLine = typeof d.chapter === 'string' ? d.chapter
+      : 'Chapter ' + roman(d.chapter || 1);
     head.appendChild(h('div', null,
-      label('Operational Briefing — Chapter ' + roman(d.chapter || 1)),
+      label('Operational Briefing — ' + chapterLine),
       h('div', { class: 'vc-h2 vc-it', text: d.title || 'The Bridge at Vasel' })));
     head.appendChild(h('div', { class: 'vc-label', text: d.date || 'EW 1935 · Squad 7' }));
     in_.appendChild(head);
@@ -433,12 +435,15 @@ export class ResultsScreen {
       ['Ducats Earned', String(d.dp != null ? d.dp : 0)],
       ['Experience', String(d.exp != null ? d.exp : 0)],
     ];
-    if (d.stats) {
-      if (d.stats.kills != null) rows.push(['Enemies Routed', String(d.stats.kills)]);
-      if (d.stats.captured != null) rows.push(['Camps Taken', String(d.stats.captured)]);
-      if (d.stats.shots != null && d.stats.hits != null) {
-        rows.push(['Accuracy', Math.round((d.stats.hits / Math.max(1, d.stats.shots)) * 100) + '%']);
-      }
+    const S = d.stats || {};
+    if (S.kills != null) rows.push(['Enemies Routed', String(S.kills)]);
+    const camps = S.campsTaken != null ? S.campsTaken : S.captured;
+    if (camps != null) rows.push(['Camps Taken', String(camps)]);
+    if (S.damageDealt != null) rows.push(['Damage Dealt', String(Math.round(S.damageDealt))]);
+    if (S.ordersUsed != null) rows.push(['Orders Issued', String(S.ordersUsed)]);
+    if (S.rescued) rows.push(['Comrades Rescued', String(S.rescued)]);
+    if (S.shots != null && S.hits != null) {
+      rows.push(['Accuracy', Math.round((S.hits / Math.max(1, S.shots)) * 100) + '%']);
     }
     for (const [k, v] of rows) stats.appendChild(statRow(k, v, 'late'));
     right.appendChild(stats);

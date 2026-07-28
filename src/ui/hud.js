@@ -42,14 +42,29 @@ const CLASS_NAME = {
   engineer: 'Engineer', sniper: 'Sniper', tank: 'Tank',
 };
 
+// Ids and costs mirror src/game/orders.js so the strip is truthful even before
+// the game pushes its own list over `ui:orders`. Icons/blurbs are ours.
 const DEFAULT_ORDERS = [
-  { id: 'awaken', name: 'Awaken', cost: 1, icon: 'ragnaid', desc: 'Rouse a downed ally back onto their feet.' },
-  { id: 'caution', name: 'Caution', cost: 2, icon: 'shield', desc: 'One soldier takes 40% less fire this turn.' },
-  { id: 'demolition', name: 'Demolition Boost', cost: 2, icon: 'lancer', desc: 'Anti-armour damage raised by half.' },
-  { id: 'resupply', name: 'Resupply', cost: 1, icon: 'ammo', desc: 'Restore ammunition and ragnaid to one unit.' },
-  { id: 'recon', name: 'Reconnaissance', cost: 2, icon: 'eye', desc: 'Reveal every enemy position on the map.' },
-  { id: 'command', name: 'Direct Command', cost: 3, icon: 'radio', desc: 'Grant a soldier a second sortie.' },
+  { id: 'caution', name: 'Caution', cost: 1, icon: 'shield', desc: 'One soldier evades and shrugs off fire for two turns.' },
+  { id: 'resupply', name: 'Resupply', cost: 2, icon: 'ammo', desc: 'Restore ammunition and ragnaid to one unit.' },
+  { id: 'attackBoost', name: 'Attack Boost', cost: 2, icon: 'shock', desc: 'Raise one soldier’s damage and accuracy.' },
+  { id: 'demolitionBoost', name: 'Demolition Boost', cost: 2, icon: 'lancer', desc: 'Anti-armour damage raised by seven tenths.' },
+  { id: 'enemyRecon', name: 'Enemy Recon', cost: 2, icon: 'eye', desc: 'Reveal every enemy position on the map.' },
+  { id: 'directCommand', name: 'Direct Command', cost: 3, icon: 'radio', desc: 'Grant a soldier a second sortie.' },
 ];
+
+const ORDER_ICON = {
+  resupply: 'ammo', attackBoost: 'shock', defenseBoost: 'shield', demolitionBoost: 'lancer',
+  doubleMovement: 'boot', caution: 'shield', awakenPotential: 'star', medicalKit: 'ragnaid',
+  enemyRecon: 'eye', fireSupport: 'mortar', directCommand: 'radio', stormyAttack: 'swords',
+  repairKit: 'engineer',
+};
+
+// mission.objectives use game-side type names; map them onto our pin glyphs.
+const OBJ_TYPE = {
+  captureCamp: 'capture', rout: 'kill', tankDestroyed: 'defend',
+  turnLimit: 'survive', escort: 'escort', survive: 'survive',
+};
 
 const LEGENDS = {
   command: [
@@ -113,6 +128,9 @@ export class HUD {
     this._blips = [];
     this._time = 0;
     this._alertTimer = 0;
+    this._tagTick = 0;
+    this._campTick = 0;
+    this.reticlePx = 0;
     this._unsubs = [];
 
     // ---- layers ----------------------------------------------------------
@@ -279,7 +297,7 @@ export class HUD {
         wobblyPath(98, 58, 2, 58, { seed: 420 + i, amp: 0.7, segs: 8 }) + ' ' +
         wobblyPath(2, 58, 2, 2, { seed: 430 + i, amp: 0.7, segs: 6 }) +
         '" fill="none" stroke="#4a3c2c" stroke-width="1" opacity="0.7"/></svg>';
-      const emblem = icon(o.icon || 'star', { size: 34, width: 1.5, rough: true });
+      const emblem = icon(o.icon || ORDER_ICON[o.id] || 'star', { size: 34, width: 1.5, rough: true });
       emblem.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#4a3c2c';
       art.appendChild(emblem);
       in_.appendChild(art);
@@ -571,11 +589,17 @@ export class HUD {
       this.alert('Interception Fire', 'take cover');
     });
     this._on('mission:end', (p) => {
+      const s = (p && p.stats) || {};
+      const roster = Array.isArray(s.roster) ? s.roster : null;
       this.results.show({
         victory: p?.victory !== false,
+        rank: s.rank,
+        title: s.title,
         turns: p?.turns != null ? p.turns : this.turn,
-        dp: p?.stats?.dp, exp: p?.stats?.exp,
-        stats: p?.stats, casualties: p?.stats?.casualties,
+        dp: s.ducats != null ? s.ducats : s.dp,
+        exp: s.exp,
+        stats: s,
+        casualties: s.casualties || (roster ? roster.filter((r) => !r.alive) : []),
         seed: 777,
       });
       this.setControls('result');
@@ -626,7 +650,141 @@ export class HUD {
     });
     this._on('ui:legend', (p) => this.setControls(typeof p === 'string' ? p : p?.mode));
     this._on('ui:pause', (p) => this._applyPause(p ? p.paused !== false : true));
-    this._on('shot:fired', () => { this._muzzle = 0.06; });
+
+    this._wireGame();
+  }
+
+  /**
+   * Adapters for the richer, game-specific events emitted by src/game/*.
+   * All of them are optional: if the game never emits them the HUD still runs
+   * off battle state alone.
+   */
+  _wireGame() {
+    this._on('battle:ready', (p) => this._adoptMission(p?.mission, p?.battle));
+
+    // --- action mode -------------------------------------------------------
+    this._on('action:enter', (p) => {
+      if (p?.unit) { this.selected = p.unit; this._syncSelection(); }
+      this.apShown = p?.ap != null ? p.ap : (this.selected?.ap || 0);
+      this.aiming = false;
+      this.target = null;
+    });
+    this._on('action:exit', () => { this.aiming = false; this.target = null; });
+    this._on('action:end', (p) => {
+      this.aiming = false;
+      this.target = null;
+      if (p?.reason && p.reason !== 'turnEnded') this.toast(String(p.reason).toUpperCase());
+    });
+    this._on('aim:enter', () => { this.aiming = true; this.setControls('aim'); });
+    this._on('aim:exit', () => { this.aiming = false; this.target = null; });
+    this._on('aim:target', (p) => this._onAimTarget(p));
+    this._on('weapon:switch', (p) => {
+      const w = p?.weapon;
+      if (w) this.toast(String(w.name || 'WEAPON').toUpperCase());
+    });
+    this._on('attack:resolved', (p) => {
+      if (!p) return;
+      if (p.kills) this.toast(p.kills > 1 ? p.kills + ' ENEMIES ROUTED' : 'ENEMY ROUTED');
+      if (p.attacksLeft === 0) this.setControls('action');
+    });
+    this._on('interception:shot', () => { this.dmgFlash = Math.max(this.dmgFlash, 0.22); });
+
+    // --- command mode ------------------------------------------------------
+    this._on('command:enter', () => { this._rosterKey = ''; this.cpShown = -1; this._renderCp(); });
+    this._on('command:denied', (p) => this.toast(String(p?.reason || 'Not permitted').toUpperCase()));
+    this._on('camp:captured', (p) => {
+      const c = p?.camp;
+      if (!c) return;
+      this.toast(((c.name || 'CAMP') + (p.by?.team === 0 ? ' secured' : ' lost')).toUpperCase());
+      if (c.pos) this.labels.banner(c.pos, p.by?.team === 0 ? 'CAMP SECURED' : 'CAMP LOST', { life: 2.2 });
+    });
+
+    // --- deployment --------------------------------------------------------
+    this._on('deploy:begin', (p) => {
+      const camps = (this.battle.camps || []).filter((c) => c.deploy && c.owner === 0)
+        .map((c) => ({ id: c.id, name: c.name, slots: this._slotsForCamp(p?.slots, c.id) }));
+      this.showDeployment({
+        camps: camps.length ? camps : null,
+        squad: p?.units || this._allies(),
+        minDeploy: 1,
+      });
+    });
+    this._on('deploy:end', () => this.deployment.hide());
+  }
+
+  _slotsForCamp(slots, id) {
+    if (!Array.isArray(slots)) return 6;
+    let n = 0;
+    for (const s of slots) if (s.camp === id) n++;
+    return n || 6;
+  }
+
+  /** Pull chapter, objectives, camps and map extents out of a mission object. */
+  _adoptMission(M, battle) {
+    if (battle) this.battle = battle;
+    if (!M) return;
+    this.mission = M;
+
+    if (M.bounds) {
+      this.mapExtent = Math.max(
+        (M.bounds.maxX - M.bounds.minX) || 128, (M.bounds.maxZ - M.bounds.minZ) || 128);
+      this.mapScaleEl.textContent = Math.round(this.mapExtent) + ' m';
+    }
+
+    // Objectives: win conditions first, failure conditions as sub-lines.
+    if (Array.isArray(M.objectives) && M.objectives.length) {
+      this.objectives = M.objectives.map((o) => ({
+        type: OBJ_TYPE[o.type] || 'capture',
+        text: o.label || o.id || '',
+        sub: !o.win,
+      })).sort((a, b) => (a.sub === b.sub ? 0 : a.sub ? 1 : -1)).slice(0, 4);
+      this._renderObjectives();
+    }
+
+    // Compass markers + capture rings from the live camps.
+    const camps = (battle && battle.camps) || [];
+    this.markers = camps.map((c) => ({
+      pos: c.pos, label: c.name ? c.name.split(' ')[0] : 'Camp',
+      icon: 'camp', team: c.owner,
+    }));
+
+    const ch = M.chapter;
+    const chapterNum = typeof ch === 'number' ? ch
+      : (String(ch || '').match(/\d+/) ? parseInt(String(ch).match(/\d+/)[0], 10) : 1);
+    this._setBookmark(chapterNum);
+    this._missionChapter = ch != null ? ch : chapterNum;
+  }
+
+  _onAimTarget(p) {
+    if (!p) return;
+    this.aiming = true;
+    if (p.reticlePx != null && isFinite(p.reticlePx)) this.reticlePx = p.reticlePx;
+    if (p.chance != null) this.hitChance = clamp01(p.chance > 1 ? p.chance / 100 : p.chance);
+    if (!p.target) { this.target = null; return; }
+    const t = p.target;
+    this.setTarget({
+      unit: t, name: t.name, cls: t.cls, hp: t.hp, maxHp: t.maxHp,
+      distance: p.distance, hit: this.hitChance, part: p.part,
+      cover: t.coverValue != null ? t.coverValue : null,
+      lethal: p.lethal, expectedDamage: p.expectedDamage,
+    });
+  }
+
+  /** Ownership rings over the base camps, refreshed a few times a second. */
+  _updateCamps() {
+    const camps = this.battle.camps;
+    if (!Array.isArray(camps) || !camps.length) return;
+    for (const c of camps) {
+      if (!c.pos) continue;
+      const owned = c.owner === 0 || c.owner === 1;
+      // Contested camps breathe rather than sit — it reads as pressure.
+      const p = c.contested ? 0.5 + 0.42 * Math.sin(this._time * 4.2)
+        : owned ? 1 : 0.22;
+      this.labels.capture(c.id, c.pos, {
+        progress: p, team: c.owner === 1 ? 1 : 0,
+        label: c.contested ? 'CONTESTED' : (c.name ? c.name.split(' ')[0] : ''),
+      });
+    }
   }
 
   // ======================================================================
@@ -639,26 +797,48 @@ export class HUD {
   project(worldPos, out) { return this.labels.project(worldPos, out); }
 
   showChapter(d = {}) {
-    if (d.chapter != null) this._setBookmark(d.chapter);
+    const M = this.mission || {};
+    const chapter = d.chapter != null ? d.chapter
+      : (this._missionChapter != null ? this._missionChapter : M.chapter);
+    if (typeof chapter === 'number') this._setBookmark(chapter);
     this.chapterCard.show({
-      chapter: d.chapter, title: d.title, subtitle: d.subtitle, place: d.place,
+      chapter,
+      title: d.title || M.name || M.title,
+      subtitle: d.subtitle != null ? d.subtitle : (M.briefing && M.briefing.objective),
+      place: d.place || M.subtitle,
       seed: d.seed || 404, dwell: d.dwell, onDone: d.onDone,
     });
   }
 
   showBriefing(d = {}) {
+    const M = this.mission || {};
+    const B = M.briefing || {};
     this.briefing.show({
-      chapter: d.chapter != null ? d.chapter : this.mission.chapter,
-      title: d.title || this.mission.title,
-      brief: d.brief || this.mission.brief,
-      date: d.date || this.mission.date,
+      chapter: d.chapter != null ? d.chapter : (this._missionChapter != null ? this._missionChapter : M.chapter),
+      title: d.title || B.title || M.name || M.title,
+      brief: d.brief || B.text || M.brief,
+      date: d.date || M.subtitle || M.date,
       objectives: d.objectives || this.objectives,
-      squad: d.squad || this._allies(),
-      intel: d.intel || this.mission.intel,
-      markers: d.markers,
+      squad: (d.squad || this._allies()).filter((u) => u && u.cls !== 'tank'),
+      intel: d.intel || B.intel || M.intel,
+      markers: d.markers || this._missionMarkers(),
       seed: d.seed || CFG.seed || 1234,
     });
     this.setControls('command');
+  }
+
+  /** Normalised 0..1 map markers for the briefing illustration, from the camps. */
+  _missionMarkers() {
+    const camps = this.battle.camps;
+    const B = this.mission && this.mission.bounds;
+    if (!Array.isArray(camps) || !camps.length || !B) return null;
+    const w = (B.maxX - B.minX) || 1, hgt = (B.maxZ - B.minZ) || 1;
+    return camps.map((c) => ({
+      x: clamp01((c.pos.x - B.minX) / w),
+      // the survey is drawn north-up, so +Z (Imperial) belongs at the top
+      y: clamp01(1 - (c.pos.z - B.minZ) / hgt),
+      type: 'capture', team: c.owner, label: c.name ? c.name.split(' ')[0] : '',
+    }));
   }
 
   showDeployment(d = {}) {
@@ -773,9 +953,17 @@ export class HUD {
 
     if (this.handleKeys) this._keys();
 
+    // Keep world-space name tags bound to the live unit list. Cheap enough to
+    // re-diff a squad-sized array a few times a second.
+    if (this.opts.nameTags !== false && ++this._tagTick > 15) {
+      this._tagTick = 0;
+      if (Array.isArray(this.battle.units)) this.labels.syncTracked(this.battle.units);
+    }
+
     if (this.phase === 'command' || this.phase === 'enemy') {
       this._updateCommand(dt);
     }
+    if (++this._campTick > 6) { this._campTick = 0; this._updateCamps(); }
     if (this.phase === 'action') {
       this._updateAction(dt);
       this._updateTargeting(dt);
@@ -979,7 +1167,7 @@ export class HUD {
     }
     const mw = this._mapW, mh = this._mapH;
     const toX = (x) => clamp01((x + half) / ext) * mw;
-    const toY = (z) => clamp01((z + half) / ext) * mh;
+    const toY = (z) => (1 - clamp01((z + half) / ext)) * mh;   // north (+Z) at the top
 
     // grow the blip pool as needed (bounded by squad size, so this settles fast)
     while (this._blips.length < units.length) {
@@ -1026,11 +1214,11 @@ export class HUD {
     }
   }
 
+  // The HUD never mutates the battle — it only announces the intent, and the
+  // game layer decides whether the turn actually ends.
   _endTurn() {
     Bus.emit('ui:endTurn', { team: 0 });
     Bus.emit('sfx', { name: 'ui_endturn', vol: 0.9 });
-    this.battle.endTurn?.();
-    this.toast('TURN ENDED');
   }
 
   // ----------------------------------------------------------------- action
@@ -1080,10 +1268,12 @@ export class HUD {
     for (const pip of this.ammoPips.children) { pip.classList.toggle('spent', i >= live); i++; }
   }
 
+  // North is +Z: the mission places Gallia at -Z ("south bank") and the Imperial
+  // town at +Z, so the survey and the compass both have to agree with that.
   _cameraHeading() {
     if (!this.camera) return 0;
     this.camera.getWorldDirection(V1);
-    return Math.atan2(V1.x, -V1.z);   // 0 = -Z (north), +ve toward +X (east)
+    return Math.atan2(V1.x, V1.z);    // 0 = +Z (north), +ve toward +X (east)
   }
 
   _updateCompass() {
@@ -1118,7 +1308,7 @@ export class HUD {
     for (let i = 0; i < ms.length; i++) {
       const m = ms[i], el = this.compassPins.children[i];
       if (!m.pos || !el) continue;
-      const bearing = Math.atan2(m.pos.x - cam.x, -(m.pos.z - cam.z));
+      const bearing = Math.atan2(m.pos.x - cam.x, m.pos.z - cam.z);
       const rel = shortestAngle(this._cameraHeading(), bearing) * 180 / Math.PI;
       const x = w / 2 + rel * pxPerDeg;
       const inView = x > -10 && x < w + 10;
@@ -1134,10 +1324,18 @@ export class HUD {
     this.tgtLayer.classList.toggle('on', on);
     if (!on) return;
 
-    // accuracy circle contracts as the shot settles
-    this.spreadShown = damp(this.spreadShown, this.spread, 7, dt);
+    // Accuracy circle contracts as the shot settles. When the game publishes a
+    // real ballistic radius (aim:target.reticlePx) we honour it exactly — the
+    // circle then means "90% of shots land inside this", not "looks tense".
     const base = Math.min(innerWidth, innerHeight);
-    const r = lerp(base * 0.035, base * 0.30, this.spreadShown);
+    let r;
+    if (this.reticlePx > 0) {
+      this.spreadShown = damp(this.spreadShown, clamp01(this.reticlePx / (base * 0.32)), 9, dt);
+      r = clamp(this.spreadShown * base * 0.32, base * 0.022, base * 0.34);
+    } else {
+      this.spreadShown = damp(this.spreadShown, this.spread, 7, dt);
+      r = lerp(base * 0.035, base * 0.30, this.spreadShown);
+    }
     // add a slow sway so the reticle never looks pinned to the pixel grid
     const sway = Math.sin(this._time * 1.7) * 1.2 * this.spreadShown;
     this.accEl.style.width = (r * 2).toFixed(1) + 'px';
@@ -1167,6 +1365,9 @@ export class HUD {
     const from = this.phase;
     this.phase = to;
     const cmd = to === 'command' || to === 'enemy';
+    if (to === 'briefing' && !this.briefing.visible) this.showBriefing({});
+    else if (to !== 'briefing') this.briefing.hide();
+    if (to !== 'deploy') this.deployment.hide();
     this.cmdLayer.classList.toggle('vc-hidden', !cmd);
     this.actLayer.classList.toggle('vc-hidden', to !== 'action');
     this.tgtLayer.classList.toggle('on', false);

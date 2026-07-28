@@ -33,14 +33,17 @@ const _worldUp = new THREE.Vector3(0, 1, 0);
 const _altUp = new THREE.Vector3(0, 0, 1);
 
 // Key colour through the day. Authored sRGB; three converts to linear.
+// Deliberately less saturated than a physical sun. The NPR shader normalises
+// the key colour to unit luminance before tinting, so a strongly saturated
+// orange arrives at the surface as a ~2x red multiplier and stains everything.
 const SUN_RAMP = [
-  { t: 0.00, c: 0xd98a52, i: 0.35 },   // pre-dawn ember
-  { t: 0.14, c: 0xf0a768, i: 1.35 },   // low sun, long shadows
-  { t: 0.34, c: 0xffdca6, i: 2.15 },
-  { t: 0.50, c: 0xfff0cf, i: 2.45 },   // noon — palest, brightest
-  { t: 0.68, c: 0xffd79c, i: 2.20 },
-  { t: 0.86, c: 0xf2a061, i: 1.30 },   // the memoir hour
-  { t: 1.00, c: 0xb96f4e, i: 0.32 },
+  { t: 0.00, c: 0xd7a483, i: 0.35 },   // pre-dawn ember
+  { t: 0.14, c: 0xf0c093, i: 1.35 },   // low sun, long shadows
+  { t: 0.34, c: 0xffe2bd, i: 2.10 },
+  { t: 0.50, c: 0xfff3dd, i: 2.40 },   // noon — palest, brightest
+  { t: 0.68, c: 0xffe1b9, i: 2.15 },
+  { t: 0.86, c: 0xf6c295, i: 1.32 },   // the memoir hour
+  { t: 1.00, c: 0xc0906f, i: 0.32 },
 ];
 
 const SKY_RAMP = [

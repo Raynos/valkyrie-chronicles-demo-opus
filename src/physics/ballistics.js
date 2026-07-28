@@ -37,21 +37,21 @@ const AIR_DENSITY = 1.225;
  *                              a deliberate readability cheat, per VC)
  */
 export const WEAPON_BALLISTICS = {
-  rifle:      { v0: 720, m: 0.0092, cd: 0.30, cal: 0.0079, pen: 26, grav: 1.0, tracer: 0.15 },
-  smg:        { v0: 400, m: 0.0080, cd: 0.36, cal: 0.0090, pen: 14, grav: 1.0, tracer: 0.10 },
-  mg:         { v0: 780, m: 0.0125, cd: 0.29, cal: 0.0079, pen: 32, grav: 1.0, tracer: 0.35 },
-  sniper:     { v0: 860, m: 0.0130, cd: 0.26, cal: 0.0079, pen: 40, grav: 1.0, tracer: 0.05 },
+  rifle:      { v0: 720, m: 0.0092, cd: 0.30, cal: 0.0079, pen: 26, grav: 1.0, tracer: 0.15, damage: 22 },
+  smg:        { v0: 400, m: 0.0080, cd: 0.36, cal: 0.0090, pen: 14, grav: 1.0, tracer: 0.10, damage: 12 },
+  mg:         { v0: 780, m: 0.0125, cd: 0.29, cal: 0.0079, pen: 32, grav: 1.0, tracer: 0.35, damage: 18 },
+  sniper:     { v0: 860, m: 0.0130, cd: 0.26, cal: 0.0079, pen: 40, grav: 1.0, tracer: 0.05, damage: 95 },
   lance:      { v0: 155, m: 2.500,  cd: 0.42, cal: 0.0880, pen: 240, grav: 0.55, tracer: 1.0,
-                explosive: { radius: 4.2, power: 62 } },
+                explosive: { radius: 4.2, power: 62 }, damage: 260 },
   grenade:    { v0: 22,  m: 0.600,  cd: 0.55, cal: 0.0600, pen: 6,  grav: 1.0, tracer: 0,
-                explosive: { radius: 5.0, power: 55 }, fuse: 2.6, bounce: 0.34 },
+                explosive: { radius: 5.0, power: 55 }, fuse: 2.6, bounce: 0.34, damage: 40 },
   mortar:     { v0: 95,  m: 3.200,  cd: 0.36, cal: 0.0810, pen: 30, grav: 1.0, tracer: 0.2,
-                explosive: { radius: 6.5, power: 78 } },
-  tankAP:     { v0: 780, m: 6.300,  cd: 0.24, cal: 0.0750, pen: 300, grav: 1.0, tracer: 0.6 },
+                explosive: { radius: 6.5, power: 78 }, damage: 70 },
+  tankAP:     { v0: 780, m: 6.300,  cd: 0.24, cal: 0.0750, pen: 300, grav: 1.0, tracer: 0.6, damage: 420 },
   tankHE:     { v0: 560, m: 6.800,  cd: 0.30, cal: 0.0750, pen: 60,  grav: 1.0, tracer: 0.6,
-                explosive: { radius: 6.0, power: 84 } },
-  coax:       { v0: 760, m: 0.0125, cd: 0.29, cal: 0.0079, pen: 30, grav: 1.0, tracer: 0.4 },
-  flame:      { v0: 26,  m: 0.030,  cd: 1.20, cal: 0.1200, pen: 2,  grav: 0.45, tracer: 0 },
+                explosive: { radius: 6.0, power: 84 }, damage: 180 },
+  coax:       { v0: 760, m: 0.0125, cd: 0.29, cal: 0.0079, pen: 30, grav: 1.0, tracer: 0.4, damage: 16 },
+  flame:      { v0: 26,  m: 0.030,  cd: 1.20, cal: 0.1200, pen: 2,  grav: 0.45, tracer: 0, damage: 8 },
 };
 
 /** Register or override a weapon profile at runtime (used by weapons.js). */

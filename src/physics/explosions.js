@@ -6,10 +6,9 @@
 import * as THREE from 'three';
 import { Bus } from '../core/bus.js';
 import { clamp, smoothstep } from '../core/math.js';
-import { lineOfSight, normalizeCollider } from './collision.js';
+import { lineOfSight } from './collision.js';
 
 const _v = new THREE.Vector3();
-const _v2 = new THREE.Vector3();
 const _target = new THREE.Vector3();
 
 /** One live blast wave. Pooled. */
@@ -38,7 +37,8 @@ export class Explosions {
     this.world = world;
     this.rigid = opts.rigid || null;
     this.units = opts.units || [];
-    this.impulseScale = opts.impulseScale ?? 3.2;
+    /** N·s of impulse per unit of blast `power`, at the centre of the blast. */
+    this.impulseScale = opts.impulseScale ?? 0.85;
     this.waves = [];
     this._pool = [];
     this.maxWaves = 24;
@@ -47,6 +47,8 @@ export class Explosions {
     /** Last detonation report; reused to avoid per-blast allocation. */
     this.lastReport = { pos: new THREE.Vector3(), radius: 0, power: 0, affected: [] };
     this._affectedPool = [];
+    this._swOut = [];
+    this._swPool = [];
   }
 
   setUnits(units) { this.units = units; return this; }
@@ -120,24 +122,9 @@ export class Explosions {
       this.rigid.applyRadialImpulse(pos, radius * 1.35, power * this.impulseScale);
     }
 
-    // ---- destructible cover -------------------------------------------------
-    const cols = (this.world && this.world.colliders) || null;
-    if (cols) {
-      for (let i = 0; i < cols.length; i++) {
-        const raw = cols[i];
-        if (!raw.destructible || raw.dead) continue;
-        const box = normalizeCollider(raw);
-        const d = box.center.distanceTo(pos) - box.boundRadius * 0.5;
-        if (d > radius) continue;
-        const f = Math.pow(clamp(1 - d / radius, 0, 1), falloffExp);
-        raw.hp = (raw.hp ?? 60) - power * f;
-        if (raw.hp <= 0) {
-          raw.dead = true;
-          raw.disabled = true;
-          Bus.emit('cover:destroyed', { collider: raw, pos: box.center.clone() });
-        }
-      }
-    }
+    // NOTE: destructible cover is deliberately NOT damaged here. src/world/
+    // owns props and already subscribes to the `explosion` event below, so
+    // doing it here too would apply the blast twice.
 
     Bus.emit('explosion', { pos: pos.clone(), radius, power, source: o.source || null, weapon: o.weapon });
     Bus.emit('sfx', { name: radius > 5 ? 'explosionBig' : 'explosion', pos, vol: clamp(radius / 6, 0.4, 1) });
@@ -161,7 +148,7 @@ export class Explosions {
    * @param {THREE.Vector3} pos
    * @param {Array} out  filled with { wave, dist, front, intensity, dir }
    */
-  queryShockwave(pos, out = []) {
+  queryShockwave(pos, out = this._swOut) {
     out.length = 0;
     for (let i = 0; i < this.waves.length; i++) {
       const w = this.waves[i];
@@ -174,11 +161,14 @@ export class Explosions {
       const fade = 1 - w.t / w.life;
       _v.subVectors(pos, w.pos);
       if (_v.lengthSq() < 1e-6) _v.set(0, 1, 0); else _v.normalize();
-      out.push({
-        wave: w, dist: d, front,
-        intensity: shell * fade * clamp(w.power / 60, 0.2, 2) * (1 - clamp(d / (w.radius * 2), 0, 1)),
-        dir: _v2.copy(_v).clone(),
-      });
+      // Records are pooled — the FX layer reads them within the frame.
+      let rec = this._swPool[out.length];
+      if (!rec) rec = this._swPool[out.length] = { wave: null, dist: 0, front: 0, intensity: 0, dir: new THREE.Vector3() };
+      rec.wave = w; rec.dist = d; rec.front = front;
+      rec.intensity = shell * fade * clamp(w.power / 60, 0.2, 2) *
+                      (1 - clamp(d / (w.radius * 2), 0, 1));
+      rec.dir.copy(_v);
+      out.push(rec);
     }
     return out;
   }

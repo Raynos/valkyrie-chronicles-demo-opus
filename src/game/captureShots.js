@@ -129,24 +129,25 @@ export const SHOTS = {
     b.commandMode?.exit();
 
     const rng = makeRng(0xA11CE);
-    // Squad spread out on the south approach, Imperials holding the far bank.
+    // Squad on the southern approach road, Imperials holding the far (north) bank.
     const squad = b.units.filter((u) => u.team === 0);
     squad.forEach((u, i) => {
-      const x = -18 + i * 6.5 + (rng() - 0.5) * 2.4;
-      const z = -34 + (rng() - 0.5) * 6;
-      pose(ctx, u, x, z, 0.05, u.isVehicle ? 'idle' : (i % 3 === 0 ? 'crouchIdle' : 'idle'),
+      const x = -16 + i * 5.5 + (rng() - 0.5) * 2.4;
+      const z = 32 + (rng() - 0.5) * 6;
+      pose(ctx, u, x, z, Math.PI, u.isVehicle ? 'idle' : (i % 3 === 0 ? 'crouchIdle' : 'idle'),
         i % 3 === 0 ? STANCE.CROUCH : STANCE.STAND);
     });
     const foe = b.units.filter((u) => u.team === 1);
     foe.forEach((u, i) => {
-      const x = -14 + i * 5.2 + (rng() - 0.5) * 3;
-      const z = 16 + (i % 3) * 9 + (rng() - 0.5) * 4;
-      pose(ctx, u, x, z, Math.PI, 'idle');
+      const x = -4 + i * 4.6 + (rng() - 0.5) * 3;
+      const z = -12 - (i % 3) * 9 + (rng() - 0.5) * 4;
+      pose(ctx, u, x, z, 0, 'idle');
       u.spotted = true;
     });
 
-    const y = groundAt(ctx, -6, -96) + 34;
-    aimCamera(ctx.camera, -6, y, -96, 4, 4, 18, 29);
+    // High on the southern ridge, looking north down the road, over the bridge, into the town.
+    const y = groundAt(ctx, -8, 86) + 30;
+    aimCamera(ctx.camera, -8, y, 86, 8, 3, -8, 29);
     await frames(14);
   },
 
@@ -162,11 +163,11 @@ export const SHOTS = {
     const rng = makeRng(0xC0FFEE);
     const squad = b.units.filter((u) => u.team === 0);
     squad.forEach((u, i) => {
-      pose(ctx, u, -16 + i * 6 + (rng() - 0.5) * 2, -26 + (rng() - 0.5) * 8, 0.1);
+      pose(ctx, u, -14 + i * 5.2 + (rng() - 0.5) * 2, 26 + (rng() - 0.5) * 8, Math.PI);
     });
     const foe = b.units.filter((u) => u.team === 1);
     foe.forEach((u, i) => {
-      pose(ctx, u, -12 + i * 5.4, 10 + (i % 4) * 8, Math.PI);
+      pose(ctx, u, -8 + i * 5.0, -8 - (i % 4) * 8, 0);
       u.spotted = true;
       u.lastKnown.copy(u.pos);
       u.lastKnownTurn = b.turn;
@@ -175,7 +176,7 @@ export const SHOTS = {
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || squad[1];
     cm.select(alicia);
     cm.showThreat = true;
-    cm.focusOn(_v.set(alicia.pos.x + 4, 0, alicia.pos.z + 16), true);
+    cm.focusOn(_v.set(alicia.pos.x + 4, 0, alicia.pos.z - 16), true);
     cm.distWant = cm.dist = 52;
     cm.pitchWant = cm.pitch = -0.95;
     cm.yawWant = cm.yaw = 0.22;
@@ -197,17 +198,17 @@ export const SHOTS = {
     setTimeOfDay(ctx, 0.36);
     uiMode('action');
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
-    pose(ctx, alicia, -6, -24, 0.08, 'run');
+    pose(ctx, alicia, -3, 24, Math.PI + 0.08, 'run');
     // A couple of Imperials in the middle distance to give the frame stakes.
     const foe = b.units.filter((u) => u.team === 1).slice(0, 4);
-    foe.forEach((u, i) => pose(ctx, u, -10 + i * 7, 14 + (i % 2) * 5, Math.PI, 'idle'));
+    foe.forEach((u, i) => pose(ctx, u, -6 + i * 6, -10 - (i % 2) * 5, 0, 'idle'));
 
     b.setPhase('action');
     b.activeUnit = alicia;
     alicia.beginAction();
     const am = b.actionMode;
     am.enter(alicia);
-    am.camYaw = 0.08;
+    am.camYaw = Math.PI + 0.08;
     am.camPitch = -0.10;
     am.sprinting = true;
     am.speedSmoothed = alicia.classDef.speed.run;
@@ -226,10 +227,10 @@ export const SHOTS = {
     uiMode('aim');
     const shooter = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
     const target = b.units.find((u) => u.team === 1 && !u.isVehicle);
-    pose(ctx, shooter, 2, -6, 0.0, 'aim', STANCE.CROUCH);
-    pose(ctx, target, 3.4, 20.5, Math.PI, 'idle');
+    pose(ctx, shooter, 4, 14, Math.PI, 'aim', STANCE.CROUCH);
+    pose(ctx, target, 5.4, -6.5, 0, 'idle');
     const others = b.units.filter((u) => u.team === 1 && u !== target).slice(0, 3);
-    others.forEach((u, i) => pose(ctx, u, -8 + i * 9, 26 + i * 3, Math.PI, 'crouchIdle', STANCE.CROUCH));
+    others.forEach((u, i) => pose(ctx, u, -4 + i * 8, -12 - i * 3, 0, 'crouchIdle', STANCE.CROUCH));
 
     b.setPhase('action');
     b.activeUnit = shooter;
@@ -258,18 +259,19 @@ export const SHOTS = {
     const rng = makeRng(0xF13E);
 
     const squad = b.units.filter((u) => u.team === 0 && !u.isVehicle);
-    squad.forEach((u, i) => pose(ctx, u, -9 + i * 4.2, -9 - (i % 2) * 2.5,
-      0.06, i % 2 ? 'crouchIdle' : 'aim', i % 2 ? STANCE.CROUCH : STANCE.STAND));
+    squad.forEach((u, i) => pose(ctx, u, -7 + i * 4.2, 16 + (i % 2) * 2.5,
+      Math.PI + 0.06, i % 2 ? 'crouchIdle' : 'aim', i % 2 ? STANCE.CROUCH : STANCE.STAND));
     const foe = b.units.filter((u) => u.team === 1 && !u.isVehicle).slice(0, 6);
-    foe.forEach((u, i) => pose(ctx, u, -8 + i * 4.6, 13 + (i % 3) * 3.5, Math.PI, 'aim'));
+    foe.forEach((u, i) => pose(ctx, u, -6 + i * 4.6, -6 - (i % 3) * 3.5, 0, 'aim'));
     foe.forEach((u) => { u.spotted = true; });
 
     b.setPhase('action');
     b.activeUnit = squad[0];
 
+    // Side-on across the bridge approach so the tracers cross the frame.
     aimCamera(ctx.camera,
-      -22, groundAt(ctx, -22, -2) + 5.4, -2,
-      2, 1.6, 12, 33);
+      -24, groundAt(ctx, -24, 6) + 5.2, 6,
+      4, 1.6, 2, 33);
 
     // Continuous, seeded exchange of fire so the screenshot always catches live tracers.
     let acc = 0, tick = 0;
@@ -310,14 +312,14 @@ export const SHOTS = {
     const isara = unitNamed(ctx, 'Isara Gunther');
     const largo = unitNamed(ctx, 'Largo Potter');
     show(ctx, [tank, isara, largo]);
-    pose(ctx, tank, 0, -14, 0.42, 'idle');
-    tank.aimYaw = 0.9;
+    pose(ctx, tank, 0, 22, Math.PI + 0.42, 'idle');
+    tank.aimYaw = Math.PI + 0.9;
     tank.syncActor?.();
-    pose(ctx, isara, 4.6, -17.4, 2.1, 'idle');
-    pose(ctx, largo, -4.2, -17.8, 0.9, 'crouchIdle', STANCE.CROUCH);
+    pose(ctx, isara, 4.6, 25.4, 2.1 + Math.PI, 'idle');
+    pose(ctx, largo, -4.2, 25.8, 0.9 + Math.PI, 'crouchIdle', STANCE.CROUCH);
 
-    const gy = groundAt(ctx, 9.5, -22);
-    aimCamera(ctx.camera, 9.5, gy + 1.85, -22.5, 0.2, 1.7, -14, 31);
+    const gy = groundAt(ctx, 9.5, 30);
+    aimCamera(ctx.camera, 9.5, gy + 1.85, 30.5, 0.2, 1.7, 22, 31);
     await frames(12);
   },
 
@@ -329,10 +331,11 @@ export const SHOTS = {
     hideAll(ctx);
     const foe = b.units.filter((u) => u.team === 1 && !u.isVehicle).slice(0, 3);
     show(ctx, foe);
-    foe.forEach((u, i) => pose(ctx, u, 10 + i * 3.5, 30 + (i % 2) * 4, Math.PI * 0.8, 'crouchIdle', STANCE.CROUCH));
+    foe.forEach((u, i) => pose(ctx, u, 18 + i * 3.5, -30 - (i % 2) * 4, 0.4, 'crouchIdle', STANCE.CROUCH));
 
-    const gy = groundAt(ctx, 4, 18);
-    aimCamera(ctx.camera, 4, gy + 3.2, 18, 16, 4.5, 38, 36);
+    // Standing in the village square looking into the ruined frontages.
+    const gy = groundAt(ctx, 10, -18);
+    aimCamera(ctx.camera, 10, gy + 3.0, -18, 28, 4.5, -38, 36);
     await frames(12);
   },
 
@@ -344,7 +347,7 @@ export const SHOTS = {
     hideAll(ctx);
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
     show(ctx, [alicia]);
-    pose(ctx, alicia, 0, -20, 0.55, 'idle');
+    pose(ctx, alicia, -2, 34, 0.55, 'idle');
     alicia.aimYaw = 0.55;
     alicia.aimPitch = 0.03;
     alicia.syncActor?.();
@@ -367,10 +370,11 @@ export const SHOTS = {
     const edy = unitNamed(ctx, 'Edy Nelson') || firstOfClass(ctx, 'scout', 0);
     const rosie = unitNamed(ctx, 'Rosie Stark');
     show(ctx, [edy, rosie]);
-    pose(ctx, edy, -3.0, -30.0, 0.15, 'crouchWalk', STANCE.CROUCH);
-    pose(ctx, rosie, 2.6, -33.5, 0.25, 'crouchIdle', STANCE.CROUCH);
+    // Inside the fallow field south-west of the deployment (layout.fields).
+    pose(ctx, edy, -19.0, 62.0, Math.PI + 0.15, 'crouchWalk', STANCE.CROUCH);
+    pose(ctx, rosie, -13.4, 65.5, Math.PI + 0.25, 'crouchIdle', STANCE.CROUCH);
 
-    const cx = -3.4, cz = -36.5;
+    const cx = -19.4, cz = 68.5;
     const gy = groundAt(ctx, cx, cz);
     aimCamera(ctx.camera, cx, gy + 0.26, cz, edy.pos.x, edy.pos.y + 0.95, edy.pos.z, 40);
     await frames(12);
@@ -383,13 +387,14 @@ export const SHOTS = {
     uiMode('none');
     const rng = makeRng(0xD05C);
     const squad = b.units.filter((u) => u.team === 0);
-    squad.forEach((u, i) => pose(ctx, u, -14 + i * 5.5 + (rng() - 0.5) * 2, -20 + (rng() - 0.5) * 5,
-      0.1, u.isVehicle ? 'idle' : 'idle'));
+    squad.forEach((u, i) => pose(ctx, u, -12 + i * 5.0 + (rng() - 0.5) * 2, 22 + (rng() - 0.5) * 5,
+      Math.PI, 'idle'));
     const foe = b.units.filter((u) => u.team === 1).slice(0, 5);
-    foe.forEach((u, i) => pose(ctx, u, -6 + i * 6, 18 + (i % 2) * 6, Math.PI, 'idle'));
+    foe.forEach((u, i) => pose(ctx, u, -4 + i * 6, -14 - (i % 2) * 6, 0, 'idle'));
 
-    const gy = groundAt(ctx, -40, -30);
-    aimCamera(ctx.camera, -40, gy + 11.5, -30, 6, 3, 16, 30);
+    // Raking light from the west across the whole valley.
+    const gy = groundAt(ctx, -52, 34);
+    aimCamera(ctx.camera, -52, gy + 11.0, 34, 10, 3, -6, 30);
     await frames(14);
   },
 };

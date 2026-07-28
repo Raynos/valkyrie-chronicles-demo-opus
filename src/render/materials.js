@@ -71,7 +71,7 @@ function shared() {
     uSunDirW:    { value: new THREE.Vector3(0.42, 0.74, 0.32).normalize() },
     uSunDirV:    { value: new THREE.Vector3(0, 0, 1) },
     uSunColor:   { value: new THREE.Color(0xffe9c8) },
-    uKeyGain:    { value: 0.74 },
+    uKeyGain:    { value: 0.62 },
     uFillGain:   { value: 0.30 },
     uCream:      { value: PALETTE.cream },
     uViolet:     { value: PALETTE.violet },
@@ -128,7 +128,7 @@ ${prepass ? '' : '#include <shadowmap_pars_vertex>\n#include <fog_pars_vertex>'}
 ${needNoise ? GLSL_HASH + GLSL_NOISE : ''}
 
 uniform float uTime;
-${wind ? 'uniform vec4 uWind;\nuniform float uBladeHeight;\nuniform float uSway;' : ''}
+${wind ? 'uniform vec4 uWind;\nuniform float uBladeHeight;\nuniform float uSway;\nuniform float uWindSpeed;\nuniform vec2 uFade;' : ''}
 
 varying vec3 vViewPos;
 varying vec3 vViewNormal;
@@ -215,11 +215,12 @@ const WIND_BLOCK = /* glsl */`
     float phase = vcHash21( bladeBaseW.xz * 3.17 + bladeBaseW.y );
     vec2 wdir = normalize( uWind.xy + vec2( 1e-5, 0.0 ) );
     float travel = dot( bladeBaseW.xz, wdir );
+    float wt = uTime * uWindSpeed;
 
     // slow travelling gust front + a second slower swell + high-freq flutter
-    float gust  = sin( uTime * 0.85 - travel * 0.135 + phase * 6.2831 );
-    float swell = sin( uTime * 0.29 - travel * 0.048 + phase * 3.1 );
-    float flut  = sin( uTime * 5.15 + phase * 21.7 ) * ( 0.55 + 0.45 * gust );
+    float gust  = sin( wt * 0.85 - travel * 0.135 + phase * 6.2831 );
+    float swell = sin( wt * 0.29 - travel * 0.048 + phase * 3.1 );
+    float flut  = sin( wt * 5.15 + phase * 21.7 ) * ( 0.55 + 0.45 * gust );
 
     float amp = ( gust * 0.52 + swell * 0.34 + flut * 0.17 ) * uWind.z * uSway;
 
@@ -231,6 +232,16 @@ const WIND_BLOCK = /* glsl */`
     transformed.y -= bend * amp * amp * 0.42;
 
     objectNormal = normalize( objectNormal + vec3( wdir.x, 0.0, wdir.y ) * amp * bend * 0.55 );
+
+    #ifdef VC_FADE
+      // Distance fade: shrink the blade into the ground rather than fading its
+      // alpha. A fading alpha would need sorting and would dither against the
+      // paper grain; a shrinking blade just stops being drawn.
+      float camD = distance( bladeBaseW, cameraPosition );
+      float keep = 1.0 - smoothstep( uFade.x, uFade.y, camD );
+      transformed.y = mix( 0.0, transformed.y, keep );
+      transformed.xz = mix( vec2( 0.0 ), transformed.xz, mix( 0.35, 1.0, keep ) );
+    #endif
 
     vAux = vec2( hN, phase );
   }
@@ -375,8 +386,10 @@ const NPR_SHADE_BODY = /* glsl */`
 
   // ---- band quantisation with a bleeding, irregular boundary ---------------
   vec2 bq = vWorldPos.xz + vWorldPos.y * 0.83;
-  float n1 = vcFbm3( bq * 0.62 );                      // how WIDE the wet edge is
-  float n2 = vcFbm4( bq * 1.85 + 31.7 );               // where the edge actually sits
+  // fbm of value noise clusters hard around 0.5; stretch both fields or the
+  // band edge barely moves and you are back to a clean toon ramp
+  float n1 = clamp( ( vcFbm3( bq * 0.62 ) - 0.5 ) * 2.3 + 0.5, 0.0, 1.0 );
+  float n2 = clamp( ( vcFbm4( bq * 1.85 + 31.7 ) - 0.5 ) * 2.6 + 0.5, 0.0, 1.0 );
   // a little paper-locked variation in the *width* only — width does not move
   // the boundary, so this adds tooth without making the bands crawl on camera
   // motion, which would instantly read as a shader effect.
@@ -389,17 +402,23 @@ const NPR_SHADE_BODY = /* glsl */`
 
   // ---- two-tone temperature grading ---------------------------------------
   vec3 shadeCol = vcShadowColour( albedo, uViolet, uInkFloor );
-  vec3 midCol   = albedo * 0.94 + shadeCol * 0.13;
-  vec3 litCol   = mix( albedo, uCream, 0.40 ) * 1.16;
+  vec3 midCol   = albedo * 0.96 + shadeCol * 0.11;
+  vec3 litCol   = vcLitColour( albedo, uCream );
 
-  vec3 col = mix( shadeCol, midCol, smoothstep( 0.0, 0.58, g ) );
-  col = mix( col, litCol, smoothstep( 0.46, 1.0, g ) );
+  // The ramp is pushed so the bottom TWO bands are unambiguously the violet
+  // shade colour. A cast shadow that is merely a darker copy of the lit tone is
+  // the difference between "toon shader" and "gouache".
+  vec3 col = mix( shadeCol, midCol, smoothstep( 0.16, 0.64, g ) );
+  col = mix( col, litCol, smoothstep( 0.52, 1.0, g ) );
 
-  vec3 keyTint = keyCol / max( vcLum( keyCol ) + 1e-4, 1e-4 );
-  col *= mix( vec3( 1.0 ), keyTint, 0.42 * smoothstep( 0.12, 0.9, g ) );
+  // Warm the lit half with the key's own colour — but a low sun normalised to
+  // unit luminance is a ~2x multiplier on red, which stains the entire frame
+  // orange. Pull it back toward white before it is applied.
+  vec3 keyTint = mix( vec3( 1.0 ), keyCol / max( vcLum( keyCol ) + 1e-4, 1e-4 ), 0.55 );
+  col *= mix( vec3( 1.0 ), keyTint, 0.50 * smoothstep( 0.12, 0.9, g ) );
 
   vec3 ambTint = ambientCol / max( ambientLum + 1e-4, 1e-4 );
-  col = mix( col, col * ambTint, 0.34 * ( 1.0 - smoothstep( 0.0, 0.62, g ) ) );
+  col = mix( col, col * ambTint, 0.42 * ( 1.0 - smoothstep( 0.0, 0.62, g ) ) );
 
   // wet edge dries darker where the wash pooled
   col *= 1.0 - pool * 0.19 * uBandBleed * ( 1.12 - g * 0.5 );
@@ -435,11 +454,17 @@ const NPR_SHADE_BODY = /* glsl */`
   }
 
   // ---- rim / backlight ----------------------------------------------------
+  // A plain Fresnel is wrong here: a ground plane seen from a low camera is at
+  // a grazing angle across its ENTIRE visible area, so pow(1-NdotV, k) floods
+  // the whole field with cream. Gate it hard so only genuinely edge-on facets
+  // — the actual silhouette of a compact object — light up.
   {
-    float fres = pow( 1.0 - clamp( dot( N, V ), 0.0, 1.0 ), 2.6 );
+    float grazing = 1.0 - clamp( dot( N, V ), 0.0, 1.0 );
+    float fres = smoothstep( 0.62, 0.99, grazing );
+    fres *= fres;
     float litSide = smoothstep( -0.15, 0.62, dot( N, primaryL ) );
-    col += uCream * fres * litSide * uRim * 0.80 * ( 0.32 + 0.68 * shadowMask );
-    col += ambTint * fres * ( 1.0 - litSide ) * uRim * 0.16;
+    col += uCream * fres * litSide * uRim * 0.95 * ( 0.32 + 0.68 * shadowMask );
+    col += ambTint * fres * ( 1.0 - litSide ) * uRim * 0.20;
   }
 
   // ---- translucency (leaves, cloth, skin) ---------------------------------
@@ -566,9 +591,12 @@ export const MaterialRegistry = {
         u.uSunDirV.value.copy(u.uSunDirW.value).transformDirection(camera.matrixWorldInverse);
       }
       u.uSunColor.value.copy(key.color);
-      // Auto-normalise the band drive to whatever intensity the rig runs at, so
-      // the quantisation always spans its full range regardless of exposure.
-      u.uKeyGain.value = 1 / Math.max(0.35, key.intensity * 1.55);
+      // Deep twilight is the one case where the key should stop carrying the
+      // top band on its own; below that the fill has to take over or the whole
+      // frame collapses into the darkest value.
+      const dim = Math.min(1, key.intensity / 1.2);
+      u.uKeyGain.value = 0.62 * (0.45 + 0.55 * dim);
+      u.uFillGain.value = 0.30 + 0.16 * (1 - dim);
     }
   },
 
@@ -588,11 +616,18 @@ export const MaterialRegistry = {
     u.uPixelRatio.value = pixelRatio;
   },
 
-  /** Wind for grass/foliage. dir is a world XZ direction. */
-  setWind(dx, dz, strength = 1) {
+  /**
+   * Wind for grass/foliage.
+   *   setWind(gain)            — change strength only, keep the direction
+   *   setWind(dx, dz)          — change direction only, keep the strength
+   *   setWind(dx, dz, gain)    — both
+   */
+  setWind(a, b, strength) {
     const u = shared();
-    const l = Math.hypot(dx, dz) || 1;
-    u.uWind.value.set(dx / l, dz / l, strength, u.uWind.value.w);
+    const w = u.uWind.value;
+    if (b === undefined) { w.z = a; return; }
+    const l = Math.hypot(a, b) || 1;
+    w.set(a / l, b / l, strength !== undefined ? strength : w.z, w.w);
   },
 
   dispose() {
@@ -709,7 +744,7 @@ export function makeCanvasMaterial(opts = {}) {
       uTime: { value: 0 },
       uResolution: { value: new THREE.Vector2() },
       uPixelRatio: { value: 1 },
-      uKeyGain: { value: 0.74 },
+      uKeyGain: { value: 0.62 },
       uFillGain: { value: 0.30 },
       uCream: { value: new THREE.Color() },
       uViolet: { value: new THREE.Color() },
@@ -797,6 +832,10 @@ ${NPR_SHADE_BODY}
   mat.userData.vcOutline = o.outline;
   mat.userData.vcOutlineWidth = o.outlineWidth;
   mat.userData.vcKind = 'canvas';
+  // A see-through mesh (a move-range ghost, a glass pane) must not stamp opaque
+  // depth into the G-buffer or it will occlude the outlines of everything
+  // behind it. Alpha-tested cutouts are NOT transparent and keep their prepass.
+  if (o.transparent && o.prepass !== true) mat.userData.vcNoPrepass = true;
 
   attachPrepass(mat, { needNoise: false },
     { alphaTest: o.alphaTest > 0, map: !!o.map },
@@ -823,8 +862,8 @@ ${NPR_SHADE_BODY}
  */
 export function makeGrassMaterial(opts = {}) {
   const o = Object.assign({
-    rootColor: 0x4d5a33,
-    tipColor: 0xa8a866,
+    rootColor: 0x41522c,
+    tipColor: 0x96a45c,
     bladeHeight: 0.55,
     sway: 0.28,
     subsurface: 0.85,
@@ -834,13 +873,22 @@ export function makeGrassMaterial(opts = {}) {
     rim: 1.35,
     alphaTest: 0,
     map: null,
+    color: 0xffffff,
+    vertexColors: false,
+    windSpeed: 1,
+    fadeStart: 1e5,
+    fadeEnd: 1e6,
     side: THREE.DoubleSide,
     name: 'vcGrass',
   }, opts);
 
+  // `wind` is the world module's name for the sway amplitude.
+  if (opts.wind !== undefined) o.sway = opts.wind;
+
   const defines = { VC_INSTANCED: '' };
   if (o.alphaTest > 0) defines.VC_ALPHATEST = '';
   if (o.map) defines.VC_MAP = '';
+  if (o.fadeEnd < 1e5) defines.VC_FADE = '';
   if (CFG.quality <= 0) defines.VC_LOW = '';
 
   const uniforms = THREE.UniformsUtils.merge([
@@ -873,9 +921,11 @@ export function makeGrassMaterial(opts = {}) {
       uMapRepeat: { value: new THREE.Vector2(1, 1) },
       uTime: { value: 0 },
       uWind: { value: new THREE.Vector4() },
+      uWindSpeed: { value: 1 },
+      uFade: { value: new THREE.Vector2(1e5, 1e6) },
       uResolution: { value: new THREE.Vector2() },
       uPixelRatio: { value: 1 },
-      uKeyGain: { value: 0.74 },
+      uKeyGain: { value: 0.62 },
       uFillGain: { value: 0.30 },
       uCream: { value: new THREE.Color() },
       uViolet: { value: new THREE.Color() },
@@ -898,6 +948,9 @@ export function makeGrassMaterial(opts = {}) {
   uniforms.uSubsurface.value = o.subsurface;
   uniforms.uAlphaTest.value = o.alphaTest;
   uniforms.uMap.value = o.map;
+  uniforms.uColor.value.set(o.color);
+  uniforms.uWindSpeed.value = o.windSpeed;
+  uniforms.uFade.value.set(o.fadeStart, Math.max(o.fadeEnd, o.fadeStart + 1e-3));
 
   const frag = /* glsl */`
 ${NPR_FRAG_PREAMBLE}
@@ -921,6 +974,10 @@ void main() {
   hsv.y = clamp( hsv.y * ( 1.0 + ( vcHash11( phase * 91.7 ) - 0.5 ) * uVariation ), 0.0, 1.0 );
   hsv.z = clamp( hsv.z * ( 1.0 + ( vcHash11( phase * 37.1 ) - 0.5 ) * uVariation * 1.4 ), 0.0, 2.0 );
   albedo = vcHsv2Rgb( hsv );
+  albedo *= uColor;
+  #if defined( USE_COLOR_ALPHA ) || defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
+    albedo *= vColorC.rgb;
+  #endif
 
   // blades darken sharply into the sward at the base — that shadowed mat is
   // most of what sells a grass field as painted rather than modelled
@@ -957,6 +1014,7 @@ ${NPR_SHADE_BODY}
     fog: true,
     side: o.side,
     transparent: false,
+    vertexColors: !!o.vertexColors,
     name: o.name,
   });
 
@@ -968,6 +1026,8 @@ ${NPR_SHADE_BODY}
     { alphaTest: o.alphaTest > 0, map: !!o.map },
     Object.assign({
       uWind: uniforms.uWind,
+      uWindSpeed: uniforms.uWindSpeed,
+      uFade: uniforms.uFade,
       uBladeHeight: uniforms.uBladeHeight,
       uSway: uniforms.uSway,
     }, o.alphaTest > 0 ? { uAlphaTest: uniforms.uAlphaTest, uOpacity: uniforms.uOpacity } : {},
@@ -984,9 +1044,20 @@ ${NPR_SHADE_BODY}
  * R=grass G=dry dirt B=rock A=mud. Each layer gets its own detail fetch from
  * the generated ground atlas, triplanar-blended so cliffs don't smear.
  *
+ * Three ways to drive the colour, in priority order:
+ *   opts.splatFromVertexColor  vertex colour is a 4-channel SPLAT
+ *                              (R grass, G dirt, B rock, A mud)
+ *   opts.vertexColors          vertex colour is the BAKED ALBEDO + AO the
+ *                              terrain generator already computed; the
+ *                              procedural layers then only contribute their
+ *                              detail modulation and micro-relief, which is what
+ *                              stops baked vertex colour from looking flat
+ *   neither                    fully procedural weights from slope/height/noise
+ *
  * @param {object} opts
  *  grass/dirt/rock/mud   layer colours
- *  splatFromVertexColor  multiply procedural weights by the colour attribute
+ *  splatFromVertexColor  (alias: splat) vertex colour holds layer weights
+ *  vertexColors          vertex colour holds baked albedo/AO
  *  detailScale           metres per detail tile (default 0.11 => ~9 m tile)
  *  macroScale            metres per macro-variation tile
  *  rockSlope             slope (0..1) at which rock takes over
@@ -999,6 +1070,7 @@ export function makeTerrainMaterial(opts = {}) {
     rock: 0x8b8479,
     mud: 0x59452f,
     splatFromVertexColor: false,
+    vertexColors: false,
     detailScale: 0.11,
     detailScale2: 0.031,
     macroScale: 0.017,
@@ -1007,13 +1079,19 @@ export function makeTerrainMaterial(opts = {}) {
     mudFade: 1.4,
     bands: CFG.render.bands,
     hatch: 0.8,
-    rim: 0.55,
+    rim: 0.0,
     outline: false,
     name: 'vcTerrain',
   }, opts);
 
+  const splat = o.splatFromVertexColor === true || o.splat === true;
+  // A generator that bakes real colours into the attribute wins over our
+  // procedural guess; explicit splat mode is the opt-out.
+  const vcolAlbedo = !splat && o.vertexColors === true;
+
   const defines = {};
-  if (o.splatFromVertexColor) defines.VC_SPLAT_VCOL = '';
+  if (splat) defines.VC_SPLAT_VCOL = '';
+  if (vcolAlbedo) defines.VC_VCOL_ALBEDO = '';
   if (CFG.quality <= 0) defines.VC_LOW = '';
 
   const uniforms = THREE.UniformsUtils.merge([
@@ -1038,7 +1116,7 @@ export function makeTerrainMaterial(opts = {}) {
       uWrap: { value: 0.5 },
       uHatch: { value: 0.8 },
       uHatchSpacing: { value: 5.9 },
-      uRim: { value: 0.55 },
+      uRim: { value: 0.0 },
       uPaper: { value: 1.15 },
       uBlotch: { value: 1.25 },
       uBlotchScale: { value: 0.028 },
@@ -1051,7 +1129,7 @@ export function makeTerrainMaterial(opts = {}) {
       uTime: { value: 0 },
       uResolution: { value: new THREE.Vector2() },
       uPixelRatio: { value: 1 },
-      uKeyGain: { value: 0.74 },
+      uKeyGain: { value: 0.62 },
       uFillGain: { value: 0.30 },
       uCream: { value: new THREE.Color() },
       uViolet: { value: new THREE.Color() },
@@ -1150,6 +1228,19 @@ void main() {
   vec3 cMud = uMud * mix( 0.74, 1.14, det.a ) * mix( 1.0, 0.86, det2.a );
 
   vec3 albedo = cGrass * wGrass + cDirt * wDirt + cRock * wRock + cMud * wMud;
+
+  #ifdef VC_VCOL_ALBEDO
+    // The generator baked its own colour + AO into the attribute. Trust it, and
+    // keep only the *modulation* our layers produce — that detail is the whole
+    // reason the ground doesn't read as flat vertex colour.
+    #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
+      float layerMod = ( mix( 0.80, 1.18, det.r ) * wGrass + mix( 0.82, 1.16, det.g ) * wDirt
+                       + mix( 0.70, 1.20, det.b ) * wRock + mix( 0.78, 1.14, det.a ) * wMud );
+      layerMod *= mix( 0.94, 1.07, det2.r );
+      albedo = vColorC.rgb * uColor * layerMod;
+    #endif
+  #endif
+
   float alpha = uOpacity;
 
   // micro-relief: rock and dirt get real normal break-up, grass stays smooth
@@ -1171,7 +1262,7 @@ ${NPR_SHADE_BODY}
     fragmentShader: frag,
     lights: true,
     fog: true,
-    vertexColors: !!o.splatFromVertexColor,
+    vertexColors: splat || vcolAlbedo,
     name: o.name,
   });
 
@@ -1195,8 +1286,8 @@ ${NPR_SHADE_BODY}
 export function makeSkyMaterial(opts = {}) {
   const o = Object.assign({
     top: 0x6f8ea0,
-    horizon: 0xc9c3a6,
-    horizonWarm: 0xe8cf98,
+    horizon: 0xb6bfae,
+    horizonWarm: 0xdcc79a,
     cloud: 0xfff4dd,
     cloudShade: 0xa8a3aa,
     sunGlow: 0xffe2ac,
@@ -1247,7 +1338,7 @@ void main() {
   // vertical wash: cool teal-grey overhead falling to warm straw at the horizon
   float t = pow( clamp( h * 1.18 + 0.06, 0.0, 1.0 ), 0.60 );
   vec3 col = mix( uHorizon, uTop, t );
-  col = mix( col, uHorizonWarm, smoothstep( 0.20, -0.04, h ) );
+  col = mix( col, uHorizonWarm, smoothstep( 0.10, -0.05, h ) );
 
   // sun: a tight core plus a very broad warm bleed, both of which are meant to
   // survive into the bloom pass
@@ -1260,8 +1351,10 @@ void main() {
   vec2 drift = vec2( uTime * 0.0045, uTime * 0.0016 );
   float c1 = vcFbm4( cp * uCloudScale + drift );
   float c2 = vcFbm3( cp * uCloudScale * 2.6 - drift * 1.7 );
-  float mass = c1 * 0.72 + c2 * 0.28;
-  float cover = smoothstep( 0.47, 0.70, mass ) * smoothstep( -0.03, 0.16, h );
+  // fbm of value noise clusters tightly around 0.5 — stretch it or the cloud
+  // banks never get enough contrast to read as separate masses
+  float mass = ( c1 * 0.72 + c2 * 0.28 - 0.5 ) * 2.6 + 0.5;
+  float cover = smoothstep( 0.34, 0.78, mass ) * smoothstep( -0.03, 0.18, h );
 
   // quantise the cloud body into three painted values with a bleeding edge
   vec2 q = vcQuantiseBands( cover, 3.0, 1.35, c2, c1 );

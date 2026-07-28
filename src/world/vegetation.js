@@ -230,6 +230,7 @@ export class Vegetation {
 
     this.matGrass = makeFoliageMaterial({
       color: 0xffffff, vertexColors: true, instanced: true,
+      rootColor: PALETTE.grassDark, tipColor: PALETTE.grassDry,
       windStrength: 0.13, windSpeed: 2.3, windHeight: 1.0, stiffness: 1.7,
       fadeStart: this.grassFade[0], fadeEnd: this.grassFade[1],
       alphaTest: 0.05, rim: 0.9, hatch: 0.22,
@@ -237,6 +238,7 @@ export class Vegetation {
 
     this.matWheat = makeFoliageMaterial({
       color: 0xffffff, vertexColors: true, instanced: true,
+      rootColor: PALETTE.wheatDark, tipColor: PALETTE.wheat,
       map: bladeTexture('wheat', 3),
       windStrength: 0.20, windSpeed: 1.55, windHeight: 1.0, stiffness: 1.4,
       fadeStart: 78, fadeEnd: 105, alphaTest: 0.4, rim: 0.75, hatch: 0.25,
@@ -246,6 +248,7 @@ export class Vegetation {
     for (const k of Object.keys(SPECIES)) {
       this.matLeaf[k] = makeFoliageMaterial({
         color: SPECIES[k].leaf, vertexColors: false, instanced: true,
+        rootColor: PALETTE.grassDark, tipColor: SPECIES[k].leaf, variation: 0.3,
         map: leafClusterTexture(SPECIES[k].tex, 5 + Object.keys(SPECIES).indexOf(k)),
         // Cards are centred on their own pivot, so the useful sway range is
         // the upper half: windHeight 0.5 makes the top edge flutter fully.
@@ -255,6 +258,7 @@ export class Vegetation {
     }
     this.matBush = makeFoliageMaterial({
       color: PALETTE.leafOak, vertexColors: false, instanced: true,
+      rootColor: PALETTE.grassDark, tipColor: PALETTE.leafOak, variation: 0.28,
       map: leafClusterTexture('bush', 9),
       windStrength: 0.09, windSpeed: 1.4, windHeight: 0.5, stiffness: 1.2,
       fadeStart: 150, fadeEnd: 200, alphaTest: 0.42, rim: 0.6, hatch: 0.45,

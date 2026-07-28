@@ -117,14 +117,33 @@ vec3 vcShadowColour(vec3 albedo, vec3 violet, vec3 floorCol) {
   float target = 0.735;                       // ~265 deg, violet-blue
   float dh = target - hsv.x;
   dh -= floor(dh + 0.5);                      // shortest arc round the wheel
-  hsv.x = fract(hsv.x + dh * 0.45);
-  hsv.y = clamp(hsv.y * 0.78 + 0.16, 0.0, 0.88);
-  hsv.z = hsv.z * 0.36 + 0.035;
+  // A warm pigment takes the short arc BACKWARDS through magenta, which lands
+  // on pink and still reads warm. Push those further so a brick wall's shade is
+  // genuinely purple rather than a paler brick.
+  float warmth = 1.0 - smoothstep(0.14, 0.46, min(hsv.x, 1.0 - hsv.x));
+  hsv.x = fract(hsv.x + dh * mix(0.46, 0.62, warmth));
+  hsv.y = clamp(hsv.y * 0.80 + 0.17, 0.0, 0.88);
+  hsv.z = hsv.z * 0.33 + 0.032;
   vec3 c = vcHsv2Rgb(hsv);
-  c = mix(c, violet * (0.35 + 0.9 * vcLum(c)), 0.30);
+  c = mix(c, violet * (0.35 + 0.9 * vcLum(c)), 0.38);
   // never darker than the warm brown-violet floor, scaled by how dark the
   // pigment itself is (a black boot still reads darker than a cream wall)
   return max(c, floorCol * (0.42 + 0.58 * vcLum(albedo)));
+}
+
+// The other half of the rule. Lit pigment must stay the SAME pigment — brighter,
+// a touch warmer, slightly less saturated. Mixing toward neutral cream is what
+// turns sage grass into khaki and an olive field into a desert, so the lift is
+// done in HSV and only a whisper of paper white is added on top.
+vec3 vcLitColour(vec3 albedo, vec3 cream) {
+  vec3 hsv = vcRgb2Hsv(albedo);
+  float target = 0.105;                       // ~38 deg, straw / low sun
+  float dh = target - hsv.x;
+  dh -= floor(dh + 0.5);
+  hsv.x = fract(hsv.x + dh * 0.26);
+  hsv.y *= 0.84;
+  hsv.z = min(1.0, hsv.z * 1.42 + 0.11);
+  return mix(vcHsv2Rgb(hsv), cream, 0.14);
 }
 `;
 
@@ -141,8 +160,11 @@ vec2 vcQuantiseBands(float lightTerm, float bands, float bleed, float n1, float 
   float t = clamp(lightTerm, 0.0, 1.0) * bands;
   float fi = floor(t);
   float fr = t - fi;
-  float w = clamp(bleed * (0.05 + 0.46 * n1 * n1), 0.012, 0.46);
-  float shift = (n2 - 0.5) * w * 1.75;
+  // Keep the feathered zone NARROW — a wide one just reconstructs the smooth
+  // gradient we were trying to destroy. The irregularity comes from the shift
+  // term dragging the boundary off the geometric iso-line, not from softness.
+  float w = clamp(bleed * (0.02 + 0.22 * n1 * n1), 0.010, 0.30);
+  float shift = (n2 - 0.5) * (w * 1.5 + 0.30);
   float e = smoothstep(0.5 - w, 0.5 + w, fr + shift);
   float banded = (fi + e) / bands;
   float pool = 1.0 - abs(e * 2.0 - 1.0);
@@ -207,16 +229,23 @@ export const GLSL_TONEMAP = /* glsl */`
 // CREAM white point rather than pure white, and the toe lifts so the darkest
 // value in frame lands on a warm brown-violet instead of crushing to zero.
 vec3 vcCanvasTonemap(vec3 x, float exposure, vec3 paperWhite, vec3 inkBlack) {
-  x *= exposure;
-  // Hable-ish shoulder with a softened toe
+  x = max(x, vec3(0.0)) * exposure;
+  // Hable-ish shoulder with a softened toe.
   const float A = 0.22, B = 0.30, C = 0.10, D = 0.20, E = 0.018, F = 0.30;
   vec3 c = ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
-  const float W = 11.2;
+  // A LOW white point (~2, not the film-standard 11.2). Our scene values live
+  // in 0..1.5, and a curve built for a 11-stop HDR range compresses that into a
+  // narrow grey wedge — which is exactly how a stylised frame turns to mud.
+  const float W = 2.05;
   float wS = ((W * (A * W + C * B) + D * E) / (W * (A * W + B) + D * F)) - E / F;
-  c /= wS;
-  c = clamp(c, 0.0, 1.0);
-  // remap the [0,1] range onto ink-black .. paper-white
-  return mix(inkBlack, paperWhite, c);
+  c = clamp(c / wS, 0.0, 1.0);
+
+  // Lift the floor to a warm brown-violet, but let the CREAM white point arrive
+  // only near the top of the range. Applying it flat would drag every midtone
+  // toward the same sepia and kill the sage/teal half of the palette.
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  vec3 top = mix(vec3(1.0), paperWhite, smoothstep(0.28, 1.0, l));
+  return inkBlack * (1.0 - c) + c * top;
 }
 `;
 

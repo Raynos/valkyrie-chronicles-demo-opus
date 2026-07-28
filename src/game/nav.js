@@ -102,7 +102,7 @@ export class NavGrid {
       for (let ix = 0; ix < w; ix++) {
         const i = iz * w + ix;
         const x = this.worldX(ix), z = this.worldZ(iz);
-        let walk = true, cost = 1, cover = 0, y = 0;
+        let walk = true, cost = 1, cover = 0, y = 0, hadQuery = false;
         if (world?.navQuery) {
           let q = null;
           try { q = world.navQuery(x, z); } catch { q = null; }
@@ -110,13 +110,21 @@ export class NavGrid {
             walk = q.walkable !== false;
             cost = q.cost || 1;
             cover = q.cover || 0;
-            if (q.y !== undefined) y = q.y;
+            // `height` is the standing height including bridge decks and rooftops.
+            if (q.height !== undefined) y = q.height;
+            else if (q.y !== undefined) y = q.y;
+            hadQuery = true;
           }
         }
-        if (terrain?.heightAt) y = terrain.heightAt(x, z);
+        if (!hadQuery) {
+          if (world?.groundHeightAt) y = world.groundHeightAt(x, z);
+          else if (terrain?.heightAt) y = terrain.heightAt(x, z);
+        }
         if (terrain?.slopeAt) {
           const s = terrain.slopeAt(x, z);
-          if (s > this.maxSlope) walk = false;
+          // Only veto on slope when the world has no opinion — otherwise the bridge deck,
+          // which spans a gorge, would be marked impassable by the terrain underneath it.
+          if (!hadQuery && s > this.maxSlope) walk = false;
           else cost *= 1 + s * 1.9;
         }
         this.flags[i] = walk ? WALK : BLOCK;
@@ -163,6 +171,8 @@ export class NavGrid {
   }
 
   heightAt(x, z) {
+    // groundHeightAt includes walkable platforms (the bridge deck); terrain does not.
+    if (this.world?.groundHeightAt) return this.world.groundHeightAt(x, z);
     if (this.world?.terrain?.heightAt) return this.world.terrain.heightAt(x, z);
     const ix = clamp(this.cellX(x), 0, this.w - 1), iz = clamp(this.cellZ(z), 0, this.h - 1);
     return this.height[this.idx(ix, iz)];
@@ -435,7 +445,6 @@ const NX = new Int8Array([1, -1, 0, 0, 1, 1, -1, -1]);
 const NZ = new Int8Array([0, 0, 1, -1, 1, -1, 1, -1]);
 
 const _push = new THREE.Vector3();
-const _try = new THREE.Vector3();
 
 /**
  * Move `pos` by (dx,dz) with wall sliding: full move, then each axis alone, then a
@@ -444,24 +453,50 @@ const _try = new THREE.Vector3();
  */
 export function moveWithCollision(pos, dx, dz, radius, nav, world, height = 1.7) {
   const sx = pos.x, sz = pos.z;
+  // Preferred path: the World has a grid broadphase and a penetration resolver that also
+  // snaps to platform tops. Far cheaper than our linear collider scan in a built-up village.
+  if (world?.resolvePosition) {
+    const total = Math.hypot(dx, dz);
+    const n = total > 0.4 ? Math.min(8, Math.ceil(total / 0.4)) : 1;
+    for (let i = 0; i < n; i++) {
+      const nx = pos.x + dx / n, nz = pos.z + dz / n;
+      if (nav && !nav.walkableAt(nx, nz)) break;
+      pos.x = nx; pos.z = nz;
+      world.resolvePosition(pos, radius);
+    }
+    return Math.hypot(pos.x - sx, pos.z - sz);
+  }
+  // Sub-step so a single large frame delta can never tunnel past — or be rejected by —
+  // a wall it would only have clipped. 0.25 m is well under any collider we author.
+  const want = Math.hypot(dx, dz);
+  const steps = want > 0.25 ? Math.min(12, Math.ceil(want / 0.25)) : 1;
+  const ux = dx / steps, uz = dz / steps;
+  for (let i = 0; i < steps; i++) {
+    if (!stepMove(pos, ux, uz, radius, nav, world, height)) break;
+  }
+  if (nav) pos.y = nav.heightAt(pos.x, pos.z);
+  return Math.hypot(pos.x - sx, pos.z - sz);
+}
+
+/** One collision-resolved micro-step. @returns false when fully blocked. */
+function stepMove(pos, dx, dz, radius, nav, world, height) {
+  const sx = pos.x, sz = pos.z;
   const ok = (x, z) => {
     if (nav && !nav.walkableAt(x, z)) return false;
     const y = nav ? nav.heightAt(x, z) : pos.y;
     return colliderPush(x, y, z, radius, height, _push, world) < 0.001;
   };
-  if (ok(sx + dx, sz + dz)) { pos.x = sx + dx; pos.z = sz + dz; }
-  else if (ok(sx + dx, sz)) { pos.x = sx + dx; }
-  else if (ok(sx, sz + dz)) { pos.z = sz + dz; }
-  else {
-    // Wedged: push out of whatever we are inside so we never get stuck in a wall.
-    const y = nav ? nav.heightAt(sx, sz) : pos.y;
-    if (colliderPush(sx, y, sz, radius, height, _push, world) > 0.001) {
-      pos.x += _push.x * 0.5;
-      pos.z += _push.z * 0.5;
-    }
+  if (ok(sx + dx, sz + dz)) { pos.x = sx + dx; pos.z = sz + dz; return true; }
+  // Slide: keep whichever single axis is legal.
+  if (ok(sx + dx, sz)) { pos.x = sx + dx; return true; }
+  if (ok(sx, sz + dz)) { pos.z = sz + dz; return true; }
+  // Wedged: push out of whatever we are inside so we never get stuck in a wall.
+  const y = nav ? nav.heightAt(sx, sz) : pos.y;
+  if (colliderPush(sx, y, sz, radius, height, _push, world) > 0.001) {
+    pos.x += _push.x * 0.5;
+    pos.z += _push.z * 0.5;
   }
-  if (nav) pos.y = nav.heightAt(pos.x, pos.z);
-  return Math.hypot(pos.x - sx, pos.z - sz);
+  return false;
 }
 
 /** Total length of a polyline. */

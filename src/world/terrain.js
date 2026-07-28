@@ -233,21 +233,27 @@ export class Terrain {
     }
     if (!isBridgeRoad) return smoothed;
 
-    // Locate the span: road samples that fall inside the river channel.
+    // Locate the span: road samples that fall inside the open water.
     const L = this.layout;
     let s0 = -1, s1 = -1;
     for (let i = 0; i < n; i++) {
       const r = L.riverSDF(poly.x[i], poly.z[i]);
-      const w = L.riverHalfWidth(r.t) + 7.5;
+      const w = L.riverHalfWidth(r.t) + 2.0;
       if (r.d < w) { if (s0 < 0) s0 = i; s1 = i; }
     }
     if (s0 < 0) return smoothed;
 
-    const abutA = clamp(s0 - 5, 0, n - 1);
-    const abutB = clamp(s1 + 5, 0, n - 1);
+    const abutA = clamp(s0 - 3, 0, n - 1);
+    const abutB = clamp(s1 + 3, 0, n - 1);
+    // Deck height is set from the WATERLINE, not from the tops of the banks:
+    // a village bridge sits a headroom above the river and the road is cut
+    // down through the bank to meet it, rather than the road being carried up
+    // onto a viaduct.
     const deckY = Math.max(
-      smoothed[abutA], smoothed[abutB], WATER_Y + 2.9
-    ) + 0.28;
+      this._bilinearFrom(HA, poly.x[abutA], poly.z[abutA]),
+      this._bilinearFrom(HA, poly.x[abutB], poly.z[abutB]),
+      WATER_Y + 2.6
+    ) + 1.35;
     this.layout.bridge.spanIndex = [s0, s1];
 
     const ramp = 16;
@@ -262,7 +268,7 @@ export class Terrain {
     // measure the actual span so the bridge geometry matches the carved gap
     const sx = poly.x[abutA], sz = poly.z[abutA];
     const ex = poly.x[abutB], ez = poly.z[abutB];
-    this.layout.bridge.length = Math.max(20, Math.hypot(ex - sx, ez - sz) + 3.0);
+    this.layout.bridge.length = clamp(Math.hypot(ex - sx, ez - sz) + 4.0, 20, 40);
     this.layout.bridge.x = (sx + ex) * 0.5;
     this.layout.bridge.z = (sz + ez) * 0.5;
     this.layout.bridge.yaw = Math.atan2(ex - sx, ez - sz);
@@ -493,11 +499,16 @@ export class Terrain {
     const skirtCount = n * 4;
     const total = vcount + skirtCount;
 
+    // `color` carries the SPLAT (r grass, g dirt, b rock, a mud) because that
+    // is what src/render/materials.js's terrain shader reads through
+    // VC_SPLAT_VCOL. The finished per-vertex albedo we bake (splat mix + AO +
+    // scorch + field patchiness) rides along in `aAlbedo` for any material that
+    // would rather be told the answer than derive it.
     const pos = new Float32Array(total * 3);
     const nrm = new Float32Array(total * 3);
     const uv = new Float32Array(total * 2);
-    const col = new Float32Array(total * 3);
-    const spl = new Float32Array(total * 4);
+    const col = new Float32Array(total * 4);
+    const alb = new Float32Array(total * 3);
     const ao = new Float32Array(total);
 
     const put = (vi, gi, gj, drop) => {
@@ -510,9 +521,9 @@ export class Terrain {
       nrm[vi * 3] = NX[k]; nrm[vi * 3 + 1] = NY[k]; nrm[vi * 3 + 2] = NZ[k];
       uv[vi * 2] = (x + half) / this.size;
       uv[vi * 2 + 1] = (z + half) / this.size;
-      col[vi * 3] = CR[k * 3]; col[vi * 3 + 1] = CR[k * 3 + 1]; col[vi * 3 + 2] = CR[k * 3 + 2];
-      spl[vi * 4] = SP[k * 4]; spl[vi * 4 + 1] = SP[k * 4 + 1];
-      spl[vi * 4 + 2] = SP[k * 4 + 2]; spl[vi * 4 + 3] = SP[k * 4 + 3];
+      alb[vi * 3] = CR[k * 3]; alb[vi * 3 + 1] = CR[k * 3 + 1]; alb[vi * 3 + 2] = CR[k * 3 + 2];
+      col[vi * 4] = SP[k * 4]; col[vi * 4 + 1] = SP[k * 4 + 1];
+      col[vi * 4 + 2] = SP[k * 4 + 2]; col[vi * 4 + 3] = SP[k * 4 + 3];
       ao[vi] = AO[k];
     };
 
@@ -568,8 +579,8 @@ export class Terrain {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    g.setAttribute('aSplat', new THREE.BufferAttribute(spl, 4));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 4));
+    g.setAttribute('aAlbedo', new THREE.BufferAttribute(alb, 3));
     g.setAttribute('aAO', new THREE.BufferAttribute(ao, 1));
     g.setIndex(idx);
     g.computeBoundingSphere();

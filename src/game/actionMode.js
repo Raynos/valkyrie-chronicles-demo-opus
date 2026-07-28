@@ -430,7 +430,12 @@ export class ActionMode {
 
   updateModeInput(dt, gdt) {
     const u = this.unit;
-    if (CFG.capture) { this.updateAimSolve(dt); return; }
+    if (CFG.capture) {
+      // Capture shots drive the mode directly; only solve the reticle when one asked for aim.
+      if (this.mode === MODE.AIM) this.updateAimSolve(dt);
+      else if (this.mode === MODE.GRENADE) this.updateGrenadeArc();
+      return;
+    }
 
     if (Input.pressed('enter') || Input.pressed('f')) { this.requestEnd(); return; }
 

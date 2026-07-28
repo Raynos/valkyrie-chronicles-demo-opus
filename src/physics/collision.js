@@ -43,6 +43,8 @@ const _lA = new THREE.Vector3();     // lineOfSight
 export const SURFACE = {
   DIRT: 'dirt',
   GRASS: 'grass',
+  ROCK: 'rock',
+  MUD: 'mud',
   STONE: 'stone',
   BRICK: 'brick',
   WOOD: 'wood',
@@ -52,9 +54,28 @@ export const SURFACE = {
   FLESH: 'flesh',
 };
 
+/**
+ * Maps a world collider's `tag` to an impact surface. The world module tags
+ * colliders semantically rather than by material, so this is the bridge.
+ */
+export const TAG_SURFACE = {
+  sandbag: SURFACE.SANDBAG,
+  building: SURFACE.BRICK,
+  wall: SURFACE.BRICK,
+  rubble: SURFACE.STONE,
+  wire: SURFACE.METAL,
+  crate: SURFACE.WOOD,
+  fence: SURFACE.WOOD,
+  tree: SURFACE.WOOD,
+  hedgehog: SURFACE.METAL,
+  barrel: SURFACE.METAL,
+  vehicle: SURFACE.METAL,
+  rock: SURFACE.STONE,
+};
+
 /** Armour thickness (mm-ish, arbitrary but consistent) used for penetration. */
 export const SURFACE_HARDNESS = {
-  dirt: 18, grass: 8, stone: 90, brick: 55, wood: 22,
+  dirt: 18, grass: 8, rock: 95, mud: 14, stone: 90, brick: 55, wood: 22,
   metal: 70, sandbag: 40, water: 4, flesh: 6,
 };
 
@@ -103,7 +124,14 @@ const _hitB = new Hit();
 export function normalizeCollider(c) {
   const ver = c.version | 0;
   let n = c.__phys;
-  if (n && n.version === ver) return n;
+  if (n && n.version === ver) {
+    // These two flip at runtime when the world destroys a prop, and the
+    // world does not bump a version, so refresh them unconditionally.
+    n.solid = c.solid !== false;
+    n.blocksLos = c.blocksLos !== false;
+    n.cover = c.cover ?? 0;
+    return n;
+  }
   if (!n) {
     n = c.__phys = {
       version: -1,
@@ -118,6 +146,8 @@ export function normalizeCollider(c) {
       material: SURFACE.STONE,
       cover: 0,
       destructible: false,
+      solid: true,
+      blocksLos: true,
       hardness: 90,
       ref: c,
     };
@@ -154,8 +184,12 @@ export function normalizeCollider(c) {
     n.invQuat.copy(n.quat).invert();
     n.boundRadius = n.half.length();
   }
-  n.material = c.material || c.mat || SURFACE.STONE;
+  n.material = c.material || c.mat || TAG_SURFACE[c.tag] || SURFACE.STONE;
   n.cover = c.cover ?? 0;
+  // The world module's own semantics: `solid` gates physical collision,
+  // `blocksLos` gates sight. A destroyed prop keeps its record but clears both.
+  n.solid = c.solid !== false;
+  n.blocksLos = c.blocksLos !== false;
   n.destructible = !!c.destructible;
   n.hardness = c.hardness ?? SURFACE_HARDNESS[n.material] ?? 60;
   return n;
@@ -165,27 +199,27 @@ export const UP = /*@__PURE__*/ new THREE.Vector3(0, 1, 0);
 
 // ------------------------------------------------------------- primitives ---
 
-/** Closest point on segment [p0,p1] to point q. Writes into `out`. */
+/** Closest point on segment [p0,p1] to point q. Alias-safe: `out` may be `q`. */
 export function closestPointOnSegment(p0, p1, q, out) {
-  _a.subVectors(p1, p0);
-  const len2 = _a.lengthSq();
+  _sA.subVectors(p1, p0);
+  const len2 = _sA.lengthSq();
   if (len2 < 1e-12) return out.copy(p0);
-  let t = _b.subVectors(q, p0).dot(_a) / len2;
-  t = clamp(t, 0, 1);
-  return out.copy(p0).addScaledVector(_a, t);
+  const t = clamp(
+    ((q.x - p0.x) * _sA.x + (q.y - p0.y) * _sA.y + (q.z - p0.z) * _sA.z) / len2, 0, 1);
+  return out.set(p0.x + _sA.x * t, p0.y + _sA.y * t, p0.z + _sA.z * t);
 }
 
-/** Closest point on an (optionally rotated) box to world point q. */
+/** Closest point on an (optionally rotated) box to world point q. Alias-safe. */
 export function closestPointOnBox(box, q, out) {
-  _a.subVectors(q, box.center);
-  if (!box.axisAligned) _a.applyQuaternion(box.invQuat);
-  _a.set(
-    clamp(_a.x, -box.half.x, box.half.x),
-    clamp(_a.y, -box.half.y, box.half.y),
-    clamp(_a.z, -box.half.z, box.half.z)
+  _sB.subVectors(q, box.center);
+  if (!box.axisAligned) _sB.applyQuaternion(box.invQuat);
+  _sB.set(
+    clamp(_sB.x, -box.half.x, box.half.x),
+    clamp(_sB.y, -box.half.y, box.half.y),
+    clamp(_sB.z, -box.half.z, box.half.z)
   );
-  if (!box.axisAligned) _a.applyQuaternion(box.quat);
-  return out.copy(box.center).add(_a);
+  if (!box.axisAligned) _sB.applyQuaternion(box.quat);
+  return out.copy(box.center).add(_sB);
 }
 
 /**
@@ -193,17 +227,17 @@ export function closestPointOnBox(box, q, out) {
  * `outNormal` receives the world-space face normal.
  */
 export function rayVsBox(origin, dir, maxDist, box, outNormal) {
-  _ro.subVectors(origin, box.center);
-  _rd.copy(dir);
+  _rbO.subVectors(origin, box.center);
+  _rbD.copy(dir);
   if (!box.axisAligned) {
-    _ro.applyQuaternion(box.invQuat);
-    _rd.applyQuaternion(box.invQuat);
+    _rbO.applyQuaternion(box.invQuat);
+    _rbD.applyQuaternion(box.invQuat);
   }
   let tmin = 0, tmax = maxDist;
   let axis = 0, sign = 1;
   for (let i = 0; i < 3; i++) {
-    const o = i === 0 ? _ro.x : i === 1 ? _ro.y : _ro.z;
-    const d = i === 0 ? _rd.x : i === 1 ? _rd.y : _rd.z;
+    const o = i === 0 ? _rbO.x : i === 1 ? _rbO.y : _rbO.z;
+    const d = i === 0 ? _rbD.x : i === 1 ? _rbD.y : _rbD.z;
     const h = i === 0 ? box.half.x : i === 1 ? box.half.y : box.half.z;
     if (Math.abs(d) < 1e-8) {
       if (o < -h || o > h) return -1;
@@ -227,9 +261,9 @@ export function rayVsBox(origin, dir, maxDist, box, outNormal) {
 
 /** Ray vs sphere. Returns entry distance or -1. */
 export function rayVsSphere(origin, dir, maxDist, center, radius, outNormal) {
-  _a.subVectors(origin, center);
-  const b = _a.dot(dir);
-  const c = _a.lengthSq() - radius * radius;
+  _rsA.subVectors(origin, center);
+  const b = _rsA.dot(dir);
+  const c = _rsA.lengthSq() - radius * radius;
   if (c > 0 && b > 0) return -1;
   const disc = b * b - c;
   if (disc < 0) return -1;
@@ -245,14 +279,14 @@ export function rayVsSphere(origin, dir, maxDist, center, radius, outNormal) {
 export function rayVsCapsule(origin, dir, maxDist, p0, p1, radius, outNormal) {
   // Solve against the infinite cylinder, then clamp to the segment and fall
   // back to the two end spheres. Cheap and exact enough for hitboxes.
-  _a.subVectors(p1, p0);          // axis
-  const axLen2 = _a.lengthSq();
+  _cA.subVectors(p1, p0);          // axis
+  const axLen2 = _cA.lengthSq();
   if (axLen2 < 1e-10) return rayVsSphere(origin, dir, maxDist, p0, radius, outNormal);
-  _b.subVectors(origin, p0);
-  const dA = dir.dot(_a), mA = _b.dot(_a);
+  _cB.subVectors(origin, p0);
+  const dA = dir.dot(_cA), mA = _cB.dot(_cA);
   const A = axLen2 - dA * dA;
-  const B = axLen2 * _b.dot(dir) - mA * dA;
-  const C = axLen2 * _b.lengthSq() - mA * mA - radius * radius * axLen2;
+  const B = axLen2 * _cB.dot(dir) - mA * dA;
+  const C = axLen2 * _cB.lengthSq() - mA * mA - radius * radius * axLen2;
   let best = -1;
   if (Math.abs(A) > 1e-8) {
     const disc = B * B - A * C;
@@ -263,19 +297,19 @@ export function rayVsCapsule(origin, dir, maxDist, p0, p1, radius, outNormal) {
         if (m >= 0 && m <= axLen2) {
           best = t;
           if (outNormal) {
-            _c.copy(dir).multiplyScalar(t).add(origin);
-            _d.copy(p0).addScaledVector(_a, m / axLen2);
-            outNormal.subVectors(_c, _d).normalize();
+            _cC.copy(dir).multiplyScalar(t).add(origin);
+            _cD.copy(p0).addScaledVector(_cA, m / axLen2);
+            outNormal.subVectors(_cC, _cD).normalize();
           }
         }
       }
     }
   }
   if (best < 0) {
-    const t0 = rayVsSphere(origin, dir, maxDist, p0, radius, _e);
-    const t1 = rayVsSphere(origin, dir, maxDist, p1, radius, _f);
-    if (t0 >= 0 && (t1 < 0 || t0 < t1)) { best = t0; if (outNormal) outNormal.copy(_e); }
-    else if (t1 >= 0) { best = t1; if (outNormal) outNormal.copy(_f); }
+    const t0 = rayVsSphere(origin, dir, maxDist, p0, radius, _cE);
+    const t1 = rayVsSphere(origin, dir, maxDist, p1, radius, _cF);
+    if (t0 >= 0 && (t1 < 0 || t0 < t1)) { best = t0; if (outNormal) outNormal.copy(_cE); }
+    else if (t1 >= 0) { best = t1; if (outNormal) outNormal.copy(_cF); }
   }
   return best;
 }
@@ -305,25 +339,26 @@ export function sweptSphereVsBoxes(origin, dir, maxDist, radius, colliders, out 
     if (raw.disabled || raw.dead) continue;
     if (filter && !filter(raw)) continue;
     const box = normalizeCollider(raw);
+    if (!box.solid) continue;              // destroyed / non-blocking prop
 
     // Broad phase: distance from segment to collider centre.
-    closestPointOnSegment(origin, _c.copy(origin).addScaledVector(dir, bestT), box.center, _d);
-    if (_d.distanceToSquared(box.center) > (box.boundRadius + radius) * (box.boundRadius + radius)) continue;
+    closestPointOnSegment(origin, _wB.copy(origin).addScaledVector(dir, bestT), box.center, _wC);
+    if (_wC.distanceToSquared(box.center) > (box.boundRadius + radius) * (box.boundRadius + radius)) continue;
 
     let t = -1;
     if (box.type === 'sphere') {
-      t = rayVsSphere(origin, dir, bestT, box.center, box.radius + radius, _e);
+      t = rayVsSphere(origin, dir, bestT, box.center, box.radius + radius, _wA);
     } else {
       const savedX = box.half.x, savedY = box.half.y, savedZ = box.half.z;
       box.half.set(savedX + radius, savedY + radius, savedZ + radius);
-      t = rayVsBox(origin, dir, bestT, box, _e);
+      t = rayVsBox(origin, dir, bestT, box, _wA);
       box.half.set(savedX, savedY, savedZ);
     }
     if (t >= 0 && t < bestT) {
       bestT = t;
       bestC = box;
       hitAny = true;
-      out.normal.copy(_e);
+      out.normal.copy(_wA);
     }
   }
   if (hitAny) {
@@ -399,8 +434,12 @@ export function rayVsHeightfield(terrain, origin, dir, maxDist, out = _hitA, opt
 
 function fillTerrainNormal(terrain, out, x, z) {
   if (terrain.normalAt) {
-    const n = terrain.normalAt(x, z);
-    out.normal.set(n.x, n.y, n.z);
+    // Terrain.normalAt(x, z, out) fills the out-param, which keeps this
+    // allocation-free on the projectile hot path. The ARCHITECTURE contract
+    // only promises `normalAt(x, z): Vector3` though, so also accept an
+    // implementation that ignores the out-param and returns a fresh vector.
+    const n = terrain.normalAt(x, z, out.normal);
+    if (n && n !== out.normal) out.normal.set(n.x, n.y, n.z);
     if (out.normal.lengthSq() < 1e-6) out.normal.set(0, 1, 0);
   } else {
     const e = 0.5;
@@ -412,8 +451,9 @@ function fillTerrainNormal(terrain, out, x, z) {
 
 function terrainMaterial(terrain, x, z) {
   if (terrain.materialAt) return terrain.materialAt(x, z) || SURFACE.DIRT;
+  // Terrain.slopeAt returns radians from vertical; ~35 deg reads as bare rock.
   const s = terrain.slopeAt ? terrain.slopeAt(x, z) : 0;
-  return s > 0.62 ? SURFACE.STONE : SURFACE.GRASS;
+  return s > 0.62 ? SURFACE.ROCK : SURFACE.GRASS;
 }
 
 /**
@@ -467,45 +507,46 @@ export function capsuleVsWorld(p0, p1, radius, world, out = _capOut) {
       const raw = cols[i];
       if (raw.disabled || raw.dead || raw.noCollide) continue;
       const box = normalizeCollider(raw);
+      if (!box.solid) continue;
       // Closest point on the capsule axis to the collider, then on the collider.
-      closestPointOnSegment(p0, p1, box.center, _a);
+      closestPointOnSegment(p0, p1, box.center, _kA);
       if (box.type === 'sphere') {
-        _b.copy(box.center);
-        const dist = _a.distanceTo(_b);
+        _kB.copy(box.center);
+        const dist = _kA.distanceTo(_kB);
         const pen = box.radius + radius - dist;
         if (pen > 0) {
-          _c.subVectors(_a, _b);
-          if (_c.lengthSq() < 1e-10) _c.set(0, 1, 0); else _c.normalize();
-          out.mtv.addScaledVector(_c, pen);
+          _kC.subVectors(_kA, _kB);
+          if (_kC.lengthSq() < 1e-10) _kC.set(0, 1, 0); else _kC.normalize();
+          out.mtv.addScaledVector(_kC, pen);
           out.hit = true; out.contacts++;
         }
         continue;
       }
-      closestPointOnBox(box, _a, _b);
+      closestPointOnBox(box, _kA, _kB);
       // Re-project once: improves accuracy on long capsules against big boxes.
-      closestPointOnSegment(p0, p1, _b, _a);
-      closestPointOnBox(box, _a, _b);
-      _c.subVectors(_a, _b);
-      const d2 = _c.lengthSq();
+      closestPointOnSegment(p0, p1, _kB, _kA);
+      closestPointOnBox(box, _kA, _kB);
+      _kC.subVectors(_kA, _kB);
+      const d2 = _kC.lengthSq();
       if (d2 < radius * radius) {
         let pen, nx, ny, nz;
         if (d2 > 1e-8) {
           const d = Math.sqrt(d2);
           pen = radius - d;
-          nx = _c.x / d; ny = _c.y / d; nz = _c.z / d;
+          nx = _kC.x / d; ny = _kC.y / d; nz = _kC.z / d;
         } else {
           // Deep inside: push out along the shallowest box axis.
-          _d.subVectors(_a, box.center);
-          if (!box.axisAligned) _d.applyQuaternion(box.invQuat);
-          const ox = box.half.x - Math.abs(_d.x);
-          const oy = box.half.y - Math.abs(_d.y);
-          const oz = box.half.z - Math.abs(_d.z);
-          _e.set(0, 0, 0);
-          if (ox <= oy && ox <= oz) { _e.x = Math.sign(_d.x) || 1; pen = ox + radius; }
-          else if (oy <= oz) { _e.y = Math.sign(_d.y) || 1; pen = oy + radius; }
-          else { _e.z = Math.sign(_d.z) || 1; pen = oz + radius; }
-          if (!box.axisAligned) _e.applyQuaternion(box.quat);
-          nx = _e.x; ny = _e.y; nz = _e.z;
+          _kD.subVectors(_kA, box.center);
+          if (!box.axisAligned) _kD.applyQuaternion(box.invQuat);
+          const ox = box.half.x - Math.abs(_kD.x);
+          const oy = box.half.y - Math.abs(_kD.y);
+          const oz = box.half.z - Math.abs(_kD.z);
+          _kE.set(0, 0, 0);
+          if (ox <= oy && ox <= oz) { _kE.x = Math.sign(_kD.x) || 1; pen = ox + radius; }
+          else if (oy <= oz) { _kE.y = Math.sign(_kD.y) || 1; pen = oy + radius; }
+          else { _kE.z = Math.sign(_kD.z) || 1; pen = oz + radius; }
+          if (!box.axisAligned) _kE.applyQuaternion(box.quat);
+          nx = _kE.x; ny = _kE.y; nz = _kE.z;
         }
         out.mtv.x += nx * pen; out.mtv.y += ny * pen; out.mtv.z += nz * pen;
         out.hit = true; out.contacts++;
@@ -520,10 +561,10 @@ export function capsuleVsWorld(p0, p1, radius, world, out = _capOut) {
  * @returns {number} 0 = fully blocked .. 1 = clear. Partial cover attenuates.
  */
 export function lineOfSight(world, from, to, ignoreCollider = null) {
-  _a.subVectors(to, from);
-  const dist = _a.length();
+  _lA.subVectors(to, from);
+  const dist = _lA.length();
   if (dist < 1e-4) return 1;
-  _a.divideScalar(dist);
+  _lA.divideScalar(dist);
   let vis = 1;
   const cols = (world && world.colliders) || null;
   if (cols) {
@@ -531,9 +572,10 @@ export function lineOfSight(world, from, to, ignoreCollider = null) {
       const raw = cols[i];
       if (raw === ignoreCollider || raw.disabled || raw.dead || raw.noBlockLos) continue;
       const box = normalizeCollider(raw);
+      if (!box.blocksLos) continue;
       let t;
-      if (box.type === 'sphere') t = rayVsSphere(from, _a, dist, box.center, box.radius, null);
-      else t = rayVsBox(from, _a, dist, box, null);
+      if (box.type === 'sphere') t = rayVsSphere(from, _lA, dist, box.center, box.radius, null);
+      else t = rayVsBox(from, _lA, dist, box, null);
       // t ~ 0 means the ray *starts* inside this collider (a grenade landed on
       // the sandbag it is meant to be clearing). It cannot occlude itself.
       if (t > 0.06 && t < dist - 0.06) {
@@ -543,7 +585,7 @@ export function lineOfSight(world, from, to, ignoreCollider = null) {
       }
     }
   }
-  if (world && world.terrain && rayVsHeightfield(world.terrain, from, _a, dist, _hitB)) {
+  if (world && world.terrain && rayVsHeightfield(world.terrain, from, _lA, dist, _hitB)) {
     if (_hitB.distance < dist - 0.15) return 0;
   }
   return vis;

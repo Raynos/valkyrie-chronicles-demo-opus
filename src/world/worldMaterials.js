@@ -129,59 +129,65 @@ float bandify(float s, float warp) {
 }
 `;
 
+// Replaces <opaque_fragment>. NOTE: `outgoingLight` is already declared by the
+// Lambert shader immediately above this include — it must be ASSIGNED here,
+// never redeclared, or the whole world fails to compile. Every local below is
+// np-prefixed for the same reason: this code is injected into a scope full of
+// three's own identifiers.
 const NPR_BODY = /* glsl */ `
-  vec3 baseCol = diffuseColor.rgb;
-  float lumBase = max(1e-4, dot(baseCol, vec3(0.33333)));
+  vec3 npBase = diffuseColor.rgb;
+  float npLum = max(1e-4, dot(npBase, vec3(0.33333)));
 
-  // Recover (N.L * shadow) from three's Lambert accumulation. Valid while the
-  // scene has exactly one directional light, which is how World sets it up.
-  float shade = dot(reflectedLight.directDiffuse, vec3(0.33333)) / (lumBase * uSunLum);
-  shade = clamp(shade, 0.0, 1.35);
+  // Recover (N.L * shadow) from three's Lambert accumulation:
+  //   directDiffuse = sunColor * NdotL * shadow * diffuse / PI
+  // Valid while the scene has exactly one directional light, which is how
+  // World sets it up (it adopts an existing 'sun' rather than adding a second).
+  float npShade = dot(reflectedLight.directDiffuse, vec3(0.33333)) / (npLum * uSunLum);
+  npShade = clamp(npShade, 0.0, 1.35);
 
-  vec2 spx = gl_FragCoord.xy;
-  float fibre = texture2D(uPaperTex, spx * 0.0021).r;
-  float fibre2 = texture2D(uPaperTex, spx * 0.0073 + vec2(0.37, 0.61)).r;
+  vec2 npPx = gl_FragCoord.xy;
+  float npFibre = texture2D(uPaperTex, npPx * 0.0021).r;
+  float npFibre2 = texture2D(uPaperTex, npPx * 0.0073 + vec2(0.37, 0.61)).r;
 
-  float q = bandify(shade, (fibre - 0.5) * uBleed);
+  float npQ = bandify(npShade, (npFibre - 0.5) * uBleed);
 
   // Warm in light, violet-blue in shade. Never grey, never black.
-  vec3 shadeCol = mix(baseCol * uShadeTint, uShadeTint, 0.30);
-  vec3 midCol   = baseCol * uMidTint;
-  vec3 litCol   = baseCol * uLitTint + vec3(0.045, 0.038, 0.022);
-  vec3 col = mix(shadeCol, midCol, smoothstep(0.0, 0.52, q));
-  col = mix(col, litCol, smoothstep(0.48, 1.0, q));
+  vec3 npShadeCol = mix(npBase * uShadeTint, uShadeTint, 0.30);
+  vec3 npMidCol   = npBase * uMidTint;
+  vec3 npLitCol   = npBase * uLitTint + vec3(0.045, 0.038, 0.022);
+  vec3 npCol = mix(npShadeCol, npMidCol, smoothstep(0.0, 0.52, npQ));
+  npCol = mix(npCol, npLitCol, smoothstep(0.48, 1.0, npQ));
 
-  // Rim: a thin straw-coloured halo where the surface turns away, quantised so
+  // Rim: a thin straw-coloured halo where the surface turns away, stepped so
   // it reads as a drawn highlight rather than a fresnel gradient.
-  vec3 V = normalize(vViewPosition);
-  float fres = 1.0 - clamp(dot(normalize(normal), V), 0.0, 1.0);
-  float rim = smoothstep(0.62, 0.94, fres) * uRim * (0.25 + 0.75 * q);
-  col += rim * vec3(0.40, 0.33, 0.20);
+  vec3 npView = normalize(vViewPosition);
+  float npFres = 1.0 - clamp(dot(normalize(normal), npView), 0.0, 1.0);
+  float npRim = smoothstep(0.62, 0.94, npFres) * uRim * (0.25 + 0.75 * npQ);
+  npCol += npRim * vec3(0.40, 0.33, 0.20);
 
   // Pencil hatching, screen-space aligned, only in the lower bands. The stroke
   // phase is jittered by paper fibre so the lines waver like a real hand.
-  float hatchAmt = uHatch * smoothstep(0.66, 0.10, q);
-  if (hatchAmt > 0.001) {
-    float wob = (fibre2 - 0.5) * 5.0;
-    float l1 = sin((spx.x * 0.7071 + spx.y * 0.7071) * 0.52 + wob);
-    float s1 = smoothstep(0.10, 0.78, l1);
-    float hatch = s1;
+  float npHatchAmt = uHatch * smoothstep(0.66, 0.10, npQ);
+  if (npHatchAmt > 0.001) {
+    float npWob = (npFibre2 - 0.5) * 5.0;
+    float npL1 = sin((npPx.x * 0.7071 + npPx.y * 0.7071) * 0.52 + npWob);
+    float npHatch = smoothstep(0.10, 0.78, npL1);
     // cross-hatch the darkest band only
-    float deep = smoothstep(0.34, 0.04, q);
-    float l2 = sin((spx.x * 0.7071 - spx.y * 0.7071) * 0.49 - wob * 0.8);
-    hatch = mix(hatch, max(hatch, smoothstep(0.10, 0.78, l2)), deep);
-    col *= 1.0 - hatchAmt * hatch * 0.42;
+    float npDeep = smoothstep(0.34, 0.04, npQ);
+    float npL2 = sin((npPx.x * 0.7071 - npPx.y * 0.7071) * 0.49 - npWob * 0.8);
+    npHatch = mix(npHatch, max(npHatch, smoothstep(0.10, 0.78, npL2)), npDeep);
+    npCol *= 1.0 - npHatchAmt * npHatch * 0.42;
   }
 
-  // Paper grain multiplies hardest through the midtones and disappears in the
+  // Paper grain bites hardest through the midtones and disappears in the
   // highlights, exactly like pigment sitting in the tooth of cold-press stock.
-  float mid = 1.0 - abs(q * 2.0 - 1.0);
-  col *= mix(1.0, 0.74 + fibre * 0.52, uPaper * mid);
+  float npMid = 1.0 - abs(npQ * 2.0 - 1.0);
+  npCol *= mix(1.0, 0.74 + npFibre * 0.52, uPaper * npMid);
 
   // Lift the black point to a warm brown-violet.
-  col = uFloorCol + col * (1.0 - uFloorCol);
+  npCol = uFloorCol + npCol * (1.0 - uFloorCol);
 
-  vec3 outgoingLight = col;
+  outgoingLight = npCol;
   #ifdef OPAQUE
   diffuseColor.a = 1.0;
   #endif
@@ -252,6 +258,11 @@ function nprUniforms(opts) {
   };
 }
 
+// Reads the terrain's pre-baked per-vertex albedo instead of the `color`
+// attribute (which the terrain uses for its splat).
+const ALBEDO_VS_PARS = 'attribute vec3 aAlbedo;\nvarying vec3 vAlbedo;';
+const ALBEDO_FS_PARS = 'varying vec3 vAlbedo;';
+
 function makeFallbackSurface(opts = {}) {
   const m = new THREE.MeshLambertMaterial({
     color: opts.color ?? 0xffffff,
@@ -274,6 +285,14 @@ function makeFallbackSurface(opts = {}) {
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + NPR_PARS)
       .replace('#include <opaque_fragment>', NPR_BODY);
+    if (opts.albedoAttr) {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\n' + ALBEDO_VS_PARS)
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vAlbedo = aAlbedo;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\n' + ALBEDO_FS_PARS)
+        .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= vAlbedo;');
+    }
     if (opts.wind) {
       Object.assign(shader.uniforms, {
         uWindDir: { value: WorldLighting.windDir },
@@ -294,7 +313,8 @@ function makeFallbackSurface(opts = {}) {
   };
   // Distinct cache key so three does not share a program between wind and
   // non-wind variants of the same Lambert configuration.
-  m.customProgramCacheKey = () => `world-npr:${opts.wind ? 1 : 0}:${opts.hatch ?? 'd'}:${opts.rim ?? 'd'}`;
+  m.customProgramCacheKey = () =>
+    `world-npr:${opts.wind ? 1 : 0}:${opts.albedoAttr ? 1 : 0}`;
   _fallbacks.add(m);
   return m;
 }
@@ -367,6 +387,9 @@ export function makeSurfaceMaterial(opts = {}) {
     tryRender(Mats.makeCanvasMaterial, {
       color: opts.color ?? 0xffffff,
       map: opts.map || null,
+      // World geometry carries world-scaled triplanar UVs already (worldUV),
+      // so the material must not re-tile them.
+      mapRepeat: [1, 1],
       roughness: opts.roughness ?? 0.9,
       hatch: opts.hatch ?? 1,
       rim: opts.rim ?? 0.5,
@@ -376,26 +399,41 @@ export function makeSurfaceMaterial(opts = {}) {
       side: opts.side ?? THREE.FrontSide,
       transparent: !!opts.transparent,
       alphaTest: opts.alphaTest ?? 0,
+      outline: opts.outline ?? true,
       outlineWidth: opts.outlineWidth ?? CFG.render.outlineWidth,
     }, needs) || makeFallbackSurface({ ...opts, vertexColors: opts.vertexColors ?? true });
   return m;
 }
 
-/** Terrain: vertex-coloured splat + baked AO, never outlined. */
+/**
+ * Terrain. The geometry's `color` attribute is a vec4 SPLAT
+ * (r grass, g dirt, b rock, a mud) because that is the channel layout
+ * src/render/materials.js reads under VC_SPLAT_VCOL; `aAlbedo` carries the
+ * fully-baked colour for the fallback path.
+ */
 export function makeTerrainSurfaceMaterial(opts = {}) {
   const m =
     tryRender(Mats.makeTerrainMaterial, {
-      color: 0xffffff,
+      splatFromVertexColor: true,
       vertexColors: true,
-      splat: true,
-      ao: true,
+      grass: opts.grass ?? PALETTE.grass,
+      dirt: opts.dirt ?? PALETTE.dirt,
+      rock: opts.rock ?? PALETTE.rock,
+      mud: opts.mud ?? PALETTE.mud,
+      // Mud is authored by the splat; give the shader's own height term a sane
+      // waterline too so shorelines agree even if the splat is ignored.
+      mudLevel: opts.mudLevel ?? 3.1,
+      mudFade: 1.6,
+      rockSlope: 0.42,
       hatch: opts.hatch ?? 0.85,
-      paper: 1,
-      roughness: 1,
+      bands: CFG.render.bands,
+      outline: false,
+      color: 0xffffff,
     }, ['vertexColors']) ||
     makeFallbackSurface({
       color: 0xffffff,
-      vertexColors: true,
+      vertexColors: false,
+      albedoAttr: true,
       hatch: opts.hatch ?? 0.5,
       rim: 0.12,
       bands: (CFG.render.bands ?? 4) + 1,
@@ -414,6 +452,14 @@ export function makeFoliageMaterial(opts = {}) {
   if (opts.instanced) needs.push('instancing');
   const m =
     tryRender(Mats.makeGrassMaterial, {
+      // src/render's grass material names its knobs rootColor/tipColor/sway/
+      // bladeHeight; ours are colour/windStrength/windHeight. Send both so
+      // whichever factory answers gets what it understands.
+      rootColor: opts.rootColor ?? opts.color ?? 0xffffff,
+      tipColor: opts.tipColor ?? opts.color ?? 0xffffff,
+      bladeHeight: opts.windHeight ?? 1.0,
+      sway: (opts.windStrength ?? 0.16) * 1.9,
+      variation: opts.variation ?? 0.22,
       color: opts.color ?? 0xffffff,
       map: opts.map || null,
       instanced: !!opts.instanced,
@@ -424,7 +470,8 @@ export function makeFoliageMaterial(opts = {}) {
       windSpeed: opts.windSpeed ?? 1.7,
       fadeStart: opts.fadeStart ?? 1e5,
       fadeEnd: opts.fadeEnd ?? 1e6,
-      hatch: 0.35,
+      rim: opts.rim ?? 1.2,
+      hatch: opts.hatch ?? 0.35,
       subsurface: opts.subsurface ?? 0.55,
     }, needs) ||
     makeFallbackSurface({
