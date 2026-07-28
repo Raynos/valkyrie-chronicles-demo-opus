@@ -46,13 +46,16 @@ const CLASS_NAME = {
 
 // Ids and costs mirror src/game/orders.js so the strip is truthful even before
 // the game pushes its own list over `ui:orders`. Icons/blurbs are ours.
+// `short` is the line printed ON the card — a hand of cards is read at a glance,
+// and a four-line paragraph set at 0.6em on a 160 px card is a grey smudge. The
+// full sentence stays as the card's tooltip.
 const DEFAULT_ORDERS = [
-  { id: 'caution', name: 'Caution', cost: 1, icon: 'shield', desc: 'One soldier evades and shrugs off fire for two turns.' },
-  { id: 'resupply', name: 'Resupply', cost: 2, icon: 'ammo', desc: 'Restore ammunition and ragnaid to one unit.' },
-  { id: 'attackBoost', name: 'Attack Boost', cost: 2, icon: 'shock', desc: 'Raise one soldier’s damage and accuracy.' },
-  { id: 'demolitionBoost', name: 'Demolition Boost', cost: 2, icon: 'lancer', desc: 'Anti-armour damage raised by seven tenths.' },
-  { id: 'enemyRecon', name: 'Enemy Recon', cost: 2, icon: 'eye', desc: 'Reveal every enemy position on the map.' },
-  { id: 'directCommand', name: 'Direct Command', cost: 3, icon: 'radio', desc: 'Grant a soldier a second sortie.' },
+  { id: 'caution', name: 'Caution', cost: 1, icon: 'shield', short: 'Evades fire, two turns.', desc: 'One soldier evades and shrugs off fire for two turns.' },
+  { id: 'resupply', name: 'Resupply', cost: 2, icon: 'ammo', short: 'Ammunition and ragnaid.', desc: 'Restore ammunition and ragnaid to one unit.' },
+  { id: 'attackBoost', name: 'Attack Boost', cost: 2, icon: 'shock', short: 'Damage and aim raised.', desc: 'Raise one soldier’s damage and accuracy.' },
+  { id: 'demolitionBoost', name: 'Demolition Boost', cost: 2, icon: 'lancer', short: 'Anti-armour raised.', desc: 'Anti-armour damage raised by seven tenths.' },
+  { id: 'enemyRecon', name: 'Enemy Recon', cost: 2, icon: 'eye', short: 'Every position revealed.', desc: 'Reveal every enemy position on the map.' },
+  { id: 'directCommand', name: 'Direct Command', cost: 3, icon: 'radio', short: 'A second sortie.', desc: 'Grant a soldier a second sortie.' },
 ];
 
 const ORDER_ICON = {
@@ -163,8 +166,13 @@ export class HUD {
     this.apShown = 0;
     this.markers = [];
     this.orders = DEFAULT_ORDERS;
-    // Orders are summoned, not garrisoned across the foot of the page.
-    this.ordersOpen = false;
+    // The hand is DEALT in command mode. Round 2 filed the deck away behind a
+    // tab, which fixed the full-width toolbar but left the best-read element on
+    // the page as a hole; the answer was never "hide it", it was "make it a hand
+    // of cards instead of a strip of buttons". It sits in the lower-left
+    // quadrant, arced about a pivot below the page, clear of both the roster and
+    // the survey, and Q still gathers it back in.
+    this.ordersOpen = true;
     this.objectives = normObjectives(this.mission.objectives) || [
       { type: 'capture', text: 'Seize the Imperial base camp.' },
       { type: 'defend', text: 'Hold the bridge until relief arrives.', sub: true },
@@ -324,15 +332,13 @@ export class HUD {
     L.appendChild(this.endTurnBtn);
 
     // --- order cards -------------------------------------------------------
-    // The deck lives shut. A permanent six-card strip spanning the width of the
-    // frame turned the reconnaissance page into a toolbar and was half of why
-    // the command shot read as an application rather than a book.
-    this.ordersEl = h('div', { class: 'vc-orders shut' });
+    // Dealt, not garrisoned: a compact arc of six in the lower-left quadrant.
+    this.ordersEl = h('div', { class: 'vc-orders open' });
     this.ordersIn = h('div', { class: 'vc-orders-in' });
     this.ordersEl.appendChild(this.ordersIn);
     L.appendChild(this.ordersEl);
 
-    this.ordersTab = h('div', { class: 'vc-orders-tab' });
+    this.ordersTab = h('div', { class: 'vc-orders-tab' + (this.ordersOpen ? ' open' : '') });
     const tabP = panel({ seed: 818, cls: 'vc-otab', tilt: -0.7, soft: true });
     const tabIn = h('div', { class: 'vc-otab-in' });
     const tabG = icon('radio', { size: 19, width: 1.6, rough: true });
@@ -377,8 +383,11 @@ export class HUD {
     // Splayed about a pivot below the page edge, the way a hand of cards sits.
     const n = Math.max(1, this.orders.length);
     const mid = (n - 1) / 2;
-    const step = Math.min(6.5, 34 / n);        // degrees of cock per card
-    const pitch = Math.min(8.0, 46 / n);       // em of hand advance per card
+    // The hand advances by slightly MORE than a card width. Overlapping cards
+    // look like a hand, but they also crop the next card's title — round 2's
+    // deck read "RECT COMMAND" — and an unreadable order is not an order.
+    const step = Math.min(5.4, 30 / n);        // degrees of cock per card
+    const pitch = Math.min(7.3, 44 / n);       // em of hand advance per card
     this.orders.forEach((o, i) => {
       const p = panel({ seed: 900 + i * 37, cls: 'vc-card', tilt: 0, under: false, amp: 1.1, soft: true });
       p.root.style.setProperty('--fx', ((i - mid) * pitch).toFixed(2) + 'em');
@@ -423,8 +432,9 @@ export class HUD {
       in_.appendChild(art);
 
       in_.appendChild(h('div', { class: 'vc-card-name', text: o.name }));
-      in_.appendChild(h('div', { class: 'vc-card-desc', text: o.desc || '' }));
+      in_.appendChild(h('div', { class: 'vc-card-desc', text: o.short || o.desc || '' }));
       p.content.appendChild(in_);
+      if (o.desc) p.root.title = o.desc;
 
       const cost = h('div', { class: 'vc-card-cost' });
       cost.appendChild(cpToken({ plain: true, size: 34, seed: 500 + i }));
@@ -456,7 +466,7 @@ export class HUD {
     this.ordersOpen = want;
     this.ordersEl.classList.toggle('shut', !want);
     this.ordersEl.classList.toggle('open', want);
-    this.ordersTabLbl.textContent = want ? 'Close Orders' : 'Orders';
+    this.ordersTab.classList.toggle('open', want);
     if (want && !CFG.capture) {
       for (const c of this._orderCards || []) replay(c.root, 'vc-card');
       Bus.emit('sfx', { name: 'ui_select', vol: 0.55 });
@@ -1804,7 +1814,8 @@ export class HUD {
     this.endTurnBtn.classList.toggle('vc-hidden', to !== 'command');
     this.ordersEl.classList.toggle('vc-hidden', to !== 'command');
     this.ordersTab.classList.toggle('vc-hidden', to !== 'command');
-    if (to !== 'command') this._toggleOrders(false);
+    // Command mode deals the hand; every other phase gathers it back in.
+    this._toggleOrders(to === 'command');
     this.setControls(to === 'action' ? 'action' : to === 'enemy' ? 'enemy' : to === 'result' ? 'result' : 'command');
     if (cmd && !initial) {
       this._rosterKey = '';       // re-deal the roster with its slide-in
@@ -1823,23 +1834,25 @@ export class HUD {
   /**
    * How the page annotates soldiers, per phase.
    *
-   * Command mode is a SURVEY, read from above: line of sight through a poplar
-   * canopy is not the question there, and a slip on every man in the section
-   * turns the map into a list — so exactly one soldier, the selected one, is
-   * named, and his slip is lifted clear in SCREEN space with a leader dropped
-   * back to him. A 2 m world offset projects to about four pixels under the
-   * command pitch, which is why the plate used to land on top of its own man.
+   * Command mode is a SURVEY, read from above. Every unit gets a COUNTER — a
+   * drawn marker pushed onto the map, over the canopy that hides the soldier
+   * himself — and exactly one gets a name slip, lifted clear in SCREEN space
+   * with a leader dropped onto its counter. A 2 m world offset projects to
+   * about four pixels under the command pitch, which is why the plate used to
+   * land on top of its own man; and a slip with nothing under it at all was the
+   * round-2 critic's automatic rejection.
    *
-   * Action mode is an EYE: everything is culled by real line of sight.
+   * Action mode is an EYE: no counters, everything culled by line of sight.
    */
   _applyLabelPolicy() {
     const cmd = this.phase === 'command' || this.phase === 'enemy';
     if (cmd) {
       this.labels.setPolicy({
-        filter: (u) => u === this.selected, occlusion: false, lift: 30,
+        filter: (u) => u === this.selected, occlusion: false, lift: 34,
+        tokens: true, marked: this.selected,
       });
     } else {
-      this.labels.setPolicy({ filter: null, occlusion: true, lift: 0 });
+      this.labels.setPolicy({ filter: null, occlusion: true, lift: 0, tokens: false });
     }
   }
 

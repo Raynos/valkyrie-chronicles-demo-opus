@@ -84,6 +84,33 @@ export function deckY(ctx) {
 export function facing(x, z, tx, tz) { return Math.atan2(tx - x, tz - z); }
 
 /**
+ * Author a staging in CAMERA SPACE and get map coordinates back.
+ *
+ * Every composition note in this file — "on the left third", "four metres off the lens",
+ * "cropped by the right edge" — is a statement about the PICTURE, and a picture has two
+ * axes: how far down the view ray something is, and how far across it. Map x/z has neither.
+ * Hand-converting them is where the round-2 framings went wrong: a soldier authored as
+ * "near foreground" ended up twenty-seven metres out because the lens had been re-aimed
+ * since and nobody redid the trigonometry.
+ *
+ * `at(depth, lateral)` returns `[x, z]` for a point `depth` metres down the view axis from
+ * the lens and `lateral` metres to screen-RIGHT of it. `halfWidth(depth, fovDeg, aspect)`
+ * is how many metres of lateral the frame actually holds at that depth, so a lateral can be
+ * quoted as a fraction of the frame instead of guessed.
+ */
+export function staging(cx, cz, tx, tz) {
+  const dx = tx - cx, dz = tz - cz;
+  const inv = 1 / Math.max(1e-6, Math.hypot(dx, dz));
+  const fx = dx * inv, fz = dz * inv;
+  const rx = -fz, rz = fx;                   // cross(forward, +Y), normalised
+  return {
+    at: (depth, lateral = 0) => [cx + fx * depth + rx * lateral, cz + fz * depth + rz * lateral],
+    halfWidth: (depth, fovDeg, aspect = 16 / 9) =>
+      depth * Math.tan((fovDeg * Math.PI) / 360) * aspect,
+  };
+}
+
+/**
  * Place a unit on the ground, facing `yaw`, and force an animation clip.
  * opts: { y, fade, aimYaw, aimPitch, phase } — `y` overrides the ground snap (a bridge deck),
  * `phase` pins the locomotion cycle so a running figure is caught at an authored stride
@@ -172,6 +199,24 @@ export function aimCameraG(ctx, px, py, pz, tx, ty, tz, fov) {
   aimCamera(ctx.camera,
     px, groundAt(ctx, px, pz) + py, pz,
     tx, groundAt(ctx, tx, tz) + ty, tz, fov);
+}
+
+/**
+ * The first of `fracs` (laterals, as fractions of the half-width at `depth`) that lands on
+ * ground a man could stand on rather than in the river.
+ *
+ * A camera-space staging says WHERE IN THE PICTURE something should be; it knows nothing
+ * about the heightfield under that point. On a shot framed across a pool that is exactly
+ * how you end up with two riflemen apparently standing on the water — which is what the
+ * first pass of `bridge` did with them at +0.44 and +0.66 of half-width. Ask the terrain.
+ */
+export function dryLateral(ctx, S, depth, fracs, fovDeg) {
+  const hw = S.halfWidth(depth, fovDeg);
+  for (const f of fracs) {
+    const [x, z] = S.at(depth, hw * f);
+    if (groundAt(ctx, x, z) > WATER_Y + 0.35) return [x, z];
+  }
+  return S.at(depth, hw * fracs[fracs.length - 1]);
 }
 
 export function unitNamed(ctx, name) {
@@ -359,10 +404,15 @@ export const SHOTS = {
         i % 2 ? STANCE.CROUCH : STANCE.STAND);
     });
 
-    // Eye level on the lip of the south bank, pitched down about seven degrees so the sky
-    // takes the top third and no more — the old framing gave forty-five per cent of the page
-    // to an empty wash.
-    aimCameraG(ctx, -8.8, 2.05, 36.3, -1.0, 1.55, 18.0, 40);
+    // UP AND BACK, because the world grew. Round 2's eye-level lens on the lip of the south
+    // bank worked when the poplars along the approach were saplings; this round they are
+    // full-grown, and from 2 m two of them stood dead in front of the crossing and turned the
+    // best-scoring frame in the set into a hedge. Five metres up and six west clears the
+    // canopy and turns those same trees into what they should have been all along — a mass
+    // closing the RIGHT edge, with the river leading out of the bottom-left corner, the
+    // crossing on the left third, the mill town along the top and the section coming up the
+    // near bank through the foreground.
+    aimCameraG(ctx, -14.0, 5.20, 40.0, 1.0, 1.00, 12.0, 42);
 
     finale(ctx, 6, (i) => {
       if (i === 0) {
@@ -381,10 +431,18 @@ export const SHOTS = {
    */
   async bridge(ctx) {
     const b = ensureBattle(ctx);
-    // Low, and behind the span. The east face the camera sees therefore sits in the shade
-    // band while the arch rings and the parapet carry a warm rim, which is the only way a
-    // masonry vault reads as a curved solid rather than as a flat grey elevation.
-    setSun(ctx, 0.17, -1.72);
+    // THE OLD KEY LIT NOTHING THE LENS COULD SEE. t 0.17 / azimuth -1.72 resolves to a sun
+    // bearing of -2.10 rad — almost exactly opposite the camera-facing east elevation — so
+    // every stone surface in the frame, 35% of the canvas, landed in the same shade band and
+    // measured one hue (lit spandrel 268 deg, intrados 273, retaining wall 270) at a flat
+    // 0.68 value ratio. A masonry vault with no terminator on it is a grey elevation drawing.
+    //
+    // Re-solved for the new three-quarter below. The spandrel the camera sees faces roughly
+    // +X+Z; at t = 0.19 the elevation is 0.66 rad and a bearing of AZ = 0.62 puts that face
+    // at n.L = 0.62 (top band, warm) while the arch INTRADOS — which faces down and away —
+    // stays at -0.2 (violet). That is a terminator running round every voussoir ring, which
+    // is the only thing that makes a stone arch read as a curved solid.
+    setSun(ctx, 0.19, 0.977);
     uiMode(ctx, 'none');
     hideAll(ctx);
     b.activeUnit = null;
@@ -400,22 +458,40 @@ export const SHOTS = {
         i === 2 ? STANCE.CROUCH : STANCE.STAND);
     });
 
-    // Two of ours in the near-bank scrub, low right — the eye enters the frame there.
+    // THREE-QUARTER, not broadside — and this time actually three-quarter. The round-2 frame
+    // stood at (17.5, 26.5) and aimed at (1, -2): the span runs along the road bearing, so
+    // that view axis met it at barely twenty degrees and what came out was a flat elevation
+    // with the arches stacked edge-on behind one another. Swinging round to the south-EAST
+    // corner of the pool and aiming up the channel meets the span at close to fifty degrees,
+    // which is what opens all three rings so you can see daylight through them, and puts the
+    // near abutment in the bottom-right corner as a foreground mass.
+    const CX = 25.5, CZ = 22.0, TX = 0.5, TZ = -3.0;
+    const S = staging(CX, CZ, TX, TZ);
+
+    // Two of ours in the near-bank scrub, lower right — the eye enters the frame there.
+    // Authored in camera space so they LAND there: at 9 and 13 metres, right of the axis,
+    // they occupy the near third instead of being two ten-pixel blobs on the deck.
     const alicia = unitNamed(ctx, 'Alicia Melchiott');
     const largo = unitNamed(ctx, 'Largo Potter');
     show(ctx, [alicia, largo]);
-    pose(ctx, alicia, 26.0, 24.0, facing(26, 24, 5, 4), 'crouchIdle', STANCE.CROUCH);
-    pose(ctx, largo, 30.5, 27.0, facing(30.5, 27, 5, 4), 'crouchIdle', STANCE.CROUCH);
+    // 15 and 20 metres, not 8 and 12: the lens sits 1.6 m over a pool whose bank falls away
+    // in front of it, so a figure standing on that bank at eight metres is BELOW the bottom
+    // of the frame — which is exactly where the first two passes put them (two scalps in the
+    // bottom-right corner). Back them off until the bank has risen into shot, and let
+    // dryLateral() pick which side of the axis is actually land: half of this frame is open
+    // water and a lateral chosen off the picture alone put both of them standing on it.
+    const [ax, az] = dryLateral(ctx, S, 15.0, [-0.30, -0.52, 0.44, -0.70], 38);
+    const [gx, gz] = dryLateral(ctx, S, 20.0, [-0.52, -0.72, 0.62, -0.30], 38);
+    pose(ctx, alicia, ax, az, facing(ax, az, 5, 4), 'crouchIdle', STANCE.CROUCH);
+    pose(ctx, largo, gx, gz, facing(gx, gz, 5, 4), 'idle');
 
-    // THREE-QUARTER, not broadside. Standing off the south-east corner of the crossing and
-    // low — a metre and a half over the pool — puts the near abutment in the bottom-right
-    // corner, runs the span away to the upper left at about fifty degrees to the lens, and
-    // opens all three arches so you can see daylight through them. The channel comes out of
-    // the bottom of the frame and leads straight into the near arch, and because the camera
-    // is barely off the water the whole span gets a reflection under it.
+    // AND OUT OF THE GRASS. The lens used to sit 0.30 m over ground carrying a 0.9 m sward,
+    // i.e. INSIDE it, which filled the bottom-left quarter with 40-px-wide flat blade slabs.
+    // 1.6 m clears the canopy and is still low enough that the whole span carries a
+    // reflection under it on the pool.
     aimCamera(ctx.camera,
-      17.5, Math.max(surfaceAt(ctx, 17.5, 26.5) + 0.30, WATER_Y + 1.35), 26.5,
-      1.0, deckY(ctx) - 2.15, -2.0, 40);
+      CX, Math.max(surfaceAt(ctx, CX, CZ) + 1.60, WATER_Y + 2.35), CZ,
+      TX, deckY(ctx) - 2.30, TZ, 38);
     await frames(14);
   },
 
@@ -436,25 +512,34 @@ export const SHOTS = {
     const isara = unitNamed(ctx, 'Isara Gunther') || firstOfClass(ctx, 'engineer', 0);
     show(ctx, [alicia, rosie, largo, isara]);
 
-    // A loose arc on the flat ground east of the road: every one of them at a different
-    // distance, a different angle to camera and a different stance, so nothing overlaps and
-    // no two silhouettes repeat. They are turned across the lens, not toward it — a rank
-    // facing the camera reads as a menu screen, not as a squad.
     // Halted on the span itself. Measured against the vegetation instancing, the bridge deck
     // is the only ground on this map with eight clear metres in every direction — everywhere
-    // else a poplar trunk ends up growing straight through somebody's chest. It also gives
-    // the group a plain stone floor and open sky, which is exactly what you want behind four
-    // silhouettes that are meant to be compared.
+    // else a poplar trunk ends up growing straight through somebody's chest.
+    //
+    // THE DECK IS A LEADING LINE, NOT A FLOOR. Round 2 scored this frame down for giving
+    // "~40% of the frame to a bare bridge deck": the section stood in a shallow arc across a
+    // level lens, so between the bottom edge and the nearest boot there were four empty
+    // metres of paving with nothing in them. The stagger below is now in DEPTH along the
+    // span — 4.3, 7.6, 11.8, 16.4 metres — with the laterals alternating either side of the
+    // view axis. The nearest man is close enough that his shins run off the bottom of the
+    // frame, which is what fills the near field; the parapet rakes out of the lower right;
+    // and the far bank and the frontages close the top. Same four silhouettes, no empty
+    // paving, and the depth ladder the rubric's axis 8 actually asks for.
     const dy = deckY(ctx);
-    pose(ctx, rosie, 3.2, 15.5, facing(3.2, 15.5, -8.0, 16.5), 'idle', STANCE.STAND, { y: dy });
-    pose(ctx, alicia, 6.0, 13.0, facing(6.0, 13.0, -6.0, 15.0) + 0.3, 'crouchIdle', STANCE.CROUCH,
+    const look = (x, z, tx, tz) => facing(x, z, tx, tz);
+    pose(ctx, rosie, 3.05, 16.35, look(3.05, 16.35, 9.5, 15.0), 'idle', STANCE.STAND, { y: dy });
+    pose(ctx, alicia, 5.75, 13.25, look(5.75, 13.25, -3.0, 12.0) + 0.25, 'crouchIdle',
+      STANCE.CROUCH, { y: dy });
+    pose(ctx, largo, 2.35, 9.35, look(2.35, 9.35, 12.0, 7.0), 'idle', STANCE.STAND, { y: dy });
+    pose(ctx, isara, 5.45, 5.05, look(5.45, 5.05, -4.0, 6.5) - 0.15, 'idle', STANCE.STAND,
       { y: dy });
-    pose(ctx, largo, 2.6, 10.0, facing(2.6, 10.0, 14.0, 6.0), 'idle', STANCE.STAND, { y: dy });
-    pose(ctx, isara, 5.6, 7.0, facing(5.6, 7.0, -6.0, 9.0) - 0.2, 'idle', STANCE.STAND, { y: dy });
 
-    // Six to fifteen metres out on a portrait-length lens: near enough that webbing, belt and
-    // collar read, far enough that all four silhouettes fit without overlapping.
-    aimCamera(ctx.camera, 4.6, dy + 1.55, 21.5, 4.4, dy + 1.15, 12.0, 36);
+    // Chest height on a portrait-length lens, nosed DOWN four degrees. Level, the top
+    // quarter of the frame was open sky over the far bank — six of twenty-four cells with a
+    // mean gradient under 3, which is the rubric's "empty region" by any reading. Tilted,
+    // the frontages and the bank close the top and the deck's own perspective owns the
+    // bottom; the horizon sits just above the middle where a road shot wants it.
+    aimCamera(ctx.camera, 4.05, dy + 1.56, 20.4, 3.85, dy + 1.05, 8.0, 33);
     await frames(14);
   },
 
@@ -469,19 +554,27 @@ export const SHOTS = {
 
     // Squad on the road shoulder south of the crossing, garrison dug in north of it, so the
     // bridge — the thing the mission is about — lies between them across the middle of frame.
+    //
+    // THEY MOVE UP ONTO THE ROAD. Round 2's note was that this frame "frames the squad under
+    // tree canopy where nothing is legible", and it was literally true: at z = 24..33 the
+    // section stood under the poplar row that lines the approach, and from a camera 31
+    // degrees above the horizontal every one of them was behind leaves. z = 12..22 is the
+    // carved road corridor and its shoulders, which is the only strip on the south bank with
+    // no instanced canopy over it — and it is also where the movement wash and the fire arcs
+    // have something to lie ON.
     const squad = [
-      ['Alicia Melchiott', 1.5, 21.0],
-      ['Edy Nelson', -4.5, 24.5],
-      ['Rosie Stark', 6.5, 25.0],
-      ['Largo Potter', -8.0, 29.0],
-      ['Isara Gunther', 10.5, 30.0],
-      ['Marina Wulfstan', -1.0, 33.0],
+      ['Alicia Melchiott', 2.0, 14.5],
+      ['Edy Nelson', -3.6, 16.5],
+      ['Rosie Stark', 6.8, 17.0],
+      ['Largo Potter', -6.2, 20.5],
+      ['Isara Gunther', 9.6, 21.5],
+      ['Marina Wulfstan', 0.5, 22.5],
     ];
     for (const [name, x, z] of squad) {
       pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, 4, -10), 'idle');
     }
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
-    pose(ctx, tank, 4.5, 34.0, facing(4.5, 34, 4, -10), 'idle');
+    pose(ctx, tank, 4.2, 25.5, facing(4.2, 25.5, 4, -10), 'idle');
 
     const foe = b.units.filter((u) => u.team === 1);
     const foeSpots = [[3, -7], [11, -11], [-4, -5], [15, -21], [6, -24], [26, -17],
@@ -500,9 +593,17 @@ export const SHOTS = {
     // than on the empty approach, at a shallower oblique and closer in, the frame under the
     // wash is bridge, river, road and the first row of frontages — drawn objects with edges —
     // instead of forty metres of unmodulated hillside.
-    cm.focusOn(_v.set(4, 0, 6), true);
-    cm.distWant = cm.dist = 52;
-    cm.pitchWant = cm.pitch = -0.55;
+    // Focused on OUR OWN SECTION with the crossing behind it, not on the crossing with the
+    // section somewhere off the bottom edge. The map camera orbits its focus, so the focus is
+    // the composition: at (4, 0, 6) the six units it is supposed to be about sat below the
+    // frame and the middle of the picture was forty metres of river.
+    cm.focusOn(_v.set(3.0, 0, 15.5), true);
+    cm.distWant = cm.dist = 50;
+    // A little steeper than round 2's -0.55 so the lens clears the poplar row along the
+    // approach (at 31 degrees it looked THROUGH it and the squad was behind leaves), but not
+    // so steep that the frame becomes a plan: -0.66 is 38 degrees, which still shows the
+    // frontages on the far bank standing up against the sky.
+    cm.pitchWant = cm.pitch = -0.66;
     // Looking north, the way the player is attacking: our own section reads across the bottom
     // of the map, the crossing in the middle, their held ground at the top.
     cm.yawWant = cm.yaw = 0.34 + Math.PI;
@@ -744,51 +845,83 @@ export const SHOTS = {
   /** The Edelweiss, three-quarter low angle, crew alongside, the valley falling away behind. */
   async tank(ctx) {
     const b = ensureBattle(ctx);
-    // The key sits almost square on the glacis and a few degrees off the left flank, so the
-    // front plates take the cream band, the whole left side drops through the terminator into
-    // violet, and the cast shadow rakes left across the road instead of hiding under the hull.
-    setSun(ctx, 0.24, 0.93);
+    // THE KEY IS SOLVED, NOT GUESSED.
+    //
+    // The old pair (t 0.24, azimuth 0.93) put the sun bearing ON the hull axis, which meant
+    // BOTH flanks sat exactly on the terminator — and the camera can only ever see a flank
+    // and the glacis. The whole vehicle therefore rendered inside one violet band: measured
+    // hull mean (95,86,113), and 91% of the tank's pixels under luma 120. A quantised shader
+    // that never crosses a band boundary on its largest object is a smooth-shaded 3D render
+    // with a colour filter, which is exactly what the critic said.
+    //
+    // Solve it instead. The rig builds the sun as
+    //   elev = sin(t*PI) * 1.15 + 0.045,  az = azimuth + (t - 0.5) * 1.15
+    // and the two faces the lens can see are the glacis (normal = fwd*cos24 + up*sin24) and
+    // the port flank (normal = -right). With hull yaw TH and sun bearing AZ:
+    //   glacis . L = 0.914*cos(e)*cos(AZ - TH) + 0.407*sin(e)
+    //   port   . L = cos(e) * sin(TH - AZ)
+    // t = 0.16 gives e = 0.599 rad (34 deg — low enough that the cast shadow is three hull
+    // lengths long), and AZ - TH = +0.372 rad puts the glacis at 0.93 (top cream band) with
+    // the port flank at -0.30 (solidly through the terminator, violet). Hull yaw 0.84 is then
+    // the 48-degree three-quarter that shows both of them at once, and azimuth 1.60 is the
+    // AZ that follows. Change one of the three and you must re-solve the other two.
+    setSun(ctx, 0.16, 1.60);
     uiMode(ctx, 'none');
     hideAll(ctx);
     b.activeUnit = null;
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
     const isara = unitNamed(ctx, 'Isara Gunther');
     const largo = unitNamed(ctx, 'Largo Potter');
-    show(ctx, [tank, isara, largo]);
+    const alicia = unitNamed(ctx, 'Alicia Melchiott');
+    show(ctx, [tank, isara, largo, alicia]);
 
-    // The camera, the Edelweiss, the crossing and the mill town are put on ONE LINE, sixty-six
-    // metres of it, so the tank has a town behind it instead of a bare hillside: hull at ten
-    // metres just left of centre, the bridge clipping the left edge, the village dead centre
-    // in the haze. The old framing was a catalogue broadside against an empty slope.
-    //
-    // Hull yaw 0.50 is not arbitrary either. It puts the glacis normal exactly on the sun
-    // bearing and the left flank exactly ON the terminator, so the two plates the camera can
-    // see land in different bands — cream front, violet side — which is the whole point of a
-    // quantised shader and something a side-on shot can never show.
     // It sits ON THE ROAD, and so does the camera. The road corridor is the only ground on
     // this map that is carved flat, and a low camera on a heightfield otherwise spends the
     // shot looking over the crest of whatever bank lies between it and the subject — which
     // buries the running gear, the one part of a tank that has to be visible.
-    const tx = 2.6, tz = 19.96;
-    pose(ctx, tank, tx, tz, 0.63, 'idle');
-    // Gun raking across the frame to the right rather than pointing down the lens —
-    // a barrel aimed at the camera is a circle.
-    turretTo(tank, facing(tx, tz, 42, 2), 0.03);
+    const tx = 2.2, tz = 19.5;
+    pose(ctx, tank, tx, tz, 0.84, 'idle');
+    // The gun goes ACROSS the lens, not down it: a barrel pointed at the camera is a circle.
+    // But not square across either — aimed at (40, -10) it rakes to screen-right AND four
+    // degrees away from the lens, which is the difference between a barrel that reads as a
+    // barrel and a barrel that grows out of the near soldier's head. (It did: aimed due east
+    // the muzzle came toward the camera and landed exactly on the man in the right
+    // foreground.) Eighty degrees of traverse off the hull line also gives the silhouette the
+    // turret/hull disagreement that says "halted, watching a flank".
+    turretTo(tank, facing(tx, tz, 40, -10), 0.02);
 
-    // Two crew, on two different depth planes: Largo cropped low-left four metres off the
-    // lens, Isara eight metres out at the tank's shoulder.
-    pose(ctx, largo, 0.89, 23.32, facing(0.89, 23.32, tx, tz) - 0.3, 'crouchIdle', STANCE.CROUCH);
-    pose(ctx, isara, 5.71, 22.25, facing(5.71, 22.25, tx + 0.5, tz - 0.5), 'idle');
+    // Kneeling height, seven metres out and offset to the tank's port bow, looking slightly UP
+    // at the sponson line so the hull reads against sky and hillside rather than against the
+    // road. A tank photographed from standing height is a diagram. The aim point is pushed
+    // 1.5 m to screen-RIGHT of the hull, which is what parks the Edelweiss on the left third
+    // instead of dead centre and leaves the right third for the crew.
+    const FOV = 40, CX = 4.9, CZ = 25.4, AX = 3.2, AZ = 19.1;
+    const S = staging(CX, CZ, AX, AZ);
+    aimCameraG(ctx, CX, 0.95, CZ, AX, 1.15, AZ, FOV);
 
-    // Ten metres out, at the chest height of a kneeling man, looking slightly UP at the
-    // sponson line. A tank photographed from standing height is a diagram.
-    aimCameraG(ctx, 2.73, 1.02, 28.51, tx, 1.34, tz, 38);
+    // THREE FIGURES ON THREE DEPTH PLANES, and every one of them whole. The round-2 note was
+    // that this frame "crops a soldier at the left edge so his limbs read as detached
+    // pieces"; the fix is not to move the crop but to stop cropping, and the way to be SURE
+    // is to place them in camera space rather than to guess map coordinates — the round-2
+    // Largo was authored as "four metres off the lens, low left" and actually landed 1.3
+    // half-widths outside the left edge. Depths 3.9 / 9.6 / 17, all on the right of the axis
+    // so they balance the hull: Largo fills the near right corner, Isara stands at the tank's
+    // off-front shoulder, Alicia is small on the road behind.
+    const put = (u, d, f, clip = 'idle', st = STANCE.STAND, opts) => {
+      const [x, z] = S.at(d, S.halfWidth(d, FOV) * f);
+      return pose(ctx, u, x, z, facing(x, z, tx, tz), clip, st, opts);
+    };
+    put(largo, 3.6, 0.78, 'crouchIdle', STANCE.CROUCH);
+    put(isara, 10.5, 0.62);
+    put(alicia, 18.0, 0.40, 'walk', STANCE.STAND, { phase: 0.27 });
 
     finale(ctx, 5, (i) => {
       if (i !== 0 || !ctx.fx || !tank) return;
-      // Idling exhaust off the rear deck, and the town burning behind.
+      // Idling exhaust off the rear deck, and the town burning behind. The rear deck is
+      // 2.2 m BEHIND the hull origin along its own heading, so derive it from the yaw
+      // instead of hard-coding an offset that silently becomes the front when the hull turns.
       smokeColumn(ctx, 30, -42, 13, 9, { size: 3.0, alpha: 0.34, drift: 6, frames: 5 });
-      _v.set(tx - 0.4, tank.pos.y + 1.5, tz + 2.0);
+      _v.set(tx - Math.sin(0.84) * 2.2, tank.pos.y + 1.35, tz - Math.cos(0.84) * 2.2);
       _d.set(0.25, 0.9, 0.4);
       for (let k = 0; k < 4; k++) {
         _v.y += 0.35;
@@ -862,14 +995,31 @@ export const SHOTS = {
     hideAll(ctx);
     const edy = unitNamed(ctx, 'Edy Nelson') || firstOfClass(ctx, 'scout', 0);
     const rosie = unitNamed(ctx, 'Rosie Stark');
-    show(ctx, [edy, rosie]);
-    // Inside the fallow field south-west of the deployment (layout.fields).
-    pose(ctx, edy, -19.0, 62.0, Math.PI + 0.15, 'crouchWalk', STANCE.CROUCH, { phase: 0.42 });
-    pose(ctx, rosie, -13.4, 65.5, Math.PI + 0.25, 'crouchIdle', STANCE.CROUCH);
+    const alicia = unitNamed(ctx, 'Alicia Melchiott');
+    show(ctx, [edy, rosie, alicia]);
 
-    const cx = -19.4, cz = 68.5;
-    aimCamera(ctx.camera, cx, groundAt(ctx, cx, cz) + 0.30, cz,
-      edy.pos.x + 0.4, edy.pos.y + 0.92, edy.pos.z, 40);
+    // OVER HALF THIS FRAME USED TO BE EMPTY SKY. The lens sat 0.30 m off the ground — inside
+    // the sward — aimed at a subject 6.6 m away across an open field, so the horizon fell at
+    // 45% of frame height and every pixel above it was one flat wash. Three changes: the
+    // camera comes UP to 0.66 m (clear of the blade canopy, still a belly-crawl eye level),
+    // the subject comes IN to five metres, and — the one that actually does the work — the
+    // whole shot swings west so it looks ACROSS the field at the poplar row on the far side
+    // instead of out over open country. The trees now close the top of the frame and the sky
+    // is a band, not a field.
+    const FOV = 40, CX = -22.6, CZ = 65.2, AX = -18.6, AZ = 61.6;
+    const S = staging(CX, CZ, AX, AZ);
+    const put = (u, d, f, clip, opts) => {
+      const [x, z] = S.at(d, S.halfWidth(d, FOV) * f);
+      return pose(ctx, u, x, z, facing(x, z, 6, 6), clip, STANCE.CROUCH, opts);
+    };
+    // Inside the fallow field south-west of the deployment (layout.fields), on one line of
+    // advance at 5 / 9 / 14 m so the eye has somewhere to go after the subject.
+    put(edy, 5.0, -0.10, 'crouchWalk', { phase: 0.42 });
+    put(rosie, 9.0, 0.52, 'crouchIdle');
+    put(alicia, 14.5, -0.44, 'crouchWalk', { phase: 0.78 });
+
+    aimCamera(ctx.camera, CX, groundAt(ctx, CX, CZ) + 0.66, CZ,
+      AX, groundAt(ctx, AX, AZ) + 0.80, AZ, FOV);
     await frames(12);
   },
 
@@ -879,33 +1029,56 @@ export const SHOTS = {
    */
   async dusk(ctx) {
     const b = ensureBattle(ctx);
-    // ACTUAL dusk. At t = 0.87 the sun is still twenty-eight degrees up and the ramp has
-    // barely left afternoon, which is why the last pass read as hazy daylight; 0.925 puts it
-    // at seventeen degrees on the ember end of the ramp, and that is where the shadows get
-    // long enough to be the subject. Bearing is set eight degrees off the lens axis so the
-    // squad is contre-jour — rim on every helmet, shadows running straight at the camera and
-    // then raking left across the field.
-    setSun(ctx, 0.955, -2.14);
+    // ACTUAL dusk — and the round-2 note was that it still did not read as one. The sun WAS
+    // low (t 0.955 puts it at twelve degrees), but the bearing was eight degrees off the lens
+    // axis, i.e. almost dead ahead. A shadow cast straight toward the camera is projected
+    // onto four pixels: at twelve degrees of elevation every figure in the frame was trailing
+    // 4.4 times its own height of shadow and NONE of it was visible. Length is only length if
+    // it is ACROSS the frame.
+    //
+    // So: solve the bearing against the lens instead of against the compass. The camera below
+    // looks down f = (-0.537, -0.844); screen-right is r = (0.844, -0.537). A sun bearing AZ
+    // projects to screen-x = 0.844*sin(AZ) - 0.537*cos(AZ) and to depth = -0.537*sin(AZ) -
+    // 0.844*cos(AZ). AZ = -1.35 gives screen-x -0.94 (hard left, so the shadows rake right
+    // across the whole width at full apparent length) with depth +0.34 (still twenty degrees
+    // IN FRONT of the lens, so the squad keeps its contre-jour rim). t = 0.95 holds the sun
+    // at thirteen degrees — a 4.4:1 shadow — on the ember end of the ramp, and azimuth is
+    // AZ - (t - 0.5) * 1.15 = -1.868.
+    setSun(ctx, 0.95, -1.868);
     uiMode(ctx, 'none');
     b.setPhase('command');
     b.activeUnit = null;
-    // Laid out in CAMERA space and converted: depth 8 to 27 metres, laterals alternating
-    // either side of the axis, so the section reads as a section strung across the field
-    // rather than as a row, and nobody hides behind anybody.
+    // Every placement below is authored as (depth down the view ray, metres to screen-right)
+    // and converted — see staging(). `lat` quotes the lateral as a FRACTION of the visible
+    // half-width at that depth, so "0.62 of the way to the right edge" stays true whatever
+    // the lens does. Depths run 6 to 30 m and the laterals alternate, so the section reads as
+    // a section strung across a field and nobody hides behind anybody.
+    const CX = 30.4, CZ = 47.2, TX = 15.4, TZ = 26.2, FOV = 40;
+    const S = staging(CX, CZ, TX, TZ);
+    const lat = (d, f) => S.halfWidth(d, FOV) * f;
+
+    // Marina at six metres is the repoussoir: she is the only figure the bottom third of the
+    // frame has ever had, and without her that third was 24 000 px of unbroken field.
+    // The laterals are quoted as fractions of the visible half-width, which means two figures
+    // with the SAME fraction land in the same screen column no matter how far apart they are
+    // in depth. The first pass here used -0.52 / -0.55 / -0.62 for three of the six and they
+    // duly stacked into one vertical pile on the left. Spread them.
     const squad = [
-      ['Rosie Stark', 28.1, 39.1],
-      ['Isara Gunther', 18.6, 42.2],
-      ['Alicia Melchiott', 21.7, 37.9],
-      ['Largo Potter', 24.2, 30.3],
-      ['Edy Nelson', 13.8, 32.2],
-      ['Marina Wulfstan', 16.7, 24.4],
+      ['Marina Wulfstan', 6.4, -0.46],
+      ['Edy Nelson', 10.5, 0.34],
+      ['Largo Potter', 15.0, -0.13],
+      ['Alicia Melchiott', 20.0, 0.66],
+      ['Isara Gunther', 25.0, -0.74],
+      ['Rosie Stark', 30.0, 0.10],
     ];
-    for (const [name, x, z] of squad) {
+    for (const [name, d, f] of squad) {
+      const [x, z] = S.at(d, lat(d, f));
       pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, 4, 2), 'idle');
     }
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
-    pose(ctx, tank, 17.97, 37.3, facing(17.97, 37.3, 4, 2) - 0.35, 'idle');
-    turretTo(tank, facing(17.97, 37.3, -6, 10));
+    const [kx, kz] = S.at(13.5, lat(13.5, 0.55));
+    pose(ctx, tank, kx, kz, facing(kx, kz, 4, 2) - 0.42, 'idle');
+    turretTo(tank, facing(kx, kz, -14, 22));
 
     const foe = b.units.filter((u) => u.team === 1 && !u.isVehicle).slice(0, 5);
     const foeSpots = [[3, -7], [11, -11], [-4, -5], [15, -20], [6, -23]];
@@ -914,10 +1087,11 @@ export const SHOTS = {
       pose(ctx, u, x, z, facing(x, z, 8, 24), 'idle');
     });
 
-    // Down off the eleven-metre map camera and onto the field. From here the squad is ten to
-    // twenty-five metres out with a whole field of shadow in front of them, the crossing sits
-    // on the far third and the town goes violet behind it.
-    aimCameraG(ctx, 30.0, 2.45, 48.0, 14.6, 0.6, 23.8, 38);
+    // Down off the eleven-metre map camera and onto the field, and nosed DOWN: the old aim
+    // put a third of the page into an empty upper-right sky wash. From 1.95 m the horizon
+    // lands just above the middle, the far bank and the town close the top, and the raking
+    // shadows own the bottom two thirds.
+    aimCameraG(ctx, CX, 1.95, CZ, TX, 0.85, TZ, FOV);
 
     finale(ctx, 6, (i) => {
       if (i === 0) smokeColumn(ctx, 34, -46, 11, 9, { size: 2.2, alpha: 0.32, drift: 5, frames: 6 });

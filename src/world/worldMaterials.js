@@ -18,7 +18,10 @@
 import * as THREE from 'three';
 import * as Mats from '../render/materials.js';
 import { CFG } from '../core/config.js';
-import { paperTexture } from './textures.js';
+// ONE substrate for the whole frame. The world used to synthesise its own
+// paper here; two different sheets under one painting is a tell all by itself,
+// and the render module's is now the isotropic cold-press build.
+import { getPaperTexture } from '../render/textures.js';
 
 // ---------------------------------------------------------------------------
 // palette — the whole world draws from this
@@ -53,8 +56,14 @@ export const PALETTE = {
   // the bridge and every retaining wall came out as a lavender slab — the
   // coldest thing in frame and off the palette. Let vcShadowColour supply the
   // violet where the light actually falls away.
-  stone: 0xa39a8c,
-  stoneWarm: 0xa79a8c,
+  //
+  // Lifted in round 3: at 0xa39a8c the lit parapet still only reached L 152 and
+  // measured hue 306 — the whole structure was sitting in the shade washes, so
+  // there was no lit band on it anywhere and the ashlar coursing rendered as a
+  // flat lavender engraving on ~25% of the firefight frame. A limestone parapet
+  // in full sun is a light warm grey; author it as one.
+  stone: 0xbdb09a,
+  stoneWarm: 0xc0b096,
   brick: 0xa15b46,
   timber: 0x7d5c3c,
   timberDark: 0x5b4229,
@@ -220,7 +229,13 @@ const NPR_BODY = /* glsl */ `
   // Paper grain. Kept small: the frame already gets its cold-press tooth from
   // the grade pass, and a 26% multiply here would flatten every plateau the
   // quantiser just built.
-  float npMid = 1.0 - abs(npQ * 2.0 - 1.0);
+  //
+  // The window is evaluated on the DISPLAY value, not on a linear one. Round 2
+  // used 1 - abs(l*2-1) on a linear luminance, which peaks at a display value
+  // of 0.73 — a highlight — and rolls off through the true midtones, i.e. it is
+  // loudest exactly where the rubric says the grain must vanish.
+  float npDisp = pow(clamp(npQ, 0.0, 1.0), 0.4545);
+  float npMid = smoothstep(0.06, 0.26, npDisp) * (1.0 - smoothstep(0.52, 0.82, npDisp));
   npCol *= mix(1.0, 0.93 + npFibre2 * 0.14, uPaper * npMid);
 
   // Lift the black point to a warm brown-violet.
@@ -295,7 +310,7 @@ function nprUniforms(opts) {
     uMidTint: { value: new THREE.Color(opts.midTint ?? 0xd8cfc0) },
     uShadeTint: { value: new THREE.Color(opts.shadeTint ?? 0x4b4270) },
     uFloorCol: { value: new THREE.Color(opts.floorCol ?? 0x231d26) },
-    uPaperTex: { value: paperTexture(512, 77) },
+    uPaperTex: { value: getPaperTexture() },
   };
 }
 
@@ -414,18 +429,73 @@ function tryRender(fn, opts, needs) {
 // public factories
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// surface archetypes
+// ---------------------------------------------------------------------------
+// Pigment character per material family. Round 2 scored `materials` 3-5 on
+// every shot with the same note each time — "untextured primitives", "one flat
+// lavender-grey stucco fill", "a flat field with scattered light rectangles",
+// "flat lavender poles" — and the cause was always that nothing moved the BAND
+// DRIVE across the object, so the whole thing landed inside one wash.
+//
+// These presets feed src/render/materials.js's pigment structure: a per-block
+// tonal offset for anything laid in courses, and a circumferential fissure field
+// for anything cylindrical. Both go into the drive, so they express themselves
+// as patches of the neighbouring wash with their own wet edge, which is how a
+// painted wall or a painted trunk is actually built up.
+//
+// Pass `surface: '<name>'` to makeSurfaceMaterial; any explicit opt overrides.
+export const SURFACE_PIGMENT = {
+  //            block m  tone  fissure  freq   other
+  masonry:  { blockSize: 0.42, blockTone: 0.115, pigLevels: 15 },
+  brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15 },
+  stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35 },
+  tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14 },
+  timber:   { fissure: 0.075, fissureFreq: 3.4, pigLevels: 13 },
+  bark:     { fissure: 0.135, fissureFreq: 2.6, pigLevels: 12, curvature: 0.22 },
+  metal:    { pigLevels: 12, grain: 0.25 },
+  cloth:    { pigLevels: 12, grain: 0.38 },
+};
+
 /**
  * Opaque surface: buildings, props, bridges, tree trunks.
+ *
  * opts: { color, map, vertexColors, side, roughness, hatch, rim, flatShading,
- *         outline, transparent, alphaTest }
+ *         outline, transparent, alphaTest,
+ *
+ *         surface,        one of SURFACE_PIGMENT — pigment character preset
+ *
+ *   ...and the full band-quantiser set, all forwarded straight through to
+ *   src/render/materials.js (they used to be unreachable from here, which is
+ *   why callers were reaching into `mat.uniforms` by hand):
+ *         bands, bandBleed, wrap, contrast, lightBias, shadeCool, wetPx,
+ *         keyGain, fillGain, violet, cream, driveRange, curvature,
+ *         pigQ, pigLevels, grain, blockSize, blockTone, fissure, fissureFreq,
+ *         blotch, blotchScale, toothScale, spec, weave, mapFlat, mapDrive,
+ *         shadowSoften, subsurface, hatchSpacing }
  */
+const NPR_FORWARD = [
+  'bands', 'bandBleed', 'wrap', 'contrast', 'lightBias', 'shadeCool', 'wetPx',
+  'keyGain', 'fillGain', 'violet', 'cream', 'driveRange', 'curvature',
+  'pigQ', 'pigLevels', 'grain', 'blockSize', 'blockTone', 'fissure', 'fissureFreq',
+  'blotch', 'blotchScale', 'toothScale', 'spec', 'weave', 'mapFlat', 'mapDrive',
+  'shadowSoften', 'subsurface', 'hatchSpacing', 'emissive', 'emissiveIntensity',
+];
+
+function forwardNpr(dst, opts) {
+  const preset = opts.surface ? SURFACE_PIGMENT[opts.surface] : null;
+  if (preset) Object.assign(dst, preset);
+  for (const k of NPR_FORWARD) if (opts[k] !== undefined) dst[k] = opts[k];
+  return dst;
+}
+
 export function makeSurfaceMaterial(opts = {}) {
   const needs = ['vertexColors'];
   if (opts.instanced) needs.push('instancing');
   if (opts.map) needs.push('map');
   if (opts.alphaTest) needs.push('alphaTest');
   const m =
-    tryRender(Mats.makeCanvasMaterial, {
+    tryRender(Mats.makeCanvasMaterial, forwardNpr({
       color: opts.color ?? 0xffffff,
       map: opts.map || null,
       // World geometry carries world-scaled triplanar UVs already (worldUV),
@@ -442,7 +512,7 @@ export function makeSurfaceMaterial(opts = {}) {
       alphaTest: opts.alphaTest ?? 0,
       outline: opts.outline ?? true,
       outlineWidth: opts.outlineWidth ?? CFG.render.outlineWidth,
-    }, needs) || makeFallbackSurface({ ...opts, vertexColors: opts.vertexColors ?? true });
+    }, opts), needs) || makeFallbackSurface({ ...opts, vertexColors: opts.vertexColors ?? true });
   return m;
 }
 
@@ -463,7 +533,7 @@ export function makeSurfaceMaterial(opts = {}) {
  */
 export function makeTerrainSurfaceMaterial(opts = {}) {
   const m =
-    tryRender(Mats.makeTerrainMaterial, {
+    tryRender(Mats.makeTerrainMaterial, forwardNpr({
       splatFromVertexColor: false,
       vertexColors: true,
       grass: opts.grass ?? PALETTE.grass,
@@ -484,7 +554,7 @@ export function makeTerrainSurfaceMaterial(opts = {}) {
       bands: CFG.render.bands,
       outline: false,
       color: 0xffffff,
-    }, ['vertexColors']) ||
+    }, opts), ['vertexColors']) ||
     makeFallbackSurface({
       color: 0xffffff,
       vertexColors: true,
@@ -505,7 +575,7 @@ export function makeFoliageMaterial(opts = {}) {
   const needs = ['alphaTest', 'wind'];
   if (opts.instanced) needs.push('instancing');
   const m =
-    tryRender(Mats.makeGrassMaterial, {
+    tryRender(Mats.makeGrassMaterial, forwardNpr({
       // src/render's grass material names its knobs rootColor/tipColor/sway/
       // bladeHeight; ours are colour/windStrength/windHeight. Send both so
       // whichever factory answers gets what it understands.
@@ -527,7 +597,7 @@ export function makeFoliageMaterial(opts = {}) {
       rim: opts.rim ?? 1.2,
       hatch: opts.hatch ?? 0.35,
       subsurface: opts.subsurface ?? 0.55,
-    }, needs) ||
+    }, opts), needs) ||
     makeFallbackSurface({
       ...opts,
       wind: true,

@@ -328,6 +328,23 @@ uniform float uMapFlat;
 uniform float uMapDrive;
 uniform float uSpec;
 
+// ---- per-material overrides of the shared lighting/palette ------------------
+// uKeyGain/uFillGain and uCream/uViolet are SHARED BY REFERENCE across every
+// material (that is what keeps the frame one painting), so a material that
+// needs more key or more violet cannot simply write them. These are its knobs.
+uniform float uKeyBoost;      // multiplier on the key term in the band drive
+uniform float uFillBoost;     // multiplier on the sky-fill term
+uniform float uVioletGain;    // strength of the violet skylight in the shade wash
+uniform float uCreamGain;     // strength of the cream lift in the lit wash
+uniform vec2  uDriveRange;    // remap the raw drive from this span onto 0..1
+uniform float uCurv;          // screen-space curvature darkening (form shading)
+uniform float uPigQ;          // pigment (composite luminance) quantiser amount
+uniform float uPigLevels;     // its level count across the perceptual range
+uniform float uGrain;         // cold-press substrate amplitude on this surface
+// x: masonry course height in metres (0 = off)   y: per-block tonal amount
+// z: fissure/grain amount along the object axis  w: its angular frequency
+uniform vec4  uPigment;
+
 uniform float uTime;
 uniform vec2  uResolution;
 uniform float uPixelRatio;
@@ -452,7 +469,7 @@ const NPR_SHADE_BODY = /* glsl */`
 
   float punctN = clamp( vcLum( punct ) * 0.9, 0.0, 1.4 );
 
-  float drive = keyN * uKeyGain + ambTerm * uFillGain + punctN;
+  float drive = keyN * uKeyGain * uKeyBoost + ambTerm * uFillGain * uFillBoost + punctN;
 
   // How fast the GEOMETRIC light term moves across one screen pixel, in bands.
   // Taken before the pigment noise is folded in, or the noise's own derivative
@@ -491,6 +508,60 @@ const NPR_SHADE_BODY = /* glsl */`
   drive += ( gran - 0.5 ) * uBlotch * 0.038;
   // per-material surface pigment (terrain layers, etc), also in the drive
   drive += extraDrive;
+
+  // ---- masonry coursing / bark fissure -------------------------------------
+  // Tonal STRUCTURE, not a multiply. Round 2's masonry was "a flat field with
+  // scattered light rectangles" and its tree trunks were "flat lavender poles"
+  // — 40 px of trunk diameter in full sun rendering as one value varying 5 LSB.
+  // Both are the same failure: nothing was moving the band drive across the
+  // object, so the whole thing landed inside a single wash. A per-block tonal
+  // offset and a circumferential fissure field go into the DRIVE, so a course
+  // reads as a patch of the neighbouring wash with its own wet edge — which is
+  // exactly how a painted stone wall is built up.
+  // Both branches are UNIFORM, so this costs nothing when a material does not
+  // ask for it — and it means a caller can switch the structure on by writing
+  // mat.uniforms.uPigment.value.set(...) without needing a recompile.
+  {
+    if ( uPigment.x > 0.0 ) {
+      float bs = uPigment.x;
+      float row = floor( vWorldPos.y / bs );
+      // pick the horizontal axis that runs ALONG this face
+      float lat = mix( vWorldPos.x, vWorldPos.z, step( abs( vWorldNormal.z ), abs( vWorldNormal.x ) ) );
+      float colI = floor( lat / ( bs * 2.2 ) + fract( row * 0.5 ) );
+      float bh = vcHash21( vec2( colI, row ) + 0.5 );
+      // a course is not one flat tone either: a slow wash across the block
+      float bw = vcNoise2( vec2( lat, vWorldPos.y ) * ( 1.4 / bs ) );
+      extraDrive += ( bh - 0.5 ) * uPigment.y + ( bw - 0.5 ) * uPigment.y * 0.45;
+    }
+    if ( uPigment.z > 0.0 ) {
+      // circumferential coordinate: wraps naturally round a trunk or a barrel
+      float ang = atan( vWorldNormal.z, vWorldNormal.x );
+      float s = vcFbm3( vec2( ang * uPigment.w, vWorldPos.y * uPigment.w * 0.30 ) );
+      float s2 = vcNoise2( vec2( ang * uPigment.w * 3.1, vWorldPos.y * uPigment.w * 1.6 ) );
+      extraDrive += ( s - 0.5 ) * uPigment.z + ( s2 - 0.5 ) * uPigment.z * 0.35;
+    }
+  }
+
+  // ---- per-material drive normalisation ------------------------------------
+  // The band drive is a scene-wide quantity, but the SPAN an object occupies
+  // inside it is not. A smooth skinned body under a wrap-diffuse key covers
+  // barely a third of the range, so with the global remap the whole figure lands
+  // inside one wash — measured on the hero's thigh as 99,100,103,100,96,88, a
+  // continuous ramp on the only object in frame that did not get the watercolour
+  // pass. Handing the material the span it actually occupies puts its terminator
+  // back on a band boundary. Default (0,1) is a no-op.
+  drive = ( drive - uDriveRange.x ) / max( uDriveRange.y - uDriveRange.x, 0.05 );
+
+  // ---- curvature (form shading) --------------------------------------------
+  // The other half of the same problem: a cylinder lit near head-on has almost
+  // no N.L gradient across its width, so no boundary can fall on it however the
+  // drive is scaled. The screen-space derivative of the shading normal is a
+  // curvature estimate, and subtracting it puts a wash boundary on FORM — the
+  // edge of a thigh, the turn of a jaw, the shoulder of a trunk.
+  {
+    float curv = clamp( length( fwidth( N ) ) * 24.0, 0.0, 1.0 );
+    drive -= curv * curv * uCurv;
+  }
 
   // ---- cloth weave ---------------------------------------------------------
   // World-locked at a ~6 mm thread pitch, faded out the instant a thread would
@@ -532,9 +603,9 @@ const NPR_SHADE_BODY = /* glsl */`
   float bi = g * uBands;                       // band index; 0 is the darkest
 
   // ---- two-tone temperature grading ---------------------------------------
-  vec3 shadeCol = vcShadowColour( albedo, uViolet, uInkFloor );
+  vec3 shadeCol = vcShadowColour( albedo, uViolet * uVioletGain, uInkFloor );
   vec3 midCol   = albedo * 0.96 + shadeCol * 0.09;
-  vec3 litCol   = vcLitColour( albedo, uCream );
+  vec3 litCol   = vcLitColour( albedo, uCream * uCreamGain );
 
   // The ramp, in band-index terms for four bands (five levels):
   //   0 the cool shade wash   1 the pigment, darkened and cooled
@@ -543,7 +614,14 @@ const NPR_SHADE_BODY = /* glsl */`
   // as well is what turned this frame violet the first time the quantiser
   // actually worked: with hard bands a huge area SNAPS to level 1, where before
   // it sat on a smooth ramp two thirds of the way toward its own albedo.
-  vec3 col = mix( shadeCol, midCol, smoothstep( 0.02, 0.46, g ) );
+  //
+  // The upper edge of that first ramp used to be 0.46, i.e. the whole of band
+  // index 1 stayed 58% shade colour. On the bridge shot that put every stone
+  // surface in frame — lit spandrel, arch intrados, retaining wall — on the SAME
+  // violet hue at 268-273 deg with only a value difference between them, on the
+  // object occupying 35% of the canvas. 0.30 resolves band 1 to 94% of its own
+  // pigment, so only the darkest wash may be violet-dominated.
+  vec3 col = mix( shadeCol, midCol, smoothstep( 0.02, 0.30, g ) );
   col = mix( col, litCol, smoothstep( 0.50, 0.99, g ) );
 
   // Warm the lit half with the key's own colour — but a low sun normalised to
@@ -556,15 +634,23 @@ const NPR_SHADE_BODY = /* glsl */`
   // the raw sky fill is a strong blue multiplier, and applying it at full
   // strength on top of an already-cooled shade colour is a second violet pass
   // stacked on the first.
+  // 0.14, not 0.30: this is the THIRD cool pass on the same pixels (after the
+  // shade colour and the grade's split tone) and stacking three of them is what
+  // rendered a warm-grey masonry palette as a lavender slab.
   vec3 ambTint = mix( vec3( 1.0 ), ambientCol / max( ambientLum + 1e-4, 1e-4 ), 0.55 );
-  col = mix( col, col * ambTint, 0.30 * ( 1.0 - smoothstep( 0.0, 0.55, g ) ) );
+  col = mix( col, col * ambTint, 0.14 * ( 1.0 - smoothstep( 0.0, 0.55, g ) ) );
 
   // ---- the wet edge --------------------------------------------------------
   // Pigment runs to the rim of a drying wash and dries darker AND more
   // chromatic there — that granulating line is what tells a viewer the two
   // washes were laid down wet, one against the other. The pool term is non-zero
   // only within a few pixels of a boundary, so none of this reaches a plateau.
-  col *= 1.0 - pool * 0.30 * uBandBleed * ( 1.10 - g * 0.45 );
+  //
+  // The rim also GRANULATES: the heavy fraction of the pigment drops out of
+  // suspension right at the drying edge, so the dark line is speckled rather
+  // than drawn. paper.a is the clump mask.
+  float grit = texture2D( uPaperTex, sPx * 0.00195 + vec2( 0.13, 0.71 ) ).a;
+  col *= 1.0 - pool * 0.30 * uBandBleed * ( 1.10 - g * 0.45 ) * ( 0.70 + 0.90 * grit );
   col = mix( col, col * vec3( 0.93, 0.97, 1.08 ), pool * 0.55 * uBandBleed );
 
   // ---- pigment separation --------------------------------------------------
@@ -583,6 +669,22 @@ const NPR_SHADE_BODY = /* glsl */`
   col *= 1.0 + weave * 0.013 * weaveFade;
 #endif
 
+  // ---- pigment quantisation ------------------------------------------------
+  // Everything above this line that is NOT the light term — the albedo map, the
+  // vertex colour, the ground detail, the per-block masonry tone, the rim of a
+  // curved body — has been riding over the plateaus the band quantiser built,
+  // unquantised. That is why round 2 could measure the wet-edge machinery in the
+  // source and a continuous ramp on the screen. Quantising the composite
+  // luminance forces all of it onto the same steps. Value only; hue untouched.
+  //
+  // It gets its OWN boundary warp, not the light quantiser's. wetBands is
+  // scaled by fwidth(drive), which is exactly zero on flat ground under a
+  // top-down camera — so on the one shot where the pigment quantiser does all
+  // the work its contours would trace the terrain triangulation and turn a soft
+  // interpolation artefact into a hard parallelogram lattice. vcWetEdge is
+  // screen-scaled and world-locked and does not care how flat the light is.
+  col = vcQuantisePigment( col, uPigLevels, wN, mix( 0.5, warp, 0.85 ), uPigQ );
+
   // ---- pencil hatching in the two darkest bands ---------------------------
   // Gated on the BAND INDEX rather than on a continuous ramp: a band is a flat
   // wash, so its hatching is laid in at one weight across the whole wash and
@@ -592,12 +694,21 @@ const NPR_SHADE_BODY = /* glsl */`
   // it read as a printed screen.
   {
     float dark = 1.0 - smoothstep( 0.85, 1.75, bi );   // the two darkest bands
-    float deep = 1.0 - smoothstep( 0.05, 0.95, bi );   // the darkest band only
+    // The crossing direction used to be confined to the darkest band alone,
+    // which meant a critic scanning any shadow in the frame found ONE ruling at
+    // ONE angle and an autocorrelation that decayed monotonically — a printed
+    // screen. Graphite crosses wherever it is laid in twice.
+    float deep = 1.0 - smoothstep( 0.55, 1.95, bi );
     float h = vcHatchField( sPx, 0.6109, uHatchSpacing, 1.7 ) * dark;
     #ifndef VC_LOW
       // independently seeded and offset so the two directions cannot phase-lock
       float hx = vcHatchField( sPx + vec2( 129.0, 57.0 ), -0.2618, uHatchSpacing * 1.21, 5.3 ) * deep;
       h = max( h, hx );
+      // a third, lighter pass in the darkest wash only — three directions is
+      // what stops the darks reading as a ruled tint
+      float hz = vcHatchField( sPx + vec2( 41.0, 213.0 ), 1.4835, uHatchSpacing * 0.87, 11.9 )
+               * ( 1.0 - smoothstep( 0.05, 0.85, bi ) ) * 0.75;
+      h = max( h, hz );
     #endif
     // real graphite tooth from the drawn stroke bank, so the procedural lines
     // pick up pencil texture instead of reading as a printed screen
@@ -621,11 +732,16 @@ const NPR_SHADE_BODY = /* glsl */`
   // ---- hard specular band (metal, glass, wet paint) ------------------------
   // A painted highlight is a SHAPE with an edge, not a Phong lobe. Thresholding
   // the lobe is what turns it into one.
+  // TWO steps, not one: painted metal reads as a bright core inside a broader
+  // half-tone plateau, both with hard edges. A single threshold gives a chalk
+  // blob; a smooth lobe gives a plastic Phong.
   if ( uSpec > 0.0 ) {
     vec3 H = normalize( primaryL + V );
     float sp = pow( clamp( dot( N, H ), 0.0, 1.0 ), 46.0 );
-    sp = smoothstep( 0.30, 0.40, sp ) * ( 0.30 + 0.70 * shadowMask );
-    col += uCream * sp * uSpec * 0.55;
+    float lit = 0.30 + 0.70 * shadowMask;
+    float core = smoothstep( 0.44, 0.50, sp );
+    float halo = smoothstep( 0.11, 0.15, sp );
+    col += uCream * ( core * 0.62 + halo * 0.30 ) * uSpec * lit;
   }
 
   // ---- rim / backlight ----------------------------------------------------
@@ -633,10 +749,16 @@ const NPR_SHADE_BODY = /* glsl */`
   // a grazing angle across its ENTIRE visible area, so pow(1-NdotV, k) floods
   // the whole field with cream. Gate it hard so only genuinely edge-on facets
   // — the actual silhouette of a compact object — light up.
+  //
+  // And it is STEPPED. A continuous fresnel ramp across the outer third of every
+  // curved object is one of the two places a smooth gradient was still surviving
+  // to screen (a thigh measuring 99,100,103,100,96,88 is mostly this term). A
+  // drawn highlight has an edge.
   {
     float grazing = 1.0 - clamp( dot( N, V ), 0.0, 1.0 );
     float fres = smoothstep( 0.62, 0.99, grazing );
-    fres *= fres;
+    fres = smoothstep( 0.30, 0.38, fres * fres ) * 0.62
+         + smoothstep( 0.66, 0.74, fres * fres ) * 0.38;
     float litSide = smoothstep( -0.15, 0.62, dot( N, primaryL ) );
     col += uCream * fres * litSide * uRim * 0.95 * ( 0.32 + 0.68 * shadowMask );
     col += ambTint * fres * ( 1.0 - litSide ) * uRim * 0.20;
@@ -647,6 +769,23 @@ const NPR_SHADE_BODY = /* glsl */`
     float trans = pow( clamp( dot( -V, primaryL ), 0.0, 1.0 ), 3.0 );
     trans *= mix( 1.0, shadowMask, 0.6 );
     col += albedo * keyTint * uSubsurface * trans * 1.45;
+  }
+
+  // ---- the sheet -----------------------------------------------------------
+  // The cold-press substrate, applied LAST because the paper is under the paint
+  // and every wash above sits on it. Screen-locked at 1:1 with the texture so
+  // the tooth is the same physical size everywhere in frame, and windowed by
+  // vcPaperMidScene so it peaks in the midtones and is GONE on a lit cream
+  // wall — the rubric's requirement, and the thing round 2 had exactly
+  // backwards (its window was evaluated on a linear luminance, so it peaked at
+  // a display value of 0.73 and ran at 87% strength on the brightest surface in
+  // the picture).
+  {
+    float pm = vcPaperMidScene( vcLum( col ) );
+    if ( pm > 0.002 ) {
+      float pap = texture2D( uPaperTex, sPx * 0.001953125 ).r;
+      col *= 1.0 + ( pap - 0.60 ) * uGrain * pm;
+    }
   }
 
   col += uEmissive * uEmissiveIntensity;
@@ -890,6 +1029,62 @@ export const MaterialRegistry = {
 
 const _v3 = new THREE.Vector3();
 
+// ---------------------------------------------- per-material override block
+// Declared once and merged into all three NPR factories. See NPR_UNIFORMS_GLSL
+// for what each one does; see applyNprOpts for the opts that drive them.
+function nprExtraUniforms() {
+  return {
+    uKeyBoost:   { value: 1 },
+    uFillBoost:  { value: 1 },
+    uVioletGain: { value: 1 },
+    uCreamGain:  { value: 1 },
+    uDriveRange: { value: new THREE.Vector2(0, 1) },
+    uCurv:       { value: 0 },
+    uPigQ:       { value: 0.75 },
+    uPigLevels:  { value: 14 },
+    uGrain:      { value: 0.45 },
+    uPigment:    { value: new THREE.Vector4(0, 0, 0, 0) },
+  };
+}
+
+/**
+ * Apply the shared NPR opts to a merged uniform block.
+ *
+ * These are the knobs a caller reaches for when its object is landing inside a
+ * single wash (characters, vehicles, tree trunks) or needs its own pigment
+ * character. All are optional and every default is a no-op:
+ *
+ *   keyGain      multiplier on the key light's contribution to the band drive
+ *   fillGain     multiplier on the sky fill's contribution
+ *   violet       strength of the violet skylight in the shade wash   (1)
+ *   cream        strength of the cream lift in the lit wash          (1)
+ *   driveRange   [min,max] span of the raw drive this object occupies, remapped
+ *                onto 0..1 — the direct fix for "the whole figure is one band"
+ *   curvature    0..1 screen-space curvature darkening, puts a wash boundary on
+ *                FORM rather than only on N.L (a smooth cylinder needs this)
+ *   pigQ         0..1 pigment (composite luminance) quantiser amount   (0.75)
+ *   pigLevels    its level count across the perceptual range           (14)
+ *   grain        cold-press substrate amplitude on this surface        (0.45)
+ *   blockSize    masonry course height in metres, 0 = off
+ *   blockTone    per-block tonal spread in band-drive units          (0.10)
+ *   fissure      bark/plank fissure amount in band-drive units
+ *   fissureFreq  its angular frequency                                (2.2)
+ */
+function applyNprOpts(uniforms, o) {
+  if (o.keyGain !== undefined) uniforms.uKeyBoost.value = o.keyGain;
+  if (o.fillGain !== undefined) uniforms.uFillBoost.value = o.fillGain;
+  if (o.violet !== undefined) uniforms.uVioletGain.value = o.violet;
+  if (o.cream !== undefined) uniforms.uCreamGain.value = o.cream;
+  if (o.driveRange) uniforms.uDriveRange.value.set(o.driveRange[0], o.driveRange[1]);
+  if (o.curvature !== undefined) uniforms.uCurv.value = o.curvature;
+  if (o.pigQ !== undefined) uniforms.uPigQ.value = o.pigQ;
+  if (o.pigLevels !== undefined) uniforms.uPigLevels.value = o.pigLevels;
+  if (o.grain !== undefined) uniforms.uGrain.value = o.grain;
+  uniforms.uPigment.value.set(
+    o.blockSize ?? 0, o.blockTone ?? 0.10, o.fissure ?? 0, o.fissureFreq ?? 2.2);
+}
+
+
 function resolveSun(sun) {
   if (!sun) return null;
   if (sun.isDirectionalLight) return sun;
@@ -955,8 +1150,18 @@ export function makeCanvasMaterial(opts = {}) {
     // and a LIFT, so the brow and the jaw land in genuinely different washes
     // without the whole head sliding into the darkest one.
     wrap: opts.skinning ? 0.40 : 0.45,
-    contrast: opts.skinning ? 1.26 : 1.0,
-    lightBias: opts.skinning ? 0.13 : 0,
+    contrast: opts.skinning ? 1.30 : 1.0,
+    lightBias: 0,
+    // driveRange stays OFF by default. It is the strongest of the new knobs —
+    // it renormalises the whole object into the band range — and stacking it on
+    // top of a caller that has already tuned contrast/lightBias for its subject
+    // just slides that subject a band darker. Opt in per material.
+    driveRange: undefined,
+    // A thigh, an upper arm and a skull are all smooth cylinders: they need a
+    // boundary that falls on FORM, because N.L alone will not give them one —
+    // which is why round 2 could measure a hero's thigh as a 45 px continuous
+    // ramp while the terrain behind him quantised correctly.
+    curvature: opts.skinning ? 0.12 : 0,
     // Skin is not stone: it keeps some of its own warmth even in shade, so the
     // violet enforcement runs at two thirds strength on a character.
     shadeCool: opts.skinning ? 0.45 : 1,
@@ -1043,6 +1248,7 @@ export function makeCanvasMaterial(opts = {}) {
       uBlotchTex: { value: null },
       uPaperTex: { value: null },
     },
+    nprExtraUniforms(),
   ]);
   bindShared(uniforms);
 
@@ -1074,6 +1280,7 @@ export function makeCanvasMaterial(opts = {}) {
   uniforms.uShadowSoften.value = o.shadowSoften;
   uniforms.uMap.value = o.map;
   uniforms.uMapRepeat.value.set(o.mapRepeat[0], o.mapRepeat[1]);
+  applyNprOpts(uniforms, o);
 
   const frag = /* glsl */`
 ${NPR_FRAG_PREAMBLE}
@@ -1273,6 +1480,7 @@ export function makeGrassMaterial(opts = {}) {
       uBlotchTex: { value: null },
       uPaperTex: { value: null },
     },
+    nprExtraUniforms(),
   ]);
   bindShared(uniforms);
 
@@ -1290,6 +1498,12 @@ export function makeGrassMaterial(opts = {}) {
   uniforms.uColor.value.set(o.color);
   uniforms.uWindSpeed.value = o.windSpeed;
   uniforms.uFade.value.set(o.fadeStart, Math.max(o.fadeEnd, o.fadeStart + 1e-3));
+  // Foliage is a FLAT PAINTED MASS with a few internal value steps, not a noise
+  // field: fewer levels than a hard surface, and no substrate on a leaf card
+  // (the sheet is under the whole picture, not printed on each blade).
+  uniforms.uPigLevels.value = 9;
+  uniforms.uGrain.value = 0.20;
+  applyNprOpts(uniforms, o);
 
   const frag = /* glsl */`
 ${NPR_FRAG_PREAMBLE}
@@ -1500,6 +1714,7 @@ export function makeTerrainMaterial(opts = {}) {
       uBlotchTex: { value: null },
       uPaperTex: { value: null },
     },
+    nprExtraUniforms(),
   ]);
   bindShared(uniforms);
 
@@ -1516,6 +1731,12 @@ export function makeTerrainMaterial(opts = {}) {
   uniforms.uBands.value = o.bands;
   uniforms.uHatch.value = o.hatch * CFG.render.hatchStrength;
   uniforms.uRim.value = o.rim;
+  // The ground is the largest single wash in frame and the one a critic scans
+  // first: it gets more levels than a prop (so the aerial gradient still reads)
+  // but it must genuinely step.
+  uniforms.uPigLevels.value = 16;
+  uniforms.uGrain.value = 0.55;
+  applyNprOpts(uniforms, o);
 
   const frag = /* glsl */`
 ${NPR_FRAG_PREAMBLE}

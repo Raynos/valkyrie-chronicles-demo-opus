@@ -296,8 +296,10 @@ function css() {
 .vc-ru.sel .vc-paper{
   box-shadow:inset 0 0 16px rgba(163,47,52,.26), inset 0 0 30px rgba(128,96,58,.28);
 }
-/* A pencilled marginal bracket down the selected entry's fore-edge. */
-.vc-ru-mark{ position:absolute; left:-.28em; top:.06em; bottom:.06em; width:.95em;
+/* A pencilled marginal bracket down the selected entry's fore-edge. It sits ON
+   the edge of the sheet: floated a third of an em clear of it, the stroke read
+   as a stray red mark in the gutter rather than as a bracket around the entry. */
+.vc-ru-mark{ position:absolute; left:-.10em; top:.02em; bottom:.02em; width:.80em;
   opacity:0; transition:opacity .2s ease;
   filter:drop-shadow(0 1px 1px rgba(58,47,51,.35)); }
 .vc-ru-mark svg{ width:100%; height:100%; }
@@ -389,7 +391,8 @@ function css() {
   pointer-events:none; transition:left .34s cubic-bezier(.3,.9,.3,1);
 }
 
-.vc-m{ position:relative; width:100%; height:.62em; }
+.vc-m{ position:relative; width:100%; height:.76em; }
+.vc-m-trough{ position:absolute; inset:0; width:100%; height:100%; z-index:0; }
 .vc-m-back{ position:absolute; inset:0; width:100%; height:100%; }
 /* Clipped rather than width-scaled: the drawn stroke must keep its own length,
    so the wobble never stretches as the value falls. */
@@ -452,14 +455,14 @@ function css() {
 .vc-endturn:hover{ transform:translateX(-.5em) scale(1.03); }
 .vc-btnrow{ display:flex; gap:1.0em; justify-content:flex-end; align-items:center; margin-top:1.2em; }
 
-/* Orders are SUMMONED, not garrisoned across the foot of the page.
-   A permanent six-card strip spanning the full width was the single biggest
-   thing wrong with the command frame: it turned a reconnaissance page into a
-   toolbar. Closed, the deck is a tab in the gutter; opened, it deals into a fan
-   held in the hand, cards overlapping and splayed about a pivot below the page
-   edge, which is what the CP economy actually feels like. */
+/* The hand of orders. A six-card strip spanning the full width of the page
+   turned the reconnaissance drawing into a toolbar; filing it behind a tab left
+   a hole where the best-read element on the page had been. So it is DEALT — a
+   compact arc held in the lower-left quadrant, cards overlapping and splayed
+   about a pivot below the page edge, clear of both the roster and the survey,
+   and gathered back in with Q. */
 .vc-orders{
-  position:absolute; left:15em; right:23em; bottom:5.4em; height:14.6em;
+  position:absolute; left:21.4em; width:43em; bottom:5.0em; height:12.6em;
   pointer-events:none;
 }
 .vc-orders.shut{ display:none; }
@@ -467,12 +470,11 @@ function css() {
   position:absolute; left:50%; bottom:0; width:0; height:100%;
 }
 /* Each card is stepped along the hand and cocked a little further over, so the
-   spread arcs. The whole run is centred on the gutter and never touches either
-   the roster or the survey. */
+   spread arcs. */
 .vc-card{
-  position:absolute; left:0; bottom:0; width:9.8em; margin-left:-4.9em;
+  position:absolute; left:0; bottom:0; width:7.1em; margin-left:-3.55em;
   cursor:pointer; pointer-events:auto;
-  transform-origin:50% 150%;
+  transform-origin:50% 240%;
   transform:translateX(var(--fx,0em)) rotate(var(--fan,0deg)) translateY(var(--lift,0em));
   animation:vc-deal .42s cubic-bezier(.14,.85,.28,1.06) backwards;
   transition:transform .2s cubic-bezier(.2,.9,.3,1.3), filter .18s ease;
@@ -482,37 +484,40 @@ function css() {
     translateY(calc(var(--lift,0em) - 1.5em)) scale(1.06) !important;
   z-index:9;
 }
-/* The deck tab: a ruled paper flap in the gutter, with its CP purse beside it. */
+/* The deck tab: a ruled paper flap tucked under the left end of the hand, with
+   the key that gathers it in. Closed, it is the only thing left of the deck. */
 .vc-orders-tab{
-  position:absolute; left:15em; right:23em; bottom:2.0em; z-index:5;
+  position:absolute; left:21.4em; width:43em; bottom:1.5em; z-index:5;
   display:flex; justify-content:center; pointer-events:none;
 }
-.vc-otab{ position:relative; width:13.2em; cursor:pointer; pointer-events:auto;
+/* Dealt, the tab moves out from under the hand and sits in the bottom margin. */
+.vc-orders-tab.open{ justify-content:flex-start; left:2.2em; width:auto; bottom:2.4em; }
+.vc-otab{ position:relative; width:11.6em; cursor:pointer; pointer-events:auto;
   transition:transform .18s cubic-bezier(.2,.9,.3,1.3); }
 .vc-otab:hover{ transform:translateY(-.3em) rotate(var(--tilt,0deg)) scale(1.03) !important; }
-.vc-otab-in{ display:flex; align-items:center; gap:.5em; padding:.3em .8em .38em; }
-.vc-otab-in svg.g{ width:1.25em; height:1.25em; flex:0 0 auto; }
+.vc-otab-in{ display:flex; align-items:center; gap:.5em; padding:.28em .75em .34em; }
+.vc-otab-in svg.g{ width:1.2em; height:1.2em; flex:0 0 auto; }
 .vc-otab-in .lbl{ flex:1 1 auto; }
 .vc-card.locked{ filter:grayscale(.55) opacity(.5); cursor:default; }
-.vc-card-in{ padding:.5em .55em .6em; display:flex; flex-direction:column; gap:.3em; }
+.vc-card-in{ padding:.42em .48em .5em; display:flex; flex-direction:column; gap:.24em; }
 .vc-card-art{ width:100%; aspect-ratio:5/3; position:relative; }
 .vc-card-art svg{ position:absolute; inset:0; width:100%; height:100%; }
 .vc-card-cost{
-  position:absolute; right:-.4em; top:-.5em; width:2.3em; height:2.3em; z-index:2;
+  position:absolute; right:-.42em; top:-.52em; width:2.15em; height:2.15em; z-index:2;
   display:grid; place-items:center;
 }
-.vc-card-cost span{ position:absolute; font-size:.9em; color:#fbf2dd; text-shadow:0 1px 0 rgba(60,12,16,.6); }
-/* Every card in the strip is ruled to the same measure: the title occupies a
+.vc-card-cost span{ position:absolute; font-size:.86em; color:#fbf2dd; text-shadow:0 1px 0 rgba(60,12,16,.6); }
+/* Every card in the hand is ruled to the same measure: the title occupies a
    two-line box and sits on its BOTTOM line, so a name that wraps ("Demolition
    Boost") still shares a baseline with one that does not, and every blurb starts
-   on the same rule down the row. */
+   on the same rule across the spread. */
 .vc-card-name{
-  font-variant:small-caps; letter-spacing:.05em; font-size:.84em; line-height:1.14;
-  height:2.28em; display:flex; align-items:flex-end; overflow-wrap:anywhere;
+  font-variant:small-caps; letter-spacing:.03em; font-size:.80em; line-height:1.12;
+  height:2.24em; display:flex; align-items:flex-end; overflow-wrap:anywhere;
 }
 .vc-card-desc{
-  font-size:.62em; line-height:1.32; color:var(--ink-2);
-  height:3.96em; overflow:hidden; hyphens:auto;
+  font-size:.60em; line-height:1.30; color:var(--ink-2);
+  height:2.60em; overflow:hidden; hyphens:auto;
 }
 
 /* ---------- action mode ------------------------------------------------- */
@@ -687,6 +692,15 @@ function css() {
   background:linear-gradient(180deg, rgba(58,47,51,.62), rgba(58,47,51,0));
 }
 .vc-nametag .hp{ position:relative; z-index:1; width:5.6em; height:.38em; margin:.12em auto .04em; }
+/* Command-mode counters: the markers a staff officer pushes across a survey.
+   They are drawn in DOM over the render, so a soldier under a poplar canopy
+   still has something on the page where he stands — a name slip anchored to
+   nothing but leaves is an automatic rejection. */
+.vc-token{ width:1.85em; height:1.85em; }
+.vc-token svg{ width:100%; height:100%; overflow:visible;
+  filter:drop-shadow(0 1px 2px rgba(48,36,32,.42)); }
+.vc-token.sel svg{ filter:drop-shadow(0 0 0 rgba(0,0,0,0))
+  drop-shadow(0 0 .22em rgba(163,47,52,.9)) drop-shadow(0 1px 2px rgba(48,36,32,.5)); }
 /* A hit is a thrown blot of ink with the figure struck through it — one drawn
    piece, outlined in real ink (paint-order:stroke), so it holds against a busy
    hillside. Bare DOM digits under a text-shadow read as browser text. */
@@ -897,10 +911,11 @@ function css() {
 @media (max-width:1400px){
   .vc-roster{ left:1.0em; gap:.42em; }
   .vc-ru{ width:13.2em; }
-  .vc-orders, .vc-orders-tab{ left:13.4em; right:21em; }
-  .vc-card{ width:8.4em; margin-left:-4.2em; }
-  .vc-card-name{ font-size:.74em; letter-spacing:.02em; }
-  .vc-card-desc{ font-size:.58em; }
+  .vc-orders, .vc-orders-tab{ left:17.2em; width:38em; }
+  .vc-orders-tab.open{ left:1.6em; width:auto; }
+  .vc-card{ width:6.4em; margin-left:-3.2em; }
+  .vc-card-name{ font-size:.72em; letter-spacing:.02em; }
+  .vc-card-desc{ font-size:.56em; }
   .vc-map{ width:20em; }
   .vc-ap{ width:22em; }
 }

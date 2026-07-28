@@ -44,17 +44,28 @@ export function mixCol(a, b, t) {
 // luminance land in the SAME band and the soldier renders as one undifferentiated
 // mannequin — which is exactly what the old tunic (0xbca77c, L≈0.66) did against
 // bare skin (0xe8bd95, L≈0.78). Keep tunic/trouser a clear band below skin.
+// HUE DISCIPLINE: round 2 measured the whole frame as a sepia duotone with 75%
+// of pixels inside one 55-degree warm wedge and 0.1% anywhere in green, and the
+// soldiers rendered "grey-lavender". Two things put them there. The shade band
+// is graded toward uViolet, which is the world's job and is being fixed
+// elsewhere; but the ALBEDO was also part of it — 0x9d8a5c is hue 42, sat 0.42,
+// which sits inside the sepia wedge, so a soldier had nothing of his own to
+// contribute and simply took whatever the grade gave him. Gallian militia serge
+// is a khaki with a definite OLIVE cast: pushing the tunic to hue 52 and the
+// trousers to hue 58 puts the uniform on the sage side of the frame's dominant
+// wedge, which is both correct for VC and the only chroma on the character that
+// can survive the grade.
 export const PALETTE = {
-  tunic: rgbLin(0x9d8a5c),
-  tunicShade: rgbLin(0x81714a),
+  tunic: rgbLin(0xa2925a),
+  tunicShade: rgbLin(0x847748),
   // Headgear is deliberately a clear step DARKER and greener than the tunic.
   // A cap in tunic colour sitting on a tan face reads as a bald head with a
   // stripe on it — which is exactly what the overview shot showed.
-  cap: rgbLin(0x6f6a41),
-  capShade: rgbLin(0x585534),
-  collar: rgbLin(0x6d5c3c),
-  trouser: rgbLin(0x77704a),
-  trouserCuff: rgbLin(0x615c3d),
+  cap: rgbLin(0x6c6d3f),
+  capShade: rgbLin(0x555733),
+  collar: rgbLin(0x6b6039),
+  trouser: rgbLin(0x757548),
+  trouserCuff: rgbLin(0x5f603b),
   leather: rgbLin(0x5b4531),
   belt: rgbLin(0x473527),
   boot: rgbLin(0x3d2d22),
@@ -85,9 +96,16 @@ export const PALETTE = {
   impTrim: rgbLin(0xb6b29b),
 };
 
+// Desaturated ~16% from round 2 (0xe8bd95 was HSV sat 0.358; these are 0.30).
+// Skin is the one albedo on a character that goes through BOTH warm passes —
+// vcLitColour's cream lift and the grade's ochre boost — so it arrives on screen
+// hotter than it was authored. Measured on the round-2 closeup, a lit patch of
+// neck came out (177,132,98), hue 25, sat 0.443: the most saturated thing on the
+// whole soldier, brighter than his uniform, and reading as a stripe of paint
+// rather than as skin. VC's lit skin is a pale cream-peach.
 export const SKIN_TONES = [
-  rgbLin(0xf2cca8), rgbLin(0xe8bd95), rgbLin(0xdbab80),
-  rgbLin(0xc7946a), rgbLin(0xa87a55), rgbLin(0x82593f), rgbLin(0x60412e),
+  rgbLin(0xf2d2b4), rgbLin(0xe8c4a2), rgbLin(0xdbb38e),
+  rgbLin(0xc79c79), rgbLin(0xa88162), rgbLin(0x82604a), rgbLin(0x604636),
 ];
 
 // Hair has to survive the palette-discipline rule as well as the band shader.
@@ -923,6 +941,122 @@ function buildMat(opts, fallbackColor) {
  * The single skinned material every character body shares — one material and
  * one draw call per soldier, all zone colour coming from vertex colours.
  */
+// --- THE BAND WINDOW -------------------------------------------------------
+// A character is a SMALL object under a single key, and that is the whole
+// reason round 2's soldiers came out as smooth-shaded mannequins standing in a
+// quantised painting. The shader's drive is
+//
+//   drive = keyN * 0.62 * uKeyBoost + ambTerm * 0.30 * uFillBoost
+//
+// keyN is a wrapped half-Lambert, and ambTerm — how much sky a facet sees — sits
+// at 0.65 for anything vertical. So an unaided soldier occupies drive
+// 0.20 .. 0.82, and a FACE, whose normal only sweeps about the key, occupies
+// 0.60 .. 0.79: a THIRD of the range the quantiser's boundaries are spread
+// across. The whole figure therefore lands inside one or two washes, which is
+// exactly what the critics measured — a thigh scanning 99,100,103,100,96,88 and
+// a skin histogram peaking unimodally at 149-154 with no boundary anywhere.
+//
+// materials.js now exposes the right instrument for this: `driveRange` remaps
+// the span an object actually occupies onto 0..1 BEFORE quantisation. So the
+// job here is to state the soldier's span honestly and let every boundary land
+// inside it.
+//
+// TWO SPANS, and the second is the one that catches people out. A front-lit
+// figure spans nearly the whole key range and bands easily. A BACK-lit figure —
+// `squad`, `action` and `overview` all look at one — has N·L < 0 over every
+// visible surface, so keyN is pinned at 0 and the ONLY thing still varying is
+// the sky fill. At the stock fillGain that is a 0.13-wide ribbon and the whole
+// man collapses to one flat silhouette, which is precisely what the first pass
+// at this produced. Raising fillGain to 1.7 widens the fill's own contribution
+// to 0.22..0.51, so a back-lit soldier still resolves top-of-shoulder against
+// side-of-ribcage across two washes — which is how VC actually paints one.
+//
+//   back-lit, facet vertical      -> n 0.14  level 0
+//   back-lit, facet up (shoulder) -> n 0.30  level 1
+//   side of the form (N·L 0)      -> n 0.34  level 1
+//   terminator      (N·L 0.5)     -> n 0.53  level 2
+//   front plane     (N·L 0.75)    -> n 0.77  level 3
+//   normal to the key             -> n 1.00  level 4
+const BODY_BANDS = {
+  // FOUR, not three. bands:3 looks like the right call for skin — two flat
+  // values meeting under the cheekbone — but vcQuantiseBands emits levels at
+  // k/bands, and the colour ramp only reaches the cream `litCol` at g = 1.0,
+  // which needs the drive to clamp. At bands 3 the two interior levels resolve
+  // to 72% and 87% midCol: visually the same wash. Three bands buys two usable
+  // values and a hairline rim; four buys five.
+  bands: 4,
+  // The low end reaches well below the fill-only floor on purpose. `closeup` is
+  // contre-jour: the sun is behind the subject, so every facet of the FACE has
+  // N·L < 0, keyN is pinned at 0 and the only surviving signal is how much sky
+  // each facet sees — forehead 0.385, cheek 0.332, under-jaw 0.242. Anchoring
+  // driveRange.x at 0.22 put all three inside the darkest wash and the face
+  // rendered as one flat violet mass at luma 82. At 0.11 the first boundary
+  // falls between the forehead and the cheek, so a back-lit head still carries a
+  // terminator instead of going out as a cutout.
+  // Slid DOWN from [0.20,1.05] after measuring the soldier against his own
+  // scene: torso luma 99 against grass at 136 and lit stone well above that, i.e.
+  // the focal subject was the darkest mass in frame. Widening the window's low
+  // end lifts the whole figure about one level without touching its span, so a
+  // side plane lands in the mid wash instead of the shade wash.
+  driveRange: [0.15, 0.95],
+  fillGain: 1.7,
+  // Most of the shaping is done by driveRange now, so this is a light punch
+  // about the 0.46 pivot rather than the whole mechanism.
+  contrast: 1.22,
+  lightBias: 0.0,
+  // A cylinder lit head-on has no N·L gradient across its width, so no boundary
+  // can fall on it however the drive is scaled — the reason limbs read as tubes.
+  // Curvature darkening puts a wash boundary on FORM: the turn of a jaw, the
+  // edge of a deltoid, the roll of a forearm.
+  curvature: 0.13,
+  // WIDE — 0.62 against the factory's 0.40 and against the 0.35 this pass
+  // started at. The instinct is to keep wrap tight because it is a denominator
+  // on the key term, but that instinct is what left `closeup` with a face that
+  // measured one flat plateau at luma 85 over 80 px. Wrap sets the N·L at which
+  // the key gives up: at 0.35 anything past N·L -0.35 receives literally nothing
+  // and a head turned away from the sun has no signal left to shade it with. At
+  // 0.62 the key reaches round to N·L -0.62, so the terminator on a back-lit
+  // face falls at N·L -0.33 — ON the face, where a painter would put it —
+  // instead of off the far side of it. driveRange then restores the contrast the
+  // wrap costs, which is the whole reason the two have to be tuned as a pair.
+  wrap: 0.62,
+  // Skin keeps some of its own warmth in shade, but round 2 ran this at 0.45 and
+  // measured a shade side WARMER than the light (hue 21 vs 34, B-R -42). The
+  // rubric's test is B > R on the shade sample; 0.72 clears it while stopping
+  // short of the world's full lavender.
+  shadeCool: 0.72,
+  violet: 0.85,
+  // Under 1.0 on purpose. The cream lift is a warm multiply and skin albedo is
+  // already the warmest thing on the figure, so at 1.15 the lit skin band came
+  // out at sat 0.44 — see the SKIN_TONES note. The uniform can afford the lift;
+  // flesh cannot.
+  cream: 0.88,
+  // A soldier standing in tree shade had keyN pinned at 0 with nothing to
+  // replace it, so he rendered as a flat violet cutout — the closeup measured a
+  // unimodal face at luma 82 against lit ground at 199. Leaving 28% of the key
+  // alive inside a cast shadow keeps two washes on him, which is what a painter
+  // does: shade is a colour, not an absence.
+  shadowSoften: 0.72,
+  // The wet edge is a screen-pixel budget, and a 250 px head with a 9 px leash
+  // gets a boundary that looks ruled. 13 px reads as a pigment edge.
+  wetPx: 13,
+  bandBleed: 1.1,
+  // The composite-luminance quantiser — the thing that stops albedo, AO and
+  // curvature riding over the top of the light bands as a smooth ramp. Slightly
+  // coarser and stronger than the world default (14 / 0.75) because a soldier is
+  // a small object and needs its plateaus to be visibly flat at 2 m.
+  pigLevels: 10,
+  pigQ: 0.85,
+  // uBlotch is sampled at vWorldPos.xz * uBlotchScale, and at the world's 0.085
+  // (an 11.8 m tile) a 1.7 m soldier samples 14% of one lobe — a constant. The
+  // pigment-density term that gives every wash in the world its life was doing
+  // literally nothing on a character. 0.55 is a 1.8 m tile: about one lobe head
+  // to toe, enough to make the boundary wander without the wash crawling when he
+  // walks.
+  blotchScale: 0.55,
+  blotch: 0.85,
+};
+
 export function actorBodyMaterial() {
   if (!_bodyMat) {
     _bodyMat = buildMat({
@@ -930,8 +1064,22 @@ export function actorBodyMaterial() {
       // its masonry; it does not scribble graphite across a face. At hatch 1.0
       // the screen-space stripe field rode straight over the cheek and the
       // throat of every closeup and turned the portrait into a woodcut.
-      color: 0xffffff, roughness: 0.86, hatch: 0.34, rim: 0.5, paper: 0.9,
-      skinning: true, vertexColors: true, subsurface: 0.22, outlineWidth: 1.15,
+      // rim and subsurface are both DOWN hard from round 2 (0.5 -> 0.26,
+      // 0.22 -> 0.06). Both terms key off `1 - N·V`, so they fire at full
+      // strength on every near-silhouette fragment — which is every fragment of
+      // a 4 mm jaw ridge, a sternocleidomastoid cord or an eyelid. Under a
+      // contre-jour key the subsurface term additionally multiplies the warm
+      // albedo by keyTint, and the result was the saturated amber piping the
+      // closeup critique measured at sat 0.43-0.45 and called lens flare. Edge
+      // light belongs on the silhouette of the whole figure, not on every crease
+      // that gives it anatomy.
+      color: 0xffffff, roughness: 0.86, hatch: 0.30, rim: 0.26, paper: 0.9,
+      skinning: true, vertexColors: true, subsurface: 0.06,
+      // The focal subject must carry the FATTEST stroke in frame. At 1.15 the
+      // hero's silhouette undershoot measured -25 LSB against a 60 m house
+      // wall's -32: the painting was inking the background harder than the man.
+      outlineWidth: 2.1,
+      ...BODY_BANDS,
     }, 0xbca77c);
     _bodyMat.name = 'actorBody';
   }
@@ -942,8 +1090,16 @@ export function actorBodyMaterial() {
 export function actorGearMaterial() {
   if (!_gearMat) {
     _gearMat = buildMat({
-      color: 0xffffff, roughness: 0.58, hatch: 0.85, rim: 0.85, paper: 0.7,
-      skinning: false, vertexColors: true, subsurface: 0.0, outlineWidth: 0.9,
+      color: 0xffffff, roughness: 0.58, hatch: 0.85, rim: 0.45, paper: 0.7,
+      skinning: false, vertexColors: true, subsurface: 0.0, outlineWidth: 1.6,
+      // Same window as the body — kit is worn ON the body and has to sit in the
+      // same washes or the soldier reads as a man with a sticker set on him —
+      // but a shade step harder, since leather and steel do not scatter.
+      bands: 4, driveRange: [0.14, 0.97], fillGain: 1.7,
+      contrast: 1.25, lightBias: 0.0, curvature: 0.11, wrap: 0.45,
+      shadeCool: 0.92, violet: 0.95, cream: 1.20, shadowSoften: 0.76,
+      wetPx: 11, bandBleed: 1.0, pigLevels: 11, pigQ: 0.80,
+      blotchScale: 0.6, blotch: 0.8,
     }, 0x6f6c64);
     _gearMat.name = 'actorGear';
   }
@@ -1011,17 +1167,21 @@ function buildTorso(b, rig, o) {
   const hy = rig.restWorld.hips.pos.y, ny = rig.restWorld.neck.pos.y;
   const zc = 0.006;
   b.setBones(TORSO).setColor(o.tunic).setMottle(0.075);
+  // The waist is pulled in another 8 mm and the chest pushed out another 6, so
+  // the wedge is a 46% swell over 29 cm instead of 39%. `squad` showed the old
+  // one from the side as an unbroken tube from armpit to hip — a taper you can
+  // only see from the front is not a silhouette.
   b.addTube([
-    { p: [0, hy - 0.150, zc - 0.006], rx: 0.128 * g, rz: 0.095 * g },
-    { p: [0, hy - 0.075, zc - 0.002], rx: 0.153 * g, rz: 0.113 * g },      // hip shelf
-    { p: [0, hy - 0.010, zc], rx: 0.146 * g, rz: 0.106 * g },
-    { p: [0, hy + 0.090, zc + 0.004], rx: 0.128 * g, rz: 0.095 * g },      // waist (narrowest)
-    { p: [0, hy + 0.190, zc + 0.006], rx: 0.144 * g, rz: 0.101 * g },      // lower ribs
-    { p: [0, hy + 0.300, zc + 0.008], rx: 0.163 * g * sh, rz: 0.112 * g }, // chest
-    { p: [0, hy + 0.380, zc + 0.008], rx: 0.178 * g * sh, rz: 0.114 * g }, // upper chest
-    { p: [0, hy + 0.445, zc + 0.004], rx: 0.172 * g * sh, rz: 0.106 * g }, // shoulder shelf
-    { p: [0, ny - 0.038, zc], rx: 0.126 * g, rz: 0.090 * g },              // traps
-    { p: [0, ny - 0.020, zc + 0.002], rx: 0.090 * g, rz: 0.074 * g },      // neck hole
+    { p: [0, hy - 0.150, zc - 0.006], rx: 0.126 * g, rz: 0.094 * g },
+    { p: [0, hy - 0.075, zc - 0.002], rx: 0.152 * g, rz: 0.114 * g },      // hip shelf
+    { p: [0, hy - 0.010, zc], rx: 0.143 * g, rz: 0.104 * g },
+    { p: [0, hy + 0.090, zc + 0.004], rx: 0.120 * g, rz: 0.088 * g },      // waist (narrowest)
+    { p: [0, hy + 0.190, zc + 0.006], rx: 0.142 * g, rz: 0.100 * g },      // lower ribs
+    { p: [0, hy + 0.300, zc + 0.008], rx: 0.165 * g * sh, rz: 0.115 * g }, // chest
+    { p: [0, hy + 0.380, zc + 0.008], rx: 0.184 * g * sh, rz: 0.118 * g }, // upper chest
+    { p: [0, hy + 0.445, zc + 0.004], rx: 0.176 * g * sh, rz: 0.108 * g }, // shoulder shelf
+    { p: [0, ny - 0.038, zc], rx: 0.122 * g, rz: 0.088 * g },              // traps
+    { p: [0, ny - 0.020, zc + 0.002], rx: 0.084 * g, rz: 0.070 * g },      // neck hole
   ], { seg: seg(18), capStart: 'round', capEnd: 'none' });
 
   // Pectoral planes — two shallow shields on the front of the chest. Without
@@ -1035,6 +1195,33 @@ function buildTorso(b, rig, o) {
       displace: (dx, dy, dz) => [1, 1, 0.52 + 0.48 * clamp01(dz)],
     });
   }
+
+  // --- Scapulae. The back was the one plane on the whole soldier with no
+  // landmark at all: `squad` and `action` both look at a soldier from behind and
+  // got a flat sheet of cloth from collar to belt. Two shallow shields either
+  // side of the spine, with the trough of the spinal furrow between them, gives
+  // the back a centre line and two planes that catch the key differently.
+  b.setColor(o.tunic).setMottle(0.055);
+  for (const side of [1, -1]) {
+    b.addEllipsoid({
+      center: [side * 0.070 * g, hy + 0.350, zc - 0.068 * g],
+      radius: [0.076 * g, 0.084 * g, 0.038 * g],
+      seg: seg(12), rings: seg(8),
+      // Flat against the ribcage, standing proud only on the outboard half —
+      // a shoulder blade, not a bolted-on lump.
+      displace: (dx, dy, dz) => [1, 1, 0.56 + 0.44 * clamp01(-dz)],
+    });
+  }
+  // Spinal furrow: a shallow groove down the centre of the back. It is 4 mm of
+  // geometry but it is a CREASE, so the outline pass draws a line down the spine
+  // in every pose — the single cheapest way to stop a back reading as a board.
+  b.setColor(o.tunicShade).setMottle(0.05);
+  b.addTube([
+    { p: [0, hy + 0.400, zc - 0.104 * g], rx: 0.011, rz: 0.006 },
+    { p: [0, hy + 0.300, zc - 0.110 * g], rx: 0.013, rz: 0.007 },
+    { p: [0, hy + 0.180, zc - 0.100 * g], rx: 0.012, rz: 0.006 },
+    { p: [0, hy + 0.080, zc - 0.088 * g], rx: 0.010, rz: 0.005 },
+  ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
 
   // Tunic hem — a short skirt below the belt line. It starts at hy+0.030 (just
   // under the belt) rather than hy-0.040, where it used to swallow the belt
@@ -1058,21 +1245,26 @@ function buildTorso(b, rig, o) {
   // of it, so the whole arc is outside the shell. Placed any tighter it
   // disappears inside the trapezius cone and only the piping pokes through,
   // which reads as a couple of cream splinters sticking out of the shoulders.
-  const colY = ny - 0.018;
-  const colR = 0.098 * g, colD = 0.081 * g;
+  // Raised 14 mm and closed 8 degrees further round the throat than round 2.
+  // The neck measured 58% of head height on screen against a real 35-45%, and
+  // most of that was not the neck being long — it was the collar sitting low
+  // with a wide gap at the front, so the whole column was exposed. A militia
+  // stand collar closes to a narrow V.
+  const colY = ny - 0.004;
+  const colR = 0.096 * g, colD = 0.080 * g;
   for (const side of [1, -1]) {
     b.setColor(o.collar).setMottle(0.045);
     addArc(b, {
       y: colY, zc: zc - 0.002, rx: colR, rz: colD,
-      a0: side * 0.44, a1: side * 2.76, tx: 0.015, tz: 0.012, div: 8,
-      dy: (t) => 0.018 * smoothstep(0, 0.55, t), seg: seg(7),
+      a0: side * 0.30, a1: side * 2.80, tx: 0.015, tz: 0.012, div: 9,
+      dy: (t) => 0.020 * smoothstep(0, 0.55, t), seg: seg(7),
     });
     // Cream piping along the collar's top edge — VC's uniforms are trimmed.
     b.setColor(o.trim).setMottle(0.02);
     addArc(b, {
-      y: colY + 0.013, zc: zc - 0.002, rx: colR, rz: colD,
-      a0: side * 0.47, a1: side * 2.73, tx: 0.0034, tz: 0.0030, div: 8,
-      dy: (t) => 0.018 * smoothstep(0, 0.55, t), seg: seg(5),
+      y: colY + 0.014, zc: zc - 0.002, rx: colR, rz: colD,
+      a0: side * 0.33, a1: side * 2.77, tx: 0.0034, tz: 0.0030, div: 9,
+      dy: (t) => 0.020 * smoothstep(0, 0.55, t), seg: seg(5),
     });
     // Lapel point: the collar corner folding down onto the chest.
     b.setColor(o.collar).setMottle(0.04);
@@ -1141,11 +1333,16 @@ function buildShoulders(b, rig, o) {
     const cl = rig.restWorld['clavicle' + s].pos;
     // Sit the cap between the clavicle tip and the humerus head: that is where
     // an actual deltoid is, and it guarantees an overlap with the chest.
-    const px = lerp(cl.x, p.x, 0.60), pz = lerp(cl.z, p.z, 0.70);
+    // Pushed 5 cm further outboard than round 2 (0.60 -> 0.68 of the clavicle-
+    // to-humerus span, cap radius 0.092 -> 0.099). The rubric's test is that the
+    // shoulder cap sits OUTSIDE the ribcage silhouette: upper chest is now
+    // 0.184*g, the deltoid's outer edge 0.235*g, so it clears by 51 mm and the
+    // shoulder is a separate mass in profile instead of a bump on the tube.
+    const px = lerp(cl.x, p.x, 0.68), pz = lerp(cl.z, p.z, 0.70);
     b.setBones(side > 0 ? ARM_L : ARM_R).setColor(o.tunic).setMottle(0.07);
     b.addEllipsoid({
-      center: [px, p.y + 0.014, pz + 0.002],
-      radius: [0.092 * g, 0.078 * g, 0.086 * g],
+      center: [px, p.y + 0.012, pz + 0.002],
+      radius: [0.099 * g, 0.084 * g, 0.089 * g],
       seg: seg(16), rings: seg(11),
       displace: (dx, dy, dz) => {
         // A deltoid is not a ball: flat shelf on top, a lateral head that bulges
@@ -1154,10 +1351,15 @@ function buildShoulders(b, rig, o) {
         const up = clamp01(dy), dn = clamp01(-dy);
         const out = clamp01(dx * side);
         const lat = out * (1 - up * up) * (1 - dn * dn);
+        // Three heads: anterior (front), lateral (out), posterior (back). The
+        // two seams between them are shallow, but they run down the outside of
+        // the cap where the light is turning, which is precisely where a band
+        // boundary wants something to catch on.
+        const seam = 0.030 * lat * (Math.cos(Math.atan2(dz, dx * side) * 3.0) * 0.5 + 0.5);
         return [
-          1 - up * up * 0.14 + lat * 0.10,
-          1 - up * up * 0.22 - dn * dn * 0.14,
-          1 - up * up * 0.10 - clamp01(-dz) * 0.06,
+          1 - up * up * 0.14 + lat * 0.16 - seam,
+          1 - up * up * 0.22 - dn * dn * 0.16,
+          1 - up * up * 0.10 - clamp01(-dz) * 0.06 - seam * 0.6,
         ];
       },
     });
@@ -1196,14 +1398,46 @@ function buildArms(b, rig, o) {
     // Upper arm: sleeve over a bicep belly. The swell at 0.40 and the pinch
     // above the elbow are deliberate — a straight taper is a cone, and a cone
     // gives the quantiser a single unbroken wash from shoulder to wrist.
+    //
+    // `rz` (fore-and-aft) now leads `rx` by ~14% through the middle third: an
+    // upper arm is an OVAL in section, deeper than it is wide, because the
+    // biceps sits in front of the humerus and the triceps behind it. Round 2's
+    // near-circular section is what made the critic call the arms "smooth grey
+    // tubes" — a circular cylinder under a single key has one terminator line
+    // running dead straight down it, which is the signature of a pipe.
     b.addTube([
-      { p: at(sh, el, -0.12), rx: 0.057 * g, rz: 0.059 * g },
-      { p: at(sh, el, 0.16), rx: 0.055 * g, rz: 0.058 * g },
-      { p: at(sh, el, 0.40), rx: 0.052 * g, rz: 0.056 * g },   // bicep belly
-      { p: at(sh, el, 0.72), rx: 0.044 * g, rz: 0.047 * g },
-      { p: at(sh, el, 0.94), rx: 0.041 * g, rz: 0.045 * g },
-      { p: el, rx: 0.043 * g, rz: 0.046 * g },                  // elbow
+      { p: at(sh, el, -0.12), rx: 0.057 * g, rz: 0.060 * g },
+      { p: at(sh, el, 0.16), rx: 0.054 * g, rz: 0.061 * g },
+      { p: at(sh, el, 0.40), rx: 0.051 * g, rz: 0.059 * g },   // bicep / tricep belly
+      { p: at(sh, el, 0.72), rx: 0.043 * g, rz: 0.048 * g },
+      { p: at(sh, el, 0.94), rx: 0.0395 * g, rz: 0.0435 * g }, // supracondylar pinch
+      { p: el, rx: 0.0435 * g, rz: 0.0455 * g },                // elbow
     ], { seg: seg(12) });
+
+    // Triceps: the mass on the BACK of the upper arm, running from the deltoid's
+    // rear head down to the point of the elbow. It is what makes an arm read as
+    // an arm from behind, which is the angle `squad`, `action` and `overview`
+    // all use.
+    b.addEllipsoid({
+      center: [lerp(sh[0], el[0], 0.42) - side * 0.006, lerp(sh[1], el[1], 0.42), lerp(sh[2], el[2], 0.42) - 0.030 * g],
+      radius: [0.040 * g, 0.088 * g, 0.036 * g],
+      seg: seg(10), rings: seg(8),
+      displace: (dx, dy, dz) => [1, 1, 0.40 + 0.60 * clamp01(-dz)],
+    });
+
+    // Olecranon — the point of the elbow. 8 mm of bone standing proud on the
+    // back of the joint. The critique's note on `overview` was that the whole arm
+    // is "a single lozenge from shoulder to hand with no elbow bend anywhere in
+    // its silhouette"; the bend comes from anim.js, but the KNUCKLE of the joint
+    // has to exist or a bent arm is still a bent hose.
+    b.setColor(mixCol(o.tunic, o.tunicShade, 0.35)).setMottle(0.05);
+    b.addEllipsoid({
+      center: [el[0] + side * 0.004, el[1] + 0.004, el[2] - 0.030 * g],
+      radius: [0.030 * g, 0.032 * g, 0.023 * g],
+      seg: seg(9), rings: seg(6),
+      displace: (dx, dy, dz) => [1, 1, 0.45 + 0.55 * clamp01(-dz)],
+    });
+    b.setColor(o.tunic);
 
     // --- Rolled sleeve. The cuff stops at 45% of the forearm and the rest is
     // bare skin. Two things fall out of that: the sleeve's hard rolled edge is
@@ -1212,9 +1446,9 @@ function buildArms(b, rig, o) {
     // as three separate values, which is why the extremity survives to 40 m.
     const rollT = 0.44;
     b.addTube([
-      { p: el, rx: 0.043 * g, rz: 0.046 * g },
-      { p: at(el, wr, 0.16), rx: 0.045 * g, rz: 0.047 * g },   // forearm belly
-      { p: at(el, wr, rollT - 0.02), rx: 0.040 * g, rz: 0.042 * g },
+      { p: el, rx: 0.0435 * g, rz: 0.0455 * g },
+      { p: at(el, wr, 0.16), rx: 0.0475 * g, rz: 0.0485 * g }, // forearm belly (brachioradialis)
+      { p: at(el, wr, rollT - 0.02), rx: 0.0395 * g, rz: 0.0415 * g },
     ], { seg: seg(12) });
     // The roll itself: a thicker band of doubled cloth.
     b.setColor(o.tunicShade);
@@ -1225,14 +1459,26 @@ function buildArms(b, rig, o) {
       { p: at(el, wr, rollT + 0.12), rx: 0.040 * g, rz: 0.042 * g },
     ], { seg: seg(12), capEnd: 'flat' });
 
-    // Bare forearm + wrist, tapering into the hand.
+    // Bare forearm + wrist. The taper is now 44% (0.041 -> 0.023) instead of
+    // 29%, and the wrist is flattened (rz well under rx): a wrist is an oval
+    // laid the other way to the upper arm, and that quarter-turn of section is
+    // most of what stops the limb reading as one extruded pipe. The narrow wrist
+    // is also what makes the HAND read — a mitt on the end of a tube of the same
+    // width is not a hand, it is a blunt end.
     b.setBones(side > 0 ? HAND_L : HAND_R).setColor(o.skin).setMottle(0.035);
     b.addTube([
-      { p: at(el, wr, rollT + 0.04), rx: 0.038, rz: 0.040 },
-      { p: at(el, wr, 0.66), rx: 0.034, rz: 0.036 },
-      { p: at(el, wr, 0.88), rx: 0.029, rz: 0.031 },
-      { p: wr, rx: 0.027, rz: 0.030 },
+      { p: at(el, wr, rollT + 0.04), rx: 0.0405, rz: 0.0400 },
+      { p: at(el, wr, 0.62), rx: 0.0340, rz: 0.0320 },
+      { p: at(el, wr, 0.84), rx: 0.0275, rz: 0.0245 },
+      { p: at(el, wr, 0.96), rx: 0.0245, rz: 0.0208 },
+      { p: wr, rx: 0.0236, rz: 0.0200 },                       // wrist: flat oval
     ], { seg: seg(11) });
+    // Ulnar styloid — the knob on the little-finger side of the wrist. Tiny, but
+    // it is the landmark that separates forearm from hand in silhouette.
+    b.addEllipsoid({
+      center: [wr[0] + side * 0.017, wr[1] + 0.010, wr[2] - 0.004],
+      radius: [0.0105, 0.0125, 0.0100], seg: seg(8), rings: seg(5),
+    });
   }
 }
 
@@ -1327,14 +1573,30 @@ function buildLegs(b, rig, o) {
     const at = (a, b2, t) => [lerp(a[0], b2[0], t), lerp(a[1], b2[1], t), lerp(a[2], b2[2], t)];
     b.setBones(grp).setColor(o.trouser).setMottle(0.07);
     b.addTube([
-      { p: [hp[0], hp[1] + 0.055, hp[2]], rx: 0.086 * g, rz: 0.090 * g },
-      { p: at(hp, kn, 0.14), rx: 0.083 * g, rz: 0.088 * g },
-      { p: at(hp, kn, 0.52), rx: 0.072 * g, rz: 0.077 * g },
-      { p: at(hp, kn, 0.88), rx: 0.058 * g, rz: 0.062 * g },
-      { p: kn, rx: 0.057 * g, rz: 0.060 * g },                  // knee
-      { p: at(kn, an, 0.20), rx: 0.063 * g, rz: 0.068 * g },    // calf belly
+      { p: [hp[0], hp[1] + 0.055, hp[2]], rx: 0.088 * g, rz: 0.094 * g },
+      { p: at(hp, kn, 0.14), rx: 0.086 * g, rz: 0.093 * g },    // thigh mass
+      { p: at(hp, kn, 0.40), rx: 0.078 * g, rz: 0.085 * g },
+      { p: at(hp, kn, 0.74), rx: 0.062 * g, rz: 0.068 * g },
+      { p: at(hp, kn, 0.93), rx: 0.0525 * g, rz: 0.0565 * g },  // just above the knee
+      { p: kn, rx: 0.058 * g, rz: 0.061 * g },                  // knee
+      { p: at(kn, an, 0.11), rx: 0.055 * g, rz: 0.059 * g },    // below the joint
+      { p: at(kn, an, 0.26), rx: 0.066 * g, rz: 0.071 * g },    // calf belly (gastrocnemius)
       { p: at(kn, an, 0.42), rx: 0.055 * g, rz: 0.058 * g },
     ], { seg: seg(13), capStart: 'round' });
+
+    // Patella. The thigh above it and the shin below it are both cones; without
+    // a kneecap the leg is one long taper and a bent knee has no corner in its
+    // outline. Standing proud on the FRONT only, so it never bulges the profile
+    // of a straight leg — it only appears when the joint flexes, which is
+    // exactly when a critic looks for it.
+    b.setColor(mixCol(o.trouser, o.trouserCuff, 0.30)).setMottle(0.05);
+    b.addEllipsoid({
+      center: [kn[0], kn[1] + 0.006, kn[2] + 0.034 * g],
+      radius: [0.040 * g, 0.046 * g, 0.028 * g],
+      seg: seg(10), rings: seg(7),
+      displace: (dx, dy, dz) => [1, 1, 0.42 + 0.58 * clamp01(dz)],
+    });
+    b.setColor(o.trouser);
     // Trouser blousing gathered over the boot top.
     b.setColor(o.trouserCuff);
     b.addTube([
@@ -1415,20 +1677,75 @@ function buildBoots(b, rig, o) {
 }
 
 /**
- * Neck. 100 mm of column between the collar and the jaw, thickening into the
- * trapezius at the base so the head is joined to the shoulders by a wedge
- * rather than balanced on a stalk.
+ * Neck.
+ *
+ * Round 2's neck was a plain vertical cylinder rx 0.046-0.056 running straight
+ * into the underside of the skull, and it is most of why the critics read the
+ * head as "enormous and egg-shaped": the skull is 0.080 in half-width, the neck
+ * was 0.048, so head and neck differ by 40% and the eye fuses them into one
+ * continuous mass whose widest point is the cheekbone. What separates a head
+ * from a neck in every drawing ever made is the JAW UNDERCUT — the mandible
+ * overhangs the throat, and the wedge of shadow it casts is the line that says
+ * "this is a head, that is a neck".
+ *
+ * So three changes:
+ *   * the column is narrower (0.0415) and, more importantly, it is set BACK
+ *     0.020 m relative to the head bone, so the chin and the gonial angle
+ *     genuinely overhang it and the AO bake finds a real occluded wedge there;
+ *   * two sternocleidomastoid cords run from behind each ear down to the sternal
+ *     notch — the single most recognisable landmark on a neck, and a pair of
+ *     ridges for the band terminator to break over instead of a smooth cylinder;
+ *   * the trapezius is no longer a fat ring at the base of the column but a
+ *     swept wedge running out toward each shoulder, so the neck reads as joined
+ *     to the torso by a slope rather than plugged into a socket.
  */
 function buildNeck(b, rig, o) {
   const ny = rig.restWorld.neck.pos.y, hy = rig.restWorld.head.pos.y;
+  const g = o.girth;
   b.setBones(NECK).setColor(o.skin).setMottle(0.03);
+  // The column. `zc` walks BACKWARD going up: the throat leans back under the
+  // chin instead of running vertically into it.
   b.addTube([
-    { p: [0, ny - 0.052, 0.000], rx: 0.072, rz: 0.064 },   // trapezius root
-    { p: [0, ny - 0.014, 0.004], rx: 0.056, rz: 0.052 },
-    { p: [0, ny + 0.034, 0.007], rx: 0.048, rz: 0.046 },
-    { p: [0, hy - 0.010, 0.009], rx: 0.046, rz: 0.045 },
-    { p: [0, hy + 0.028, 0.006], rx: 0.051, rz: 0.050 },   // into the skull base
+    { p: [0, ny - 0.048, -0.002], rx: 0.062, rz: 0.058 },  // base, inside the traps
+    { p: [0, ny - 0.012, -0.004], rx: 0.050, rz: 0.048 },
+    { p: [0, ny + 0.032, -0.010], rx: 0.0435, rz: 0.0425 },
+    { p: [0, hy - 0.012, -0.016], rx: 0.0415, rz: 0.0415 }, // narrowest — under the jaw
+    { p: [0, hy + 0.030, -0.020], rx: 0.0455, rz: 0.0455 }, // into the skull base
   ], { seg: seg(12) });
+
+  // Sternocleidomastoid. Origin behind the ear (mastoid), insertion at the
+  // sternal notch; the two cords converge to a V at the throat.
+  b.setColor(mixCol(o.skin, PALETTE.lip, 0.10)).setMottle(0.025);
+  for (const side of [1, -1]) {
+    b.addTube([
+      { p: [side * 0.0345, hy + 0.004, -0.030], rx: 0.0068, rz: 0.0054 },
+      { p: [side * 0.0300, ny + 0.026, -0.008], rx: 0.0080, rz: 0.0060 },
+      { p: [side * 0.0195, ny - 0.014, 0.0175], rx: 0.0076, rz: 0.0058 },
+      { p: [side * 0.0075, ny - 0.044, 0.0265], rx: 0.0060, rz: 0.0046 },
+    ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
+  }
+  // Suprasternal notch: a small dimple between the two cord ends. Reads as the
+  // hollow of the throat above the collar.
+  b.setColor(mixCol(o.skin, [0.02, 0.017, 0.02], 0.22)).setMottle(0.02);
+  b.addEllipsoid({
+    center: [0, ny - 0.056, 0.024], radius: [0.017, 0.011, 0.008],
+    seg: seg(9), rings: seg(5),
+  });
+
+  // Trapezius: a wedge sloping from the base of the skull out to each shoulder.
+  // Without it the shoulders start where the sleeve starts and the neck plugs
+  // into a flat shelf.
+  b.setBones(TORSO).setColor(o.tunic).setMottle(0.06);
+  for (const side of [1, -1]) {
+    const s = side > 0 ? 'L' : 'R';
+    const cl = rig.restWorld['clavicle' + s].pos;
+    b.addTube([
+      { p: [side * 0.020, ny - 0.030, -0.014], rx: 0.030, rz: 0.036 },
+      { p: [side * 0.055 * g, ny - 0.052, -0.010], rx: 0.036, rz: 0.040 },
+      { p: [side * 0.100 * g, cl.y - 0.014, -0.004], rx: 0.038, rz: 0.041 },
+      { p: [side * 0.140 * g, cl.y - 0.036, 0.000], rx: 0.032, rz: 0.036 },
+    ], { seg: seg(9), capStart: 'round', capEnd: 'round' });
+  }
 }
 
 /**
@@ -1440,12 +1757,21 @@ function buildNeck(b, rig, o) {
 export function buildHead(b, rig, o, f) {
   const hb = rig.restWorld.head.pos;
   const hs = rig.proportions.head;
-  // 0.160 x 0.233 x 0.197 m — a slightly-large but human skull, giving 7.28
-  // heads to the figure. The previous 0.195 x 0.252 x 0.228 was 6.4 heads and
-  // 22% over-wide, which is the whole of "the head is enormous and
-  // balloon-shaped, roughly a third of the visible figure".
   const cx = 0, cy = hb.y + 0.066 * hs, cz = hb.z + 0.004;
-  const R = [0.0800 * f.width * hs, 0.1165 * f.length * hs, 0.0985 * f.depth * hs];
+  // Round 2's skull measured 0.169 W x 0.230 H x 0.215 D at the medium body
+  // type. A real adult head is 0.152 x 0.232 x 0.196: ours was 11% over-wide and
+  // 10% over-deep, i.e. 35% too much VOLUME, on a figure whose height was
+  // already correct at 7.5 heads. That is why every critic wrote "the head is
+  // enormous" while the ratio measured fine — the head is not too TALL, it is
+  // too FAT, and mass is what the eye judges. Width and depth come down 6%
+  // each (extents 0.159 x 0.230 x 0.202) which is still a stylised, slightly
+  // large VC head but no longer a balloon.
+  // Height is nudged UP 4% at the same time, because trimming width and depth
+  // alone took the figure from 7.52 to 7.66 heads and the brief's target for an
+  // adult soldier is ~7.25. The two moves work together: the head is 11% less
+  // voluminous than round 2 (which is what "enormous" was actually measuring)
+  // while the ratio comes back down to 7.36.
+  const R = [0.0755 * f.width * hs, 0.1215 * f.length * hs, 0.0925 * f.depth * hs];
 
   /**
    * The skull's radial displacement, factored out of addEllipsoid so the face
@@ -1463,12 +1789,33 @@ export function buildHead(b, rig, o, f) {
     const ax = Math.abs(dx);
 
     // --- cranium: occipital bulge behind, parietal width above, flat crown so
-    // headgear has somewhere to sit.
-    sx += up * up * 0.032 * f.cranium;
-    sz += 0.055 * f.cranium * smoothstep(-0.25, -0.90, dz);
-    if (dy > 0.78) sy -= (dy - 0.78) * 0.13;
+    // headgear has somewhere to sit. The occiput is down from 0.055 to 0.036 —
+    // a big rearward bulge on a tall ellipsoid is precisely the "egg" the
+    // critique named, and the real landmark is a small inion, not a dome.
+    sx += up * up * 0.030 * f.cranium;
+    sz += 0.036 * f.cranium * smoothstep(-0.30, -0.92, dz);
+    if (dy > 0.74) sy -= (dy - 0.74) * 0.16;
     // Temples: pinched above and behind the eyes.
     sx -= 0.055 * gauss(dy - 0.30, 0.24) * gauss(ax - 0.86, 0.30);
+
+    // --- SQUARE THE CRANIUM. An ellipsoid's horizontal section is a circle, and
+    // a stack of circles is an egg no matter what you do to the profile. A skull
+    // in plan is a rounded BOX: flat over the temples, flat across the back,
+    // corners at the parietal eminences. Bending the cross-section toward a
+    // superellipse (n = 2.55) pushes the four corners out ~7.7% and leaves the
+    // axes alone, which is the whole difference between "head" and "egg" in
+    // silhouette — and it hands the band quantiser four turning points per
+    // section instead of a single smooth sweep.
+    {
+      const hl = Math.hypot(dx, dz);
+      if (hl > 1e-4) {
+        const n = 2.55;
+        const sq = 1 / Math.pow(Math.pow(Math.abs(dx / hl), n) + Math.pow(Math.abs(dz / hl), n), 1 / n);
+        // Cranium only: fades out below the cheekbone so the jaw stays a wedge.
+        const k = 1 + (sq - 1) * smoothstep(-0.28, 0.34, dy) * 0.60;
+        sx *= k; sz *= k;
+      }
+    }
 
     // --- THE FACE PLANE. The single biggest "balloon" fix. A sphere shades as
     // one continuous gradient, which is precisely what the closeup critique
@@ -1505,6 +1852,17 @@ export function buildHead(b, rig, o, f) {
     sz += chin * 0.165 * (0.55 + f.chin * 0.50);
     sy -= chin * 0.045;
 
+    // --- SUBMANDIBULAR UNDERCUT. The single most important thing separating a
+    // head from a neck, and round 2 had none of it: the closeup crop shows the
+    // jaw running straight down into a column the same width, so the eye fuses
+    // the two into one mass and reads the result as an enormous egg. The plane
+    // under the mandible has to tuck UP and BACK so the jaw overhangs the
+    // throat; the AO bake then finds a genuine occluded wedge there and the
+    // outline pass finds a crease.
+    const under = gauss(dy + 0.88, 0.26) * smoothstep(-0.35, 0.55, dz);
+    sy -= under * 0.085;
+    sz -= under * 0.150;
+
     return [clamp(sx, 0.5, 1.4), clamp(sy, 0.5, 1.4), clamp(sz, 0.5, 1.4)];
   };
 
@@ -1528,6 +1886,33 @@ export function buildHead(b, rig, o, f) {
   };
   /** Direction with the given lateral/vertical bias and the front hemisphere. */
   const face = (dx, dy, lift = 0) => surf(dx, dy, Math.sqrt(Math.max(0.04, 1 - dx * dx - dy * dy)), lift);
+
+  // --- MANDIBLE. A ridge running from the chin back and up to the gonial angle
+  // under the ear. The displacement above builds the jaw as a VOLUME, but a
+  // volume alone gives a soft turn; VC draws the jaw as a LINE, and the outline
+  // pass will only draw one where there is a crease. This is 3 mm of geometry
+  // that reads at 40 m, and together with the submandibular undercut it is what
+  // finally separates the head from the neck.
+  {
+    const jawPts = [
+      [0.030, -0.850], [0.300, -0.830], [0.560, -0.735],
+      [0.760, -0.575], [0.880, -0.360], [0.930, -0.150],
+    ];
+    b.setColor(mixCol(o.skin, [0.05, 0.036, 0.033], 0.16)).setMottle(0.02);
+    for (const side of [1, -1]) {
+      const spine = jawPts.map(([ax, ay], i) => {
+        const t = i / (jawPts.length - 1);
+        // The chin end sits on the front hemisphere; the gonial end wraps round
+        // to the side, so blend the z-bias along the run.
+        const dz = lerp(0.62, -0.30, t);
+        const p = surf(side * ax, ay, dz, 0.0010);
+        const r = lerp(0.0039, 0.0029, Math.abs(t - 0.45) * 1.6);
+        return { p, rx: r, rz: r * 0.72 };
+      });
+      b.addTube(spine, { seg: seg(6), capStart: 'round', capEnd: 'round' });
+    }
+    b.setColor(o.skin).setMottle(0.03);
+  }
 
   // --- Nose. Built as three real pieces — bridge, ball, wings — because the
   // face plane above is now flat, so the nose is the ONLY thing casting a
@@ -1559,8 +1944,13 @@ export function buildHead(b, rig, o, f) {
   }
 
   // --- Ears, seated on the real skin so they are not swallowed by the temples.
+  // Moved back from dz -0.26 to -0.40: an ear sits behind the midline of the
+  // skull, roughly over the mandibular ramus, and round 2's sat forward of it —
+  // which is why the closeup crop shows a pale grey chip apparently stuck to the
+  // cheek. Also dropped 0.03 so the helix top lines up with the brow, which is
+  // where it lands on a real head.
   for (const side of [1, -1]) {
-    const p = surf(side * 1, -0.03, -0.26, -0.004);
+    const p = surf(side * 1, -0.06, -0.40, -0.004);
     const m = new THREE.Matrix4().compose(
       new THREE.Vector3(p[0], p[1], p[2]),
       new THREE.Quaternion().setFromEuler(new THREE.Euler(0.1, side * 1.35, 0)),
@@ -1589,6 +1979,26 @@ export function buildHead(b, rig, o, f) {
     const at = (dz) => new THREE.Matrix4().compose(
       new THREE.Vector3(p[0], p[1], p[2] + dz), rot, new THREE.Vector3(1, 1, 1));
 
+    // --- SOCKET SHADOW, and it is the piece that matters at range. Every other
+    // feature here — lash, iris, brow, lid — is a LINE a few millimetres wide,
+    // and a 4 mm line on a head 20 px across is a quarter of a pixel: it is
+    // simply gone. That is why round 2's critics wrote "the 12 m second soldier
+    // has no face at all" and "a blank tan oval inside the helmet" while the
+    // portrait shot showed perfectly good features. An AREA does not vanish the
+    // way a line does, so the socket gets a broad plate of darker skin, wider
+    // than the eye and sitting under the brow. Up close it is the shadow the
+    // brow ridge casts; at 40 m it is the two dark accents that make an oval
+    // read as a face.
+    // Kept deliberately shallow: at 0.40 toward the shade and 27 mm wide it read
+    // as a painted-on mask across both eyes at portrait distance. A socket is a
+    // half-value step, not a hole.
+    b.setColor(mixCol(o.skin, [0.052, 0.040, 0.044], 0.24)).setMottle(0.02);
+    b.setTransform(at(-0.0055));
+    b.addEllipsoid({
+      radius: [0.0224 * eyeS, 0.0152 * eyeS, 0.0082], seg: seg(10), rings: seg(6),
+      displace: (dx, dy, dz) => [1, 1, 0.30 + 0.70 * clamp01(dz)],
+    });
+
     // Sclera: a FLAT lens, not a ball. CANVAS-engine eyes are drawn shapes on
     // the face, so keep the depth small and let the lash line carry the form.
     b.setColor(PALETTE.eyeWhite).setMottle(0);
@@ -1612,8 +2022,12 @@ export function buildHead(b, rig, o, f) {
       { p: [p[0] + side * lx * 0.42, p[1] + ly * 0.88, p[2] + 0.0042], rx: 0.0034, rz: 0.0028 },
       { p: [p[0] + side * lx * 1.02, p[1] + ly * 0.34, p[2] + 0.0006], rx: 0.0022, rz: 0.0019 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
-    // Lower lid: a thin warm crease that stops the eye floating.
-    b.setColor(mixCol(o.skin, PALETTE.lip, 0.35));
+    // Lower lid: a thin crease that stops the eye floating. It used to be mixed
+    // 35% toward PALETTE.lip (0xb07a68) and the closeup critique measured the
+    // result — (175,123,96) to (195,143,109), sat 0.43-0.45 — as the highest
+    // -chroma pixels on the whole character, reading as lens flare rather than an
+    // eyelid. A lower lid is a SHADOW, so it is now a desaturated darker skin.
+    b.setColor(mixCol(o.skin, [0.052, 0.044, 0.046], 0.34));
     b.addTube([
       { p: [p[0] - side * lx * 0.80, p[1] - ly * 0.62, p[2] + 0.0006], rx: 0.0018, rz: 0.0015 },
       { p: [p[0], p[1] - ly * 0.98, p[2] + 0.0034], rx: 0.0021, rz: 0.0017 },
@@ -1628,31 +2042,60 @@ export function buildHead(b, rig, o, f) {
     const p0 = face(side * (eDX - 0.13), bY - 0.02, 0.0022);
     const p1 = face(side * eDX, bY, 0.0026);
     const p2 = face(side * (eDX + 0.16), bY - 0.03, 0.0020);
+    // Half again as thick as round 2. A brow is a wide, soft mass on a real
+    // face, not a wire, and thickness is the only thing that buys it survival
+    // past ~15 m.
     b.addTube([
-      { p: [p0[0], p0[1], p0[2]], rx: 0.0048, rz: 0.0040 },
-      { p: [p1[0], p1[1], p1[2]], rx: 0.0068, rz: 0.0054 },
-      { p: [p2[0], p2[1], p2[2]], rx: 0.0046, rz: 0.0038 },
+      { p: [p0[0], p0[1], p0[2]], rx: 0.0070, rz: 0.0056 },
+      { p: [p1[0], p1[1], p1[2]], rx: 0.0098, rz: 0.0074 },
+      { p: [p2[0], p2[1], p2[2]], rx: 0.0066, rz: 0.0052 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
   }
 
   // --- Mouth: a soft lip wedge on the surface, with a darker seam.
+  //
+  // Round 2 laid the corners at dx = +/-0.125 of the head half-width, which is a
+  // 19 mm mouth on a 159 mm head — barely wider than a nostril. At portrait
+  // distance that renders as a dark bean, and because it is so narrow it never
+  // reaches round onto the front plane, so in three-quarter view it lands ON the
+  // profile silhouette: exactly what the closeup critique reported at (1080,485).
+  // A mouth is ~40% of face width; the corners now sit at +/-0.315, which puts
+  // them under the pupils where they belong, and the whole thing rides 0.045
+  // higher so it is not sitting on the chin.
   {
-    const mDY = -0.48;
-    const c0 = face(-0.125 * f.width, mDY + 0.035, 0.0018);
-    const c1 = face(0, mDY, 0.0030);
-    const c2 = face(0.125 * f.width, mDY + 0.035, 0.0018);
-    b.setColor(PALETTE.lip).setMottle(0.02);
+    const mDY = -0.435;
+    const mW = 0.315 * f.width;
+    const c0 = face(-mW, mDY + 0.048, 0.0016);
+    const c1 = face(0, mDY, 0.0028);
+    const c2 = face(mW, mDY + 0.048, 0.0016);
+    const q0 = face(-mW * 0.55, mDY + 0.014, 0.0024);
+    const q1 = face(mW * 0.55, mDY + 0.014, 0.0024);
+    b.setColor(mixCol(PALETTE.lip, o.skin, 0.34)).setMottle(0.02);
     b.addTube([
-      { p: [c0[0], c0[1], c0[2]], rx: 0.0040, rz: 0.0034 },
-      { p: [c1[0], c1[1] + 0.0016, c1[2]], rx: 0.0075, rz: 0.0056 },
-      { p: [c2[0], c2[1], c2[2]], rx: 0.0040, rz: 0.0034 },
+      { p: [c0[0], c0[1], c0[2]], rx: 0.0026, rz: 0.0022 },
+      { p: [q0[0], q0[1] + 0.0008, q0[2]], rx: 0.0050, rz: 0.0040 },
+      { p: [c1[0], c1[1] + 0.0012, c1[2]], rx: 0.0058, rz: 0.0046 },
+      { p: [q1[0], q1[1] + 0.0008, q1[2]], rx: 0.0050, rz: 0.0040 },
+      { p: [c2[0], c2[1], c2[2]], rx: 0.0026, rz: 0.0022 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
-    b.setColor(mixCol(PALETTE.lip, [0.03, 0.02, 0.02], 0.55));
+    // The mouth SEAM. This is the piece that actually reads — on a real face the
+    // lips are barely a value change and the line between them carries it all.
+    b.setColor(mixCol(PALETTE.lip, [0.028, 0.019, 0.019], 0.62));
     b.addTube([
-      { p: [c0[0], c0[1] + 0.0006, c0[2] + 0.0006], rx: 0.0021, rz: 0.0017 },
-      { p: [c1[0], c1[1] + 0.0028, c1[2] + 0.0012], rx: 0.0027, rz: 0.0021 },
-      { p: [c2[0], c2[1] + 0.0006, c2[2] + 0.0006], rx: 0.0021, rz: 0.0017 },
+      { p: [c0[0], c0[1] + 0.0004, c0[2] + 0.0004], rx: 0.0014, rz: 0.0012 },
+      { p: [q0[0], q0[1] + 0.0018, q0[2] + 0.0010], rx: 0.0019, rz: 0.0015 },
+      { p: [c1[0], c1[1] + 0.0022, c1[2] + 0.0012], rx: 0.0020, rz: 0.0016 },
+      { p: [q1[0], q1[1] + 0.0018, q1[2] + 0.0010], rx: 0.0019, rz: 0.0015 },
+      { p: [c2[0], c2[1] + 0.0004, c2[2] + 0.0004], rx: 0.0014, rz: 0.0012 },
     ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
+    // Philtrum: two short ridges from the nose base down to the upper lip.
+    b.setColor(mixCol(o.skin, [0.05, 0.04, 0.04], 0.13)).setMottle(0.015);
+    for (const side of [1, -1]) {
+      b.addTube([
+        { p: face(side * 0.058 * f.width, mDY + 0.120, 0.0012), rx: 0.0022, rz: 0.0018 },
+        { p: face(side * 0.072 * f.width, mDY + 0.034, 0.0014), rx: 0.0026, rz: 0.0020 },
+      ], { seg: seg(5), capStart: 'round', capEnd: 'round' });
+    }
   }
 
   b.setMottle(0.06);

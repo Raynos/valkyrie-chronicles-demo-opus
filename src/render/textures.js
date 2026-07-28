@@ -72,6 +72,78 @@ function tridge(x, y, base, oct = 4, gain = 0.55, seed = 0) {
   return sum / norm;
 }
 
+// Tileable cellular (Worley) noise. `per` is the feature-cell period; the
+// feature point in each cell is jittered over the WHOLE cell, so the result has
+// no lattice direction left in it — which is the entire point of using this for
+// paper tooth. Returns [F1, F2] in cell units.
+//
+// This is the isotropic primitive the old paper texture lacked. Value-noise fbm
+// stretched on an axis (which is what "fibre" used to be) is a RULING: its power
+// spectrum has a single dominant orientation, and at an 8 px period on a 1:1
+// screen fetch that is indistinguishable from a printed halftone. Distance to a
+// jittered point set has no preferred orientation at any scale.
+// The feature points are baked once per (period, seed) — hoist the table out of
+// the pixel loop and the inner 3x3 gather is nine array reads instead of
+// eighteen hashes, which is the difference between a 0.5 s texture build and a
+// 0.15 s one.
+const _cellTables = new Map();
+function cellPoints(per, seed) {
+  const key = per + ':' + seed;
+  let t = _cellTables.get(key);
+  if (!t) {
+    t = new Float32Array(per * per * 2);
+    for (let y = 0; y < per; y++) {
+      for (let x = 0; x < per; x++) {
+        const i = (y * per + x) * 2;
+        t[i] = hashi(x, y, seed);
+        t[i + 1] = hashi(x, y, (seed ^ 0x9e3779b9) | 0);
+      }
+    }
+    _cellTables.set(key, t);
+  }
+  return t;
+}
+
+/**
+ * F1 (and F2 via `out`) from a hoisted point table. Distances in cell units.
+ * The index wrap is a pair of compares rather than a modulo: this runs eleven
+ * million times per texture and `%` on a double is not cheap.
+ */
+function cellF1(P, per, x, y, out) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  let f1 = 9, f2 = 9;
+  for (let dy = -1; dy <= 1; dy++) {
+    const cy = yi + dy;
+    let wy = cy % per; if (wy < 0) wy += per;
+    const row = wy * per * 2;
+    for (let dx = -1; dx <= 1; dx++) {
+      const cx = xi + dx;
+      let wx = cx % per; if (wx < 0) wx += per;
+      const i = row + wx * 2;
+      const ex = x - (cx + P[i]), ey = y - (cy + P[i + 1]);
+      const d = ex * ex + ey * ey;
+      if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
+    }
+  }
+  if (out) out[0] = Math.sqrt(f2);
+  return Math.sqrt(f1);
+}
+
+// LATTICE-PRESERVING rotations, for laying an anisotropic field down at an
+// angle without losing the tile.
+//
+// A field sampled at x = (a*u - b*v) * fa is periodic in u and v with period 1
+// exactly when a*fa, b*fa are integers — the integer matrix [[a,-b],[b,a]] maps
+// Z^2 into itself. So the angle is atan(b/a), the scale is hypot(a,b), and
+// `base` is chosen per direction to cancel that scale so all three strand
+// families end up the same physical size (about 20 x 39 px at octave 0, i.e. a
+// 2:1 stretch). Everything here is an integer; nothing rounds.
+const FIBRE_DIRS = [
+  { a: 1, b: 0, fa: 2, fb: 1, base: 13 },   //   0 deg
+  { a: 1, b: 2, fa: 2, fb: 1, base: 6 },    //  63.4 deg
+  { a: -1, b: 2, fa: 2, fb: 1, base: 6 },   // 116.6 deg
+];
+
 function tnoise3(x, y, z, per, seed) {
   const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
   const u = fade(x - xi), v = fade(y - yi), w = fade(z - zi);
@@ -131,6 +203,33 @@ function finish(tex, { repeat = true, mips = true, aniso = 8 } = {}) {
   return tex;
 }
 
+// A low-frequency field evaluated on a coarse grid and bilinearly upsampled.
+// Everything in the paper/ground builds that lives above ~4 * step pixels goes
+// through this; it is what keeps a five-field multi-octave texture build inside
+// a loading screen instead of costing half a second.
+function coarseField(S, step, fn) {
+  const G = S / step;
+  const a = new Float32Array((G + 1) * (G + 1));
+  const inv = 1 / S;
+  for (let j = 0; j <= G; j++) {
+    for (let i = 0; i <= G; i++) {
+      a[j * (G + 1) + i] = fn((i % G) * step * inv, (j % G) * step * inv);
+    }
+  }
+  a.G = G; a.step = step;
+  return a;
+}
+function coarseAt(a, x, y) {
+  const G = a.G, st = a.step, W = G + 1;
+  const fx = x / st, fy = y / st;
+  const i = fx | 0, j = fy | 0;
+  const tx = fx - i, ty = fy - j;
+  const r0 = j * W + i, r1 = r0 + W;
+  const s0 = a[r0] + (a[r0 + 1] - a[r0]) * tx;
+  const s1 = a[r1] + (a[r1 + 1] - a[r1]) * tx;
+  return s0 + (s1 - s0) * ty;
+}
+
 function dataTex(size, fill) {
   const data = new Uint8Array(size * size * 4);
   const inv = 1 / size;
@@ -149,44 +248,157 @@ function dataTex(size, fill) {
 }
 
 // ============================================================== PAPER FIBRE
-// Cold-press watercolour paper. Three superimposed signals:
-//   * "tooth"  — the irregular hill-and-valley surface that catches pigment
-//   * "fibre"  — anisotropic pulp strands, stretched ~4:1 on two crossing axes
-//   * "cockle" — the very low frequency buckle of a wetted sheet
-// R: tooth+fibre luminance (this is what multiplies the frame)
-// G: fibre-only, used for directional bias in the grade pass
+// Genuine cold-press watercolour paper.
+//
+// ROUND 2 MEASURED THIS AS A MACHINE-RULED HALFTONE and it was: the old "fibre"
+// term was two value-noise fbms stretched 7:1 and 7:1 on perpendicular axes, at
+// a base period that landed on ~8 screen pixels once the grade pass sampled the
+// tile 1:1. Orientation-power anisotropy of the G output measured 290:1 — a
+// perfect single-direction screen — and that channel is fetched at ~0.87 texels
+// per screen pixel by the surface shaders. Cold-press tooth is the opposite of
+// that: it is ISOTROPIC and IRREGULAR at every scale.
+//
+// So the substrate is now built out of tileable cellular (Worley) noise, which
+// has no preferred orientation by construction, at three scales, domain-warped
+// so the feature lattice can never show through:
+//   * "tooth"   — irregular hills and valleys, the surface that catches pigment
+//   * "gran"    — CLUMPED granulation: heavy pigment settling into the tooth in
+//                 irregular clusters (the characteristic cauliflower speckle of
+//                 a granulating wash), density driven by a separate low-freq
+//                 "where the wash pooled" field so it clusters instead of
+//                 dusting the sheet evenly
+//   * "fibre"   — pulp strands, still present because paper has them, but laid
+//                 down in THREE directions each gated by its own mask, so a
+//                 strand is visible locally and the aggregate has no direction.
+//                 The rotations are integer lattice maps, so the tile still
+//                 wraps exactly.
+//   * "cockle"  — the very low frequency buckle of a wetted sheet
+//
+// The field is normalised to an exact mean/sd at build time, because the grade
+// pass hard-codes `(paper.r - 0.60)` as its centre.
+//
+// R: tooth + granulation + fibre (this is what multiplies the frame)
+// G: mid-frequency isotropic mottle — wet-edge boundary tooth
 // B: cockle (large-scale, drives the luminance ripple)
-// A: fine speckle, used to keep the grain alive under magnification
+// A: granulation clump mask (fine, isotropic)
+
+// The grade pass hard-codes `(paper.r - 0.60)` as its centre, so the mean is
+// load-bearing. The sd is down from the round-2 texture's 0.095 because the new
+// field puts far more of its energy in the 3-12 px tooth octaves and far less in
+// the 60 px lobes the old stretched fibre carried — same visible tooth, less
+// total multiply, and no low-frequency blotch repeating at the 512 px tile.
+const PAPER_MEAN = 0.60;
+const PAPER_SD = 0.078;
 
 export function getPaperTexture() {
   return cached('paper', () => {
     const S = 512;
     const seed = (CFG.seed ^ 0x51ab) >>> 0;
-    const tex = dataTex(S, (u, v, out) => {
-      // pulp strands: two crossing anisotropic fbms
-      const f1 = tfbm(u * 4.0, v * 0.55, 16, 4, 0.55, seed + 11);
-      const f2 = tfbm(u * 0.5, v * 3.6, 16, 4, 0.55, seed + 29);
-      const fibre = (f1 * 0.55 + f2 * 0.45);
+    const N = S * S;
+    const inv = 1 / S;
+    const lumF = new Float32Array(N);
+    const midF = new Float32Array(N);
+    const cockF = new Float32Array(N);
+    const granF = new Float32Array(N);
 
-      // tooth: sharpened mid-frequency noise, biased so peaks are rare
-      const t0 = tfbm(u, v, 32, 4, 0.52, seed + 71);
-      const t1 = tridge(u, v, 64, 3, 0.5, seed + 97);
-      let tooth = mix(t0, t1, 0.42);
-      tooth = sstep(0.24, 0.86, tooth);
+    const fibSeed = FIBRE_DIRS.map((_, i) => seed + 811 + i * 197);
 
-      // deposit: pigment sinks into valleys -> slight inversion in the darks
-      const grain = tnoise(u * 256, v * 256, 256, seed + 131);
+    // hoisted feature-point tables
+    const Pa = cellPoints(40, seed + 11);
+    const Pb = cellPoints(88, seed + 23);
+    const Pc = cellPoints(168, seed + 31);
+    const Pg0 = cellPoints(20, seed + 601);
+    const Pg1 = cellPoints(52, seed + 617);
 
-      const cockle = tfbm(u, v, 3, 3, 0.6, seed + 211);
+    // low-frequency fields, on a coarse grid (everything here has lobes of
+    // 14 px or more, so a 4 px grid resolves it exactly)
+    const fWu = coarseField(S, 4, (u, v) => tfbm(u, v, 6, 3, 0.55, seed + 301) - 0.5);
+    const fWv = coarseField(S, 4, (u, v) => tfbm(u, v, 6, 3, 0.55, seed + 307) - 0.5);
+    const fDens = coarseField(S, 4, (u, v) => tfbm(u, v, 7, 3, 0.60, seed + 401));
+    const fCock = coarseField(S, 8, (u, v) => tfbm(u, v, 3, 3, 0.6, seed + 211));
+    const fWash = coarseField(S, 4, (u, v) => tfbm(u, v, 9, 3, 0.55, seed + 631));
+    const fMask = FIBRE_DIRS.map((_, i) =>
+      coarseField(S, 8, (u, v) => sstep(0.40, 0.78, tfbm(u, v, 4, 2, 0.60, fibSeed[i] + 53))));
+    // the strand field itself: ~10 px features, so a 2 px grid still resolves it
+    const fStrand = FIBRE_DIRS.map((d, i) => coarseField(S, 2, (u, v) =>
+      tfbm((u * d.a - v * d.b) * d.fa, (u * d.b + v * d.a) * d.fb, d.base, 3, 0.55, fibSeed[i])));
 
-      const lum = sat(0.60 + (tooth - 0.5) * 0.40 + (fibre - 0.5) * 0.30 + (grain - 0.5) * 0.10);
+    let p = 0;
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++, p++) {
+        const u = x * inv, v = y * inv;
 
-      out[0] = lum;
-      out[1] = sat(0.5 + (fibre - 0.5) * 1.25);
-      out[2] = cockle;
-      out[3] = grain;
-    });
-    return finish(tex);
+        // Domain warp. Without this the cellular lattice leaves faint rows at
+        // the cell period; with it the point set reads as scattered.
+        const uu = u + coarseAt(fWu, x, y) * 0.070;
+        const vv = v + coarseAt(fWv, x, y) * 0.070;
+
+        // ---- tooth: fractal cellular hills, ~13 px and ~6 px cells ----------
+        const a1 = cellF1(Pa, 40, uu * 40, vv * 40);
+        const b1 = cellF1(Pb, 88, uu * 88 + 2.7, vv * 88 + 5.1);
+        const c1 = cellF1(Pc, 168, uu * 168 + 1.3, vv * 168 + 9.7);
+        const tooth = (1 - a1) * 0.46 + (1 - b1) * 0.34 + (1 - c1) * 0.20;
+
+        // ---- granulation: clustered pigment specks --------------------------
+        // Clumps sit ON the fine feature points; their DENSITY comes from an
+        // independent low-frequency field, which is what makes them cluster into
+        // cauliflower patches instead of dusting the sheet uniformly.
+        const dens = sstep(0.36, 0.76, coarseAt(fDens, x, y));
+        const clump = (1 - sstep(0.06, 0.46, b1)) * 0.55 + (1 - sstep(0.05, 0.40, c1)) * 0.45;
+        const gran = clump * dens;
+
+        // ---- fibre: three masked directions, aggregate has no orientation ---
+        let fs = 0, fw = 1e-4;
+        for (let i = 0; i < 3; i++) {
+          const m = coarseAt(fMask[i], x, y);
+          if (m <= 0.001) continue;
+          fs += coarseAt(fStrand[i], x, y) * m;
+          fw += m;
+        }
+        const fibre = fw > 1e-3 ? fs / fw : 0.5;
+
+        // ---- fine speckle: keeps the grain alive under magnification --------
+        const speck = tnoise(u * 256, v * 256, 256, seed + 131);
+
+        lumF[p] = tooth * 0.62 - gran * 0.34 + (fibre - 0.5) * 0.16 + (speck - 0.5) * 0.13;
+
+        // G: isotropic mid-frequency mottle for the wet-edge boundary tooth.
+        // Two cellular octaves at ~26 px and ~10 px plus a broad wash so a
+        // terminator picks up paper structure without picking up a direction.
+        const g0 = cellF1(Pg0, 20, uu * 20 + 4.1, vv * 20 + 1.9);
+        const g1 = cellF1(Pg1, 52, uu * 52 + 7.7, vv * 52 + 3.3);
+        midF[p] = (1 - g0) * 0.55 + (1 - g1) * 0.25 + coarseAt(fWash, x, y) * 0.20;
+
+        cockF[p] = coarseAt(fCock, x, y);
+        granF[p] = gran * 0.75 + (1 - clump) * 0.10 + speck * 0.15;
+      }
+    }
+
+    // Normalise the multiply channel onto the exact mean/sd the grade pass and
+    // the surface shaders assume. Doing this measured rather than by hand is
+    // what keeps a change to the tooth recipe from silently rebalancing the
+    // whole frame's contrast.
+    const norm = (arr, mean, sd) => {
+      let m = 0;
+      for (let i = 0; i < N; i++) m += arr[i];
+      m /= N;
+      let s = 0;
+      for (let i = 0; i < N; i++) { const d = arr[i] - m; s += d * d; }
+      s = Math.sqrt(s / N) || 1e-5;
+      const k = sd / s;
+      for (let i = 0; i < N; i++) arr[i] = mean + (arr[i] - m) * k;
+    };
+    norm(lumF, PAPER_MEAN, PAPER_SD);
+    norm(midF, 0.5, 0.155);
+
+    const data = new Uint8Array(N * 4);
+    for (let i = 0, q = 0; i < N; i++, q += 4) {
+      data[q] = sat(lumF[i]) * 255 + 0.5;
+      data[q + 1] = sat(midF[i]) * 255 + 0.5;
+      data[q + 2] = sat(cockF[i]) * 255 + 0.5;
+      data[q + 3] = sat(granF[i]) * 255 + 0.5;
+    }
+    return finish(new THREE.DataTexture(data, S, S, THREE.RGBAFormat, THREE.UnsignedByteType));
   });
 }
 
@@ -314,6 +526,8 @@ export function getBlotchTexture() {
       }
     }
     const at = (x, y) => dens[wrap(y, S) * S + wrap(x, S)];
+    const Pgr = cellPoints(74, seed + 313);
+    const fPool = coarseField(S, 2, (u, v) => tfbm(u, v, 8, 3, 0.6, seed + 331));
 
     const tex = dataTex(S, (u, v, out, x, y) => {
       const d = at(x, y);
@@ -321,7 +535,13 @@ export function getBlotchTexture() {
       const gy = at(x, y + 1) - at(x, y - 1);
       const grad = Math.sqrt(gx * gx + gy * gy) * S * 0.06;
       const pool = sstep(0.18, 0.85, grad);
-      const gran = tfbm(u, v, 48, 3, 0.5, seed + 313);
+      // Granulation is CLUMPED, not a smooth field: heavy pigment drops out of
+      // suspension into the tooth in irregular clusters. Cellular blobs whose
+      // density is driven by a separate broad "where the wash pooled" wash.
+      const gr1 = cellF1(Pgr, 74, u * 74 + 2.9, v * 74 + 6.1);
+      const gran = sat((1 - sstep(0.05, 0.44, gr1)) *
+                       sstep(0.30, 0.74, coarseAt(fPool, x, y)) * 1.35
+                       + tfbm(u, v, 24, 2, 0.5, seed + 347) * 0.30);
       // wash boundary: threshold the density then measure how close we are
       const edge = 1 - Math.abs(d - 0.52) * 4.0;
       out[0] = sat(0.5 + (d - 0.5) * 1.35);
@@ -394,16 +614,43 @@ export function getGroundDetailTexture() {
   return cached('ground', () => {
     const S = 512;
     const seed = (CFG.seed ^ 0x60d5) >>> 0;
-    const tex = dataTex(S, (u, v, out) => {
-      const grass = mix(
-        tfbm(u * 1.6, v * 0.42, 32, 4, 0.55, seed + 7),
-        tridge(u * 0.5, v * 2.2, 24, 3, 0.5, seed + 19), 0.45);
-      const grit = tfbm(u, v, 64, 3, 0.45, seed + 31);
-      const pebble = sstep(0.68, 0.9, tfbm(u, v, 40, 2, 0.5, seed + 53));
-      const rock = tridge(u, v, 12, 5, 0.55, seed + 67);
-      const mud = tfbm(u, v, 6, 4, 0.6, seed + 83);
+    const Pt1 = cellPoints(56, seed + 7);
+    const Pt2 = cellPoints(116, seed + 19);
+    const Pgr = cellPoints(124, seed + 31);
+    const Ppb = cellPoints(44, seed + 53);
+    const Prv = cellPoints(26, seed + 61);
+    const fTuft = coarseField(S, 4, (u, v) => tfbm(u, v, 9, 3, 0.55, seed + 23));
+    const fPeb = coarseField(S, 8, (u, v) => tfbm(u, v, 6, 2, 0.6, seed + 59));
+    const fMud = coarseField(S, 2, (u, v) => tfbm(u, v, 6, 4, 0.6, seed + 83));
+    const _f2 = [0];
+    const tex = dataTex(S, (u, v, out, x, y) => {
+      // Grass tufts. This used to be `tfbm(u*1.6, v*0.42, ...)` mixed with a
+      // ridge stretched the other way — a ROW-CORRELATED field, which under a
+      // grazing camera projects to pure horizontal smear (round 2 measured a
+      // 3.9:1 directional anisotropy on the near road) AND did not even tile,
+      // because 1.6 * 32 is not an integer number of lattice cells. Isotropic
+      // clumped aggregate on both counts now: cellular tufts at ~9 px over a
+      // broad density wash, so the ground reads as matted growth rather than
+      // as a brushed metal streak.
+      const tuft = 1 - cellF1(Pt1, 56, u * 56, v * 56);
+      const tuft2 = 1 - cellF1(Pt2, 116, u * 116 + 3.1, v * 116 + 7.9);
+      const grass = sat(0.5 + (tuft - 0.42) * 0.85 + (tuft2 - 0.42) * 0.45
+                        + (coarseAt(fTuft, x, y) - 0.5) * 0.55);
+
+      // Dirt: 2-6 px aggregate. Blobs on a jittered point set, never a lattice.
+      const grit = 1 - sstep(0.06, 0.42, cellF1(Pgr, 124, u * 124 + 1.7, v * 124 + 5.3));
+      const pebble = (1 - sstep(0.05, 0.30, cellF1(Ppb, 44, u * 44 + 9.1, v * 44 + 2.3))) *
+                     sstep(0.42, 0.80, coarseAt(fPeb, x, y));
+
+      // Rock fissures: cellular VEINS (F2-F1 runs along the boundaries between
+      // grains, which is what a fissure actually is) over a ridged base. Ridged
+      // value noise alone carries the square lattice's axes through at 3.3:1.
+      const rf1 = cellF1(Prv, 26, u * 26 + 4.7, v * 26 + 8.3, _f2);
+      const vein = 1 - sstep(0.02, 0.22, _f2[0] - rf1);
+      const rock = sat(tridge(u, v, 12, 5, 0.55, seed + 67) * 0.62 + vein * 0.46);
+      const mud = coarseAt(fMud, x, y);
       out[0] = sat(grass);
-      out[1] = sat(grit * 0.7 + pebble * 0.55);
+      out[1] = sat(0.30 + grit * 0.42 + pebble * 0.45);
       out[2] = sat(rock);
       out[3] = sat(mud);
     });

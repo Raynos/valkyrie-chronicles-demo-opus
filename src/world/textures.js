@@ -318,6 +318,76 @@ export function barkTexture(seed = 11) {
   });
 }
 
+/**
+ * Clay pantile roof: horizontal courses of overlapping tiles.
+ *
+ * The `tile` material shipped with NO map at all, which is why every roof in
+ * the game measured as "a flat brick-red gradient with zero tile courses" — a
+ * 12 m expanse of one value is the most obviously untextured primitive in the
+ * frame. The map is value-only (see toDetail): the brick-red pigment stays in
+ * the baked vertex colour, and this only carves the courses, the roll of each
+ * pantile, the shadow under every lap and a per-tile value jitter.
+ *
+ * Authored so that at uvScale 0.5 (one texture per 2 m of roof) the courses
+ * land at ~0.14 m, which is what a real pantile gauge is.
+ */
+export function roofTileTexture(seed = 37) {
+  return cached(`rooftile:${seed}`, () => {
+    const S = 256;
+    const c = canvas(S);
+    const g = c.getContext('2d');
+    const rows = 14;             // -> 0.143 m courses at a 2 m tile
+    const cols = 11;
+    const rh = S / rows, cw = S / cols;
+    const rng = makeRng(seed);
+    // per-tile value jitter, +/-8%
+    const jitter = new Float32Array(rows * cols);
+    for (let i = 0; i < jitter.length; i++) jitter[i] = 0.92 + rng() * 0.16;
+
+    g.fillStyle = '#8a8a8a';
+    g.fillRect(0, 0, S, S);
+    for (let r = 0; r < rows; r++) {
+      const y0 = r * rh;
+      // Alternate courses are offset half a tile, the way pantiles are laid.
+      const off = (r & 1) ? cw * 0.5 : 0;
+      for (let k = -1; k <= cols; k++) {
+        const x0 = k * cw + off;
+        const j = jitter[r * cols + ((k + cols) % cols)];
+        // the barrel of the tile: bright on the roll, dark in the pan
+        const grd = g.createLinearGradient(x0, 0, x0 + cw, 0);
+        grd.addColorStop(0.00, `rgb(${(96 * j) | 0},${(96 * j) | 0},${(96 * j) | 0})`);
+        grd.addColorStop(0.30, `rgb(${(178 * j) | 0},${(178 * j) | 0},${(178 * j) | 0})`);
+        grd.addColorStop(0.62, `rgb(${(138 * j) | 0},${(138 * j) | 0},${(138 * j) | 0})`);
+        grd.addColorStop(1.00, `rgb(${(104 * j) | 0},${(104 * j) | 0},${(104 * j) | 0})`);
+        g.fillStyle = grd;
+        // a slightly wavy course line — hand-laid clay is never ruled
+        const sag = (valueNoise2(k * 1.7, r * 2.3, seed) - 0.5) * rh * 0.16;
+        g.fillRect(x0, y0 + sag, cw + 0.6, rh * 0.96);
+      }
+      // the shadow the course above casts on the head of this one
+      g.fillStyle = 'rgba(0,0,0,0.42)';
+      g.fillRect(0, y0, S, Math.max(1, rh * 0.16));
+    }
+    // weathering: lichen blotches and damp streaks running down the pitch
+    const img = g.getImageData(0, 0, S, S);
+    const d = img.data;
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const blotch = fbm2(x * 0.028, y * 0.028, { octaves: 4, seed: seed + 5 });
+        const streak = fbm2(x * 0.22, y * 0.012, { octaves: 3, seed: seed + 11 });
+        const m = 0.86 + blotch * 0.26 + (streak - 0.5) * 0.14;
+        const i = (y * S + x) * 4;
+        d[i] = clamp01(d[i] / 255 * m) * 255;
+        d[i + 1] = clamp01(d[i + 1] / 255 * m) * 255;
+        d[i + 2] = clamp01(d[i + 2] / 255 * m) * 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    toDetail(g, S, { strength: 0.40, contrast: 1.25 });
+    return finish(c, { repeat: 1 });
+  });
+}
+
 /** Hand-troweled stucco: mottled cream with trowel sweeps and damp staining. */
 export function stuccoTexture(seed = 23, base = [214, 202, 176]) {
   return cached(`stucco:${seed}:${base.join(',')}`, () => {

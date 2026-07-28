@@ -15,7 +15,7 @@ import * as THREE from 'three';
 import { WATER_Y } from './layout.js';
 import { flowNoiseTexture, paperTexture } from './textures.js';
 import { PALETTE, WorldLighting } from './worldMaterials.js';
-import { bridgeSpanLayout } from './structures.js';
+import { bridgeSpanLayout, BRIDGE_PIER_W } from './structures.js';
 import { clamp01 } from '../core/math.js';
 
 const VERT = /* glsl */ `
@@ -74,6 +74,14 @@ uniform vec3  uSunColor;
 uniform vec3  uSkyColor;
 uniform float uBands;
 
+// Bridge piers, in world XZ. xy = centre, z = half-extent along the flow
+// (cutwater to cutwater), w = half-extent across it. uPierX / uPierZ are the
+// bridge's local axes in world space, shared by every pier.
+uniform vec4  uPiers[4];
+uniform vec2  uPierX;
+uniform vec2  uPierZ;
+uniform float uPierCount;
+
 varying float vDepth;
 varying vec2  vFlow;
 varying float vArc;
@@ -86,6 +94,37 @@ float band(float v, float n, float soft) {
   float sc = v * n;
   float f = floor(sc);
   return (f + smoothstep(0.5 - soft, 0.5 + soft, sc - f)) / n;
+}
+
+/**
+ * Normalised distance to the nearest pier footprint: 0 at its centre, 1 on its
+ * face, >1 outside. The plan is the same hexagon buildBridge lofts — parallel
+ * sided in the middle, tapering to a point at each cutwater — so the mask and
+ * the masonry share a silhouette to within a few centimetres.
+ *
+ * This exists because the river is a transparent sheet with depthWrite off and
+ * its per-vertex depth attribute is sampled from the TERRAIN only. Over a pier
+ * the sheet therefore believed it was two metres deep, ran its alpha up to
+ * 0.94, and painted the open channel straight over solid masonry — while the
+ * outline composite still drew the pier's silhouette on top at full weight.
+ * That is the "transparent X-ray box" the round-2 critique measured (0.7/3.0/4.0
+ * LSB between the inside of a pier and open water).
+ */
+float pierDist(vec2 w) {
+  float best = 9.0;
+  for (int i = 0; i < 4; i++) {
+    if (float(i) >= uPierCount) break;
+    vec2 d = w - uPiers[i].xy;
+    float a = dot(d, uPierX);                 // along the flow
+    float b = dot(d, uPierZ);                 // across it
+    float ha = max(uPiers[i].z, 1e-3);
+    float t = clamp(abs(a) / ha, 0.0, 1.0);
+    // the nose: full width for the middle 62%, then a straight taper to a point
+    float hb = uPiers[i].w * (1.0 - smoothstep(0.62, 1.0, t));
+    float e = max(abs(a) / ha, abs(b) / max(hb, 0.02));
+    best = min(best, e);
+  }
+  return best;
 }
 
 void main() {
@@ -107,10 +146,18 @@ void main() {
 
   float turb = clamp((n1.b * 0.5 + n2.b * 0.3 + n3.a * 0.4), 0.0, 1.0);
 
+  // --- masonry standing in the channel. Everything below this point uses
+  // dWater, the depth of water ABOVE THE BED OR THE PIER, whichever is higher —
+  // so the sheet stops believing it is two metres deep over a solid pier.
+  float pd = pierDist(vWorld.xz);
+  float pierSolid = 1.0 - smoothstep(0.88, 1.02, pd);
+  float pierHalo = (1.0 - smoothstep(1.00, 1.30, pd)) * (1.0 - pierSolid);
+  float dWater = vDepth * (1.0 - pierSolid);
+
   // --- depth colour. The bed is a warm sand that reads THROUGH the shallows;
   // the channel proper settles to a teal-slate. Quantised into washes with soft
   // edges so it belongs to the same painting as the ground.
-  float dNorm = clamp(vDepth / 1.75, 0.0, 1.0);
+  float dNorm = clamp(dWater / 1.75, 0.0, 1.0);
   // The quantiser boundary wanders with the flow noise, so the depth washes are
   // torn contours in the current rather than clean bathymetry lines.
   float dq = band(clamp(dNorm + (n3.b - 0.5) * 0.16, 0.0, 1.0), uBands, 0.11);
@@ -160,12 +207,15 @@ void main() {
 
   // --- foam. A tight noisy band right at the waterline, plus lace where the
   // flow is turbulent, plus a standing wave broken around every bridge pier.
-  float shore = (1.0 - smoothstep(0.05, 0.40, vDepth)) * wet;
+  // The pier core is masonry, not shingle: no foam may be painted ACROSS it,
+  // only around it.
+  float shore = (1.0 - smoothstep(0.05, 0.40, dWater)) * wet * (1.0 - pierSolid);
   float lace = smoothstep(0.42, 0.86, n3.b + n1.a * 0.4 - shore * 0.2);
   float foam = clamp(shore * (0.46 + lace * 0.80), 0.0, 0.90);
-  foam += smoothstep(0.55, 0.95, vDepth) * lace * 0.16;   // midstream riffles
-  // pier wash: aObstacle is 1 hard against a pier and dies off downstream
-  float pier = vObst * wet * (0.48 + 0.60 * smoothstep(0.25, 0.75, turb));
+  foam += smoothstep(0.55, 0.95, dWater) * lace * 0.16;   // midstream riffles
+  // pier wash: aObstacle is the coarse per-vertex wake, pierHalo the exact
+  // 0.25 m collar the fragment shader can resolve against the real footprint.
+  float pier = max(vObst, pierHalo) * wet * (0.48 + 0.60 * smoothstep(0.25, 0.75, turb));
   foam = max(foam, clamp(pier, 0.0, 0.94));
   // Quantise the foam so it lands as flicked white gouache with a torn edge,
   // not as an airbrushed alpha gradient.
@@ -175,8 +225,10 @@ void main() {
   // A hard contact darkening where anything pierces the surface. Masonry
   // standing in a river makes a dark line at the waterline and a shadow in its
   // own lee; without one the piers read as pale cards laid ON the water.
-  float contact = smoothstep(0.55, 0.97, vObst) * wet;
-  col *= 1.0 - contact * 0.30;
+  float contact = max(smoothstep(0.55, 0.97, vObst), pierHalo) * wet;
+  col *= 1.0 - contact * 0.34;
+  // Under water the stone reads as a green-slate shadow, not as a dry course.
+  col = mix(col, uDeep * 0.62, pierSolid * 0.70);
 
   // Hold the pigment: the depth washes, the silt and the sky reflection all
   // pull toward neutral, and a neutral river reads as wet tarmac.
@@ -195,8 +247,11 @@ void main() {
   // Shallow water is nearly clear so the warm bed reads straight through it;
   // deep water closes up, which also stops submerged masonry from being
   // legible through the channel.
-  float alpha = mix(0.30, 0.94, smoothstep(0.0, 1.05, vDepth));
+  float alpha = mix(0.30, 0.94, smoothstep(0.0, 1.05, dWater));
   alpha = max(alpha, foam * 0.9);
+  // Over a pier the sheet is a thin film, and it is applied LAST so no foam or
+  // riffle term can put the channel back on top of the masonry.
+  alpha = mix(alpha, 0.20, pierSolid);
   alpha *= wet;
   if (alpha < 0.02) discard;
 
@@ -215,6 +270,7 @@ export class Water {
     this.time = 0;
 
     const geo = this._build(opts.across ?? 26, opts.subdiv ?? 2);
+    const pf = this._pierFootprints();
 
     this.material = new THREE.ShaderMaterial({
       uniforms: {
@@ -231,6 +287,10 @@ export class Water {
         uSunColor: { value: new THREE.Color(WorldLighting.sunColor) },
         uSkyColor: { value: new THREE.Color(PALETTE.skyHorizon) },
         uBands: { value: 3.0 },
+        uPiers: { value: pf.piers },
+        uPierX: { value: pf.axisX },
+        uPierZ: { value: pf.axisZ },
+        uPierCount: { value: pf.count },
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -386,6 +446,39 @@ export class Water {
       out.push({ x: b.x + zc * si, z: b.z + zc * co, r: b.width * 0.5 + 1.6 });
     }
     return out;
+  }
+
+  /**
+   * The pier PLAN, for the fragment-shader occlusion mask. Mirrors the loft in
+   * buildBridge(): a hexagon `half + reach` out along the bridge's local X (the
+   * cutwater direction, which points up and downstream) and `pierW * 0.555`
+   * along its local Z.
+   *
+   * @returns {{piers: THREE.Vector4[], axisX: THREE.Vector2, axisZ: THREE.Vector2, count: number}}
+   */
+  _pierFootprints() {
+    const MAX = 4;
+    const piers = [];
+    for (let i = 0; i < MAX; i++) piers.push(new THREE.Vector4(1e6, 1e6, 1, 1));
+    const axisX = new THREE.Vector2(1, 0);
+    const axisZ = new THREE.Vector2(0, 1);
+    const b = this.layout.bridge;
+    if (!b || !(b.length > 0)) return { piers, axisX, axisZ, count: 0 };
+    const { pierZ } = bridgeSpanLayout(b.length);
+    const co = Math.cos(b.yaw), si = Math.sin(b.yaw);
+    // buildBridge places pier centres at local (0, y, zc); local +Z maps to
+    // (si, co) in world, so local +X maps to (co, -si).
+    axisX.set(co, -si);
+    axisZ.set(si, co);
+    // half + reach, taken at the widest ring of the loft (the spread footing).
+    const halfAlong = b.width * 0.5 + 1.05;
+    const halfAcross = BRIDGE_PIER_W * 0.555;
+    const n = Math.min(MAX, pierZ.length);
+    for (let i = 0; i < n; i++) {
+      const zc = pierZ[i];
+      piers[i].set(b.x + zc * si, b.z + zc * co, halfAlong, halfAcross);
+    }
+    return { piers, axisX, axisZ, count: n };
   }
 
   /** Surface height including the swell — for splash VFX and boats. */

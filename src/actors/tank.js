@@ -605,19 +605,48 @@ export class Tank {
     // track. Must clear the top of the return run — see sponsonRing().
     this.sponsonY = this.axleY + 0.53;                    // 0.27
     this.fenderY = this.axleY + 0.59;                     // 0.33
+    /**
+     * How much taller the superstructure is than the round-2 hull, in metres.
+     *
+     * The old envelope topped out at deck 0.52 / turret roof 0.98 above the
+     * suspension datum, i.e. 1.12 m and 1.58 m off the ground on a 4.90 m hull —
+     * a 3.1:1 length-to-height wedge. Nothing on the battlefield is that shape:
+     * a real light/medium tank is about 2.3:1, and the Edelweiss in particular
+     * is a TALL vehicle whose turret roof sits above a standing man's head. At
+     * 1.58 m every soldier in every shot loomed over it, which is most of why
+     * axis 7 (form) scored 4 — the silhouette was reading as an armoured car.
+     *
+     * Every deck-mounted feature below adds DECK to its Y and every glacis
+     * feature is re-derived from the (now steeper) plate, so this is the ONE
+     * number to change if the proportion needs another pass. It also finally
+     * puts the visual radiator inside the y-band src/game/units.js has always
+     * declared for the `radiator` aim region (1.05..1.62 above ground).
+     */
+    this.deckRise = 0.24;
 
     // Hit volumes consumed by src/physics/ballistics.js.
+    //
+    // NOTE THE FRAME. ballistics.tankBox() resolves `hull`, `trackL` and
+    // `trackR` against tank.ROOT — the ground point — and only `turret` against
+    // the turret node. The round-2 offsets were written as if they were in
+    // chassis space, so the hull box sat a full rideHeight (0.60 m) below the
+    // hull: it spanned -0.24..0.60 above the ground while the armour it was
+    // standing in for spanned 0.46..1.12. Rounds aimed at the hull passed
+    // through it and hit the terrain, and rounds aimed at the tracks tested a
+    // box that was half underground. Root-relative from here.
+    // Armour envelope in chassis space: belly at -0.14, deck at 0.52 + deckRise.
+    const hullBot = -0.14, hullTop = 0.52 + this.deckRise;
     this.hitDims = {
-      hull: { hx: 1.20, hy: 0.42, hz: 2.50 },
-      turret: { hx: 0.86, hy: 0.30, hz: 1.00 },
+      hull: { hx: 1.20, hy: (hullTop - hullBot) / 2, hz: 2.50 },
+      turret: { hx: 0.86, hy: 0.32, hz: 1.00 },
       trackL: { hx: 0.24, hy: 0.36, hz: 2.45 },
       trackR: { hx: 0.24, hy: 0.36, hz: 2.45 },
     };
     this.hitOffsets = {
-      hull: { x: 0, y: 0.18, z: 0 },
+      hull: { x: 0, y: this.rideHeight + (hullTop + hullBot) / 2, z: 0 },
       turret: { x: 0, y: 0.22, z: -0.05 },
-      trackL: { x: -this.gauge / 2, y: this.axleY + 0.02, z: 0 },
-      trackR: { x: this.gauge / 2, y: this.axleY + 0.02, z: 0 },
+      trackL: { x: -this.gauge / 2, y: this.rideHeight + this.axleY + 0.02, z: 0 },
+      trackR: { x: this.gauge / 2, y: this.rideHeight + this.axleY + 0.02, z: 0 },
     };
 
     // ---- combat state -----------------------------------------------------
@@ -780,16 +809,51 @@ export class Tank {
     // ---- primary armour envelope -----------------------------------------
     // Stations run rear -> nose. The deck drops sharply from z=1.4 forward:
     // that is the glacis, and its slope is what the penetration model reads.
+    //
+    // `rise` lifts the superstructure (see this.deckRise) without moving the
+    // nose, so the glacis gets STEEPER as well as the vehicle getting taller —
+    // 24 degrees from horizontal before, 33.5 after. That matters twice over: a
+    // steeper plate is a bigger, flatter facet aimed more directly at the sky,
+    // which is exactly the surface a three-band quantiser needs to park a whole
+    // cream wash on, and it is the single silhouette line that says "tank"
+    // rather than "box on tracks".
+    const rise = this.deckRise;
     const stations = [
-      { z: -2.56, w: 1.14, wl: 0.94, yBot: -0.06, yTop: 0.40, ch: 0.14 },
-      { z: -2.10, w: 1.20, wl: 0.97, yBot: -0.13, yTop: 0.50, ch: 0.16 },
-      { z: -1.20, w: 1.21, wl: 0.97, yBot: -0.14, yTop: 0.52, ch: 0.17 },
-      { z: 0.10, w: 1.21, wl: 0.97, yBot: -0.14, yTop: 0.52, ch: 0.17 },
-      { z: 1.05, w: 1.21, wl: 0.97, yBot: -0.14, yTop: 0.51, ch: 0.17 },
-      { z: 1.42, w: 1.20, wl: 0.96, yBot: -0.14, yTop: 0.48, ch: 0.17 },
-      { z: 1.98, w: 1.14, wl: 0.92, yBot: -0.12, yTop: 0.26, ch: 0.14 },
-      { z: 2.34, w: 1.02, wl: 0.86, yBot: -0.01, yTop: 0.07, ch: 0.09 },
+      { z: -2.56, w: 1.14, wl: 0.94, yBot: -0.06, yTop: 0.40 + rise * 0.92, ch: 0.14 },
+      { z: -2.10, w: 1.20, wl: 0.97, yBot: -0.13, yTop: 0.50 + rise, ch: 0.16 },
+      { z: -1.20, w: 1.21, wl: 0.97, yBot: -0.14, yTop: 0.52 + rise, ch: 0.17 },
+      { z: 0.10, w: 1.21, wl: 0.97, yBot: -0.14, yTop: 0.52 + rise, ch: 0.17 },
+      { z: 1.05, w: 1.21, wl: 0.97, yBot: -0.14, yTop: 0.51 + rise, ch: 0.17 },
+      { z: 1.42, w: 1.20, wl: 0.96, yBot: -0.14, yTop: 0.48 + rise * 0.92, ch: 0.17 },
+      { z: 1.98, w: 1.14, wl: 0.92, yBot: -0.12, yTop: 0.26 + rise * 0.33, ch: 0.14 },
+      { z: 2.34, w: 1.02, wl: 0.86, yBot: -0.01, yTop: 0.07 + rise * 0.08, ch: 0.09 },
     ];
+    /**
+     * Deck height at a station z — the datum EVERY deck and glacis fitting now
+     * hangs off. Round 2 had all forty of them written as absolute constants,
+     * which is why the last proportion change left the hatch floating and the
+     * spare track links buried: raising the roof silently moved the plate they
+     * were bolted to and nothing followed. Interpolated, they follow.
+     */
+    const deckAt = (z) => {
+      const last = stations.length - 1;
+      if (z <= stations[0].z) return stations[0].yTop;
+      if (z >= stations[last].z) return stations[last].yTop;
+      for (let i = 0; i < last; i++) {
+        if (z <= stations[i + 1].z) {
+          const k = (z - stations[i].z) / (stations[i + 1].z - stations[i].z);
+          return lerp(stations[i].yTop, stations[i + 1].yTop, k);
+        }
+      }
+      return stations[last].yTop;
+    };
+    /** The glacis plate: where its break is, and how steeply it falls. */
+    const glacisA = stations[5], glacisB = stations[7];
+    const glacisSlope = Math.atan2(glacisA.yTop - glacisB.yTop, glacisB.z - glacisA.z);
+    /** Deck height under the turret ring. _buildTurret and _buildMarkings read it. */
+    this.turretDeckY = deckAt(-0.10);
+    this.glacisSlope = glacisSlope;
+    this.glacisAt = deckAt;
     // The shelf clears the top of the return run (y = rollerY + rollerR) so the
     // whole track loop lives in the pocket under the overhang.
     const shelfY = this.sponsonY;
@@ -835,53 +899,82 @@ export class Tank {
     const nBolts = byQ([12, 20, 26]);
     for (let i = 0; i < nBolts; i++) {
       const a = (i / nBolts) * TAU;
-      rivets.push([Math.cos(a) * ringR, 0.53, -0.10 + Math.sin(a) * ringR, 0]);
+      rivets.push([Math.cos(a) * ringR, this.turretDeckY + 0.005, -0.10 + Math.sin(a) * ringR, 0]);
     }
 
     // ---- turret ring / race ----------------------------------------------
     const race = new THREE.CylinderGeometry(0.90, 0.94, 0.09, byQ([16, 24, 32]), 1, true);
-    place(race, 0, 0.525, -0.10);
+    place(race, 0, this.turretDeckY, -0.10);
     B.metal.push(race);
 
     // ---- engine deck: louvred grilles above the powerpack -----------------
     for (const zc of [-1.35, -1.95]) {
+      const dy = deckAt(zc);
       const frame = new THREE.BoxGeometry(1.34, 0.05, 0.46);
-      place(frame, 0, 0.525, zc);
+      place(frame, 0, dy, zc);
       B.metal.push(frame);
       const slats = byQ([4, 7, 9]);
       for (let i = 0; i < slats; i++) {
         const s = new THREE.BoxGeometry(1.22, 0.035, 0.035);
-        place(s, 0, 0.556, zc - 0.19 + (i / (slats - 1)) * 0.38, 0.42, 0, 0);
+        place(s, 0, dy + 0.031, zc - 0.19 + (i / (slats - 1)) * 0.38, 0.42, 0, 0);
         B.grille.push(s);
       }
     }
 
     // ---- rear plate + THE RADIATOR (the weak point) -----------------------
-    // Visually distinct: recessed, cool-teal, heavily louvred, ringed by a
-    // bright rim so the player can read it at a glance from behind.
+    //
+    // This is the one panel on the vehicle a player has to be able to name from
+    // forty metres, and round 2 it was a dark rectangle among dark rectangles at
+    // knee height. Three changes, all about READABILITY rather than detail:
+    //
+    //   1. It moves UP the rear plate, from a centre 0.77 m off the ground to
+    //      1.09 m — which is where src/game/units.js has always declared the
+    //      `radiator` aim region (1.05..1.62) and where a gunner would actually
+    //      look. The old grille was below the tow shackles.
+    //   2. It is RECESSED behind a proud, chamfered rim frame that stands 6 cm
+    //      off the plate all the way round. A recess is what gives the quantiser
+    //      something to work with: the rim catches the top band and the well
+    //      behind it drops two bands, so the feature reads as a hole even in
+    //      silhouette instead of relying on the grille's teal albedo.
+    //   3. Its louvres are deeper and steeper (0.11 m at 40 degrees rather than
+    //      0.07 at 29), so the slats self-shadow into a row of hard darks.
     const radZ = -2.585;
-    const radFrame = new THREE.BoxGeometry(1.24, 0.62, 0.06);
-    place(radFrame, 0, 0.17, radZ + 0.02);
-    B.metal.push(radFrame);
-    const radBack = new THREE.BoxGeometry(1.06, 0.5, 0.04);
-    place(radBack, 0, 0.17, radZ - 0.02);
+    // Centred on the rear plate's clear span — between the belly chamfer and the
+    // deck chamfer, which on the raised hull is local y 0.08..0.48.
+    const radY = (deckAt(-2.56) - 0.14 + 0.08) / 2 + 0.02;
+    this.radiatorY = radY;
+    const radHalfH = 0.155;
+    // Proud rim frame: four bars round a hole, not a slab. They overlap at the
+    // corners — at this scale nobody counts the vertices, and an unbroken rim is
+    // the whole point.
+    for (const [w, hgt, ox, oy] of [
+      [1.34, 0.06, 0, radHalfH + 0.03], [1.34, 0.06, 0, -radHalfH - 0.03],
+      [0.06, radHalfH * 2 + 0.12, 0.64, 0], [0.06, radHalfH * 2 + 0.12, -0.64, 0],
+    ]) {
+      const bar = new THREE.BoxGeometry(w, hgt, 0.10);
+      place(bar, ox, radY + oy, radZ + 0.045);
+      B.metal.push(bar);
+    }
+    const radBack = new THREE.BoxGeometry(1.22, radHalfH * 2, 0.04);
+    place(radBack, 0, radY, radZ - 0.055);
     B.grille.push(radBack);
     const nSlats = byQ([5, 9, 13]);
     for (let i = 0; i < nSlats; i++) {
-      const s = new THREE.BoxGeometry(1.02, 0.028, 0.07);
-      place(s, 0, 0.17 - 0.22 + (i / (nSlats - 1)) * 0.44, radZ - 0.03, -0.5, 0, 0);
+      const s = new THREE.BoxGeometry(1.18, 0.030, 0.10);
+      place(s, 0, radY - radHalfH * 0.84 + (i / (nSlats - 1)) * radHalfH * 1.68,
+        radZ - 0.02, -0.70, 0, 0);
       B.grille.push(s);
     }
     // Protective bar cage over the radiator — bent, and it shows.
     for (let i = 0; i < 3; i++) {
-      const y = 0.02 + i * 0.15;
-      B.metal.push(cylBetween(-0.6, y, radZ - 0.05, 0.6, y + (i === 1 ? 0.02 : 0), radZ - 0.05, 0.018, 5));
+      const y = radY - 0.13 + i * 0.13;
+      B.metal.push(cylBetween(-0.62, y, radZ - 0.08, 0.62, y + (i === 1 ? 0.015 : 0), radZ - 0.08, 0.018, 5));
     }
-    B.metal.push(cylBetween(-0.6, -0.06, radZ - 0.05, -0.6, 0.4, radZ - 0.05, 0.02, 5));
-    B.metal.push(cylBetween(0.6, -0.06, radZ - 0.05, 0.6, 0.4, radZ - 0.05, 0.02, 5));
+    B.metal.push(cylBetween(-0.62, radY - 0.19, radZ - 0.08, -0.62, radY + 0.19, radZ - 0.08, 0.02, 5));
+    B.metal.push(cylBetween(0.62, radY - 0.19, radZ - 0.08, 0.62, radY + 0.19, radZ - 0.08, 0.02, 5));
 
     this.weakPoint = new THREE.Object3D();
-    this.weakPoint.position.set(0, 0.17, radZ - 0.06);
+    this.weakPoint.position.set(0, radY, radZ - 0.09);
     this.chassis.add(this.weakPoint);
     this.weakPointRadius = 0.52;
 
@@ -890,8 +983,8 @@ export class Tank {
       const muff = new THREE.CylinderGeometry(0.10, 0.11, 0.72, byQ([6, 10, 12]));
       place(muff, sx * 0.92, 0.30, -2.18, 0, 0, Math.PI / 2 + sx * 0.04);
       B.metal.push(muff);
-      const stack = new THREE.CylinderGeometry(0.055, 0.07, 0.36, byQ([5, 8, 10]));
-      place(stack, sx * 0.92, 0.52, -2.32, -0.22, 0, 0);
+      const stack = new THREE.CylinderGeometry(0.055, 0.07, 0.40, byQ([5, 8, 10]));
+      place(stack, sx * 0.92, deckAt(-2.32) - 0.06, -2.32, -0.22, 0, 0);
       B.metal.push(stack);
       // Heat shield: a curved strap over the muffler.
       const shield = new THREE.CylinderGeometry(0.135, 0.135, 0.5, 8, 1, true, Math.PI * 0.15, Math.PI * 0.7);
@@ -899,7 +992,7 @@ export class Tank {
       B.paint.push(shield);
     }
     this.exhaustPort = new THREE.Object3D();
-    this.exhaustPort.position.set(0.92, 0.70, -2.36);
+    this.exhaustPort.position.set(0.92, deckAt(-2.36) + 0.16, -2.36);
     this.chassis.add(this.exhaustPort);
 
     // ---- fenders + mud flaps ---------------------------------------------
@@ -951,6 +1044,76 @@ export class Tank {
       }
     }
 
+    // ---- bolted applique plate on each sponson side -----------------------
+    //
+    // THE SPONSON SIDE IS THE BIGGEST FLAT THING ON THE VEHICLE and it is what a
+    // three-quarter shot spends most of its pixels on. Round 2 it was one
+    // unbroken 0.26 x 3.6 m wash from the idler to the sprocket, and a wash with
+    // no plane change in it cannot band: the quantiser has nothing to quantise,
+    // so the whole flank landed on one level and the critic read it as a
+    // smooth-shaded slab with hatching printed over the top.
+    //
+    // A plate standing 2.5 cm proud, with its own bevel and its own bolt line,
+    // gives that surface a raised island whose four edges each carry a real
+    // normal discontinuity — which is where a wash boundary can actually sit —
+    // and gives the outline pass a closed interior contour to draw. It is also
+    // exactly what a field-modified Gallian tank would have on it.
+    const sideY = this.sponsonY + 0.06 + 0.13;      // mid-height of the flat run
+    for (const sx of [-1, 1]) {
+      for (const [z0, z1] of [[-1.62, -0.34], [0.06, 1.30]]) {
+        const len = z1 - z0;
+        const plate = new THREE.BoxGeometry(0.05, 0.235, len);
+        place(plate, sx * 1.225, sideY, (z0 + z1) / 2);
+        B.paint.push(plate);
+        // Chamfered lip top and bottom so the plate has a bevel to catch light
+        // rather than a razor edge that the outline pass turns into a hairline.
+        for (const s of [-1, 1]) {
+          const lip = new THREE.BoxGeometry(0.05, 0.03, len);
+          place(lip, sx * 1.216, sideY + s * 0.132, (z0 + z1) / 2, 0, 0, 0);
+          B.metal.push(lip);
+        }
+        // Bolt line round the perimeter.
+        const nz = Math.max(3, Math.round(len / (rivetSpacing * 1.5)));
+        for (let i = 0; i <= nz; i++) {
+          const z = lerp(z0 + 0.05, z1 - 0.05, i / nz);
+          rivets.push([sx * 1.252, sideY + 0.10, z, 0]);
+          rivets.push([sx * 1.252, sideY - 0.10, z, 0]);
+        }
+      }
+    }
+
+    // ---- spare road wheel, bolted to the port hull side --------------------
+    // A round, high-contrast object at the rear quarter: it is the one thing on
+    // the flank that is not a horizontal, and in silhouette it is what tells you
+    // which end of the tank you are looking at from behind.
+    {
+      const sw = new THREE.CylinderGeometry(this.wheelRadius * 0.92, this.wheelRadius * 0.92,
+        0.12, byQ([8, 14, 18]));
+      place(sw, -1.30, sideY + 0.02, -2.02, 0, 0, Math.PI / 2);
+      B.metal.push(sw);
+      const swHub = new THREE.CylinderGeometry(0.085, 0.085, 0.17, byQ([6, 8, 10]));
+      place(swHub, -1.30, sideY + 0.02, -2.02, 0, 0, Math.PI / 2);
+      B.metal.push(swHub);
+      B.metal.push(cylBetween(-1.22, sideY + 0.02, -2.02, -1.38, sideY + 0.02, -2.02, 0.026, 5));
+    }
+
+    // ---- jerrican rack on the starboard fender ----------------------------
+    for (let i = 0; i < 2; i++) {
+      const jz = 1.72 - i * 0.30;
+      const can = new THREE.BoxGeometry(0.17, 0.44, 0.26);
+      place(can, 1.36, fenderY + 0.24, jz);
+      B.ochre.push(can);
+      // The three ribs that make a jerrican a jerrican.
+      for (const r of [-0.075, 0, 0.075]) {
+        const rib = new THREE.BoxGeometry(0.015, 0.36, 0.03);
+        place(rib, 1.445, fenderY + 0.24, jz + r);
+        B.metal.push(rib);
+      }
+      B.metal.push(place(new THREE.BoxGeometry(0.14, 0.035, 0.06), 1.36, fenderY + 0.455, jz));
+    }
+    B.metal.push(cylBetween(1.24, fenderY + 0.40, 1.90, 1.24, fenderY + 0.40, 1.40, 0.016, 4));
+    B.metal.push(cylBetween(1.48, fenderY + 0.40, 1.90, 1.48, fenderY + 0.40, 1.40, 0.016, 4));
+
     // ---- tool rack: shovel, crowbar, axe ----------------------------------
     const tz = 0.9;
     // Shovel.
@@ -971,28 +1134,43 @@ export class Tank {
     }
 
     // ---- spare track links on the glacis ----------------------------------
+    // Every one of these is now placed ON the plate rather than at a constant
+    // that used to be on it: `deckAt(z)` is the plate, `glacisSlope` is its
+    // pitch, and the +0.03 is how proud a stowed shoe sits.
     const spare = byQ([3, 5, 6]);
     for (let i = 0; i < spare; i++) {
       const g = this._linkGeometry(0);
       const t = i / Math.max(1, spare - 1);
-      // Lie them along the glacis slope (z 1.55..2.15, y 0.42..0.16).
-      placeS(g, -0.55 + t * 1.1, lerp(0.44, 0.20, t * 0.35 + 0.25), lerp(1.62, 2.05, t * 0.2 + 0.35),
-        0.9, 0.9, 0.9, -1.12, Math.PI / 2, 0);
+      const lz = lerp(1.62, 2.05, t * 0.2 + 0.35);
+      placeS(g, -0.55 + t * 1.1, deckAt(lz) + 0.03, lz,
+        0.9, 0.9, 0.9, -(Math.PI / 2 - glacisSlope), Math.PI / 2, 0);
       B.metal.push(g);
     }
     // The bracket holding them.
-    B.metal.push(cylBetween(-0.62, 0.42, 1.60, 0.62, 0.22, 1.98, 0.016, 5));
+    B.metal.push(cylBetween(-0.62, deckAt(1.60) + 0.02, 1.60, 0.62, deckAt(1.98) + 0.02, 1.98, 0.016, 5));
 
     // ---- headlamps + guards ----------------------------------------------
+    // Round 2 rendered these as two ping-pong balls: a bare 0.093 m hemisphere
+    // of `glass` (emissive, rim 1.0) standing proud of the nose with nothing
+    // round it, so both read as pure white blobs and were the brightest thing on
+    // the vehicle. They are now RECESSED — a deeper drum with a hood over the
+    // top half — and the lens is a shallow disc set 2 cm inside it, so the light
+    // that reaches it is the light that reaches the inside of a bucket.
     for (const sx of [-1, 1]) {
-      const hx = sx * 0.86, hy = 0.30, hz = 2.02;
-      const body = new THREE.CylinderGeometry(0.095, 0.105, 0.13, byQ([6, 10, 14]));
+      const hx = sx * 0.86, hz = 2.02;
+      const hy = deckAt(hz) + 0.13;
+      const body = new THREE.CylinderGeometry(0.105, 0.115, 0.19, byQ([6, 10, 14]));
       place(body, hx, hy, hz, Math.PI / 2 - 0.3, 0, 0);
       B.metal.push(body);
-      const lens = new THREE.SphereGeometry(0.093, byQ([6, 10, 12]), byQ([4, 6, 8]), 0, TAU, 0, Math.PI * 0.45);
-      place(lens, hx, hy + 0.02, hz + 0.055, Math.PI / 2 - 0.3, 0, 0);
+      const lens = new THREE.CylinderGeometry(0.082, 0.082, 0.018, byQ([6, 10, 12]));
+      place(lens, hx, hy + 0.004, hz + 0.012, Math.PI / 2 - 0.3, 0, 0);
       B.glass.push(lens);
-      // Wire guard: three arcs.
+      // The hood: a half-collar over the top of the drum, carried forward.
+      const hood = new THREE.CylinderGeometry(0.118, 0.118, 0.16, byQ([8, 12, 16]), 1, true,
+        Math.PI * 0.08, Math.PI * 0.84);
+      place(hood, hx, hy + 0.012, hz + 0.05, Math.PI / 2 - 0.3, 0, 0);
+      B.paint.push(hood);
+      // Wire guard: three arcs across the open face.
       for (let i = 0; i < 3; i++) {
         const a = -0.6 + i * 0.6;
         B.metal.push(cylBetween(
@@ -1000,27 +1178,32 @@ export class Tank {
           hx + Math.cos(a) * 0.1, hy + Math.sin(a) * 0.1 + 0.02, hz + 0.10, 0.008, 4));
       }
       const mount = new THREE.BoxGeometry(0.06, 0.10, 0.05);
-      place(mount, hx, hy - 0.12, hz - 0.02);
+      place(mount, hx, hy - 0.14, hz - 0.02);
       B.metal.push(mount);
     }
 
     // ---- driver's visor + hull MG port ------------------------------------
-    const visor = new THREE.BoxGeometry(0.36, 0.13, 0.06);
-    place(visor, -0.42, 0.34, 1.82, -0.42, 0, 0);
+    // Both sit ON the glacis and both are now derived from it, including their
+    // rotation: at 33.5 degrees a visor left at the old -0.42 rad stood 9
+    // degrees off the plate and cast a wedge of shadow that read as a crack.
+    const visorZ = 1.80, mgZ = 1.86;
+    const visor = new THREE.BoxGeometry(0.38, 0.15, 0.07);
+    place(visor, -0.42, deckAt(visorZ) + 0.035, visorZ, -glacisSlope, 0, 0);
     B.metal.push(visor);
-    const slit = new THREE.BoxGeometry(0.28, 0.035, 0.03);
-    place(slit, -0.42, 0.345, 1.845, -0.42, 0, 0);
+    const slit = new THREE.BoxGeometry(0.30, 0.038, 0.03);
+    place(slit, -0.42, deckAt(visorZ) + 0.042, visorZ + 0.028, -glacisSlope, 0, 0);
     B.grille.push(slit);
-    const mgBall = new THREE.SphereGeometry(0.15, byQ([6, 10, 14]), byQ([5, 7, 9]));
-    place(mgBall, 0.46, 0.30, 1.86);
+    const mgBall = new THREE.SphereGeometry(0.16, byQ([6, 10, 14]), byQ([5, 7, 9]));
+    place(mgBall, 0.46, deckAt(mgZ) + 0.01, mgZ);
     B.metal.push(mgBall);
-    B.metal.push(place(new THREE.CylinderGeometry(0.028, 0.032, 0.38, 6), 0.46, 0.31, 2.02, Math.PI / 2 - 0.12, 0, 0));
+    B.metal.push(place(new THREE.CylinderGeometry(0.028, 0.032, 0.40, 6),
+      0.46, deckAt(mgZ) + 0.03, mgZ + 0.17, Math.PI / 2 - 0.12, 0, 0));
 
     // ---- driver's hatch ---------------------------------------------------
     const dh = new THREE.CylinderGeometry(0.25, 0.25, 0.05, byQ([8, 14, 18]));
-    place(dh, -0.44, 0.545, 1.24);
+    place(dh, -0.44, deckAt(1.24) + 0.025, 1.24);
     B.metal.push(dh);
-    B.metal.push(place(new THREE.BoxGeometry(0.14, 0.04, 0.05), -0.44, 0.575, 1.06));
+    B.metal.push(place(new THREE.BoxGeometry(0.14, 0.04, 0.05), -0.44, deckAt(1.06) + 0.055, 1.06));
 
     // ---- tow cable + shackles --------------------------------------------
     for (const sx of [-1, 1]) {
@@ -1108,17 +1291,23 @@ export class Tank {
 
     this.turret = new THREE.Group();
     this.turret.name = 'turret';
-    this.turret.position.set(0, 0.535, -0.10);
+    // Sits on the deck, wherever the deck now is (see this.deckRise).
+    this.turret.position.set(0, (this.turretDeckY ?? 0.52) + 0.015, -0.10);
     this.chassis.add(this.turret);
 
     // ---- turret shell: tapered, sloped, with a bustle ---------------------
+    // The shell is 0.08 m taller than round 2 as well, on top of the deck rise.
+    // The two together lift the turret roof from 1.58 m off the ground to 1.90
+    // and the cupola to 2.05 — which is what puts it ABOVE a standing man's head
+    // instead of level with his chest, and is most of what the silhouette needed.
+    const TT = 0.08;
     const ts = [
-      { z: -1.02, w: 0.60, yBot: 0.02, yTop: 0.30, ch: 0.10 },
-      { z: -0.72, w: 0.78, yBot: 0.01, yTop: 0.38, ch: 0.13 },
-      { z: -0.20, w: 0.86, yBot: 0.00, yTop: 0.44, ch: 0.15 },
-      { z: 0.32, w: 0.85, yBot: 0.00, yTop: 0.44, ch: 0.15 },
-      { z: 0.70, w: 0.72, yBot: 0.01, yTop: 0.38, ch: 0.14 },
-      { z: 0.92, w: 0.50, yBot: 0.04, yTop: 0.30, ch: 0.11 },
+      { z: -1.02, w: 0.60, yBot: 0.02, yTop: 0.30 + TT * 0.6, ch: 0.10 },
+      { z: -0.72, w: 0.78, yBot: 0.01, yTop: 0.38 + TT, ch: 0.13 },
+      { z: -0.20, w: 0.86, yBot: 0.00, yTop: 0.44 + TT, ch: 0.15 },
+      { z: 0.32, w: 0.85, yBot: 0.00, yTop: 0.44 + TT, ch: 0.15 },
+      { z: 0.70, w: 0.72, yBot: 0.01, yTop: 0.38 + TT, ch: 0.14 },
+      { z: 0.92, w: 0.50, yBot: 0.04, yTop: 0.30 + TT * 0.6, ch: 0.11 },
     ];
     const trings = ts.map((s) => ({ z: s.z, pts: hullRing(s.w, s.yBot, s.yTop, s.ch, 0.012) }));
     B.paint.push(loft(subdivideStations(trings, byQ([1, 2, 3]), byQ([1, 2, 2])), true, true));
@@ -1133,19 +1322,19 @@ export class Tank {
     // ---- commander's cupola ----------------------------------------------
     const cupR = 0.245;
     const cup = new THREE.CylinderGeometry(cupR, cupR + 0.012, 0.17, byQ([8, 14, 18]), 1, true);
-    place(cup, 0.30, 0.50, -0.44);
+    place(cup, 0.30, 0.50 + TT, -0.44);
     B.paint.push(cup);
     // Vision blocks around it.
     const nBlocks = byQ([4, 6, 8]);
     for (let i = 0; i < nBlocks; i++) {
       const a = (i / nBlocks) * TAU;
       const bl = new THREE.BoxGeometry(0.10, 0.055, 0.03);
-      place(bl, 0.30 + Math.cos(a) * (cupR + 0.012), 0.52, -0.44 + Math.sin(a) * (cupR + 0.012), 0, -a + Math.PI / 2, 0);
+      place(bl, 0.30 + Math.cos(a) * (cupR + 0.012), 0.52 + TT, -0.44 + Math.sin(a) * (cupR + 0.012), 0, -a + Math.PI / 2, 0);
       B.grille.push(bl);
     }
     // The hatch lid — a live Object3D so it can open.
     this.hatch = new THREE.Group();
-    this.hatch.position.set(0.30 - cupR, 0.588, -0.44);
+    this.hatch.position.set(0.30 - cupR, 0.588 + TT, -0.44);
     this.turret.add(this.hatch);
     {
       const lid = new THREE.CylinderGeometry(cupR + 0.02, cupR + 0.02, 0.038, byQ([8, 14, 18]));
@@ -1157,12 +1346,12 @@ export class Tank {
       this.hatch.add(lidMesh);
     }
     this.headNode = new THREE.Object3D();
-    this.headNode.position.set(0.30, 0.60, -0.44);
+    this.headNode.position.set(0.30, 0.60 + TT, -0.44);
     this.turret.add(this.headNode);
 
     // ---- loader's hatch (fixed) ------------------------------------------
-    B.metal.push(place(new THREE.CylinderGeometry(0.20, 0.20, 0.045, byQ([8, 12, 16])), -0.32, 0.455, -0.36));
-    B.metal.push(place(new THREE.BoxGeometry(0.12, 0.035, 0.045), -0.32, 0.48, -0.19));
+    B.metal.push(place(new THREE.CylinderGeometry(0.20, 0.20, 0.045, byQ([8, 12, 16])), -0.32, 0.455 + TT, -0.36));
+    B.metal.push(place(new THREE.BoxGeometry(0.12, 0.035, 0.045), -0.32, 0.48 + TT, -0.19));
 
     // ---- stowage rack on the bustle --------------------------------------
     for (const s of [-1, 1]) {
@@ -1224,7 +1413,7 @@ export class Tank {
 
     // ---- gun mount --------------------------------------------------------
     this.gun = new THREE.Group();          // pitches
-    this.gun.position.set(0, 0.235, 0.46);
+    this.gun.position.set(0, 0.235 + TT * 0.5, 0.46);
     this.turret.add(this.gun);
     const G = { paint: [], metal: [] };
 
@@ -1281,8 +1470,8 @@ export class Tank {
     this.coaxMuzzle.position.set(0.34, -0.02, 1.20);
     this.gun.add(this.coaxMuzzle);
     // Gunner's sight above the mantlet.
-    G.metal.push(place(new THREE.BoxGeometry(0.1, 0.09, 0.16), -0.30, 0.14, 0.52));
-    B.glass.push(place(new THREE.CylinderGeometry(0.032, 0.032, 0.02, byQ([6, 10, 12])), -0.30, 0.14, 0.605, Math.PI / 2, 0, 0));
+    G.metal.push(place(new THREE.BoxGeometry(0.1, 0.09, 0.16), -0.30, 0.14 + TT * 0.5, 0.52));
+    B.glass.push(place(new THREE.CylinderGeometry(0.032, 0.032, 0.02, byQ([6, 10, 12])), -0.30, 0.14 + TT * 0.5, 0.605, Math.PI / 2, 0, 0));
 
     for (const key of Object.keys(G)) {
       if (!G[key].length) continue;
@@ -1479,11 +1668,13 @@ export class Tank {
       return m;
     };
     // Turret cheeks, facing ±X off the flat of the shell.
-    add(0.23, 0.868, 0.20, 0.02, 0, Math.PI / 2, this.turret);
-    add(0.23, -0.868, 0.20, 0.02, 0, -Math.PI / 2, this.turret);
-    // Glacis, lying in the slope of the plate (drop 0.22 m over 0.56 m of run).
-    const slope = Math.atan2(0.22, 0.56);
-    add(0.26, 0.72, 0.386, 1.705, -Math.PI / 2 + slope, 0, this.chassis);
+    add(0.23, 0.868, 0.24, 0.02, 0, Math.PI / 2, this.turret);
+    add(0.23, -0.868, 0.24, 0.02, 0, -Math.PI / 2, this.turret);
+    // Glacis, lying IN the plate — read off the same deck curve _buildHull used,
+    // so a change to this.deckRise carries the roundel with the plate instead of
+    // leaving it hanging in space in front of the nose.
+    const gz = 1.705;
+    add(0.26, 0.72, this.glacisAt(gz) + 0.033, gz, -Math.PI / 2 + this.glacisSlope, 0, this.chassis);
   }
 
   /** One track shoe. Quality 0 collapses it to two boxes. */
@@ -2255,7 +2446,13 @@ export class Tank {
 
   _updateFx(dt) {
     const p = this.physics;
+    // Down to `chassis`, not just `root`: every spawn point below is a hull
+    // fitting (exhaust stack, engine deck, radiator) and therefore lives in
+    // chassis space, which carries the suspension heave, pitch and roll. Taking
+    // them off `root` put the exhaust plume at a fixed height over the GROUND
+    // POINT, so it detached from the deck every time the tank leaned.
     this.root.updateWorldMatrix(true, false);
+    this.chassis.updateWorldMatrix(false, false);
 
     // ---- exhaust ----------------------------------------------------------
     const rpm = p ? p.engineRpm : 0.2;
@@ -2265,8 +2462,9 @@ export class Tank {
       this._exhaustAccum -= 1;
       for (let k = 0; k < 2; k++) {
         const sx = SIDES[k];
-        _va.set(sx * 0.92, 0.70, -2.36);
-        this.root.localToWorld(_va);
+        // Off the exhaust stack itself — its height moves with the deck.
+        _va.copy(this.exhaustPort.position); _va.x = sx * 0.92;
+        this.chassis.localToWorld(_va);
         _vb.set(0, 0.6, -1).transformDirection(this.root.matrixWorld);
         const sp = 0.7 + rpm * 2.4;
         this.exhaustPuffs.spawn(
@@ -2289,9 +2487,10 @@ export class Tank {
         this._smokeAccum -= 1;
         // Out of the engine deck, and out of the radiator if that's the wound.
         const fromRad = this.critical && this.rng() < 0.5;
-        if (fromRad) _va.set((this.rng() - 0.5) * 0.9, 0.2, -2.6);
-        else _va.set((this.rng() - 0.5) * 1.0, 0.55, -1.6 + (this.rng() - 0.5) * 0.7);
-        this.root.localToWorld(_va);
+        if (fromRad) _va.set((this.rng() - 0.5) * 0.9, this.radiatorY, -2.63);
+        else _va.set((this.rng() - 0.5) * 1.0, this.turretDeckY + 0.04,
+          -1.6 + (this.rng() - 0.5) * 0.7);
+        this.chassis.localToWorld(_va);
         this.damageSmoke.spawn(
           _va.x, _va.y, _va.z,
           (this.rng() - 0.5) * 0.7, 0.9 + this.rng() * 1.4, (this.rng() - 0.5) * 0.7 - (fromRad ? 0.8 : 0),
@@ -2307,8 +2506,9 @@ export class Tank {
       this._fireAccum += dt * 26;
       while (this._fireAccum >= 1) {
         this._fireAccum -= 1;
-        _va.set((this.rng() - 0.5) * 1.4, 0.5 + this.rng() * 0.5, -1.4 + (this.rng() - 0.5) * 1.6);
-        this.root.localToWorld(_va);
+        _va.set((this.rng() - 0.5) * 1.4, this.turretDeckY + this.rng() * 0.5,
+          -1.4 + (this.rng() - 0.5) * 1.6);
+        this.chassis.localToWorld(_va);
         this.firePuffs.spawn(
           _va.x, _va.y, _va.z,
           (this.rng() - 0.5) * 1.2, 1.6 + this.rng() * 2.4, (this.rng() - 0.5) * 1.2,

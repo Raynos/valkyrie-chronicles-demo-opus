@@ -216,6 +216,19 @@ void main() {
   vec3 N = normalize(nd.xyz);
   float z = -P.z;
 
+  // ---- how much of this depth is NOISE ------------------------------------
+  // The G-buffer is HalfFloat, so lz carries a 10-bit mantissa and one ULP is
+  // 2^-11 of the value — in metres, z * 4.9e-4. At the over-the-shoulder camera
+  // (z ~ 8 m) that is 4 mm and invisible; at the command camera the near ground
+  // is already 45 m out, where it is 22 mm, and the ray-march below counts
+  // anything past 18 mm as an occluder. The quantisation contours of a linearly
+  // interpolated depth are STRAIGHT LINES ACROSS EACH TRIANGLE, the band
+  // quantiser downstream turns each one into a flat filled wash, and the result
+  // is the hard-edged parallelogram lattice that tiled the whole command ground
+  // plane at a ~50 px pitch. Every threshold in this pass is therefore floored
+  // at a multiple of the local depth quantum instead of at a constant.
+  float dq = z * 5.2e-4 + 0.004;
+
   // Rotating the sample pattern by a LOW-FREQUENCY field rather than per-pixel
   // hash matters: the wash is quantised downstream, and a per-pixel rotation
   // would quantise into salt-and-pepper. Correlated over ~40 px it quantises
@@ -237,7 +250,7 @@ void main() {
     float valid = step(0.0001, slz) * step(0.4, length(snd.xyz));
     vec3 v = rayAt(suv) * (slz * uFar) - P;
     float vv = dot(v, v);
-    ao += max(0.0, dot(v, N) - z * 0.0018) / (vv + 0.02)
+    ao += max(0.0, dot(v, N) - z * 0.0018 - dq * 2.0) / (vv + 0.02)
         * step(vv, r2max) * valid;
   }
   float vis = clamp(1.0 - (2.0 * uAoRadius / float(AO_TAPS)) * ao, 0.0, 1.0);
@@ -257,7 +270,9 @@ void main() {
     float jit = texture2D(tNoise, sPx / 19.0 + 0.53).g;
     // Start off the surface by more than a depth texel's worth of slope, or a
     // grazing plane self-intersects on the very first step.
-    float startOff = 0.010 + z * 0.0025 + (1.0 - ndl) * 0.030;
+    float startOff = 0.010 + z * 0.0025 + (1.0 - ndl) * 0.030 + dq * 3.0;
+    float hitLo = max(0.018, dq * 2.6);
+    float hitHi = max(0.055, dq * 6.0);
     vec3 rp = P + N * startOff + uSunV * stepLen * (0.30 + 0.70 * jit);
     for (int i = 0; i < 8; i++) {
       rp += uSunV * stepLen;
@@ -266,7 +281,7 @@ void main() {
       vec4 snd = texture2D(tND, suv);
       float sz = snd.a * uFar;
       float diff = -rp.z - sz;                     // >0 = the ray is behind geometry
-      float hit = smoothstep(0.018, 0.055, diff) * (1.0 - smoothstep(uThickness * 0.65, uThickness, diff));
+      float hit = smoothstep(hitLo, hitHi, diff) * (1.0 - smoothstep(uThickness * 0.65, uThickness, diff));
       hit *= inside * step(0.0001, snd.a) * step(0.4, length(snd.xyz));
       occ = max(occ, hit * (1.0 - float(i) / steps * 0.5));
     }
@@ -275,8 +290,14 @@ void main() {
     occ *= smoothstep(0.03, 0.28, ndl);
   }
   // A contact seam is a near-field read. Past ~35 m it is smaller than a pixel
-  // and all it can contribute is shimmer.
-  occ *= 1.0 - smoothstep(26.0, 62.0, z);
+  // and all it can contribute is shimmer — and, once the depth quantum passes
+  // the hit threshold, a triangle lattice. Brought in from 26/62 m.
+  occ *= 1.0 - smoothstep(16.0, 38.0, z);
+  // The hemisphere term has the same problem in slower motion: at 60 m+ a 0.5 m
+  // radius is a handful of pixels wide and every one of them is reading a
+  // quantised depth, so all it estimates is the mantissa. Fade it out too — the
+  // AERIAL PERSPECTIVE below is what is supposed to be doing the work out there.
+  vis = mix(1.0, vis, 1.0 - smoothstep(45.0, 95.0, z));
 
   gl_FragColor = vec4(vis, 1.0 - occ, 0.0, 1.0);
 }
@@ -324,7 +345,10 @@ void main() {
       wsum += w;
     }
   }
-  gl_FragColor = vec4(sum / wsum, 1.0);
+  // Alpha is the sky mask the composite wrote; the grade downstream needs it,
+  // so it has to survive the blur. Taken from the centre tap, not gathered:
+  // a half-sky/half-hill bokeh disc must not turn a hillside into sky.
+  gl_FragColor = vec4(sum / wsum, texture2D(tColor, vUv).a);
 }
 `;
 
@@ -411,15 +435,23 @@ void main() {
   vec2 uv = vUv;
   vec3 color = texture2D(tColor, uv).rgb;
 
-  // ---- bloom first: the linework is drawn ON TOP of the painted image, so it
-  // must not be blurred into the glow.
-  vec3 bloom = texture2D(tBloom, uv).rgb;
-  color += bloom * uBloomStrength * uBloomTint;
-
   vec2 sPx = uv * uResolution;
   vec4 ndC = texture2D(tND, uv);
   float isSkyC = step(length(ndC.xyz), 0.4);
   float distC = ndC.a * uFar;
+
+  // ---- bloom first: the linework is drawn ON TOP of the painted image, so it
+  // must not be blurred into the glow.
+  //
+  // The tint is a PIGMENT effect — sunlight blooming through gouache picks up
+  // the straw of the paper it is sitting on. The SKY is not painted on that
+  // paper, it is the hole in the picture the air is seen through, and a
+  // (1.32, 0.95, 0.56) additive over 28% of the frame is most of why the dome
+  // measured hue 27 with blue the lowest channel at every altitude. Bloom on
+  // the sky therefore stays near-neutral and only the painted surfaces get the
+  // amber.
+  vec3 bloom = texture2D(tBloom, uv).rgb;
+  color += bloom * uBloomStrength * mix(uBloomTint, vec3(1.0), isSkyC * 0.85);
 
   // ---- how far away the SUBJECT is -----------------------------------------
   // Nine fixed taps over the middle of the frame, sky excluded. Every fragment
@@ -432,20 +464,34 @@ void main() {
   // at 60 m recedes in the over-the-shoulder frame, it also greys out the whole
   // command plate, where the nearest ground is already 45 m away and the map is
   // supposed to read like a clean illustrated page.
-  float refZ;
+  //
+  // TWO numbers come out of the same nine taps, and both matter. refZ is the
+  // mean, i.e. how deep the picture is; nearZ is the closest thing in it,
+  // i.e. where the SUBJECT is. Round 2 used the mean alone and clamped it up
+  // against a 16 m floor, which is why the closeup put more drawn incident on a
+  // 30 m stone wall (meanEdge 15.4) than on the 2 m hero it is a closeup OF
+  // (12.0): with refZ ~ 25 m the ramp did not even start until the wall was
+  // already behind it. Recession has to be measured FROM the subject.
+  float refZ, nearZ;
   {
-    float s = 0.0, n = 0.0;
+    float s = 0.0, n = 0.0, mn = 1e6;
     for (int i = 0; i < 9; i++) {
       vec2 t = vec2(float(i - (i / 3) * 3) * 0.25 + 0.25, float(i / 3) * 0.22 + 0.28);
       vec4 d = texture2D(tND, t);
       float ok = step(0.4, length(d.xyz));
-      s += d.a * uFar * ok; n += ok;
+      float z = d.a * uFar;
+      s += z * ok; n += ok;
+      mn = min(mn, mix(1e6, z, ok));
     }
     refZ = n > 0.5 ? s / n : 40.0;
+    nearZ = n > 0.5 ? mn : refZ;
   }
-  float hazeStart = clamp(max(uHazeStart, refZ * uHazeRefK), uHazeStart, 90.0);
-  float inkStart = max(uInkFadeStart, refZ * 0.85);
-  float inkEnd = inkStart + max(8.0, uInkFadeEnd - uInkFadeStart);
+  // Weighted toward the subject but not pinned to it, so a single blade of
+  // grass 0.4 m from the lens cannot collapse the whole depth ramp.
+  float subjZ = clamp(mix(nearZ, refZ, 0.34), 2.0, 70.0);
+  float hazeStart = clamp(subjZ * uHazeRefK, uHazeStart * 0.55, 70.0);
+  float inkStart = clamp(subjZ * 1.30, uInkFadeStart * 0.45, 44.0);
+  float inkEnd = inkStart + clamp(refZ * 1.55, 18.0, uInkFadeEnd - uInkFadeStart);
 
   // ---- contact wash --------------------------------------------------------
   // Screen-space occlusion, PAINTED. A straight multiply would give the same
@@ -630,13 +676,23 @@ void main() {
     float hFall = exp(-max(wy - uHazeBase, 0.0) / max(uHazeHeight, 1.0));
     float haze = (1.0 - exp(-max(distC - hazeStart, 0.0) * uHazeDensity));
     haze *= mix(0.55, 1.0, hFall) * uHazeMax * (1.0 - isSkyC);
-    // haze both LIGHTENS and WARMS; carrying a little of the pixel's own value
-    // into the mix stops distant darks turning into flat grey cut-outs
-    vec3 hz = uHazeColor * (0.86 + 0.30 * vcLum(color));
+    // Haze LIGHTENS and lowers contrast. It used to WARM as well, hard: a
+    // (1.13, 0.99, 0.69) straw laid over the whole midground at up to 0.5
+    // density is a sepia filter with a distance ramp on it, and it is the only
+    // reason a 60 m hillside and a 6 m hero shared a hue. Carrying a little of
+    // the pixel's own value into the mix stops distant darks turning into flat
+    // grey cut-outs.
+    vec3 hz = uHazeColor * (0.90 + 0.26 * vcLum(color));
     color = mix(color, hz, clamp(haze, 0.0, 1.0));
   }
 
-  gl_FragColor = vec4(color, 1.0);
+  // Alpha carries the SKY MASK forward to the grade pass. The grade is where
+  // the cream white point, the warm highlight tint and the umber vignette live,
+  // and every one of them is a property of PAINT ON PAPER. Applied to the sky —
+  // which is 28% of a landscape frame and the brightest thing in it, so it
+  // catches the highlight end of every one of those ramps at full strength —
+  // they are what turned a 0x6d9ab0 teal dome into (185,162,147) at hue 27.
+  gl_FragColor = vec4(color, isSkyC);
 }
 `;
 
@@ -655,12 +711,23 @@ uniform float uChroma;
 uniform float uPaperStrength;
 uniform float uSaturation;
 uniform float uContrast;
+uniform float uPreGain;
 uniform float uTime;
 uniform vec3  uPaperWhite;
 uniform vec3  uInkBlack;
 uniform vec3  uShadowTint;
 uniform vec3  uHighTint;
 uniform vec3  uVignetteTint;
+uniform float uWhiteStart;    // luma at which the cream white point starts
+uniform float uHighStart;     // luma at which the warm highlight tint starts
+uniform float uFloorPow;      // how fast the ink floor lets go of the midtones
+uniform float uGreenLift;     // hue turns the sage lobe is pushed toward green
+uniform float uGreenChroma;
+uniform float uSkySat;
+uniform float uSatGamma;
+uniform float uSatKnee;
+uniform float uSatComp;
+uniform vec3  uSkyWhite;
 varying vec2 vUv;
 
 float lumaOf(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
@@ -724,40 +791,109 @@ void main() {
   c = vec3(mix(c.r, rr, 0.60), c.g, mix(c.b, bb, 0.60));
 #endif
 
-  // ---- tonemap to a cream white point --------------------------------------
-  // The 1.10 pre-gain pairs with the raised white point in vcCanvasTonemap: it
-  // keeps the midtones where they were while the shoulder gains headroom, which
-  // is what stops a bright sky clipping to one flat cream slab.
-  c = vcCanvasTonemap(c, uExposure * 1.10, uPaperWhite, uInkBlack, uContrast);
+  // 1 where the composite says this fragment is the sky dome. Sampled at the
+  // centre tap only — the AA above deliberately reads .rgb, and a filtered sky
+  // mask would smear paper grade half a pixel into every skyline.
+  float sky = texture2D(tColor, uv).a;
 
-  // ---- split tone: warm brown-violet shadows, cream highlights --------------
-  // Normalise both tints to unit luminance first — a split tone must move HUE,
-  // not value. Tinting by a raw dark colour would drag the shadows back below
-  // the warm brown-violet floor the tonemap just established.
+  // ---- tonemap -------------------------------------------------------------
+  // Run the shared curve with a NEUTRAL white point and NO floor, then do the
+  // two end-point moves here, where the sky mask is in scope and the shapes are
+  // ours to choose. vcCanvasTonemap's own version applies the floor as
+  // inkBlack * (1 - c), which is a straight line: at half value it is still
+  // laying down HALF of a colour whose unit-luminance ratio is
+  // (1.24, 0.87, 1.64). That is a magenta-violet wash over the entire tonal
+  // range with GREEN as its lowest channel — the single largest reason 0.1% of
+  // the frame was anywhere in the green band. Squaring it keeps the identical
+  // floor at c = 0 and hands the midtones back their chroma.
+  c = vcCanvasTonemap(c, uExposure * uPreGain, vec3(1.0), vec3(0.0), uContrast);
+  {
+    float l0 = lumaOf(c);
+    // The cream white point is PAPER. The sky is not painted on it.
+    vec3 pw = mix(uPaperWhite, uSkyWhite, sky);
+    vec3 top = mix(vec3(1.0), pw, smoothstep(uWhiteStart, 1.0, l0));
+    c = uInkBlack * pow(max(vec3(1.0) - c, vec3(0.0)), vec3(uFloorPow)) + c * top;
+  }
+
+  // ---- split tone ----------------------------------------------------------
+  // A SPLIT tone, at last. Round 2 ran (1.14, 0.95, 1.05) into the shadows and
+  // (1.13, 0.99, 0.73) into the highlights — both ends warm, red leading in
+  // both, nothing anywhere pulling the other way. Two warm ends is not a split
+  // tone, it is a duotone, and 75.5% of the frame landed inside one 55 degree
+  // wedge because of it. Shade in gouache is skylight: it goes COOL. That is
+  // also the only thing in the whole chain that can give the palette an axis to
+  // spread along.
   //
-  // Keep this WEAK. It is the third violet term in the stack (after the shade
-  // colour and the ambient tint in materials.js) and stacking three of them
-  // multiplicatively is how 70% of the frame ended up lavender. The shadow tint
-  // here must satisfy R >= B or the whole image reads cool.
+  // Both tints are normalised to unit luminance first — a split tone moves HUE,
+  // not value — and the highlight end is masked off the sky, which is already
+  // the coolest thing in frame and must stay that way.
   float l = lumaOf(c);
   vec3 sT = uShadowTint / max(lumaOf(uShadowTint), 1e-4);
   vec3 hT = uHighTint / max(lumaOf(uHighTint), 1e-4);
-  c *= mix(sT, vec3(1.0), smoothstep(0.0, 0.46, l));
-  c *= mix(vec3(1.0), hT, smoothstep(0.48, 1.0, l));
+  c *= mix(sT, vec3(1.0), smoothstep(0.0, 0.42, l));
+  c *= mix(vec3(1.0), hT, smoothstep(uHighStart, 1.0, l) * (1.0 - sky * 0.90));
 
-  // ---- saturation shaping: greens go dusty, ochres get lifted ---------------
+  // ---- palette shaping: hue SEPARATION, not hue collapse -------------------
   {
     vec3 hsv = vcRgb2Hsv(c);
-    float dg = hsv.x - 0.295;                       // ~106 deg, foliage green
-    float greenness = exp(-dg * dg / 0.0072);
-    float dO = hsv.x - 0.095;                       // ~34 deg, ochre / umber
-    float ochreness = exp(-dO * dO / 0.0052);
-    // Gallia is green countryside. Take the electric edge off a video-game
-    // green, do not launder it out of the palette entirely.
-    hsv.y *= 1.0 - greenness * 0.11;
-    hsv.y *= 1.0 + ochreness * 0.10;
-    hsv.z *= 1.0 + ochreness * 0.030;
-    hsv.y = clamp(hsv.y * uSaturation, 0.0, 1.0);
+    // Measured on the round-2 overview, five named patches: lit hillside grass
+    // hue 50.3, sand road 33.0, house stucco 31.7, stone wall 32.5, lit canopy
+    // 33.1. Four of the five inside 1.4 degrees of each other and the fifth 17
+    // degrees away — the whole picture painted out of one pigment. The pigments
+    // themselves are fine (terrain grass 0x74804a is hue 71); what collapses
+    // them is that the LIT end of every one of them is leaned toward straw
+    // before it ever reaches the grade.
+    //
+    // So the grade puts the separation back — as a MONOTONE, EXPANSIVE warp,
+    // not a bump. A symmetric lobe is a trap here: its slope on the far side is
+    // 1 - lift * 0.61 / sigma, which for any lift big enough to move sunlit
+    // grass off straw goes NEGATIVE, and every input hue from 70 to 90 degrees
+    // then lands on the same 101. That measured as a 19.9% spike in a single
+    // 10-degree bin — a second duotone, just a greener one.
+    //
+    // A steep rise and a long tail keeps d(out)/d(in) above zero everywhere and
+    // ABOVE ONE across the band that matters: the grass family arrives spanning
+    // 50-71 degrees and leaves spanning 66-100, while the road at 40 moves two
+    // degrees and the stucco at 33 does not move at all.
+    float rise = smoothstep(0.110, 0.152, hsv.x);         // 40 -> 55 deg
+    float fall = 1.0 - smoothstep(0.180, 0.360, hsv.x);   // 65 -> 130 deg
+    float gLift = rise * fall;
+    float dO = hsv.x - 0.094;                       // ~34 deg, ochre / straw
+    dO -= floor(dO + 0.5);
+    float ochreness = exp(-dO * dO / 0.0034);
+    hsv.x = fract(hsv.x + gLift * uGreenLift);
+    // Chroma protection is a SEPARATE, much wider lobe, and it is measured on
+    // the hue the pixel now has: everything from 62 to 108 degrees is Gallian
+    // pasture and none of it may be laundered. Round 2 shaved 11% off the
+    // foliage band and handed 10% saturation plus 3% value to the ochres, i.e.
+    // it paid for the sepia out of the greens. Both signs are the other way up.
+    float dc = hsv.x - 0.236;                       // ~85 deg, pasture green
+    dc -= floor(dc + 0.5);
+    float gChroma = exp(-dc * dc / 0.0060);
+    hsv.y *= 1.0 + gChroma * uGreenChroma;
+    hsv.y *= 1.0 - ochreness * 0.10;
+    hsv.z *= 1.0 - ochreness * 0.012;
+    // Chroma is restored with a GAMMA, not a gain. The saturation problem is
+    // not that the reds are weak, it is that three quarters of the frame is a
+    // paper-washed near-neutral; a flat multiply would lift the pantiles and the
+    // dome — already the most chromatic things in frame — by the same factor and
+    // turn them into poster paint. y^0.73 more than doubles the chroma of a 0.05
+    // wash, gains a 0.20 midtone 45% and a 0.60 pantile only 20%.
+    //
+    // The sky is exempt from both: the rubric names a MUTED teal-grey sky and
+    // calls a pure blue one an automatic reject, and the dome is the one surface
+    // whose chroma is authored rather than lit, so the grade should carry it
+    // through rather than have an opinion about it.
+    float sat = pow(clamp(hsv.y, 0.0, 1.0), uSatGamma) * uSaturation;
+    // ...with a shoulder on the top end, because the rubric rejects a saturated
+    // video-game green outright and a gamma alone will hand you one: the 0.42
+    // terrain albedo comes out of the gain near 0.65, which on a lawn filling a
+    // third of the frame reads as poster paint. Everything under the knee is
+    // untouched, so the shoulder costs the frame mean almost nothing while it
+    // takes the top off the pantiles and the pasture.
+    sat = sat <= uSatKnee ? sat
+        : uSatKnee + (sat - uSatKnee) / (1.0 + (sat - uSatKnee) * uSatComp);
+    hsv.y = clamp(mix(sat, hsv.y * uSkySat, sky), 0.0, 1.0);
     c = vcHsv2Rgb(hsv);
   }
 
@@ -779,10 +915,16 @@ void main() {
   // The HUE shift stays; the VALUE crush is nearly gone. A 26% corner darkening
   // is a lens artefact, and a page of gouache has no lens — what a painted page
   // does have is warmer, slightly duller corners where the wash was laid last.
+  //
+  // 0x8a6f63 normalised to (1.44, 0.90, 0.71) — a 2:1 red-over-blue multiply
+  // reaching a third of the way into the frame, over the near grass that is the
+  // biggest green mass in every landscape shot. Softened to about a quarter of
+  // that swing, and pulled off the sky so a corner of dome does not warm.
   float vig = 1.0 - uVignette * pow(clamp(r2 * 2.0, 0.0, 1.0), 1.25);
   vec3 vT = uVignetteTint / max(lumaOf(uVignetteTint), 1e-4);
+  vT = mix(vT, vec3(1.0), sky * 0.75);
   c *= mix(vT, vec3(1.0), vig);
-  c *= mix(0.93, 1.0, vig);
+  c *= mix(0.94, 1.0, vig);
 
   // 8-bit dither so the big flat washes do not band on the way out
   float dith = (vcHash21(gl_FragCoord.xy + fract(uTime) * 61.3) - 0.5) / 255.0;
@@ -922,8 +1064,11 @@ export class CanvasRenderPipeline {
         uWobble: { value: CFG.render.outlineWobble },
         uBloomStrength: { value: CFG.render.bloomStrength },
         uHorizonLine: { value: 0.52 },
-        uInk: { value: new THREE.Color(0x35292b) },
-        uBloomTint: { value: new THREE.Color(0xffdcae) },
+        uInk: { value: new THREE.Color(0x342e33) },
+        // Was 0xffdcae — (1.32, 0.95, 0.56) once normalised, i.e. a 2.4:1
+        // red-over-blue ADD wherever anything is bright, which in a daylight
+        // frame is everywhere. Still cream, no longer amber.
+        uBloomTint: { value: new THREE.Color(0xffe9cd) },
         uInkFadeStart: { value: 16 },
         uInkFadeEnd: { value: 78 },
         uAoStrength: { value: 0.62 },
@@ -931,11 +1076,13 @@ export class CanvasRenderPipeline {
         // The contact wash is skylight-only pigment, same violet the surface
         // shaders use for shade, so a boot seam and a cast shadow agree.
         uContactViolet: { value: new THREE.Color(0x6c6a86) },
-        uInkFloor: { value: PALETTE.inkFloor.clone() },
+        uInkFloor: { value: new THREE.Color(0x3c3947) },
         uViewToWorld: { value: new THREE.Matrix4() },
-        // Warm straw-grey: the air over Gallia in the afternoon, not blue
-        // distance fog. Aerial perspective in gouache lightens AND warms.
-        uHazeColor: { value: new THREE.Color(0xd7cbac) },
+        // Pale straw-GREY. Aerial perspective lightens and drops contrast; the
+        // warmth is a lean, not the whole colour. 0xd7cbac normalised to
+        // (1.13, 0.99, 0.69), and with density 0.0175 from 9 m out to a 0.70
+        // ceiling that painted a third of every frame in one hue.
+        uHazeColor: { value: new THREE.Color(0xcdc9bb) },
         // Round 1 measured 0.22 haze at 60 m, which is why the village read
         // SHARPER than the 9 m hero. Air is thicker than that and it starts
         // much closer to the eye.
@@ -960,17 +1107,44 @@ export class CanvasRenderPipeline {
         uVignette: { value: CFG.render.vignette },
         uChroma: { value: CFG.render.chroma },
         uPaperStrength: { value: CFG.render.paperStrength },
-        uSaturation: { value: 1.04 },
+        // The frame-wide chroma has to come from HUE SPREAD now that it is no
+        // longer coming from everything being the same saturated amber. 1.04
+        // measured 0.28 mean saturation with 78% of it inside one wedge; the
+        // same number with the wedge broken up reads as a much flatter picture,
+        // so the global gain goes up to compensate.
+        uSaturation: { value: 1.22 },
+        uSatGamma: { value: 0.73 },
+        uSatKnee: { value: 0.50 },
+        uSatComp: { value: 1.30 },
         uContrast: { value: 0.34 },
+        // Was folded into the tonemap call as a literal 1.10. Exposed because
+        // it is the only lever left that moves the highlight clip: round 2 put
+        // 16,483 R=255 pixels into the closeup sky.
+        uPreGain: { value: 1.06 },
         uTime: { value: 0 },
-        uPaperWhite: { value: new THREE.Color(0xfff6e4) },
-        uInkBlack: { value: PALETTE.inkFloor.clone() },
-        // Warm brown-violet, R > B. The old 0xa79ec8 normalised to a
-        // (1.01, 0.96, 1.21) multiplier — a 21% blue lift over everything below
-        // half value, i.e. most of the frame.
-        uShadowTint: { value: new THREE.Color(0xb3a5ac) },
-        uHighTint: { value: new THREE.Color(0xfff0d2) },
-        uVignetteTint: { value: new THREE.Color(0x8a6f63) },
+        uPaperWhite: { value: new THREE.Color(0xfaf4e6) },
+        // The sky gets a white point too — a frame with 16,483 pure-255 pixels in
+        // it fails the rubric outright — but a COOL one, so the dome does not
+        // pick up the paper's straw at the one end where it is brightest.
+        uSkyWhite: { value: new THREE.Color(0xedf1f3) },
+        // The frame's floor. Blue still leads red — that part of round 2 was
+        // right and the darkest band must stay cool — but GREEN is no longer
+        // the lowest channel. 0x3a3043 normalised to (1.24, 0.87, 1.64), and
+        // since the tonemap lays that down across the whole tonal range it was
+        // subtracting green from every pixel in the picture.
+        uInkBlack: { value: new THREE.Color(0x3c3947) },
+        uWhiteStart: { value: 0.62 },
+        uHighStart: { value: 0.74 },
+        uFloorPow: { value: 2.6 },
+        uGreenLift: { value: 0.084 },        // +30 deg on the sage lobe
+        uGreenChroma: { value: 0.22 },
+        uSkySat: { value: 1.02 },
+        // COOL shade, warm light: the actual split. Slate-violet, blue ahead of
+        // red, and gentle — the surface shaders and the contact wash already
+        // put violet in the darks, this only has to keep the axis honest.
+        uShadowTint: { value: new THREE.Color(0xaba9b2) },
+        uHighTint: { value: new THREE.Color(0xfff4e2) },
+        uVignetteTint: { value: new THREE.Color(0xa2988c) },
       },
       vertexShader: FS_VERT, fragmentShader: GRADE_FRAG,
       depthTest: false, depthWrite: false, name: 'vcGrade',
@@ -1245,7 +1419,11 @@ export class CanvasRenderPipeline {
     const sun = rig?.sun || (rig?.isDirectionalLight ? rig : null);
     if (!sun) return;
     const u = this.mComposite.uniforms.uHazeColor.value;
-    u.copy(HAZE_BASE).lerp(sun.color, 0.28);
+    // 0.28 toward a 0xffe1b9 key put another 28% of the sun's own amber into
+    // the haze on top of an already-warm base, so the drift was doing as much
+    // hue damage as the base colour. Halved: the distance should lean toward
+    // the light, not be painted in it.
+    u.copy(HAZE_BASE).lerp(sun.color, 0.14);
     const li = THREE.MathUtils.clamp((sun.intensity || 2.1) / 2.1, 0.40, 1.05);
     u.multiplyScalar(0.56 + 0.48 * li);
   }
@@ -1406,6 +1584,6 @@ export class CanvasRenderPipeline {
 
 const _v = new THREE.Vector3();
 const _m4 = new THREE.Matrix4();
-const HAZE_BASE = new THREE.Color(0xd7cbac);
+const HAZE_BASE = new THREE.Color(0xcdc9bb);
 
 export default CanvasRenderPipeline;

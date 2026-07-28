@@ -124,23 +124,60 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
   // A flat 1.035·R shell measured off the undisplaced ellipsoid ends up *inside*
   // the cranium — the skull bulges by up to 5.8% at the crown — which is why
   // hair was invisible on every soldier.
-  const thick = coveredByHat ? 1.016 : 1.055;
+  // 1.016 was a 1.9 mm shell over the skull. That is inside the depth buffer's
+  // resolving power at 30 m (near 0.15 / far 900), so on `overview` the skull
+  // won the depth test across the whole back of the head and every distant
+  // soldier rendered as a bare pale egg with a thin dark ring of hair round the
+  // silhouette — the "balloon" read, caused not by proportion but by z-fighting.
+  // 1.034 is ~4 mm and still well inside the scout cap's 1.085 shell and the
+  // helmet's 1.16, so nothing pokes through.
+  const thick = coveredByHat ? 1.034 : 1.062;
   const D = head.disp || (() => [1, 1, 1]);
   b.setBones(BONE_GROUPS.HEAD).setColor(hc).setMottle(0.09);
 
   // u = 0 at +Z (face), 0.25 at +X (character's left), 0.5 at -Z (nape).
   const front = style === 'crop' ? 0.40 : style === 'sidePart' ? 0.44 : 0.47;
+  // phiMax is measured from the CROWN in half-turns, so it is how far DOWN the
+  // scalp cap reaches: 0.5 is the equator (ear-top height), and dy = cos(phi*PI).
+  //
+  // Round 2 evaluated to 0.82 at the sides — dy = cos(148 deg) = -0.85, which is
+  // BELOW THE JAW. That is the entire explanation for the closeup critique's
+  // "dark irregular paint-splat plastered across the MIDDLE of the near cheek
+  // with a second detached blob on the jaw": the scalp cap was being swept down
+  // over the cheekbone and the mandible, on both sides, on every soldier. The
+  // hairline is now clamped so it can never pass the ear line on the sides
+  // (0.545, dy = -0.14) and never reaches the cheek plane at all; only the nape,
+  // where hair genuinely does hang below the ear, is allowed past it.
   const phiMax = (u) => {
     const a = u * TAU;
     const cz = Math.cos(a);                 // +1 facing forward
     const cx = Math.sin(a);
-    // Forward hairline sits high, sides come down over the ears, nape lowest.
-    let m = 0.52 + 0.20 * (1 - clamp01(cz)) + 0.10 * Math.abs(cx);
+    const backness = clamp01(-cz);          // 0 at the face, 1 at the nape
+    // Forward hairline sits high, sides come down to the ear line, nape lowest.
+    let m = 0.455 + 0.075 * (1 - clamp01(cz)) + 0.155 * backness;
     m -= front * 0.30 * clamp01(cz) * clamp01(cz);
-    if (style === 'sidePart') m += 0.06 * clamp01(cx) * clamp01(cz);
-    if (style === 'bob' || style === 'swept') m += 0.16 * (1 - clamp01(cz));
-    if (style === 'bun' || style === 'ponytail') m -= 0.05 * (1 - clamp01(cz));
-    return clamp(m, 0.28, 0.94);
+    if (style === 'sidePart') m += 0.05 * clamp01(cx) * clamp01(cz);
+    if (style === 'bob' || style === 'swept') m += 0.20 * backness + 0.055 * Math.abs(cx);
+    if (style === 'bun' || style === 'ponytail') m -= 0.04 * backness;
+    // HARD CEILING, independent of style: everything forward of the ear axis is
+    // capped at the ear line (phi 0.50 = the equator = dy 0). Only the rear
+    // third may hang lower. At 0.545 the cap still reached dy -0.14, i.e. 17 mm
+    // below the eye line onto the cheek, which is what made every soldier read
+    // as wearing a dark helmet of hair.
+    let ceiling = 0.500 + 0.345 * smoothstep(0.15, 0.85, backness);
+    // UNDER HEADGEAR the ceiling is far tighter, and this is the one that was
+    // doing real damage. The shocktrooper helmet's front edge sits at phi 0.300
+    // (dy +0.59, high on the forehead) while the hairline ran to 0.425 and the
+    // wisp band under it to 0.425 as well, so 22 degrees of arc — the entire
+    // forehead from the helmet brim down to the eyebrow — rendered as bare hair.
+    // On `squad` that measured (114,72,74), hue 357, sat 0.37: a saturated brick
+    // -red block sitting exactly where the soldier's face should be, and by far
+    // the loudest thing on him. Capping the front at 0.345 leaves an 8-degree
+    // fringe under the tightest brim and nothing at all under a garrison cap,
+    // which is correct: a cap sits ON the crown and what shows is nape and
+    // sideburn, not a full band across the brow.
+    if (coveredByHat) ceiling = Math.min(ceiling, 0.345 + 0.285 * backness);
+    return clamp(Math.min(m, ceiling), 0.26, 0.86);
   };
   b.addEllipsoid({
     center: [C[0], C[1] + 0.004, C[2] - 0.004],
@@ -168,14 +205,12 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
       center: [C[0], C[1] - 0.002, C[2] - 0.006],
       radius: [R[0], R[1], R[2]],
       seg: seg(20), rings: seg(7),
-      phiMin: 0.35,
-      phiMax: (u) => {
-        const cz = Math.cos(u * TAU);              // +1 face, -1 nape
-        // Stops at the top of the ear (phi 0.51) rather than running past it:
-        // the old 0.575 at the sides buried the ear and half the temple under
-        // one dark mass and every capped soldier came out with a bowl cut.
-        return 0.398 + 0.105 * (1 - clamp01(cz)) + 0.120 * clamp01(-cz);
-      },
+      // Tracks the same ceiling as the scalp cap above (0.345 at the brow,
+      // 0.630 at the nape) so the wisp band cannot reintroduce the forehead
+      // block the cap was just clamped out of. phiMin drops to 0.28 so the band
+      // still has a body at the front where phiMax is now tight.
+      phiMin: 0.28,
+      phiMax: (u) => 0.345 + 0.285 * clamp01(-Math.cos(u * TAU)),
       displace: (dx, dy, dz, u, v) => {
         const k = D(dx, dy, dz);
         const s = 1.038 * (1 + 0.022 * Math.sin(u * TAU * 6 + 0.7) * v)

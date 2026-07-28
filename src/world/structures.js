@@ -22,11 +22,19 @@ import {
   smoothNormals, extrudeElevation,
 } from './geoutil.js';
 import { makeSurfaceMaterial, PALETTE } from './worldMaterials.js';
-import { stuccoTexture, stoneTexture, woodTexture } from './textures.js';
+import { stuccoTexture, stoneTexture, woodTexture, roofTileTexture } from './textures.js';
 import { makeBox } from './collider.js';
 import { WATER_Y } from './layout.js';
 
-const BINS = ['stucco', 'stone', 'tile', 'timber', 'metal'];
+// `sunk` is masonry that lives BELOW the waterline. It is ordinary stone in
+// every respect except that it is drawn into a mesh with outlining disabled:
+// the river is a transparent sheet that does not write depth, so the outline
+// composite happily draws a full-weight graphite silhouette of a submerged
+// pier straight over the open channel in front of it. Round 2 "solved" that by
+// deleting the submerged geometry, which produced the transparent X-ray boxes;
+// the geometry has to be there to occlude the riverbed, and it is the INK that
+// has to go.
+const BINS = ['stucco', 'stone', 'sunk', 'tile', 'timber', 'metal'];
 
 function newBins() {
   const b = {};
@@ -439,19 +447,29 @@ export function buildBridge(rng, length, width, deckY, riverBedY, waterY) {
   // A segmental (elliptical) arch: semicircular only when rise == span/2.
 
   // --- the body: one profile, three holes, one sweep ------------------------
+  //
+  // Split at the waterline. Everything below it is the same masonry, but it goes
+  // into the `sunk` bin so the outline composite does not draw its silhouette
+  // over the open channel in front of it — a transparent river that writes no
+  // depth cannot stop the ink pass, and a full-weight graphite outline of a
+  // submerged pier hanging in mid-stream is the "X-ray box" the critique found.
+  const wlY = waterRel - 0.02;
+  const splitOK = wlY > baseY + 0.10 && wlY < springY - 0.10;
+  const bodyBase = splitOK ? wlY : baseY;
+
   const shape = new THREE.Shape();
-  shape.moveTo(-length * 0.5, baseY);
-  shape.lineTo(length * 0.5, baseY);
+  shape.moveTo(-length * 0.5, bodyBase);
+  shape.lineTo(length * 0.5, bodyBase);
   shape.lineTo(length * 0.5, 0);
   shape.lineTo(-length * 0.5, 0);
   shape.closePath();
   for (const { z0, z1 } of spanZ) {
     const zc = (z0 + z1) * 0.5;
     const hole = new THREE.Path();
-    hole.moveTo(z0, baseY);
+    hole.moveTo(z0, bodyBase);
     hole.lineTo(z0, springY);
     hole.absellipse(zc, springY, span * 0.5, rise, Math.PI, 0, true);
-    hole.lineTo(z1, baseY);
+    hole.lineTo(z1, bodyBase);
     hole.closePath();
     shape.holes.push(hole);
   }
@@ -459,6 +477,29 @@ export function buildBridge(rng, length, width, deckY, riverBedY, waterY) {
   setGeomColor(body, PALETTE.stone, 0.085);
   body = smoothNormals(body, 40);
   bins.stone.push(body);
+
+  if (splitOK) {
+    // the footing: the same plan, the same three openings, no ink
+    const foot = new THREE.Shape();
+    foot.moveTo(-length * 0.5, baseY);
+    foot.lineTo(length * 0.5, baseY);
+    foot.lineTo(length * 0.5, wlY);
+    foot.lineTo(-length * 0.5, wlY);
+    foot.closePath();
+    for (const { z0, z1 } of spanZ) {
+      const hole = new THREE.Path();
+      hole.moveTo(z0, baseY);
+      hole.lineTo(z0, wlY);
+      hole.lineTo(z1, wlY);
+      hole.lineTo(z1, baseY);
+      hole.closePath();
+      foot.holes.push(hole);
+    }
+    let footG = extrudeElevation(foot, width, 8);
+    setGeomColor(footG, PALETTE.stone, 0.085);
+    footG = smoothNormals(footG, 40);
+    bins.sunk.push(footG);
+  }
 
   // road surface on top of the deck
   bins.stone.push(box(width - 1.5, 0.10, length, PALETTE.dirtDark,
@@ -504,18 +545,28 @@ export function buildBridge(rng, length, width, deckY, riverBedY, waterY) {
   const reach = 0.95;
   for (const zc of pierZ) {
     const capBase = Math.min(springY - 0.12, waterRel + 1.9);
+    // The cutwater now runs the whole way from the spread footing on the bed to
+    // the starling cap under the springing, because the river shader finally
+    // knows the masonry is there: water.js masks its own depth/alpha against
+    // pierFootprints(), so the submerged shaft is only under a 0.20-alpha film
+    // instead of the 0.94-alpha channel wash that used to erase it. Round 2's
+    // compromise — deleting the submerged SHADE and keeping the ink — is what
+    // produced the "transparent X-ray box".
+    // Two lofts, split AT the waterline, sharing a ring so there is no gap.
+    // The lower one goes into `sunk` (no ink); the upper is ordinary stone.
+    const sunkG = loft([
+      { c: { x: 0, y: baseY, z: zc }, r: 1, sx: half + reach * 1.10, sz: pierW * 0.660 },
+      { c: { x: 0, y: baseY + 0.5, z: zc }, r: 1, sx: half + reach * 1.02, sz: pierW * 0.575 },
+      { c: { x: 0, y: waterRel - 0.45, z: zc }, r: 1, sx: half + reach * 0.99, sz: pierW * 0.558 },
+      { c: { x: 0, y: waterRel + 0.06, z: zc }, r: 1, sx: half + reach, sz: pierW * 0.555 },
+    ], 6, true, false);
+    setGeomColor(sunkG, PALETTE.stone, 0.10, rng);
+    bins.sunk.push(sunkG);
     const g = loft([
-      // The nose STOPS at the waterline. Below it there is only the plain pier
-      // shaft (which is part of the extruded body). The river does not write
-      // depth, so anything submerged still gets a full-weight graphite outline
-      // drawn over the water by the composite — carrying a 2 m tapered cutwater
-      // down to the bed therefore reads as a pair of inked blades hanging in the
-      // channel, which is exactly what it looked like.
-      { c: { x: 0, y: waterRel - 0.45, z: zc }, r: 1, sx: half + reach * 0.97, sz: pierW * 0.550 },
-      { c: { x: 0, y: waterRel + 0.10, z: zc }, r: 1, sx: half + reach, sz: pierW * 0.555 },
+      { c: { x: 0, y: waterRel + 0.06, z: zc }, r: 1, sx: half + reach, sz: pierW * 0.555 },
       { c: { x: 0, y: capBase, z: zc }, r: 1, sx: half + reach * 0.90, sz: pierW * 0.55 },
       { c: { x: 0, y: capBase + 0.75, z: zc }, r: 1, sx: half * 0.97, sz: pierW * 0.50 },
-    ], 6, true, true);
+    ], 6, false, true);
     setGeomColor(g, PALETTE.stone, 0.10, rng);
     bins.stone.push(g);
     // a dark waterline course — algae and wet stone where the river washes it
@@ -1131,11 +1182,34 @@ export class Structures {
     const mats = {
       stucco: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, map: stuccoTexture(23), rim: 0.5 }),
       stone: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, map: stoneTexture(31), rim: 0.45 }),
-      tile: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, rim: 0.55, hatch: 0.8 }),
+      sunk: makeSurfaceMaterial({
+        color: 0xffffff, vertexColors: true, map: stoneTexture(31), rim: 0.25, outline: false,
+      }),
+      tile: makeSurfaceMaterial({
+        color: 0xffffff, vertexColors: true, map: roofTileTexture(37), rim: 0.55, hatch: 0.8,
+      }),
       timber: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, map: woodTexture(41), rim: 0.4 }),
       metal: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, rim: 0.8 }),
     };
-    const uvScale = { stucco: 0.34, stone: 0.42, tile: 0.5, timber: 0.75, metal: 0.5 };
+    // Push the maps into the BAND DRIVE rather than letting them multiply the
+    // albedo. makeSurfaceMaterial() has no parameter for this, so set it here:
+    // a mortar course or a pantile lap that merely darkens the wash by 4% is
+    // invisible after the quantiser, whereas one that moves the band drive puts
+    // a real step in — which is the difference between engraved-looking
+    // masonry and an untextured primitive with a decal on it.
+    const drive = { stucco: 0.24, stone: 0.34, sunk: 0.30, tile: 0.36, timber: 0.26, metal: 0.10 };
+    for (const k of BINS) {
+      const u = mats[k] && mats[k].uniforms;
+      if (!u) continue;
+      if (u.uBands) u.uBands.value = k === 'tile' ? 3 : 4;
+      if (u.uBandBleed) u.uBandBleed.value = 0.13;
+      if (u.uMapDrive) u.uMapDrive.value = drive[k];
+      if (u.uMapFlat) u.uMapFlat.value = 0.68;
+      if (u.uLightContrast) u.uLightContrast.value = 1.18;
+      if (u.uWetPx) u.uWetPx.value = 12;
+    }
+    // 0.5 -> one pantile texture per 2 m of roof, i.e. 0.14 m courses.
+    const uvScale = { stucco: 0.34, stone: 0.42, sunk: 0.42, tile: 0.5, timber: 0.75, metal: 0.5 };
     this.materials = mats;
     this.meshes = [];
     for (const k of BINS) {
@@ -1147,7 +1221,8 @@ export class Structures {
       m.name = `structures:${k}`;
       m.castShadow = true;
       m.receiveShadow = true;
-      m.userData.outline = true;
+      // The submerged bin writes depth and shade but no ink — see BINS.
+      m.userData.outline = k !== 'sunk';
       m.matrixAutoUpdate = false;
       this.group.add(m);
       this.meshes.push(m);

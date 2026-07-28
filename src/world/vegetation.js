@@ -17,7 +17,7 @@ import { makeRng, rngRange, fbm2, valueNoise2 } from '../core/rng.js';
 import { clamp01, smoothstep, lerp, TAU } from '../core/math.js';
 import { makeFoliageMaterial, makeSurfaceMaterial, PALETTE } from './worldMaterials.js';
 import { leafClusterTexture, bladeTexture, barkTexture, blossomTexture } from './textures.js';
-import { loft, mergeGeoms, setGeomColor, quadCard, ensureAttrs } from './geoutil.js';
+import { loft, mergeGeoms, setGeomColor, quadCard, ensureAttrs, worldUV, tintGeom } from './geoutil.js';
 import { makeBox } from './collider.js';
 import { WATER_Y } from './layout.js';
 
@@ -208,7 +208,19 @@ function growTree(kind, rng) {
         rot: t * 0.5,
       });
     }
-    parts.push(loft(rings, 8, false, true));
+    // A root SKIRT under the flare: three lobes of buttress spreading onto the
+    // ground, so the trunk grows out of the terrain instead of being pushed
+    // into it. Round 2's trunk met the ground on a clean circle with no contact
+    // darkening at all.
+    const skirt = [
+      { c: { x: rings[0].c.x, y: -0.34, z: rings[0].c.z }, r: rings[0].r * 1.62, rot: 0.31 },
+      { c: { x: rings[0].c.x, y: -0.10, z: rings[0].c.z }, r: rings[0].r * 1.26, rot: 0.16 },
+      { c: { x: rings[0].c.x, y: trunkR * 1.5, z: rings[0].c.z }, r: rings[0].r * 1.02, rot: 0.04 },
+    ];
+    // 12 sides: at 8 the nearest trunk in the overview frame is a visible
+    // octagon, and a 45-degree facet break is a crease the outline pass inks.
+    parts.push(loft(skirt, 12, false, false));
+    parts.push(loft(rings, 12, false, true));
   }
 
   // --- limbs: one per lobe (plus a couple of decorative ones), each a curved,
@@ -316,6 +328,21 @@ function growTree(kind, rng) {
 
   const geom = mergeGeoms(parts);
   setGeomColor(geom, S.bark, 0.09, rng);
+  // THE trunk bug: loft() emits no uv attribute and ensureAttrs() fills it with
+  // ZEROS, so every bark fetch on every trunk in the game sampled one texel.
+  // The map was wired up, bound and sampled — at a constant. That is why a 40 px
+  // sunlit trunk measured 5 LSB of variation across its whole diameter and read
+  // as a flat lavender bar. A triplanar world-space UV at a 0.30 m tile puts the
+  // fibre back; the per-instance yaw then rotates the seam so no two trunks in
+  // an avenue carry the same pattern.
+  worldUV(geom, 3.3);
+  // Damp, mossy, shaded foot. This is the contact darkening — a tree that meets
+  // the ground at the same value it has at head height is a pole stuck in a lawn.
+  tintGeom(geom, (c, x, y) => {
+    const k = clamp01(1 - y / 1.15);
+    const f = 1 - k * k * 0.34;
+    c.r *= f; c.g *= f * 1.02; c.b *= f * 0.96;
+  });
   return { geom, cards, height, radius: Math.min(maxR, 7.5), trunkR };
 }
 
@@ -430,6 +457,32 @@ export class Vegetation {
       color: 0xffffff, vertexColors: true, instanced: true,
       map: barkTexture(11), roughness: 1, rim: 0.35,
     });
+    // makeSurfaceMaterial() does not forward the band-quantiser options, so the
+    // trunk bin has always run on the generic 4-band defaults with the map fed
+    // straight into the albedo as a multiply. Reach into the uniforms instead of
+    // widening a signature owned by another module.
+    //
+    //  - bands 3 / bandBleed 0.13: a 0.4 m cylinder needs a TERMINATOR, i.e. a
+    //    lit face, a half-tone and a shade face meeting at two bled edges. Four
+    //    bands on a form that narrow just puts a fourth value in the way.
+    //  - mapDrive 0.30: the bark's tonal deviation goes into the BAND DRIVE, so
+    //    a crack crosses a boundary and steps rather than smearing the plateau.
+    //  - shadeCool 0.62 / lightBias 0.06: bark is the one thing in a Gallian
+    //    hedgerow that must stay brown. At full violet enforcement every trunk
+    //    in round 2 measured as a lavender pole.
+    if (this.matBark.uniforms) {
+      const u = this.matBark.uniforms;
+      if (u.uBands) u.uBands.value = 3;
+      if (u.uBandBleed) u.uBandBleed.value = 0.13;
+      if (u.uMapDrive) u.uMapDrive.value = 0.30;
+      if (u.uMapFlat) u.uMapFlat.value = 0.72;
+      if (u.uShadeCool) u.uShadeCool.value = 0.62;
+      if (u.uLightBias) u.uLightBias.value = 0.06;
+      if (u.uLightContrast) u.uLightContrast.value = 1.28;
+      if (u.uWetPx) u.uWetPx.value = 10;
+      // 0.30 m per bark tile, circumferentially and vertically.
+      if (u.uMapRepeat) u.uMapRepeat.value.set(1, 1);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -482,8 +535,13 @@ export class Vegetation {
     // which is why the count here can be this high without costing anything at
     // 80 m: the blades in a tile are shuffled, so any prefix of the buffer is
     // an unbiased random subset of the whole tile.
-    const clumpsPerM2 = q >= 2 ? 1.55 : q === 1 ? 1.0 : 0.28;
-    const perClump = q >= 2 ? 9 : q === 1 ? 6 : 4;
+    // Round 2 shipped 14 blades/m2 that were each 5-9 cm wide. At the bridge
+    // camera that measured as 27-46 px slabs — wider on screen than the boulder
+    // behind them. The fix is the opposite trade: HALVE the blade width and
+    // spend the fill rate on twice as many of them, because a sward reads as a
+    // sward through density, not through the size of any one leaf.
+    const clumpsPerM2 = q >= 2 ? 3.5 : q === 1 ? 2.1 : 0.5;
+    const perClump = q >= 2 ? 12 : q === 1 ? 8 : 4;
 
     // THREE blade cuts, not one. A meadow made from a single 3.8 cm straight
     // spike is exactly what the closeup critique measured — "sparse flat
@@ -491,10 +549,14 @@ export class Vegetation {
     // odd big arching seed-stalk, and the variation in WIDTH and CURVATURE is
     // what gives the foreground body. Each variant gets its own InstancedMesh
     // per tile, so this costs draw calls (three per near tile) and nothing else.
+    // Widths are HALF-widths (the strip is pushed to +/- w), so 0.0095 is a
+    // 1.9 cm leaf — which is what a fescue actually is. The extra level on each
+    // cut buys the curl a smooth arc instead of a two-segment dog-leg; a
+    // straight blade is what reads as a "flat spike" however thin it gets.
     const geos = [
-      bladeGeometry(4, 0.0175, 0.14, 0.02),  // fine bent
-      bladeGeometry(5, 0.0250, 0.28, 0.06),  // broad leaf, arched
-      bladeGeometry(5, 0.0340, 0.46, -0.10), // big flag leaf, well over
+      bladeGeometry(5, 0.0115, 0.17, 0.03),  // fine bent
+      bladeGeometry(6, 0.0165, 0.30, 0.08),  // broad leaf, arched
+      bladeGeometry(6, 0.0225, 0.47, -0.13), // big flag leaf, well over
     ];
     this.grassGeos = geos;
     this.grassGeo = geos[0];
@@ -533,14 +595,17 @@ export class Vegetation {
             const bx = cx + Math.cos(a) * rr;
             const bz = cz + Math.sin(a) * rr;
             const by = this.terrain.heightAt(bx, bz);
-            const hgt = lerp(0.30, 0.80, tall) * rngRange(rng, 0.68, 1.35)
+            const hgt = lerp(0.26, 0.66, tall) * rngRange(rng, 0.62, 1.32)
               * (v === 2 ? 1.22 : v === 1 ? 1.05 : 1);
-            _e.set(rngRange(rng, -0.30, 0.30), rng() * TAU, rngRange(rng, -0.30, 0.30), 'YXZ');
+            // Lean harder. A tuft of near-vertical blades is a hairbrush; real
+            // sward falls open, and the extra tilt is also what stops the near
+            // field being a picket fence across the lens.
+            _e.set(rngRange(rng, -0.34, 0.34), rng() * TAU, rngRange(rng, -0.34, 0.34), 'YXZ');
             _q.setFromEuler(_e);
             _p.set(bx, by - 0.035, bz);
             // width varies almost 3:1 within a variant, so no two blades in a
             // tuft are the same shape
-            _s.set(rngRange(rng, 0.58, 1.40), hgt, 1);
+            _s.set(rngRange(rng, 0.62, 1.34), hgt, 1);
             _m4.compose(_p, _q, _s);
             // Per-blade TINT — a modulation of the material's root/tip ramp,
             // never a second pigment. Sun-bleached and warmer on the rises,
@@ -548,10 +613,15 @@ export class Vegetation {
             const ao = this.terrain.aoAt(bx, bz);
             const vn = 0.84 + valueNoise2(bx * 3.1, bz * 3.1, this.seed + 3) * 0.38;
             const bleach = clamp01(tall * 0.5 + rng() * 0.5);
+            // Per-blade sage<->olive swing on top of the bleach. Without it a
+            // tuft is one colour at three values and the near field reads as a
+            // single flat pigment; a real sward has half a dozen greens in any
+            // handful of it.
+            const grn = rngRange(rng, -0.11, 0.13);
             _c.setRGB(
-              vn * (1.0 + bleach * 0.18),
-              vn * (1.0 + bleach * 0.08),
-              vn * (1.0 - bleach * 0.18)
+              vn * (1.0 + bleach * 0.20 - grn * 0.55),
+              vn * (1.0 + bleach * 0.07 + grn * 0.45),
+              vn * (1.0 - bleach * 0.20 - grn * 0.28)
             );
             _c.multiplyScalar(0.82 + ao * 0.30);
             blades[v].push({ m: _m4.toArray([]), r: _c.r, g: _c.g, b: _c.b });
@@ -586,7 +656,14 @@ export class Vegetation {
           im.instanceColor.needsUpdate = true;
           im.castShadow = false;
           im.receiveShadow = false;
-          im.userData.outline = false;
+          // Blades take ink. Round 1 and round 2 both asked for this and both
+          // times it shipped as `false`, which is why the foreground reeds
+          // measured as "hard-aliased flat triangles with no ink whatsoever" —
+          // every other surface in the frame is drawn and the grass was not.
+          // 0.4 keeps it a hairline: a full-weight stroke on a 2 cm leaf is a
+          // black bar.
+          im.userData.outline = true;
+          im.userData.outlineWidth = 0.25;
           im.frustumCulled = true;
           im.computeBoundingSphere();
           im.matrixAutoUpdate = false;
@@ -675,7 +752,11 @@ export class Vegetation {
 
   _buildReeds() {
     const rng = makeRng(this.seed ^ 0x9e11);
-    const geo = bladeGeometry(3, 0.034, 0.22);
+    // 3 levels at a 6.8 cm width was the single worst piece of geometry in the
+    // game: a 1.9 m straight slab that at the bridge camera measured 27-46 px
+    // across, wider than the boulder it stood in front of, with a dead-straight
+    // silhouette. Reeds are 2-3 cm across and they ARCH.
+    const geo = bladeGeometry(7, 0.0155, 0.40);
     const poly = this.layout.river;
     const list = [];
     const q = this.quality;
@@ -711,20 +792,23 @@ export class Vegetation {
     const im = new THREE.InstancedMesh(geo, this.matReed, list.length);
     for (let i = 0; i < list.length; i++) {
       const r = list[i];
-      const hgt = rngRange(rng, 0.95, 1.9);
-      _e.set(rngRange(rng, -0.22, 0.22), rng() * TAU, rngRange(rng, -0.22, 0.22), 'YXZ');
+      const hgt = rngRange(rng, 0.80, 1.55);
+      _e.set(rngRange(rng, -0.34, 0.34), rng() * TAU, rngRange(rng, -0.34, 0.34), 'YXZ');
       _q.setFromEuler(_e);
       _p.set(r.x, r.y - 0.05, r.z);
-      _s.set(rngRange(rng, 0.9, 1.5), hgt, 1);
+      _s.set(rngRange(rng, 0.8, 1.25), hgt, 1);
       _m4.compose(_p, _q, _s);
       im.setMatrixAt(i, _m4);
-      const v = rngRange(rng, 0.84, 1.16);
-      _c.setRGB(v, v * rngRange(rng, 0.95, 1.05), v * rngRange(rng, 0.9, 1.05));
+      const v = rngRange(rng, 0.80, 1.18);
+      const grn = rngRange(rng, -0.10, 0.14);
+      _c.setRGB(v * (1 - grn * 0.5), v * rngRange(rng, 0.95, 1.05) * (1 + grn * 0.45),
+        v * rngRange(rng, 0.9, 1.05) * (1 - grn * 0.28));
       im.setColorAt(i, _c);
     }
     im.instanceMatrix.needsUpdate = true;
     if (im.instanceColor) im.instanceColor.needsUpdate = true;
-    im.userData.outline = false;
+    im.userData.outline = true;
+    im.userData.outlineWidth = 0.4;
     im.castShadow = false;
     im.computeBoundingSphere();
     im.matrixAutoUpdate = false;
@@ -1143,6 +1227,13 @@ export class Vegetation {
       if (on) {
         const d = Math.sqrt(d2) - TILE * 0.7;      // nearest corner, roughly
         f = 1 - smoothstep(near, far, d) * 0.80;
+        // ...and thin AGAIN in the first few metres. A camera at eye height is
+        // fine in a full-density sward; a camera at 0.3-1.5 m — which is every
+        // over-the-shoulder and prone shot — has the whole tuft between it and
+        // the subject. Halving the count under 4 m opens the sward enough to
+        // see through without changing what it looks like at 10 m, and the
+        // per-tile buffers are shuffled so the thinned set stays unbiased.
+        f *= lerp(0.74, 1.0, smoothstep(0, 12.0, d));
       }
       for (let m = 0; m < t.meshes.length; m++) {
         const im = t.meshes[m];

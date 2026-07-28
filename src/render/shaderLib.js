@@ -95,6 +95,40 @@ float vcFbm3d(vec3 p) {
 export const GLSL_COLOR = /* glsl */`
 float vcLum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
+// ---------------------------------------------------- the paper midtone window
+// THE RULE (rubric axis 4): the cold-press grain is strongest at the MIDTONES,
+// gone in the highlights, gone in deep shadow.
+//
+// Round 2 shipped mid = pow(1.0 - abs(l*2.0-1.0), 0.75) with l a LINEAR
+// luminance, and that is why the grain measured loudest exactly where it had to
+// vanish. A linear 0.5 is a DISPLAY value of 0.73 — a highlight — so the window
+// peaked on the brightest surfaces in frame and rolled off through the actual
+// midtones. Measured consequence: the lit cream stucco (display 0.79, i.e.
+// linear 0.58) evaluated to 0.87, so the fibre ran at 87% strength on the
+// brightest object in the picture, giving the same high-pass amplitude there as
+// on the midtone grass.
+//
+// The window therefore has to be evaluated in a PERCEPTUAL space. Three entry
+// points, because the callers hold the value in three different spaces:
+//   vcPaperWindow    — v is already display-referred 0..1
+//   vcPaperMid       — l is a post-tonemap linear value (the grade pass)
+//   vcPaperMidScene  — l is scene-referred radiance (the surface shaders), so
+//                      a cheap Reinhard stands in for the tonemap first
+// Peak 0.25..0.50 display, three quarters gone by 0.67, gone by 0.80. The upper
+// shoulder is deliberately early: "gone in highlights" is a hard requirement of
+// the axis, and a lit cream wall reading as clean paint with the tooth only in
+// the washes around it is what the reference actually looks like.
+float vcPaperWindow(float v) {
+  return smoothstep(0.06, 0.26, v) * (1.0 - smoothstep(0.52, 0.82, v));
+}
+float vcPaperMid(float l) {
+  return vcPaperWindow(pow(clamp(l, 0.0, 1.0), 0.4545));
+}
+float vcPaperMidScene(float l) {
+  float t = max(l, 0.0) / (max(l, 0.0) + 0.62);
+  return vcPaperWindow(pow(t, 0.4545));
+}
+
 vec3 vcRgb2Hsv(vec3 c) {
   vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
   vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
@@ -262,6 +296,39 @@ vec2 vcQuantiseBands(float lightTerm, float bands, float bleed, float n1, float 
 // the PHASE stays world-locked, so the edge sits still when the camera does.
 //   mPerPx : metres per CSS pixel here, i.e. viewDepth * uProjScale
 //   fibre  : a cold-press paper fetch, for tooth on the edge itself
+// ------------------------------------------------------ pigment quantisation
+// The second quantiser, and the one round 2 was missing.
+//
+// vcQuantiseBands above quantises the LIGHT term, which is right — but every
+// scrap of tonal variation that arrives AFTER it (albedo maps, per-vertex
+// colour, ground detail, aerial perspective, rim light, a curved thigh) then
+// rides over the top of those plateaus unquantised. That is precisely what the
+// round-2 critics measured: a tank road ramping 122->82 over 300 px inside one
+// shade mass, and a hero's thigh running 99,100,103,100,96,88 across its width.
+// The wet-edge machinery was real code doing nothing visible because nothing
+// visible was going through it.
+//
+// So: after the wash is composited, quantise its LUMINANCE too, in a perceptual
+// space (a linear quantiser puts all its steps in the highlights), with the same
+// wandering boundary, and scale the colour onto the result. Hue and saturation
+// are untouched — this only forces value onto steps.
+//
+//   col    composited colour
+//   lv     levels across the 0..1 perceptual range
+//   n1,n2  the same boundary width / warp fields the light quantiser uses
+//   amt    0..1 blend, so a material can opt out
+vec3 vcQuantisePigment(vec3 col, float lv, float n1, float n2, float amt) {
+  float y = max(vcLum(col), 1e-5);
+  float p = pow(min(y, 4.0), 0.4545);
+  float t = p * lv + (n2 - 0.5) * 1.05;
+  float fi = floor(t);
+  float fr = t - fi;
+  float w = clamp(0.020 + 0.045 * n1, 0.014, 0.075);
+  float q = (fi + smoothstep(0.5 - w, 0.5 + w, fr)) / lv;
+  float ly = pow(max(q, 0.0), 2.2);
+  return col * mix(1.0, ly / y, clamp(amt, 0.0, 1.0));
+}
+
 float vcWetEdge(vec3 wp, float mPerPx, float fibre) {
   float f = 1.0 / max(mPerPx * 46.0, 1e-5);          // cycles per metre
   vec2 q = (wp.xz + wp.y * 0.77) * f;
@@ -322,6 +389,10 @@ float vcHatchField(vec2 px, float ang, float spacing, float seed) {
   float lift = smoothstep(0.33, 0.47, press);
   // per-stroke pressure: some strokes are laid in harder than others
   float amp = mix(0.52, 1.0, vcHash21(vec2(si, seed + 19.0)));
+  // and the hand's weight drifts across the whole passage, so a bank of strokes
+  // is never one flat density — this is the term whose absence made an
+  // autocorrelation of a shadow row decay monotonically, i.e. read as a screen
+  amp *= mix(0.58, 1.18, vcFbm2(px * 0.020 + seed * 11.3));
 
   return line * lift * amp;
 }

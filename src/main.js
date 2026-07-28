@@ -664,6 +664,32 @@ function playFlow(S) {
 // Capture mode — the visual-review loop depends on every line of this.
 // ---------------------------------------------------------------------------
 
+/**
+ * A capture must never be reloaded out from under the shutter.
+ *
+ * tools/shoot.mjs points at the dev server and then waits `--wait` milliseconds
+ * after __READY__ before it grabs the frame. If ANY module changes in that window
+ * — and with several people editing the tree at once it regularly does — vite's
+ * HMR client has no accept handler to hand the update to and falls back to a full
+ * `location.reload()`. The page then boots again from scratch, and the screenshot
+ * lands on a frame from the middle of that boot: the default camera, which sits at
+ * the world origin inside the bridge abutment. That is where the identical
+ * "close-up of a stone wall" PNG that overwrote three different shots came from,
+ * and it is silent — __READY__ was still true from the previous life of the page,
+ * so the harness reported no error and wrote the garbage frame over a good one.
+ *
+ * Clearing `payload.path` is the documented way to veto vite's full reload. It is
+ * a no-op in a production build (`import.meta.hot` is undefined) and deliberately
+ * only applies under ?capture: interactive development still hot-reloads.
+ */
+function pinModulesForCapture() {
+  if (!CFG.capture || typeof import.meta === 'undefined' || !import.meta.hot) return;
+  import.meta.hot.on('vite:beforeFullReload', (payload) => {
+    console.warn('[main] suppressed an HMR full reload during capture');
+    if (payload) payload.path = '/__vc_capture_never_reload__';
+  });
+}
+
 async function captureFlow(S) {
   const { engine, scene, camera, renderer, pipeline, world, battle, fx, rig, hud, audio } = S;
 
@@ -731,23 +757,39 @@ async function captureFlow(S) {
     }
   }
 
-  // FREEZE. tools/shoot.mjs waits another `--wait` milliseconds after __READY__
-  // before it grabs the frame, and rAF is unthrottled under --disable-frame-rate-
-  // limit, so anything still moving would put a different number of frames of
-  // wind, particle age and dither into the PNG on every machine. Stopping the
-  // clock (rather than the loop) keeps the canvas being redrawn — identically —
-  // for as long as the harness wants to look at it.
-  engine.clock.getDelta = () => 0;
-  const freeze = document.createElement('style');
-  freeze.textContent =
-    '#hud *, #hud *::before, #hud *::after{animation-play-state:paused!important;transition:none!important}';
-  document.head.appendChild(freeze);
-  await raf();                     // one frozen frame, so the stats describe the PNG
-
+  // One last live frame, so `renderer.info` describes the picture we are about
+  // to publish rather than whatever the freeze leaves in the counters.
+  await raf();
   publishStats(S, {
     shot, requestedShot: requested, fallback: shot !== requested,
     fps, settleFrames: n, convergedAt: converged, finaleFrames: fin ? fin.frames : 0,
   });
+
+  // FREEZE — and freeze the SYSTEMS, not just the clock.
+  //
+  // tools/shoot.mjs waits another `--wait` milliseconds after __READY__ before it
+  // grabs the frame, and rAF is unthrottled under --disable-frame-rate-limit, so
+  // between __READY__ and the shutter this loop runs another two to five THOUSAND
+  // times. Round 3 that stopped being harmless. Stopping the clock alone leaves
+  // every system still running, just with dt = 0 — and a system is only inert at
+  // dt = 0 if it is a pure function of dt, which several are not: the foliage LOD
+  // re-streams around the camera every call, the shadow rig is deliberately handed
+  // dt = 1 in capture mode so it snaps, and the material registry re-arms its own
+  // guard once a frame. Measured on `tank`: the PNG at --wait 800 was correct and
+  // the PNG at --wait 3500 was a completely different, broken image. That is the
+  // determinism contract failing, and it fails silently — the harness reports no
+  // error and writes the garbage frame over the good one.
+  //
+  // `engine.paused` skips the system pass entirely while still re-rendering, so
+  // the scene graph is now provably constant: after this line the only thing the
+  // loop touches is the framebuffer, and every redraw is the same draw.
+  engine.clock.getDelta = () => 0;
+  engine.paused = true;
+  const freeze = document.createElement('style');
+  freeze.textContent =
+    '#hud *, #hud *::before, #hud *::after{animation-play-state:paused!important;transition:none!important}';
+  document.head.appendChild(freeze);
+  await raf();                     // one frozen frame, so the canvas holds it
   window.__READY__ = true;
 }
 
@@ -785,6 +827,9 @@ function publishStats(S, extra) {
 // ---------------------------------------------------------------------------
 
 async function boot() {
+  // Armed before anything else: a reload that fires while the shot is being set up
+  // is just as fatal as one that fires while the shutter is open.
+  pinModulesForCapture();
   const S = buildSystems();
   const updateTracers = wireCombatFx(S);
   installSystems(S, updateTracers);

@@ -27,12 +27,100 @@ const _proj = new THREE.Vector3();
 // cannot `.copy()` a Color — it reads .x/.y/.z, gets undefined, and every cell
 // colour comes out NaN, which the vertex-colour path rasterises as solid black.
 const _c1 = new THREE.Color();
-const COL_MOVE_NEAR = new THREE.Color(0.74, 0.88, 0.86);
-const COL_MOVE_FAR = new THREE.Color(0.40, 0.60, 0.66);
-const COL_MOVE_EDGE = new THREE.Color(0.93, 0.97, 0.95);
-const COL_THREAT = new THREE.Color(0.62, 0.24, 0.20);
-const COL_THREAT_HOT = new THREE.Color(0.80, 0.34, 0.22);
+const COL_MOVE_NEAR = new THREE.Color(0.72, 0.89, 0.86);
+const COL_MOVE_FAR = new THREE.Color(0.44, 0.68, 0.75);
+const COL_MOVE_EDGE = new THREE.Color(0.26, 0.47, 0.56);
+const COL_THREAT = new THREE.Color(0.58, 0.26, 0.22);
+const COL_THREAT_HOT = new THREE.Color(0.74, 0.31, 0.20);
+const COL_THREAT_EDGE = new THREE.Color(0.44, 0.15, 0.14);
 const COL_ARC = new THREE.Color(0.70, 0.32, 0.26);
+
+// ---------------------------------------------------------------------------
+// Wash painting
+//
+// The overlays used to be two triangles per nav cell, each carrying one flat
+// vertex colour. At the command camera a 1.5 m cell is 45-50 px, so the whole
+// map came out ruled into hard-edged parallelograms — a lattice a critic could
+// pull straight out of an FFT, and the one artefact no watercolour can make.
+// A wash is not a set of cells: it is one sheet of pigment whose edge is soft,
+// whose interior granulates, and which pools darker where the brush stopped.
+// So the field is rasterised on the CPU, blurred, granulated, given a wet edge,
+// and sampled per-fragment off a single terrain-conforming sheet.
+// ---------------------------------------------------------------------------
+
+/** Texels per nav cell in the wash texture. 3 puts a texel at ~0.5 m / ~15 px. */
+const WASH_SS = 3;
+
+/** Deterministic 2-D value hash in [0,1). */
+function hash2(x, y) {
+  let n = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1);
+  n = Math.imul(n ^ (n >>> 15), 0x85ebca6b);
+  n ^= n >>> 13;
+  return ((n >>> 0) % 65536) / 65536;
+}
+
+/** Smooth value noise, one octave, at `f` texels per lobe. */
+function vnoise(x, y, f, seed) {
+  const px = x / f, py = y / f;
+  const x0 = Math.floor(px), y0 = Math.floor(py);
+  const fx = px - x0, fy = py - y0;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const a = hash2(x0 + seed, y0), b = hash2(x0 + 1 + seed, y0);
+  const c = hash2(x0 + seed, y0 + 1), d = hash2(x0 + 1 + seed, y0 + 1);
+  return (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy;
+}
+
+let _blotTex = null;
+/** A soft, slightly ragged thumbprint of pigment — the alpha for map marks. */
+function blotTexture() {
+  if (_blotTex) return _blotTex;
+  const N = 64, d = new Uint8Array(N * N * 4);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const dx = (x + 0.5) / N - 0.5, dy = (y + 0.5) / N - 0.5;
+      const ang = Math.atan2(dy, dx);
+      // an irregular rim, so no two marks are the same disc
+      const wob = 0.40 + 0.055 * Math.sin(ang * 3 + 0.7) + 0.035 * Math.sin(ang * 5 - 1.9);
+      const r = Math.sqrt(dx * dx + dy * dy) / wob;
+      let a = clamp01(1 - r);
+      a = a * a * (3 - 2 * a);
+      a *= 0.82 + 0.36 * vnoise(x, y, 5.5, 3);
+      const o = (y * N + x) * 4;
+      d[o] = d[o + 1] = d[o + 2] = 255;
+      d[o + 3] = (clamp01(a) * 255) | 0;
+    }
+  }
+  _blotTex = new THREE.DataTexture(d, N, N, THREE.RGBAFormat);
+  _blotTex.minFilter = THREE.LinearFilter;
+  _blotTex.magFilter = THREE.LinearFilter;
+  _blotTex.needsUpdate = true;
+  return _blotTex;
+}
+
+/** Separable 1-2-1 blur, in place, `passes` times. Approximates a gaussian. */
+function blurField(src, w, h, passes) {
+  const tmp = new Float32Array(src.length);
+  for (let p = 0; p < passes; p++) {
+    for (let y = 0; y < h; y++) {
+      const r = y * w;
+      for (let x = 0; x < w; x++) {
+        const l = src[r + (x > 0 ? x - 1 : 0)];
+        const c = src[r + x];
+        const rr = src[r + (x < w - 1 ? x + 1 : w - 1)];
+        tmp[r + x] = (l + 2 * c + rr) * 0.25;
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      for (let y = 0; y < h; y++) {
+        const u = tmp[(y > 0 ? y - 1 : 0) * w + x];
+        const c = tmp[y * w + x];
+        const d = tmp[(y < h - 1 ? y + 1 : h - 1) * w + x];
+        src[y * w + x] = (u + 2 * c + d) * 0.25;
+      }
+    }
+  }
+  return src;
+}
 
 export class CommandMode {
   constructor(battle, camera, opts = {}) {
@@ -76,13 +164,15 @@ export class CommandMode {
     this.group.matrixAutoUpdate = false;
     this.scene?.add(this.group);
 
-    this.moveMesh = this._makeCellMesh('moveRange', 0.62);
-    this.threatMesh = this._makeCellMesh('threatMap', 0.44);
+    // Movement and threat are WASHES — one painted sheet each, sampled per
+    // fragment. Fire arcs stay geometry (they are drawn fans, not a field).
+    this.moveMesh = this._makeWash('moveRange', 0.86, 0.11);
+    this.threatMesh = this._makeWash('threatMap', 0.74, 0.085);
     this.arcMesh = this._makeCellMesh('fireArcs', 0.30);
     this.cursorRing = this._makeRing(0.55, 0.72, 0xf2e6cf, 0.9);
     this.selectRing = this._makeRing(0.72, 0.95, 0xf6d9a0, 0.95);
     this.hoverRing = this._makeRing(0.62, 0.80, 0xbfd6cf, 0.7);
-    this.ghostMarks = this._makeCellMesh('lastKnown', 0.8);
+    this.ghostMarks = this._makeCellMesh('lastKnown', 0.8, true);
     this.group.add(this.moveMesh, this.threatMesh, this.arcMesh, this.ghostMarks,
       this.cursorRing, this.selectRing, this.hoverRing);
 
@@ -90,6 +180,11 @@ export class CommandMode {
     this._threatDirty = true;
     this._ringT = 0;
     this._offBus = [];
+    // Capture-only handle. The overlay's whole job is to be INVISIBLE as
+    // machinery, which means the only way to measure it is to difference a
+    // frame against the same frame with the washes switched off; the shot
+    // harness needs a way in to do that. Never present in a played build.
+    if (typeof window !== 'undefined' && CFG.capture) window.__CM__ = this;
   }
 
   // -------------------------------------------------------------------------
@@ -411,7 +506,7 @@ export class CommandMode {
       if (u.lastKnownTurn < b.turn - 1) continue;
       _cells.push(u.lastKnown.x, u.lastKnown.y + 0.05, u.lastKnown.z, 0.55, 0.30, 0.34, 0.5);
     }
-    this._fillCellMesh(this.ghostMarks, _cells, 1.5);
+    this._fillCellMesh(this.ghostMarks, _cells, 2.7);
     this.ghostMarks.visible = _cells.length > 0;
   }
 
@@ -422,33 +517,26 @@ export class CommandMode {
   buildMoveOverlay() {
     const u = this.selected;
     if (!u || !u.active || !this.nav) { this.moveMesh.visible = false; return; }
+    const nav = this.nav;
     const ap = this.battle.previewAp(u);
     const range = ap / u.apPerMetre;
     const fill = this.nav.floodFill(u.pos, range);
     const cells = fill.cells;
-    _cells.length = 0;
-    const nav = this.nav;
+    const f = this._washFields(nav.w * nav.h);
+    f.cov.fill(0); f.amt.fill(0); f.ramp.fill(0);
     for (let i = 0; i < cells.length; i++) {
       const ci = cells[i];
-      const d = nav.reachDist(ci);
-      const t = clamp01(d / Math.max(1, range));
-      const ix = ci % nav.w, iz = (ci / nav.w) | 0;
-      // Cells on the frontier get the bright wash edge that reads as a brush stroke.
-      let edge = false;
-      for (let k = 0; k < 4 && !edge; k++) {
-        const jx = ix + EDGE_X[k], jz = iz + EDGE_Z[k];
-        if (!nav.inBounds(jx, jz)) { edge = true; break; }
-        if (nav.reachDist(nav.idx(jx, jz)) > range) edge = true;
-      }
-      _c1.copy(COL_MOVE_NEAR).lerp(COL_MOVE_FAR, t * t);
-      if (edge) _c1.lerp(COL_MOVE_EDGE, 0.72);
-      _cells.push(
-        nav.worldX(ix), nav.heightAt(nav.worldX(ix), nav.worldZ(iz)) + 0.045, nav.worldZ(iz),
-        _c1.r, _c1.g, _c1.b, edge ? 0.58 : lerp(0.34, 0.16, t),
-      );
+      const t = clamp01(nav.reachDist(ci) / Math.max(1, range));
+      f.cov[ci] = 1;
+      // The near ground takes more pigment than the far ground: a brush loaded
+      // at the soldier's feet runs out as the reach does.
+      f.amt[ci] = lerp(1.0, 0.42, t * t);
+      f.ramp[ci] = t * t;
     }
-    this._fillCellMesh(this.moveMesh, _cells, nav.cell * 1.02);
-    this.moveMesh.visible = _cells.length > 0;
+    this._paintWash(this.moveMesh, f, COL_MOVE_NEAR, COL_MOVE_FAR, COL_MOVE_EDGE, {
+      seed: 17, edge: 0.95, grain: 0.30, blur: 2, body: 0.48, rim: 0.42,
+    });
+    this.moveMesh.visible = cells.length > 0;
     Bus.emit('command:range', { unit: u, metres: range, cells: cells.length });
   }
 
@@ -459,25 +547,25 @@ export class CommandMode {
     const th = nav.threat;
     let maxT = 0.0001;
     for (let i = 0; i < th.length; i++) if (th[i] > maxT) maxT = th[i];
-    _cells.length = 0;
-    for (let iz = 0; iz < nav.h; iz++) {
-      for (let ix = 0; ix < nav.w; ix++) {
-        const i = iz * nav.w + ix;
-        const v = th[i];
-        if (v < maxT * 0.06) continue;
-        const t = clamp01(v / maxT);
-        _c1.copy(COL_THREAT).lerp(COL_THREAT_HOT, t);
-        _cells.push(
-          nav.worldX(ix), nav.heightAt(nav.worldX(ix), nav.worldZ(iz)) + 0.035, nav.worldZ(iz),
-          _c1.r, _c1.g, _c1.b, lerp(0.10, 0.42, t * t),
-        );
-      }
+    const n = nav.w * nav.h;
+    const f = this._washFields(n);
+    f.cov.fill(0); f.amt.fill(0); f.ramp.fill(0);
+    let any = 0;
+    for (let i = 0; i < n; i++) {
+      const v = th[i];
+      if (v < maxT * 0.06) continue;
+      const t = clamp01(v / maxT);
+      f.cov[i] = 1;
+      f.amt[i] = 0.26 + 0.74 * t * t;
+      f.ramp[i] = t;
+      any++;
     }
-    this._fillCellMesh(this.threatMesh, _cells, nav.cell * 1.02);
-    // The threat wash is opt-in (F key / a shot asking for it). _fillCellMesh
-    // only ever hides an empty mesh — deciding to SHOW one is the caller's job,
-    // otherwise rebuilding the buffer silently turns the overlay back on.
-    this.threatMesh.visible = this.showThreat && _cells.length > 0;
+    this._paintWash(this.threatMesh, f, COL_THREAT, COL_THREAT_HOT, COL_THREAT_EDGE, {
+      seed: 91, edge: 0.55, grain: 0.38, blur: 3, body: 0.26, rim: 0.34,
+    });
+    // The threat wash is opt-in (T key / a shot asking for it). Painting the
+    // sheet is not a reason to SHOW it — only the caller knows that.
+    this.threatMesh.visible = this.showThreat && any > 0;
   }
 
   /** Filled fans showing each spotted enemy's interception cone. */
@@ -519,14 +607,18 @@ export class CommandMode {
   // Overlay mesh plumbing
   // -------------------------------------------------------------------------
 
-  _makeCellMesh(name, opacity) {
+  _makeCellMesh(name, opacity, soft = false) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute([], 4));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute([], 2));
     const m = new THREE.MeshBasicMaterial({
       vertexColors: true, transparent: true, opacity,
       depthWrite: false, depthTest: true, side: THREE.DoubleSide,
       blending: THREE.NormalBlending,
+      // A last-known-position mark is a thumbprint of pigment, not a tile: with
+      // a hard-edged quad it reads as a selection box on the map.
+      map: soft ? blotTexture() : null,
     });
     const mesh = new THREE.Mesh(g, m);
     mesh.name = name;
@@ -536,6 +628,176 @@ export class CommandMode {
     mesh.userData.overlay = true;
     mesh.visible = false;
     return mesh;
+  }
+
+  /**
+   * One terrain-conforming sheet for a painted overlay. The geometry is shared
+   * between every wash (built once, off the nav grid); only the texture differs.
+   */
+  _makeWash(name, opacity, lift) {
+    const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1, THREE.RGBAFormat);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    const m = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity,
+      depthWrite: false, depthTest: true, side: THREE.DoubleSide,
+      blending: THREE.NormalBlending,
+      // The sheet floats a hand's breadth over the ground; the offset keeps it
+      // off the terrain's own z under the shallow command pitch.
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+    });
+    const mesh = new THREE.Mesh(new THREE.BufferGeometry(), m);
+    mesh.name = name;
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 901;
+    mesh.userData.outline = false;
+    mesh.userData.overlay = true;
+    mesh.visible = false;
+    mesh.position.y = lift;
+    mesh.userData.washTex = tex;
+    return mesh;
+  }
+
+  /** Scratch fields at nav resolution, allocated once. */
+  _washFields(n) {
+    let f = this._fields;
+    if (!f || f.cov.length !== n) {
+      f = this._fields = {
+        cov: new Float32Array(n), amt: new Float32Array(n), ramp: new Float32Array(n),
+      };
+    }
+    return f;
+  }
+
+  /**
+   * Build (once) the sheet the washes are painted on: a grid over the nav area
+   * whose vertices sit on the terrain, with UVs that put texel (ix+.5)/W exactly
+   * over the centre of nav cell ix.
+   */
+  _ensureSheet() {
+    if (this._sheet) return this._sheet;
+    const nav = this.nav;
+    if (!nav) return null;
+    const W = nav.w, H = nav.h, c = nav.cell;
+    const vx = W + 1, vz = H + 1;
+    const pos = new Float32Array(vx * vz * 3);
+    const uv = new Float32Array(vx * vz * 2);
+    for (let j = 0; j < vz; j++) {
+      for (let i = 0; i < vx; i++) {
+        const k = j * vx + i;
+        const x = nav.minX + i * c, z = nav.minZ + j * c;
+        // Take the HIGHEST of a small neighbourhood: a sheet hung off corner
+        // samples alone gets bitten through by every ridge that runs between
+        // two of them.
+        let y = nav.heightAt(x, z);
+        const q = c * 0.5;
+        y = Math.max(y, nav.heightAt(x - q, z), nav.heightAt(x + q, z),
+          nav.heightAt(x, z - q), nav.heightAt(x, z + q));
+        pos[k * 3] = x; pos[k * 3 + 1] = y; pos[k * 3 + 2] = z;
+        uv[k * 2] = i / W; uv[k * 2 + 1] = j / H;
+      }
+    }
+    const idx = (vx * vz > 65535 ? new Uint32Array(W * H * 6) : new Uint16Array(W * H * 6));
+    let o = 0;
+    for (let j = 0; j < H; j++) {
+      for (let i = 0; i < W; i++) {
+        const a = j * vx + i, b = a + 1, d = a + vx, e = d + 1;
+        idx[o++] = a; idx[o++] = d; idx[o++] = b;
+        idx[o++] = b; idx[o++] = d; idx[o++] = e;
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.computeBoundingSphere();
+    this._sheet = g;
+    for (const m of [this.moveMesh, this.threatMesh]) m.geometry = g;
+    return g;
+  }
+
+  /**
+   * Lay `f` down as pigment: blur the coverage so the boundary is a bled edge
+   * rather than a row of cells, pool a darker rim where the wash stopped (the
+   * wet edge every flat wash dries with), and granulate the interior so the
+   * sheet has tooth. Nothing in the output is aligned to the cell grid.
+   *
+   * @param {THREE.Mesh} mesh a `_makeWash` sheet
+   * @param {{cov:Float32Array,amt:Float32Array,ramp:Float32Array}} f nav-res fields
+   * @param {THREE.Color} colA near/low colour
+   * @param {THREE.Color} colB far/high colour
+   * @param {THREE.Color} colE the pigment that pools at the wet edge
+   */
+  _paintWash(mesh, f, colA, colB, colE, {
+    seed = 1, edge = 0.9, grain = 0.32, blur = 2, body = 0.30, rim: rimGain = 0.42,
+  } = {}) {
+    const g = this._ensureSheet();
+    if (!g) return;
+    const nav = this.nav;
+    const W = nav.w, H = nav.h;
+    const S = WASH_SS;
+    const TW = W * S, TH = H * S;
+
+    // Blur at nav resolution: cheap, and one pass is already a 1.5 m bleed.
+    blurField(f.cov, W, H, blur);
+    blurField(f.amt, W, H, blur);
+    blurField(f.ramp, W, H, 1);
+
+    // Per-MESH, not per-CommandMode: a shared scratch buffer is the same
+    // Uint8Array behind both DataTextures, so whichever wash painted last
+    // silently became the other one too.
+    let buf = mesh.userData.washBuf;
+    if (!buf || buf.length !== TW * TH * 4) {
+      buf = mesh.userData.washBuf = new Uint8Array(TW * TH * 4);
+    }
+
+    const bilinear = (src, u, v) => {
+      const x = u * W - 0.5, y = v * H - 0.5;
+      const x0 = Math.floor(x), y0 = Math.floor(y);
+      const fx = x - x0, fy = y - y0;
+      const cx0 = x0 < 0 ? 0 : x0 >= W ? W - 1 : x0;
+      const cx1 = x0 + 1 < 0 ? 0 : x0 + 1 >= W ? W - 1 : x0 + 1;
+      const cy0 = y0 < 0 ? 0 : y0 >= H ? H - 1 : y0;
+      const cy1 = y0 + 1 < 0 ? 0 : y0 + 1 >= H ? H - 1 : y0 + 1;
+      const a = src[cy0 * W + cx0], b = src[cy0 * W + cx1];
+      const c = src[cy1 * W + cx0], d = src[cy1 * W + cx1];
+      return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy;
+    };
+
+    for (let ty = 0; ty < TH; ty++) {
+      const v = (ty + 0.5) / TH;
+      for (let tx = 0; tx < TW; tx++) {
+        const u = (tx + 0.5) / TW;
+        const o = (ty * TW + tx) * 4;
+        const cov = bilinear(f.cov, u, v);
+        if (cov <= 0.004) { buf[o] = buf[o + 1] = buf[o + 2] = buf[o + 3] = 0; continue; }
+        const amt = bilinear(f.amt, u, v);
+        const ramp = clamp01(bilinear(f.ramp, u, v));
+
+        // Wet edge: pigment carried to the drying boundary and left there.
+        const rim = Math.pow(clamp01(4 * cov * (1 - cov)), 1.35) * edge;
+        // Tooth + granulation, two scales, neither of them the cell pitch.
+        const n1 = vnoise(tx, ty, S * 0.85, seed);
+        const n2 = vnoise(tx, ty, S * 4.3, seed + 37);
+        const gr = 1 + grain * (n1 - 0.5) * 2 * 0.6 + grain * (n2 - 0.5) * 2 * 0.4;
+
+        _c1.copy(colA).lerp(colB, ramp);
+        if (rim > 0) _c1.lerp(colE, Math.min(0.85, rim));
+        const a = clamp01((amt * cov * body + rim * rimGain) * gr);
+        buf[o] = (_c1.r * 255) | 0;
+        buf[o + 1] = (_c1.g * 255) | 0;
+        buf[o + 2] = (_c1.b * 255) | 0;
+        buf[o + 3] = (a * 255) | 0;
+      }
+    }
+
+    const tex = mesh.userData.washTex;
+    tex.image = { data: buf, width: TW, height: TH };
+    tex.needsUpdate = true;
   }
 
   /**
@@ -550,22 +812,26 @@ export class CommandMode {
     const half = size * 0.5;
     const pos = new Float32Array(n * 18);
     const col = new Float32Array(n * 24);
-    let pi = 0, ci = 0;
+    const uvs = new Float32Array(n * 12);
+    let pi = 0, ci = 0, ui = 0;
+    // two triangles, CCW when viewed from above
+    const KX = [0, 1, 1, 0, 1, 0], KZ = [0, 0, 1, 0, 1, 1];
     for (let i = 0; i < n; i++) {
       const o = i * 7;
       const x = data[o], y = data[o + 1], z = data[o + 2];
       const r = data[o + 3], g = data[o + 4], b = data[o + 5], a = data[o + 6];
-      // two triangles, CCW when viewed from above
-      const xs = [x - half, x + half, x + half, x - half, x + half, x - half];
-      const zs = [z - half, z - half, z + half, z - half, z + half, z + half];
       for (let k = 0; k < 6; k++) {
-        pos[pi++] = xs[k]; pos[pi++] = y; pos[pi++] = zs[k];
+        pos[pi++] = x + (KX[k] * 2 - 1) * half;
+        pos[pi++] = y;
+        pos[pi++] = z + (KZ[k] * 2 - 1) * half;
         col[ci++] = r; col[ci++] = g; col[ci++] = b; col[ci++] = a;
+        uvs[ui++] = KX[k]; uvs[ui++] = KZ[k];
       }
     }
     const geo = mesh.geometry;
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(col, 4));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geo.setDrawRange(0, n * 6);
     geo.computeBoundingSphere();
   }
@@ -588,15 +854,15 @@ export class CommandMode {
     for (const m of [this.moveMesh, this.threatMesh, this.arcMesh, this.ghostMarks,
       this.cursorRing, this.selectRing, this.hoverRing]) {
       m.geometry.dispose();
+      if (m.userData.washTex) m.userData.washTex.dispose();
       m.material.dispose();
     }
+    this._sheet = null;
     this.scene?.remove(this.group);
     for (const off of this._offBus) off();
   }
 }
 
 const _cells = [];
-const EDGE_X = [1, -1, 0, 0];
-const EDGE_Z = [0, 0, 1, -1];
 
 export default CommandMode;

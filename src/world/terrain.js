@@ -196,6 +196,29 @@ export class Terrain {
           h = lerp(h, ty, infl);
         }
 
+        // --- cart ruts, cut for real.
+        // The albedo bake already PAINTS two wheel tracks at 0.55 of the road
+        // half width, but paint alone gives a perfectly flat plane with a
+        // stripe on it — which is why every critique of the near ground says
+        // "one uninterrupted cream plane". A 5-7 cm depression is the smallest
+        // thing this 0.625 m grid can hold, and it is enough: the terrain
+        // normal tips, the band quantiser puts the rut floor a step down from
+        // the crown, and the road reads as worn rather than as laid.
+        // The depth wanders along the route so the ruts are not two extruded
+        // channels, and it dies out over the bridge (which is masonry).
+        if (road.d < rw * 1.5 && overChannel < 0.5) {
+          const rd = road.d / Math.max(0.8, rw);
+          const rut = Math.exp(-Math.pow((rd - 0.55) / 0.26, 2));
+          const wander = 0.55 + 0.9 * fbm2(road.t * 42.0, x * 0.05 + z * 0.05,
+            { octaves: 2, seed: this.seed + 811 });
+          h -= rut * 0.066 * wander * (1 - overChannel * 2.0);
+        }
+        if (tr.d < 3.4) {
+          const td = tr.d / 2.4;
+          const trut = Math.exp(-Math.pow((td - 0.55) / 0.30, 2));
+          h -= trut * 0.048;
+        }
+
         H[j * N + i] = h;
       }
     }
@@ -517,11 +540,18 @@ export class Terrain {
         // never toward black
         if (burn > 0.001) _col.lerp(_colB.set(PALETTE.darkest), clamp01(burn) * 0.58);
 
-        // bake AO as a violet-shifted darkening, not a grey multiply. Kept
-        // lighter than a physical AO would be: the NPR pass bands the result,
-        // and a heavy bake pushes whole hillsides down a band at once.
-        _col.lerp(shadeTint, (1 - ao) * 0.40);
-        _col.multiplyScalar(0.82 + ao * 0.22);
+        // Bake AO as a violet-shifted darkening, not a grey multiply — and bake
+        // it QUANTISED. A continuous AO ramp baked into the albedo survives the
+        // shader's band quantiser untouched (it is albedo, not light), which is
+        // what the round-2 tank shot measured: inside a single violet shade mass
+        // the luma ramped 122 -> 82 over 300 px with no plateau anywhere, i.e.
+        // the terrain's washes were not flat and the whole watercolour axis
+        // failed on the ground plane. Three steps with a mottle-warped boundary
+        // gives flat masses whose edges wander like pigment instead of tracking
+        // the AO field's smooth contours.
+        const aoQ = Math.round(clamp01(ao + (mottle - 0.5) * 0.085) * 3) / 3;
+        _col.lerp(shadeTint, (1 - aoQ) * 0.40);
+        _col.multiplyScalar(0.82 + aoQ * 0.22);
 
         CR[k * 3] = _col.r; CR[k * 3 + 1] = _col.g; CR[k * 3 + 2] = _col.b;
       }

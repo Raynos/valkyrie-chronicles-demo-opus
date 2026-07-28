@@ -116,11 +116,16 @@ export function buildSandbagWall(rng, length, courses = 4, curve = 0.18) {
  * @returns {THREE.BufferGeometry} in local space, y = 0 at the ground line.
  */
 export function boulderGeom(rng, radius, palette = [PALETTE.rock, PALETTE.stoneWarm, PALETTE.mud]) {
-  // 80 faces where the silhouette is big enough to read them, 20 for pebbles.
-  const g = new THREE.IcosahedronGeometry(radius, radius > 0.20 ? 1 : 0);
-  // two octaves: broad lumps, then a chipped facet break-up
+  // 320 faces on anything that fills more than a few pixels, 80 for a cobble,
+  // 20 for a pebble. At subdivision 1 a 0.6 m boulder two metres from the lens
+  // is 20 triangles across its silhouette and the band quantiser lands the
+  // whole of it in two washes — which is the "flat polygon" the critique keeps
+  // finding at close range.
+  const g = new THREE.IcosahedronGeometry(radius, radius > 0.42 ? 2 : radius > 0.16 ? 1 : 0);
+  // three octaves: broad lumps, facet break-up, then a chipped tooth
   wobble(g, radius * 0.30, 2.6 / Math.max(0.25, radius), (rng() * 997) | 0);
   wobble(g, radius * 0.11, 7.5 / Math.max(0.25, radius), (rng() * 997) | 0);
+  if (radius > 0.42) wobble(g, radius * 0.045, 19.0 / Math.max(0.25, radius), (rng() * 997) | 0);
   // squat it and bed it: a boulder sits low and is half buried
   tx(g, {
     rx: rng() * TAU, ry: rng() * TAU, rz: rngRange(rng, -0.4, 0.4),
@@ -473,6 +478,7 @@ export class Props {
     this._buildTelegraph();
     this._buildCraterDebris();
     this._buildStones();
+    this._buildRoadside();
     this._buildWrecks();
     this._commit();
   }
@@ -485,6 +491,22 @@ export class Props {
       stone: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, map: stoneTexture(31), rim: 0.4 }),
     };
     this.uvScale = { sandbag: 1.4, wood: 0.9, metal: 0.6, stone: 0.5 };
+    // makeSurfaceMaterial() cannot forward band-quantiser options, so reach into
+    // the uniforms. Three washes with a bled edge and the detail map driving the
+    // BAND rather than multiplying the albedo is the difference between a rock
+    // that has a terminator on it and a rock that is a flat polygon with a
+    // texture printed on it.
+    for (const k of BINS) {
+      const u = this.mats[k] && this.mats[k].uniforms;
+      if (!u) continue;
+      if (u.uBands) u.uBands.value = 3;
+      if (u.uBandBleed) u.uBandBleed.value = 0.14;
+      if (u.uMapDrive) u.uMapDrive.value = k === 'metal' ? 0.10 : 0.26;
+      if (u.uMapFlat) u.uMapFlat.value = 0.70;
+      if (u.uLightContrast) u.uLightContrast.value = 1.22;
+      if (u.uShadeCool) u.uShadeCool.value = k === 'wood' ? 0.66 : 0.85;
+      if (u.uWetPx) u.uWetPx.value = 11;
+    }
     this.wireMat = makeSurfaceMaterial({
       color: 0xffffff, vertexColors: true, map: barbedWireTexture(83),
       alphaTest: 0.35, side: THREE.DoubleSide, rim: 0.9,
@@ -970,6 +992,98 @@ export class Props {
     const g = mergeGeoms(parts);
     for (const p of parts) p.dispose();
     this.bins.stone.push(g);
+  }
+
+  /**
+   * Roadside incident.
+   *
+   * The round-2 critiques both say the same thing about the ground: "the road
+   * is one uninterrupted cream plane spanning the middle third", "there is no
+   * pebble, rut or tuft scale anywhere in the near field". The terrain's albedo
+   * bake runs on a 0.625 m vertex grid, so it CANNOT put anything smaller than
+   * about a metre on the ground — sub-metre incident has to be geometry.
+   *
+   * So: kerb stones and turned-out gravel along the verges, chippings sitting
+   * in the two wheel ruts (which the terrain paints but nothing occupies), and
+   * a scatter of timber offcuts and dropped fence rails where a farm track
+   * meets the road. Everything is keyed to the road spline, so it thins where
+   * the road does and never lands on the carriageway crown.
+   */
+  _buildRoadside() {
+    const rng = makeRng(this.seed ^ 0x2c19);
+    const T = this.terrain;
+    const road = this.layout.road;
+    if (!road || !(road.n > 2)) return;
+    const stones = [];
+    const timber = [];
+
+    for (let i = 1; i < road.n - 1; i++) {
+      const t = road.cum[i] / road.length;
+      let tx0 = road.x[i + 1] - road.x[i - 1], tz0 = road.z[i + 1] - road.z[i - 1];
+      const tl = Math.hypot(tx0, tz0) || 1;
+      const nx = -tz0 / tl, nz = tx0 / tl;
+      const hw = this.layout.roadHalfWidth(t);
+
+      // --- verge: kerb stones and the gravel a cart throws out of the surface
+      for (let k = 0; k < 9; k++) {
+        const side = rng() < 0.5 ? -1 : 1;
+        // just outside the metalled width, where the surface breaks up
+        const off = side * hw * rngRange(rng, 0.94, 1.30);
+        const x = road.x[i] + nx * off + rngRange(rng, -1.1, 1.1);
+        const z = road.z[i] + nz * off + rngRange(rng, -1.1, 1.1);
+        if (!T.inBounds(x, z) || this.occupiedTest(x, z)) continue;
+        if (T.heightAt(x, z) < WATER_Y + 0.30) continue;
+        const r = rng() < 0.22 ? rngRange(rng, 0.16, 0.28) : rngRange(rng, 0.045, 0.12);
+        const g = boulderGeom(rng, r,
+          [PALETTE.rock, PALETTE.stoneWarm, PALETTE.sand, PALETTE.dirtDark]);
+        tx(g, { x, y: T.heightAt(x, z) - r * 0.42, z, ry: rng() * TAU });
+        stones.push(g);
+      }
+
+      // --- chippings loose in the two wheel ruts. The terrain paints the ruts
+      //     at 0.55 of the half width; this puts something IN them.
+      for (let k = 0; k < 5; k++) {
+        const side = rng() < 0.5 ? -1 : 1;
+        const off = side * hw * rngRange(rng, 0.42, 0.68);
+        const x = road.x[i] + nx * off + rngRange(rng, -0.9, 0.9);
+        const z = road.z[i] + nz * off + rngRange(rng, -0.9, 0.9);
+        if (!T.inBounds(x, z) || this.occupiedTest(x, z)) continue;
+        if (T.heightAt(x, z) < WATER_Y + 0.30) continue;
+        const r = rngRange(rng, 0.028, 0.075);
+        const g = boulderGeom(rng, r, [PALETTE.rock, PALETTE.sand, PALETTE.dirtDark, PALETTE.mud]);
+        tx(g, { x, y: T.heightAt(x, z) - r * 0.55, z, ry: rng() * TAU });
+        stones.push(g);
+      }
+
+      // --- dropped timber: a rail off a fence, a sawn offcut, a discarded stake
+      if (rng() < 0.16) {
+        const side = rng() < 0.5 ? -1 : 1;
+        const off = side * hw * rngRange(rng, 1.05, 1.55);
+        const x = road.x[i] + nx * off, z = road.z[i] + nz * off;
+        if (!T.inBounds(x, z) || this.occupiedTest(x, z)) continue;
+        if (T.heightAt(x, z) < WATER_Y + 0.35) continue;
+        const len = rngRange(rng, 0.9, 2.4);
+        const th = rngRange(rng, 0.07, 0.13);
+        const g = box(len, th, th * rngRange(rng, 0.8, 1.5),
+          rng() < 0.5 ? PALETTE.timber : PALETTE.timberDark, { variation: 0.16 });
+        tx(g, {
+          x, y: T.heightAt(x, z) + th * 0.45, z,
+          ry: rng() * TAU, rz: rngRange(rng, -0.09, 0.09),
+        });
+        timber.push(g);
+      }
+    }
+
+    if (stones.length) {
+      const g = mergeGeoms(stones);
+      for (const p of stones) p.dispose();
+      this.bins.stone.push(g);
+    }
+    if (timber.length) {
+      const g = mergeGeoms(timber);
+      for (const p of timber) p.dispose();
+      this.bins.wood.push(g);
+    }
   }
 
   _buildWrecks() {

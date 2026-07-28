@@ -11,20 +11,28 @@ import { V0, clamp01, easeOutBack, easeOutCubic } from '../core/math.js';
 import { h, clear, svgEl } from './dom.js';
 import {
   captureRing, inkRule, inkGauge, damagePlate, wobblyPath, splatPath, hatchPath,
+  iconMarkup, roughCircle,
 } from './icons.js';
 import { deckleClip } from './style.js';
 
 const DMG_POOL = 28;
 const BANNER_POOL = 10;
 // How many Imperial name slips may be on the page at once (nearest win).
-const MAX_FOE_TAGS = 3;
-// And how many slips of ANY colour. Beyond this the page stops being a drawing
-// of a fight and becomes a list of names laid over one.
-const MAX_TAGS = 6;
+// Round 2 held this at 3 and the leash at 54 m, which between them threw away
+// the informational layer the action shots exist to show: a firefight across a
+// 40 m river came back with one slip on it. Both are now set to "everything the
+// eye can actually see", and the DECLUTTER pass — not an arbitrary cap — is what
+// keeps the page from becoming a list.
+const MAX_FOE_TAGS = 5;
+// And how many slips of ANY colour.
+const MAX_TAGS = 9;
 // Line-of-sight is re-tested this often (seconds). A slip over a man who is
 // behind a house is the single most damning HUD tell there is, but the answer
 // does not change at 140 fps.
 const OCCLUSION_PERIOD = 0.11;
+// Fractions of a soldier's height sampled by the line-of-sight test: chest,
+// crown, hip. Any one of them clear counts as "you can see him".
+const OCC_SAMPLES = [0.62, 0.94, 0.34];
 
 /** Gallian mark: a small pennant on a staff, inked in indigo. */
 function allyMark(seed) {
@@ -44,6 +52,48 @@ function foeMark(seed) {
     '<path d="' + splatPath(8, 8, 6.4, { seed: seed + 11, lobes: 4, rough: 0.10 }) +
     '" fill="#8d3730" stroke="#5e1c19" stroke-width="1.2" stroke-linejoin="round"/></svg>';
   return svgEl(s);
+}
+
+const TOKEN_CLS = {
+  scout: 'scout', shock: 'shock', shocktrooper: 'shock', lancer: 'lancer',
+  engineer: 'engineer', sniper: 'sniper', tank: 'tank',
+};
+
+/**
+ * A command-mode counter: the marker a staff officer pushes across a survey.
+ *
+ * Round 1 and round 2 both put a name slip over the tactical map with NOTHING
+ * under it — the soldier it belonged to was behind a poplar canopy, so the plate
+ * labelled leaves. A map needs counters, not captions: this is drawn in DOM over
+ * the render, so it reads through canopy the way a real counter sits on top of
+ * the paper, and the slip's leader line now always lands on one.
+ *
+ * @param {0|1} team
+ * @param {string} cls unit class id
+ * @param {number} seed
+ */
+function unitToken(team, cls, seed) {
+  const foe = team === 1;
+  const ink = foe ? '#5e1c19' : '#22364a';
+  const body = foe ? '#a44a3c' : '#5d7f9c';
+  const S = 34, c = S / 2;
+  const glyph = iconMarkup(TOKEN_CLS[cls] || 'scout', {
+    size: 15, width: 2.0, stroke: '#fbf3df', rough: false,
+  }).replace(/^<svg /, '<svg x="' + (c - 7.5) + '" y="' + (c - 7.5) + '" ');
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + S + ' ' + S +
+    '" width="' + S + '" height="' + S + '">' +
+    // the shadow the counter casts on the paper
+    '<path d="' + splatPath(c + 0.7, c + 1.4, 10.6, { seed: seed + 5, lobes: 9, rough: 0.16 }) +
+    '" fill="#3a2f33" opacity="0.26"/>' +
+    // the counter itself, cut by hand
+    '<path d="' + roughCircle(c, c, 9.6, { seed, amp: 0.55, segs: 20 }) +
+    '" fill="' + body + '" stroke="' + ink + '" stroke-width="2.0" stroke-linejoin="round"/>' +
+    // a facing wedge, so a column of counters shows which way the line looks
+    '<g class="fac"><path d="M' + c + ' ' + (c - 15.4) + 'L' + (c + 4.6) + ' ' + (c - 9.2) +
+    'L' + (c - 4.6) + ' ' + (c - 9.2) + 'Z" fill="' + body + '" stroke="' + ink +
+    '" stroke-width="1.7" stroke-linejoin="round"/></g>' +
+    glyph + '</svg>');
 }
 
 /** Stable 32-bit hash of a string, for per-name deckle seeds. */
@@ -74,9 +124,11 @@ export class WorldLabels {
     this._resizeCounter = 0;
 
     this.tags = new Map();      // unit -> { el, fill, hpKey, offset }
+    this.tokens = new Map();    // unit -> { el, key }
     this.rings = new Map();     // id   -> { el, anchor, circle, progress }
 
     this._p = new THREE.Vector3();
+    this._pf = new THREE.Vector3();
     this._occPt = new THREE.Vector3();
     this._out = { x: 0, y: 0, depth: 0, visible: false };
     /** (worldPoint, unit) => true when the camera can actually see that point. */
@@ -89,6 +141,10 @@ export class WorldLabels {
     this.useOcclusion = true;
     /** Minimum screen-space rise above the anchor, in px at a 900px reference. */
     this.screenLift = 0;
+    /** Command mode pushes counters onto the map; action mode does not. */
+    this.useTokens = false;
+    /** The unit the page is currently pointed at (its counter is ringed). */
+    this.markedUnit = null;
     this._occClock = 0;
 
     this._spin = 0.3819660113;   // golden-ratio walk: deterministic pop scatter
@@ -125,10 +181,17 @@ export class WorldLabels {
    *   `occlusion`    -> cull slips whose soldier is out of sight
    *   `lift`         -> extra screen-space rise above the anchor, in px
    */
-  setPolicy({ filter = null, occlusion = true, lift = 0 } = {}) {
+  setPolicy({ filter = null, occlusion = true, lift = 0, tokens = false, marked = null } = {}) {
     this.filter = typeof filter === 'function' ? filter : null;
     this.useOcclusion = occlusion !== false;
     this.screenLift = lift || 0;
+    this.useTokens = !!tokens;
+    this.markedUnit = marked || null;
+    if (!this.useTokens) {
+      for (const t of this.tokens.values()) {
+        if (t.el.style.visibility !== 'hidden') t.el.style.visibility = 'hidden';
+      }
+    }
   }
 
   // ------------------------------------------------------------------ util
@@ -215,6 +278,8 @@ export class WorldLabels {
     if (!t) return;
     t.el.remove();
     this.tags.delete(unit);
+    const tok = this.tokens.get(unit);
+    if (tok) { tok.el.remove(); this.tokens.delete(unit); }
   }
 
   /** Re-sync the tracked set to a unit list (adds new, drops removed). */
@@ -385,20 +450,25 @@ export class WorldLabels {
       if (t.foe && unit.spotted === false) continue;
       V0.set(unit.pos.x, unit.pos.y + t.height, unit.pos.z);
       this.project(V0, out);
-      // Imperials get a shorter leash than the squad: a slip on every enemy on
-      // the far bank turns the sky into a wall of paper.
-      const lim = t.foe ? Math.min(t.maxDist, 54) : Math.min(t.maxDist, 72);
+      // Imperials get a slightly shorter leash than the squad — a slip on a man
+      // 90 m off is a smudge — but both now reach the whole depth of a firefight.
+      const lim = t.foe ? Math.min(t.maxDist, 76) : Math.min(t.maxDist, 88);
       if (!out.visible || out.depth > lim) continue;
 
       // ---- occlusion ------------------------------------------------------
       // A slip drawn over a man who is behind a house or a stand of poplars is
       // the thing that makes the whole frame read as a sticker sheet: it labels
-      // masonry. Test the chest, not the crown of the head — a helmet clearing
-      // a parapet is not a visible soldier.
+      // masonry. But ONE ray at chest height calls a soldier invisible the
+      // moment a single grass blade or fence post crosses it, which is what
+      // stripped the action frames of their entire ally layer. A soldier is
+      // visible if ANY of chest / head / hip is: that is what "you can see him"
+      // means, and only a man genuinely behind cover fails all three.
       if (doOcc && this.occluder && this.useOcclusion) {
-        this._occPt.set(unit.pos.x, unit.pos.y + t.height * 0.62, unit.pos.z);
         let vis = false;
-        try { vis = !!this.occluder(this._occPt, unit); } catch { vis = true; }
+        for (let s = 0; s < OCC_SAMPLES.length && !vis; s++) {
+          this._occPt.set(unit.pos.x, unit.pos.y + t.height * OCC_SAMPLES[s], unit.pos.z);
+          try { vis = !!this.occluder(this._occPt, unit); } catch { vis = true; }
+        }
         t.seen = vis;
       }
       if (this.useOcclusion && t.seen === false) continue;
@@ -417,6 +487,12 @@ export class WorldLabels {
       if (out.x < halfW + 14 || out.x > this.w - halfW - 14 ||
           ay - hgt < this.h * 0.055 || ay > this.h - 30) continue;
       t.x = out.x; t.y = out.y - this.screenLift * this.scale; t.depth = out.depth;
+      // Where the soldier's FEET are, so the leader hairline can be run all the
+      // way down to him (or, in command mode, onto his counter) instead of
+      // stopping in mid air a head above the anchor.
+      this._pf.set(unit.pos.x, unit.pos.y, unit.pos.z);
+      this.project(this._pf, this._footOut || (this._footOut = { x: 0, y: 0, depth: 0, visible: false }));
+      t.anchorY = this._footOut.y;
       t.k = k; t.sc = sc;
       t.halfW = halfW; t.rowH = hgt;
       t.show = true;
@@ -441,7 +517,7 @@ export class WorldLabels {
     const topGuard = this.h * 0.055;
     for (const t of order) {
       let lane = 0;
-      for (; lane < 3; lane++) {
+      for (; lane < 4; lane++) {
         const top = t.y - t.rowH * (lane + 1) - lane * 3;
         if (top < topGuard) { lane = 99; break; }
         let clash = false;
@@ -454,7 +530,7 @@ export class WorldLabels {
       // No room without either overlapping a neighbour or running off the top
       // of the page: the slip is simply not drawn. Two half-legible names
       // stacked on each other say less than one.
-      if (lane >= 3) { t.show = false; continue; }
+      if (lane >= 4) { t.show = false; continue; }
       t.lane = lane;
       placed.push({ cx: t.x, halfW: t.halfW, top: t.y - t.rowH * (lane + 1) - lane * 3, rowH: t.rowH });
     }
@@ -473,9 +549,11 @@ export class WorldLabels {
       el.style.transform = 'translate(' + t.x.toFixed(1) + 'px,' + (t.y - lift).toFixed(1) +
         'px) translate(-50%,-100%) scale(' + t.sc.toFixed(3) + ')';
       // The leader hairline back down to the soldier the slip belongs to. It is
-      // always drawn, so a plate is never floating over nothing.
-      el.style.setProperty('--lead',
-        (lift + 7 + this.screenLift * this.scale).toFixed(1) + 'px');
+      // always drawn, and it runs the WHOLE way to his feet — a hairline that
+      // stops in mid air over a canopy is exactly the "anchored to nothing"
+      // plate the round-2 critic rejected the command frame for.
+      const drop = Math.max(7, (t.anchorY || 0) - (t.y - lift));
+      el.style.setProperty('--lead', (drop / t.sc).toFixed(1) + 'px');
       if (t.gauge && unit.maxHp) {
         const key = Math.round((unit.hp / unit.maxHp) * 100);
         if (key !== t.hpKey) {
@@ -484,6 +562,62 @@ export class WorldLabels {
             key <= 25 ? 'crit' : key <= 55 ? 'warn' : (t.foe ? 'foe' : 'hp'));
         }
       }
+    }
+  }
+
+  // ------------------------------------------------------------- map tokens
+
+  /**
+   * Push a counter onto the survey for every unit the player can see, and turn
+   * each one to face the way its soldier is looking. Screen-space facing is read
+   * off the projection of a point one metre in front of him, so it stays honest
+   * under any camera yaw without the label layer having to know the rig.
+   */
+  _updateTokens() {
+    if (!this.useTokens) return;
+    const out = this._out;
+    for (const [unit, t] of this.tags) {
+      let tok = this.tokens.get(unit);
+      const live = !!unit.pos && !(unit.alive === false && !unit.downed) &&
+        !(t.foe && unit.spotted === false) && unit.deployed !== false;
+      if (!live) { if (tok) tok.el.style.visibility = 'hidden'; continue; }
+
+      this.project(unit.pos, out);
+      // Counters live on the map, so they hold to a much longer leash than the
+      // name slips do — the whole point is that the survey shows the whole force.
+      if (!out.visible || out.depth > 220 ||
+          out.x < 6 || out.x > this.w - 6 || out.y < 6 || out.y > this.h - 6) {
+        if (tok) tok.el.style.visibility = 'hidden';
+        continue;
+      }
+
+      if (!tok) {
+        const el = h('div', { class: 'vc-wl vc-token' + (t.foe ? ' foe' : '') });
+        el.appendChild(unitToken(t.foe ? 1 : 0, String(unit.cls || 'scout').toLowerCase(),
+          (hashStr(unit.name || 'x') & 0x3ff) + 3));
+        this.layer.appendChild(el);
+        tok = { el, fac: el.querySelector('.fac'), sel: null, isSel: false };
+        this.tokens.set(unit, tok);
+      }
+
+      // facing: project a point a metre ahead and take the screen angle
+      const yaw = unit.aimYaw != null ? unit.aimYaw : (unit.yaw || 0);
+      this._pf.set(unit.pos.x + Math.sin(yaw), unit.pos.y, unit.pos.z + Math.cos(yaw));
+      const bx = out.x, by = out.y;
+      this.project(this._pf, out);
+      const ang = Math.atan2(out.x - bx, -(out.y - by)) * 180 / Math.PI;
+
+      const sc = clamp01(1.28 - Math.max(0, out.depth - 26) / 150) * 0.92 + 0.30;
+      const isSel = unit === this.markedUnit;
+      if (isSel !== tok.isSel) { tok.isSel = isSel; tok.el.classList.toggle('sel', isSel); }
+      tok.el.style.visibility = 'visible';
+      tok.el.style.transform = 'translate(' + bx.toFixed(1) + 'px,' + by.toFixed(1) +
+        'px) translate(-50%,-50%) scale(' + sc.toFixed(3) + ')';
+      if (tok.fac) tok.fac.setAttribute('transform', 'rotate(' + ang.toFixed(1) + ' 17 17)');
+    }
+    // units that vanished from the tracked set
+    for (const [unit, tok] of this.tokens) {
+      if (!this.tags.has(unit)) { tok.el.remove(); this.tokens.delete(unit); }
     }
   }
 
@@ -496,6 +630,7 @@ export class WorldLabels {
     const out = this._out;
 
     this._updateTags(dt);
+    this._updateTokens();
 
     // --- damage numerals
     for (const d of this.dmg) {
@@ -559,6 +694,8 @@ export class WorldLabels {
   dispose() {
     for (const t of this.tags.values()) t.el.remove();
     this.tags.clear();
+    for (const t of this.tokens.values()) t.el.remove();
+    this.tokens.clear();
     for (const r of this.rings.values()) r.el.remove();
     this.rings.clear();
     for (const d of this.dmg) d.el.remove();

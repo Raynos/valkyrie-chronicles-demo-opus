@@ -1093,6 +1093,17 @@ export function inkGauge({ w = 200, h: hgt = 14, seed = 11, segs = 8, tone = 'hp
  */
 export function marchLine({ w = 150, h: hgt = 10, seed = 21, paces = 9 } = {}) {
   const y = hgt * 0.56;
+  // A trough for the line to be stepped off IN, laid UNDER everything. Without
+  // it the march reads as a stray underline rather than as a gauge, and the AP
+  // row vanished beside the painted HP band right above it.
+  const trough = svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + hgt +
+    '" preserveAspectRatio="none"><path d="' +
+    wobblyPath(2, y, w - 6, y, { seed: seed + 211, amp: 0.30, segs: Math.max(5, w / 26) }) +
+    '" stroke="#c9b184" stroke-width="' + (hgt * 0.70).toFixed(2) +
+    '" fill="none" stroke-linecap="round" opacity="0.40"/><path d="' +
+    hatchPath(2, hgt * 0.18, w - 8, hgt * 0.66, { spacing: 2.6, angle: -0.9, seed: seed + 233 }) +
+    '" stroke="#4a3c2c" stroke-width="0.5" opacity="0.20" fill="none"/></svg>');
+  trough.classList.add('vc-m-trough');
   let g = '';
   for (let i = 0; i < paces; i++) {
     const x0 = 2 + (i / paces) * (w - 8) + 1.2;
@@ -1131,6 +1142,7 @@ export function marchLine({ w = 150, h: hgt = 10, seed = 21, paces = 9 } = {}) {
   pin.classList.add('vc-m-pin');
 
   const root = h('div', { class: 'vc-m' });
+  root.appendChild(trough);
   root.appendChild(back);
   root.appendChild(run);
   root.appendChild(pin);
