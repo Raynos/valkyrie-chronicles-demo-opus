@@ -26,26 +26,47 @@ const W = parseInt(flag('w', '1920'), 10);
 const H = parseInt(flag('h', '1080'), 10);
 const WAIT = parseInt(flag('wait', '2500'), 10);
 const PORT = parseInt(flag('port', '5173'), 10);
+/** The port we actually ended up talking to — see ensureServer(). */
+let port = PORT;
 
-async function portOpen(port) {
+async function portOpen(p) {
   return new Promise((res) => {
-    const s = net.createConnection({ port, host: '127.0.0.1' }, () => { s.end(); res(true); });
+    const s = net.createConnection({ port: p, host: '127.0.0.1' }, () => { s.end(); res(true); });
     s.on('error', () => res(false));
     s.setTimeout(600, () => { s.destroy(); res(false); });
   });
 }
 
 let server = null;
-async function ensureServer() {
-  if (await portOpen(PORT)) return;
-  server = spawn('npx', ['vite', '--port', String(PORT), '--strictPort'], {
+
+/** Spawn a dev server on `p` and wait for it to answer on 127.0.0.1. */
+async function trySpawn(p) {
+  // `--host 127.0.0.1` matters: vite's default binds `localhost`, which on macOS
+  // resolves to ::1 only, and Playwright/this probe both talk v4.
+  const proc = spawn('npx', ['vite', '--host', '127.0.0.1', '--port', String(p), '--strictPort'], {
     cwd: process.cwd(), stdio: 'ignore', detached: false,
   });
-  for (let i = 0; i < 80; i++) {
+  let dead = false;
+  proc.on('exit', () => { dead = true; });
+  for (let i = 0; i < 60 && !dead; i++) {
     await new Promise((r) => setTimeout(r, 250));
-    if (await portOpen(PORT)) return;
+    if (await portOpen(p)) { server = proc; port = p; return true; }
   }
-  throw new Error('vite failed to start');
+  proc.kill();
+  return false;
+}
+
+async function ensureServer() {
+  if (await portOpen(PORT)) return;
+  // The requested port can be held by a server we cannot reach (another
+  // project's vite bound to ::1 only), in which case --strictPort makes ours
+  // exit immediately. Walk forward until one comes up rather than reporting the
+  // useless "vite failed to start".
+  for (let p = PORT; p < PORT + 12; p++) {
+    if (p !== PORT && await portOpen(p)) continue;   // someone else's, skip
+    if (await trySpawn(p)) return;
+  }
+  throw new Error(`vite failed to start on ports ${PORT}..${PORT + 11}`);
 }
 
 const main = async () => {
@@ -62,7 +83,7 @@ const main = async () => {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(String(e)));
 
-  const url = `http://127.0.0.1:${PORT}/?capture&shot=${encodeURIComponent(shot)}`;
+  const url = `http://127.0.0.1:${port}/?capture&shot=${encodeURIComponent(shot)}`;
   await page.goto(url, { waitUntil: 'domcontentloaded' });
 
   try {

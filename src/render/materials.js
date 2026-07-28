@@ -44,7 +44,12 @@ export const PALETTE = {
   cream:      new THREE.Color(0xfff2d6),
   warmLight:  new THREE.Color(0xffdfae),
   violet:     new THREE.Color(0x5d5080),
-  inkFloor:   new THREE.Color(0x3a2f33),   // the darkest value allowed in frame
+  // The darkest value allowed in frame. Blue leads red: a CANVAS-engine frame
+  // bottoms out on a deep violet, never on the warm brown round 1 measured
+  // (85,80,64 in the terrain shade, with blue the LOWEST channel). This colour
+  // is also what the grade pass uses as its ink black, so moving it moves the
+  // toe of the whole image, not just the surface shaders.
+  inkFloor:   new THREE.Color(0x3a3043),
   graphite:   new THREE.Color(0x40332e),
   sage:       new THREE.Color(0x8d9670),
   olive:      new THREE.Color(0x6f7a4e),
@@ -67,6 +72,11 @@ function shared() {
     uTime:       { value: 0 },
     uResolution: { value: new THREE.Vector2(1280, 720) },
     uPixelRatio: { value: 1 },
+    // Metres per CSS pixel PER METRE OF VIEW DEPTH: 2*tan(fovY/2)/heightInCssPx.
+    // Multiply by the fragment's view depth and you have the world size of one
+    // screen pixel there, which is what lets a wet edge, a hatch stroke and a
+    // cloth thread all be specified in pixels and still sit still in the world.
+    uProjScale:  { value: 2 * Math.tan(CFG.camera.fov * 0.5 * Math.PI / 180) / 720 },
     uCamPos:     { value: new THREE.Vector3() },
     uSunDirW:    { value: new THREE.Vector3(0.42, 0.74, 0.32).normalize() },
     uSunDirV:    { value: new THREE.Vector3(0, 0, 1) },
@@ -98,10 +108,10 @@ function shared() {
 
 // Uniform names that are shared by reference across every material.
 const SHARED_KEYS = [
-  'uTime', 'uResolution', 'uPixelRatio', 'uCamPos', 'uSunDirW', 'uSunDirV',
-  'uSunColor', 'uShadowTexel', 'uKeyGain', 'uFillGain', 'uCream', 'uViolet',
-  'uInkFloor', 'uGraphite', 'uWind', 'uPaperTex', 'uHatchTex', 'uBlotchTex',
-  'uNoiseTex', 'uFar',
+  'uTime', 'uResolution', 'uPixelRatio', 'uProjScale', 'uCamPos', 'uSunDirW',
+  'uSunDirV', 'uSunColor', 'uShadowTexel', 'uKeyGain', 'uFillGain', 'uCream',
+  'uViolet', 'uInkFloor', 'uGraphite', 'uWind', 'uPaperTex', 'uHatchTex',
+  'uBlotchTex', 'uNoiseTex', 'uFar',
 ];
 
 function bindShared(uniforms) {
@@ -310,10 +320,18 @@ uniform vec3  uEmissive;
 uniform float uEmissiveIntensity;
 uniform float uAlphaTest;
 uniform float uShadowSoften;
+uniform float uLightContrast;
+uniform float uShadeCool;
+uniform float uWetPx;
+uniform float uLightBias;
+uniform float uMapFlat;
+uniform float uMapDrive;
+uniform float uSpec;
 
 uniform float uTime;
 uniform vec2  uResolution;
 uniform float uPixelRatio;
+uniform float uProjScale;
 uniform float uKeyGain;
 uniform float uFillGain;
 uniform vec3  uCream;
@@ -322,6 +340,7 @@ uniform vec3  uInkFloor;
 uniform vec3  uGraphite;
 uniform sampler2D uHatchTex;
 uniform sampler2D uBlotchTex;
+uniform sampler2D uPaperTex;
 
 varying vec3 vViewPos;
 varying vec3 vViewNormal;
@@ -335,12 +354,23 @@ varying vec2 vAux;
 #endif
 `;
 
-// The body. Expects `vec3 albedo`, `float alpha`, `vec3 extraN` in scope.
+// The body. Expects vec3 albedo, float alpha, vec3 extraN and float extraDrive
+// (a per-material pigment term that belongs in the BAND DRIVE, not in the
+// albedo) to be in scope.
 const NPR_SHADE_BODY = /* glsl */`
   vec3 N = normalize( vViewNormal );
   #ifdef DOUBLE_SIDED
     N *= ( gl_FrontFacing ? 1.0 : -1.0 );
   #endif
+
+  vec2 sPx = gl_FragCoord.xy / uPixelRatio;
+  // Metres per CSS pixel at this fragment. This is the bridge between the world
+  // — where pigment, wash and granulation live — and the SHEET, where the brush
+  // width, the wet-edge lobe and the pencil stroke live. Every screen-scaled
+  // feature below derives its world frequency from this, which is why a wet
+  // edge is the same 40-odd pixels across on a cheek at 1.5 m and on a hillside
+  // at 60 m, without any of it crawling when the camera moves.
+  float mPerPx = max( -vViewPos.z, 0.05 ) * uProjScale;
 
   // ---- paper tooth: nudge the shading normal with world-locked fibre noise so
   // a perfectly flat wall still shows pigment sitting unevenly on the sheet.
@@ -422,35 +452,99 @@ const NPR_SHADE_BODY = /* glsl */`
 
   float punctN = clamp( vcLum( punct ) * 0.9, 0.0, 1.4 );
 
-  float drive = clamp( keyN * uKeyGain + ambTerm * uFillGain + punctN, 0.0, 1.0 );
+  float drive = keyN * uKeyGain + ambTerm * uFillGain + punctN;
 
-  // ---- band quantisation with a bleeding, irregular boundary ---------------
-  vec2 bq = vWorldPos.xz + vWorldPos.y * 0.83;
-  // fbm of value noise clusters hard around 0.5; stretch both fields or the
-  // band edge barely moves and you are back to a clean toon ramp
-  float n1 = clamp( ( vcFbm3( bq * 0.62 ) - 0.5 ) * 2.3 + 0.5, 0.0, 1.0 );
-  float n2 = clamp( ( vcFbm4( bq * 1.85 + 31.7 ) - 0.5 ) * 2.6 + 0.5, 0.0, 1.0 );
-  // a little paper-locked variation in the *width* only — width does not move
-  // the boundary, so this adds tooth without making the bands crawl on camera
-  // motion, which would instantly read as a shader effect.
-  vec2 sPx = gl_FragCoord.xy / uPixelRatio;
-  n1 = mix( n1, vcFbm2( sPx * 0.0072 ), 0.14 );
+  // How fast the GEOMETRIC light term moves across one screen pixel, in bands.
+  // Taken before the pigment noise is folded in, or the noise's own derivative
+  // swamps it. This is what lets the wet edge wander a fixed number of PIXELS
+  // instead of a fixed number of band-units: warp a soft PCF penumbra by a
+  // constant in band-space and the boundary swings tens of metres, which turns
+  // every tree shadow into a decorative amoeba.
+  float dPerPx = fwidth( drive ) * uBands;
 
-  vec2 band = vcQuantiseBands( drive, uBands, uBandBleed, n1, n2 );
+  // ---- pigment density, folded into the BAND DRIVE -------------------------
+  // A wash is never uniform. Round 1 modulated the FINAL COLOUR by this field,
+  // and a smooth multiply straight across a plateau is precisely how a
+  // quantised frame measures back out as a gradient. Pigment density belongs in
+  // the drive: a heavily loaded patch is pushed a whole STEP darker — which is
+  // what a real wash does — and the plateau it lands on stays perfectly flat.
+  //
+  // It also fixes the flat-ground collapse the command shot showed: under a
+  // near-vertical camera the geometric term is constant, so without this the
+  // whole map lands inside one band.
+  float wash = 0.5, gran = 0.5;
+  #ifndef VC_LOW
+  {
+    vec2 bu = vWorldPos.xz * uBlotchScale;
+    vec2 bv = vec2( vWorldPos.x + vWorldPos.z, vWorldPos.y ) * uBlotchScale;
+    float vert = 1.0 - abs( vWorldNormal.y );
+    vec3 blot = mix( texture2D( uBlotchTex, bu ).rgb, texture2D( uBlotchTex, bv ).rgb, vert );
+    // a second, ~4x finer octave: the broad one is the wash, this one is the
+    // mottling inside it. Stucco lives almost entirely on this term.
+    vec3 fine = mix( texture2D( uBlotchTex, bu * 3.7 + 0.31 ).rgb,
+                     texture2D( uBlotchTex, bv * 3.7 + 0.31 ).rgb, vert );
+    wash = blot.r * 0.64 + fine.r * 0.36;
+    gran = blot.b * 0.50 + fine.b * 0.50;
+  }
+  #endif
+  drive += ( wash - 0.5 ) * uBlotch * 0.090;
+  drive += ( gran - 0.5 ) * uBlotch * 0.038;
+  // per-material surface pigment (terrain layers, etc), also in the drive
+  drive += extraDrive;
+
+  // ---- cloth weave ---------------------------------------------------------
+  // World-locked at a ~6 mm thread pitch, faded out the instant a thread would
+  // fall under ~3 screen px so it can never moire.
+  //
+  // It is a COLOUR modulation only, and a whisper of one. Feeding a thread-scale
+  // signal into the band drive quantises it, and a quantised 6 mm lattice on a
+  // helmet is not serge — it is chainmail. Learned the hard way.
+  float weave = 0.0, weaveFade = 0.0;
+#ifdef VC_WEAVE
+  weaveFade = 1.0 - smoothstep( 0.0011, 0.0026, mPerPx );
+  if ( weaveFade > 0.001 ) {
+    vec3 tw = vWorldPos * 1047.0;                 // 2*pi / 0.006 m
+    weave = sin( tw.x + tw.z * 0.31 ) * 0.5 + sin( tw.y * 1.03 - tw.x * 0.24 ) * 0.5;
+  }
+#endif
+
+  // Per-material tonal contrast and lift. A smooth head under a wrap-diffuse
+  // key spans barely one band boundary at gain 1; skin and cloth are pushed a
+  // little harder AND lifted, so the lit brow and the jaw shadow land in
+  // genuinely different washes without the whole head falling into the darkest
+  // one (which, with an unlifted 1.30 contrast, is exactly what happened).
+  drive = clamp( ( drive - 0.46 ) * uLightContrast + 0.46 + uLightBias, 0.0, 1.0 );
+
+  // ---- band quantisation with a wandering wet edge -------------------------
+  float fibre = texture2D( uPaperTex, sPx * 0.0017 ).g;
+  // ~46 px lobes, world-locked phase, screen-locked frequency
+  float warp = vcWetEdge( vWorldPos, mPerPx, fibre );
+  // Convert that into a displacement of at most uWetPx screen pixels along the
+  // boundary, capped so a nearly-flat drive cannot be dragged a whole band.
+  float wetBands = ( warp - 0.5 ) * 2.0 * min( dPerPx * uWetPx, 0.80 ) * uBandBleed;
+  // The boundary WIDTH varies on its own, much broader lobes — some edges are
+  // crisp where the paper was dry, some feathered where it was still damp.
+  float wN = vcFbm2( ( vWorldPos.xz + vWorldPos.y * 0.60 ) / max( mPerPx * 210.0, 1e-4 ) );
+
+  vec2 band = vcQuantiseBands( drive, uBands, 1.0, wN, 0.5 + wetBands / 1.15 );
   float g = band.x;
   float pool = band.y;
+  float bi = g * uBands;                       // band index; 0 is the darkest
 
   // ---- two-tone temperature grading ---------------------------------------
   vec3 shadeCol = vcShadowColour( albedo, uViolet, uInkFloor );
-  vec3 midCol   = albedo * 0.94 + shadeCol * 0.13;
+  vec3 midCol   = albedo * 0.96 + shadeCol * 0.09;
   vec3 litCol   = vcLitColour( albedo, uCream );
 
-  // The ramp: the bottom band is the cool shade colour, the middle bands are
-  // the pigment itself, the top is the sunlit lift. The mid band has to READ AS
-  // ITS ALBEDO — if the shade colour reaches into it, every surface in the
-  // frame takes the shade's temperature and the whole image goes one colour.
-  vec3 col = mix( shadeCol, midCol, smoothstep( 0.10, 0.50, g ) );
-  col = mix( col, litCol, smoothstep( 0.52, 1.0, g ) );
+  // The ramp, in band-index terms for four bands (five levels):
+  //   0 the cool shade wash   1 the pigment, darkened and cooled
+  //   2 the pigment itself    3 lit   4 the sunlit cream lift
+  // Only level 0 may be dominated by the shade colour. Letting it reach level 1
+  // as well is what turned this frame violet the first time the quantiser
+  // actually worked: with hard bands a huge area SNAPS to level 1, where before
+  // it sat on a smooth ramp two thirds of the way toward its own albedo.
+  vec3 col = mix( shadeCol, midCol, smoothstep( 0.02, 0.46, g ) );
+  col = mix( col, litCol, smoothstep( 0.50, 0.99, g ) );
 
   // Warm the lit half with the key's own colour — but a low sun normalised to
   // unit luminance is a ~2x multiplier on red, which stains the entire frame
@@ -465,37 +559,73 @@ const NPR_SHADE_BODY = /* glsl */`
   vec3 ambTint = mix( vec3( 1.0 ), ambientCol / max( ambientLum + 1e-4, 1e-4 ), 0.55 );
   col = mix( col, col * ambTint, 0.30 * ( 1.0 - smoothstep( 0.0, 0.55, g ) ) );
 
-  // wet edge dries darker where the wash pooled
-  col *= 1.0 - pool * 0.19 * uBandBleed * ( 1.12 - g * 0.5 );
+  // ---- the wet edge --------------------------------------------------------
+  // Pigment runs to the rim of a drying wash and dries darker AND more
+  // chromatic there — that granulating line is what tells a viewer the two
+  // washes were laid down wet, one against the other. The pool term is non-zero
+  // only within a few pixels of a boundary, so none of this reaches a plateau.
+  col *= 1.0 - pool * 0.30 * uBandBleed * ( 1.10 - g * 0.45 );
+  col = mix( col, col * vec3( 0.93, 0.97, 1.08 ), pool * 0.55 * uBandBleed );
 
-  // ---- pigment granulation (world-locked, so it sticks to the surface) -----
-  #ifndef VC_LOW
+  // ---- pigment separation --------------------------------------------------
+  // Granulating pigments do not dry evenly: the heavy fraction settles into the
+  // tooth and reads warmer, the light fraction floats and reads cooler, so a
+  // flat wash still has colour temperature moving through it. This is a HUE
+  // drift renormalised back to the luminance it started with, which is the only
+  // way to give a surface pigment interest without smearing the plateau it sits
+  // on — every multiplicative mottle round 1 used did exactly that.
   {
-    vec2 bu = vWorldPos.xz * uBlotchScale;
-    vec2 bv = vec2( vWorldPos.x + vWorldPos.z, vWorldPos.y ) * uBlotchScale;
-    float vert = 1.0 - abs( vWorldNormal.y );
-    vec3 blot = mix( texture2D( uBlotchTex, bu ).rgb, texture2D( uBlotchTex, bv ).rgb, vert );
-    col *= mix( 1.0, mix( 0.88, 1.12, blot.r ), uBlotch );
-    col *= 1.0 - blot.g * 0.11 * uBlotch;
+    vec3 sep = col * mix( vec3( 1.030, 1.0, 0.958 ), vec3( 0.966, 1.0, 1.048 ), wash );
+    col = sep * ( vcLum( col ) / max( vcLum( sep ), 1e-5 ) );
   }
-  #endif
+
+#ifdef VC_WEAVE
+  col *= 1.0 + weave * 0.013 * weaveFade;
+#endif
 
   // ---- pencil hatching in the two darkest bands ---------------------------
+  // Gated on the BAND INDEX rather than on a continuous ramp: a band is a flat
+  // wash, so its hatching is laid in at one weight across the whole wash and
+  // stops dead at the wet edge, which is how a pencil actually behaves over a
+  // painted ground. The old smoothstep gate let the same stripe ride the lit
+  // stucco and the lit uniform at a fraction of an amplitude, which is what made
+  // it read as a printed screen.
   {
-    float bandDark = 1.0 - smoothstep( 0.10, 0.55, g );   // darkest two bands
-    float bandCross = 1.0 - smoothstep( 0.0, 0.27, g );   // darkest band only
-    float h = vcHatchField( sPx, 0.6109, uHatchSpacing, 1.7 ) * bandDark;
+    float dark = 1.0 - smoothstep( 0.85, 1.75, bi );   // the two darkest bands
+    float deep = 1.0 - smoothstep( 0.05, 0.95, bi );   // the darkest band only
+    float h = vcHatchField( sPx, 0.6109, uHatchSpacing, 1.7 ) * dark;
     #ifndef VC_LOW
-      float hx = vcHatchField( sPx + vec2( 37.0, 11.0 ), -0.2618, uHatchSpacing * 1.27, 5.3 ) * bandCross;
-      h = max( h, hx * 0.94 );
+      // independently seeded and offset so the two directions cannot phase-lock
+      float hx = vcHatchField( sPx + vec2( 129.0, 57.0 ), -0.2618, uHatchSpacing * 1.21, 5.3 ) * deep;
+      h = max( h, hx );
     #endif
     // real graphite tooth from the drawn stroke bank, so the procedural lines
     // pick up pencil texture instead of reading as a printed screen
     vec3 hs = texture2D( uHatchTex, sPx * 0.0047 ).rgb;
-    h *= mix( 0.52, 1.28, hs.r * 0.5 + hs.g * 0.5 );
-    h = clamp( h * uHatch, 0.0, 0.85 );
-    vec3 hatchCol = mix( col * 0.40, uGraphite, 0.42 );
-    col = mix( col, hatchCol, h );
+    h *= mix( 0.55, 1.22, hs.r * 0.5 + hs.g * 0.5 );
+    h = clamp( h * uHatch, 0.0, 1.0 );
+    col = mix( col, col * 0.50 + uGraphite * 0.10, h );
+  }
+
+  // ---- shade goes violet-blue ----------------------------------------------
+  // Runs LAST of the wash stages, on the composited result, so nothing
+  // downstream can warm it back up — the graphite in the hatching included.
+  //
+  // The two darkest washes in full, nothing above them. Reaching further up the
+  // ramp is how an earlier build turned every ochre field and straw roof
+  // lavender; stopping short of band 1 is how round 1 measured its terrain
+  // shadow at (85,80,64), a warm brown with blue as the LOWEST channel. It is a
+  // luminance-preserving hue move, so widening it cannot flatten the values.
+  col = vcCoolShade( col, uShadeCool * ( 1.0 - smoothstep( 1.10, 2.05, bi ) ) );
+
+  // ---- hard specular band (metal, glass, wet paint) ------------------------
+  // A painted highlight is a SHAPE with an edge, not a Phong lobe. Thresholding
+  // the lobe is what turns it into one.
+  if ( uSpec > 0.0 ) {
+    vec3 H = normalize( primaryL + V );
+    float sp = pow( clamp( dot( N, H ), 0.0, 1.0 ), 46.0 );
+    sp = smoothstep( 0.30, 0.40, sp ) * ( 0.30 + 0.70 * shadowMask );
+    col += uCream * sp * uSpec * 0.55;
   }
 
   // ---- rim / backlight ----------------------------------------------------
@@ -692,7 +822,12 @@ export const MaterialRegistry = {
 
     if (camera) {
       u.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);
-      if (camera.isPerspectiveCamera) u.uFar.value = camera.far;
+      if (camera.isPerspectiveCamera) {
+        u.uFar.value = camera.far;
+        // world size of one CSS pixel, per metre of view depth
+        const hCss = Math.max(1, u.uResolution.value.y / Math.max(u.uPixelRatio.value, 1e-3));
+        u.uProjScale.value = 2 * Math.tan(camera.fov * 0.5 * Math.PI / 180) / hCss;
+      }
     }
 
     const key = resolveSun(sun);
@@ -810,13 +945,36 @@ export function makeCanvasMaterial(opts = {}) {
     map: null,
     mapRepeat: [1, 1],
     alphaTest: 0,
-    bands: CFG.render.bands,
+    // Skin and cloth read better on THREE washes than four: a face wants two
+    // flat values meeting at one hard edge under the cheekbone, and a fourth
+    // step just puts a third value in the way of that read.
+    bands: opts.skinning ? 3 : CFG.render.bands,
     bandBleed: 1,
-    wrap: 0.45,
+    // A smooth skull under a wrap-diffuse key barely crosses one boundary at
+    // wrap 0.45; characters get a slightly tighter wrap, more tonal contrast
+    // and a LIFT, so the brow and the jaw land in genuinely different washes
+    // without the whole head sliding into the darkest one.
+    wrap: opts.skinning ? 0.40 : 0.45,
+    contrast: opts.skinning ? 1.26 : 1.0,
+    lightBias: opts.skinning ? 0.13 : 0,
+    // Skin is not stone: it keeps some of its own warmth even in shade, so the
+    // violet enforcement runs at two thirds strength on a character.
+    shadeCool: opts.skinning ? 0.45 : 1,
+    // how far the wet edge may wander along a boundary, in screen pixels. A
+    // head is only ~250 px across in a closeup, so its edge gets a shorter
+    // leash than a hillside.
+    wetPx: opts.skinning ? 9 : 16,
+    // how much of an albedo map.s TONAL detail is handed to the band quantiser
+    // instead of multiplied into the wash
+    mapFlat: 0.55,
+    mapDrive: 0.115,
+    // hard painted specular band — metal, glass, wet paint
+    spec: undefined,
+    weave: undefined,
     blotch: 1,
     blotchScale: 0.085,
     toothScale: 1.7,
-    hatchSpacing: 5.4,
+    hatchSpacing: opts.skinning ? 6.8 : 5.8,
     shadowSoften: 1,
     side: THREE.FrontSide,
     transparent: false,
@@ -825,11 +983,18 @@ export function makeCanvasMaterial(opts = {}) {
     name: 'vcCanvas',
   }, opts);
 
+  // Metal/glass get a hard specular band; matte stucco and cloth get none.
+  const spec = o.spec !== undefined ? o.spec
+    : Math.max(0, Math.min(1, (0.90 - o.roughness) / 0.45));
+  // A skinned mesh is a soldier: uniform serge, webbing and canvas kit.
+  const weave = o.weave !== undefined ? !!o.weave : !!o.skinning;
+
   const defines = {};
   if (o.map) defines.VC_MAP = '';
   if (o.alphaTest > 0) defines.VC_ALPHATEST = '';
   if (o.skinning) defines.VC_SKINNED = '';
   if (o.instanced) defines.VC_INSTANCED = '';
+  if (weave) defines.VC_WEAVE = '';
   if (CFG.quality <= 0) defines.VC_LOW = '';
 
   const uniforms = THREE.UniformsUtils.merge([
@@ -853,11 +1018,19 @@ export function makeCanvasMaterial(opts = {}) {
       uEmissiveIntensity: { value: 1 },
       uAlphaTest: { value: 0 },
       uShadowSoften: { value: 1 },
+      uLightContrast: { value: 1 },
+      uShadeCool: { value: 1 },
+      uWetPx: { value: 16 },
+      uLightBias: { value: 0 },
+      uMapFlat: { value: 0 },
+      uMapDrive: { value: 0 },
+      uSpec: { value: 0 },
       uMap: { value: null },
       uMapRepeat: { value: new THREE.Vector2(1, 1) },
       uTime: { value: 0 },
       uResolution: { value: new THREE.Vector2() },
       uPixelRatio: { value: 1 },
+      uProjScale: { value: 5.7e-4 },
       uKeyGain: { value: 0.62 },
       uFillGain: { value: 0.30 },
       uShadowTexel: { value: 0.02 },
@@ -868,6 +1041,7 @@ export function makeCanvasMaterial(opts = {}) {
       uGraphite: { value: new THREE.Color() },
       uHatchTex: { value: null },
       uBlotchTex: { value: null },
+      uPaperTex: { value: null },
     },
   ]);
   bindShared(uniforms);
@@ -875,6 +1049,15 @@ export function makeCanvasMaterial(opts = {}) {
   uniforms.uColor.value.set(o.color);
   uniforms.uOpacity.value = o.opacity;
   uniforms.uBands.value = o.bands;
+  uniforms.uLightContrast.value = o.contrast;
+  uniforms.uShadeCool.value = o.shadeCool;
+  uniforms.uWetPx.value = o.wetPx;
+  uniforms.uLightBias.value = o.lightBias;
+  // Cutout foliage keeps its map intact — a leaf card IS its texture. Solid
+  // surfaces hand their tonal detail to the quantiser.
+  uniforms.uMapFlat.value = o.alphaTest > 0 ? 0 : o.mapFlat;
+  uniforms.uMapDrive.value = o.alphaTest > 0 ? 0 : o.mapDrive;
+  uniforms.uSpec.value = spec;
   uniforms.uBandBleed.value = o.bandBleed * (0.7 + o.roughness * 0.6);
   uniforms.uWrap.value = o.wrap;
   uniforms.uHatch.value = o.hatch * CFG.render.hatchStrength;
@@ -911,8 +1094,30 @@ void main() {
     #endif
   #endif
 
+  vec3 extraN = vec3( 0.0 );
+  float extraDrive = 0.0;
+
   #ifdef VC_MAP
-    vec4 texel = texture2D( uMap, vUvC * uMapRepeat );
+    vec2 mUv = vUvC * uMapRepeat;
+    vec4 texel = texture2D( uMap, mUv );
+    #ifndef VC_LOW
+    if ( uMapDrive > 0.0 ) {
+      // A stucco/ashlar/plank map is TONAL detail, and multiplying it straight
+      // into the albedo is a smooth multiply laid across a flat wash: it reads
+      // as a decal, and it smears every band plateau it crosses (measured on the
+      // village stucco as a continuous +/-5 LSB wander with no steps anywhere).
+      //
+      // So: keep the map's CHROMA and its coarse form, and move its fine tonal
+      // deviation — measured against a heavily mip-biased fetch of itself — into
+      // the BAND DRIVE. Mortar courses, plank shadows and wall staining then
+      // appear as patches of the neighbouring wash with their own wet edge,
+      // which is how a painted wall is actually built up.
+      float mLo = max( vcLum( texture2D( uMap, mUv, 4.0 ).rgb ), 1e-4 );
+      float dev = clamp( vcLum( texel.rgb ) / mLo, 0.35, 2.2 );
+      texel.rgb *= mix( 1.0, 1.0 / dev, uMapFlat );
+      extraDrive += clamp( dev - 1.0, -0.7, 0.7 ) * uMapDrive;
+    }
+    #endif
     albedo *= texel.rgb;
     alpha *= texel.a;
   #endif
@@ -920,8 +1125,6 @@ void main() {
   #ifdef VC_ALPHATEST
     if ( alpha < uAlphaTest ) discard;
   #endif
-
-  vec3 extraN = vec3( 0.0 );
 ${NPR_SHADE_BODY}
 
   gl_FragColor = vec4( col, alpha );
@@ -1042,6 +1245,13 @@ export function makeGrassMaterial(opts = {}) {
       uEmissiveIntensity: { value: 0 },
       uAlphaTest: { value: 0 },
       uShadowSoften: { value: 0.75 },
+      uLightContrast: { value: 1.1 },
+      uShadeCool: { value: 1 },
+      uWetPx: { value: 13 },
+      uLightBias: { value: 0 },
+      uMapFlat: { value: 0 },
+      uMapDrive: { value: 0 },
+      uSpec: { value: 0 },
       uMap: { value: null },
       uMapRepeat: { value: new THREE.Vector2(1, 1) },
       uTime: { value: 0 },
@@ -1050,6 +1260,7 @@ export function makeGrassMaterial(opts = {}) {
       uFade: { value: new THREE.Vector2(1e5, 1e6) },
       uResolution: { value: new THREE.Vector2() },
       uPixelRatio: { value: 1 },
+      uProjScale: { value: 5.7e-4 },
       uKeyGain: { value: 0.62 },
       uFillGain: { value: 0.30 },
       uShadowTexel: { value: 0.02 },
@@ -1060,6 +1271,7 @@ export function makeGrassMaterial(opts = {}) {
       uGraphite: { value: new THREE.Color() },
       uHatchTex: { value: null },
       uBlotchTex: { value: null },
+      uPaperTex: { value: null },
     },
   ]);
   bindShared(uniforms);
@@ -1123,6 +1335,7 @@ void main() {
   // splay the shading normal outward toward the tip so a blade catches light
   // across its whole width instead of behaving like a flat ribbon
   vec3 extraN = vec3( 0.0, hN * 0.22, 0.0 );
+  float extraDrive = 0.0;
 
 ${NPR_SHADE_BODY}
 
@@ -1264,9 +1477,17 @@ export function makeTerrainMaterial(opts = {}) {
       uEmissiveIntensity: { value: 0 },
       uAlphaTest: { value: 0 },
       uShadowSoften: { value: 1 },
+      uLightContrast: { value: 1.12 },
+      uShadeCool: { value: 1 },
+      uWetPx: { value: 18 },
+      uLightBias: { value: 0 },
+      uMapFlat: { value: 0 },
+      uMapDrive: { value: 0 },
+      uSpec: { value: 0 },
       uTime: { value: 0 },
       uResolution: { value: new THREE.Vector2() },
       uPixelRatio: { value: 1 },
+      uProjScale: { value: 5.7e-4 },
       uKeyGain: { value: 0.62 },
       uFillGain: { value: 0.30 },
       uShadowTexel: { value: 0.02 },
@@ -1277,6 +1498,7 @@ export function makeTerrainMaterial(opts = {}) {
       uGraphite: { value: new THREE.Color() },
       uHatchTex: { value: null },
       uBlotchTex: { value: null },
+      uPaperTex: { value: null },
     },
   ]);
   bindShared(uniforms);
@@ -1356,16 +1578,22 @@ void main() {
   wGrass /= wSum; wDirt /= wSum; wRock /= wSum; wMud /= wSum;
 
   // ---- per-layer pigment ---------------------------------------------------
-  vec3 cGrass = uGrass * mix( 0.76, 1.20, det.r ) * mix( 0.90, 1.10, det2.r );
+  // Amplitudes here are deliberately HALF what they were. A +/-22% multiply on
+  // a 4 px-scale detail fetch is a printed ruling laid over the wash: it reads
+  // as a screen, and it smears every band plateau it crosses. The tonal half of
+  // that variation now goes into the band drive instead (see layerDrive below),
+  // where heavy pigment shows up as a patch of the NEXT WASH DOWN — which is
+  // what a granulating watercolour ground actually looks like.
+  vec3 cGrass = uGrass * mix( 0.88, 1.10, det.r ) * mix( 0.95, 1.05, det2.r );
   cGrass = mix( cGrass, cGrass * vec3( 1.06, 0.98, 0.82 ), smoothstep( 0.55, 0.9, det2.a ) * 0.5 );
 
-  vec3 cDirt = uDirt * mix( 0.80, 1.18, det.g );
+  vec3 cDirt = uDirt * mix( 0.90, 1.09, det.g );
   cDirt = mix( cDirt, cDirt * vec3( 1.10, 1.02, 0.86 ), det2.b * 0.35 );
 
-  vec3 cRock = uRock * mix( 0.66, 1.22, det.b );
-  cRock *= 1.0 - smoothstep( 0.62, 0.95, det.b ) * 0.22;      // fissures read dark
+  vec3 cRock = uRock * mix( 0.82, 1.12, det.b );
+  cRock *= 1.0 - smoothstep( 0.62, 0.95, det.b ) * 0.16;      // fissures read dark
 
-  vec3 cMud = uMud * mix( 0.74, 1.14, det.a ) * mix( 1.0, 0.86, det2.a );
+  vec3 cMud = uMud * mix( 0.86, 1.08, det.a ) * mix( 1.0, 0.92, det2.a );
 
   vec3 albedo = cGrass * wGrass + cDirt * wDirt + cRock * wRock + cMud * wMud;
 
@@ -1374,14 +1602,26 @@ void main() {
     // keep only the *modulation* our layers produce — that detail is the whole
     // reason the ground doesn't read as flat vertex colour.
     #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
-      float layerMod = ( mix( 0.80, 1.18, det.r ) * wGrass + mix( 0.82, 1.16, det.g ) * wDirt
-                       + mix( 0.70, 1.20, det.b ) * wRock + mix( 0.78, 1.14, det.a ) * wMud );
-      layerMod *= mix( 0.94, 1.07, det2.r );
+      float layerMod = ( mix( 0.91, 1.08, det.r ) * wGrass + mix( 0.92, 1.07, det.g ) * wDirt
+                       + mix( 0.87, 1.09, det.b ) * wRock + mix( 0.90, 1.06, det.a ) * wMud );
+      layerMod *= mix( 0.97, 1.03, det2.r );
       albedo = vColorC.rgb * uColor * layerMod;
     #endif
   #endif
 
   float alpha = uOpacity;
+
+  // The tonal half of the ground detail, moved out of the albedo and into the
+  // BAND DRIVE. Same pigment information, but it now expresses itself as a
+  // patch of the neighbouring wash with its own wet edge, instead of as a
+  // continuous multiply that smears the plateau it sits on.
+  float extraDrive =
+      ( det.r - 0.5 ) * 0.085 * wGrass
+    + ( det.g - 0.5 ) * 0.080 * wDirt
+    + ( det.b - 0.5 ) * 0.105 * wRock
+    + ( det.a - 0.5 ) * 0.075 * wMud
+    + ( det2.r - 0.5 ) * 0.055
+    + ( macro - 0.5 ) * 0.050;
 
   // micro-relief: rock and dirt get real normal break-up, grass stays smooth
   float relief = ( det.b - 0.5 ) * wRock * 1.6 + ( det.g - 0.5 ) * wDirt * 0.7;

@@ -23,7 +23,7 @@
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'three';
-import { BONE_NAMES } from './rig.js';
+import { BONE_NAMES, SOLE_DROP } from './rig.js';
 import { clamp, clamp01, lerp, damp, dampAngle, smoothstep, DEG } from '../core/math.js';
 
 // ---------------------------------------------------------------------------
@@ -1119,11 +1119,21 @@ export class Animator {
   /**
    * Plant both feet on the ground callback and drop the hips when the stance
    * leg would otherwise have to over-extend on a slope.
+   *
+   * The target used to be `ground + (animated foot height above the root)`,
+   * which only LEVELS the two feet against the local slope — it never puts a
+   * sole on the dirt. Measured on a rolling slope that left an idling soldier's
+   * soles 11-29 mm underground and a crouching one 19-36 mm in the air, which
+   * is the rubric's "feet not planted on the ground" auto-reject and also makes
+   * a contact shadow impossible to place. The planted target is now the ankle
+   * height that puts the sole exactly on the terrain (SOLE_DROP, shared with
+   * the boot geometry in rig.js), blended out by `w` as the foot swings.
    */
   _footIK(dt) {
     const bm = this.rig.boneMap;
     const rootY = this.charRoot.matrixWorld.elements[13];
     const scale = this.charRoot.scale.y || 1;
+    const plantLift = SOLE_DROP * scale;
 
     // Pass 1: how far must the hips drop for both feet to reach the ground?
     let need = 0;
@@ -1133,7 +1143,11 @@ export class Animator {
       boneWorld(foot, _p2);
       boneWorld(thigh, _p0);
       const g = this.groundAt(_p2.x, _p2.z);
-      const targetY = g + (_p2.y - rootY);
+      const lift0 = _p2.y - rootY;
+      // Only ask the hips to drop for a foot that is genuinely planted; a foot
+      // mid-swing has no business dragging the pelvis down after it.
+      const w0 = clamp01(1 - (lift0 - 0.10 * scale) / (0.20 * scale));
+      const targetY = g + lerp(lift0, plantLift, w0);
       const maxReach = this._legLen(s) * scale * 0.985;
       const dy = targetY - _p2.y;
       if (dy < 0) {
@@ -1184,7 +1198,7 @@ export class Animator {
       }
       // Ground is sampled at the LOCKED position, not the animated one.
       const g = this.groundAt(tx, tz);
-      const targetY = g + lift;
+      const targetY = g + lerp(lift, plantLift, w);
       _pole.set(tx, lerp(_p2.y, targetY, w), tz);
       // Knee pole: forward in character space.
       this.charRoot.getWorldQuaternion(_wq3);

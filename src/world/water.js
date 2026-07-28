@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { WATER_Y } from './layout.js';
 import { flowNoiseTexture, paperTexture } from './textures.js';
 import { PALETTE, WorldLighting } from './worldMaterials.js';
+import { bridgeSpanLayout } from './structures.js';
 import { clamp01 } from '../core/math.js';
 
 const VERT = /* glsl */ `
@@ -112,15 +113,25 @@ void main() {
   float dNorm = clamp(vDepth / 1.75, 0.0, 1.0);
   // The quantiser boundary wanders with the flow noise, so the depth washes are
   // torn contours in the current rather than clean bathymetry lines.
-  float dq = band(clamp(dNorm + (n3.b - 0.5) * 0.13, 0.0, 1.0), uBands, 0.17);
+  float dq = band(clamp(dNorm + (n3.b - 0.5) * 0.16, 0.0, 1.0), uBands, 0.11);
   vec3 col = mix(uShallow, uDeep, dq);
   // Silt fingers: the bed shows through in wandering streaks, not a clean ramp.
   float silt = (1.0 - smoothstep(0.10, 0.85, dNorm)) * smoothstep(0.30, 0.75, n3.b);
   col = mix(col, uBed, clamp(silt * 0.62 + (1.0 - dNorm) * 0.26, 0.0, 0.74));
-  // current: quantised value drift along the flow so the channel visibly moves
-  float cur = band(clamp(turb * 1.25, 0.0, 1.0), 3.0, 0.24);
-  col *= 0.82 + cur * 0.40;
-  col = mix(col, col * vec3(1.07, 1.02, 0.93), turb * 0.45);
+  // Current: quantised value drift along the flow so the channel visibly moves.
+  // Round 1 read as "a flat pale slab" because this term was a 0.82-1.22
+  // multiply with a three-step ramp — under the grade that is a 6% swing.
+  float cur = band(clamp(turb * 1.30 - 0.06, 0.0, 1.0), 3.0, 0.13);
+  col *= 0.70 + cur * 0.62;
+  col = mix(col, col * vec3(1.10, 1.03, 0.90), turb * 0.50);
+
+  // Flow lines: the long dark filaments a river draws along its own shear,
+  // quantised to two values so they read as drawn strokes and not as a normal
+  // map. Aligned with the channel because they are sampled in flow UVs.
+  float line = texture2D(uFlowTex, vec2(flowUV.x * 0.55 - uTime * 0.045,
+                                        flowUV.y * 3.1 + warp.y * 2.0)).g;
+  float streak = smoothstep(0.60, 0.78, line) * smoothstep(0.12, 0.45, dNorm);
+  col *= 1.0 - streak * 0.17;
 
   // --- surface normal from the warp field, for glints only
   vec3 N = normalize(vec3(warp.x * 7.0, 1.0, warp.y * 7.0));
@@ -132,12 +143,13 @@ void main() {
   float glint = step(0.42, spec) * 0.5 + step(0.74, spec) * 0.5;
   // Break the glint field up with turbulence so it sparkles along the ripples.
   glint *= smoothstep(0.42, 0.78, turb);
-  col += glint * uSunColor * 0.75;
+  col += glint * uSunColor * 0.95;
 
-  // Sky is only lightly reflected — the CANVAS look prefers local colour over
-  // mirror behaviour.
+  // Sky is only lightly reflected, and the reflection is BANDED like everything
+  // else — a smooth Fresnel ramp is a zero on the watercolour axis.
   float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.5);
-  col = mix(col, uSkyColor, fres * 0.30);
+  fres = band(clamp(fres * 1.15 + (n3.b - 0.5) * 0.10, 0.0, 1.0), 3.0, 0.14);
+  col = mix(col, uSkyColor, fres * 0.34);
 
   // --- wetness mask. The ribbon is built WIDER than the carved channel so its
   // edges bury themselves in the banks, which means a good part of it lies over
@@ -148,14 +160,23 @@ void main() {
 
   // --- foam. A tight noisy band right at the waterline, plus lace where the
   // flow is turbulent, plus a standing wave broken around every bridge pier.
-  float shore = (1.0 - smoothstep(0.03, 0.26, vDepth)) * wet;
-  float lace = smoothstep(0.46, 0.88, n3.b + n1.a * 0.4 - shore * 0.2);
-  float foam = clamp(shore * (0.35 + lace * 0.75), 0.0, 0.85);
-  foam += smoothstep(0.55, 0.95, vDepth) * lace * 0.14;   // midstream riffles
+  float shore = (1.0 - smoothstep(0.05, 0.40, vDepth)) * wet;
+  float lace = smoothstep(0.42, 0.86, n3.b + n1.a * 0.4 - shore * 0.2);
+  float foam = clamp(shore * (0.46 + lace * 0.80), 0.0, 0.90);
+  foam += smoothstep(0.55, 0.95, vDepth) * lace * 0.16;   // midstream riffles
   // pier wash: aObstacle is 1 hard against a pier and dies off downstream
-  float pier = vObst * wet * (0.40 + 0.55 * smoothstep(0.25, 0.75, turb));
-  foam = max(foam, clamp(pier, 0.0, 0.9));
-  col = mix(col, uFoam, clamp(foam, 0.0, 0.88));
+  float pier = vObst * wet * (0.48 + 0.60 * smoothstep(0.25, 0.75, turb));
+  foam = max(foam, clamp(pier, 0.0, 0.94));
+  // Quantise the foam so it lands as flicked white gouache with a torn edge,
+  // not as an airbrushed alpha gradient.
+  foam = band(clamp(foam + (n1.a - 0.5) * 0.18, 0.0, 1.0), 3.0, 0.10);
+  col = mix(col, uFoam, clamp(foam, 0.0, 0.90));
+
+  // A hard contact darkening where anything pierces the surface. Masonry
+  // standing in a river makes a dark line at the waterline and a shadow in its
+  // own lee; without one the piers read as pale cards laid ON the water.
+  float contact = smoothstep(0.55, 0.97, vObst) * wet;
+  col *= 1.0 - contact * 0.30;
 
   // Hold the pigment: the depth washes, the silt and the sky reflection all
   // pull toward neutral, and a neutral river reads as wet tarmac.
@@ -172,9 +193,9 @@ void main() {
   col = mix(col, uHaze, clamp(1.0 - exp(-pow(vd * uFogDensity, 2.0)), 0.0, 0.85));
 
   // Shallow water is nearly clear so the warm bed reads straight through it;
-  // the channel is only ever three-quarters opaque, which is what keeps a
-  // painted river from looking like a sheet of teal plastic.
-  float alpha = mix(0.30, 0.80, smoothstep(0.0, 1.05, vDepth));
+  // deep water closes up, which also stops submerged masonry from being
+  // legible through the channel.
+  float alpha = mix(0.30, 0.94, smoothstep(0.0, 1.05, vDepth));
   alpha = max(alpha, foam * 0.9);
   alpha *= wet;
   if (alpha < 0.02) discard;
@@ -354,14 +375,15 @@ export class Water {
   _pierPoints() {
     const b = this.layout.bridge;
     if (!b || !(b.length > 0)) return [];
-    const spans = 3, pierW = 1.5;
-    const span = (b.length - pierW * (spans - 1) - 4.0) / spans;
+    const { span, pierZ } = bridgeSpanLayout(b.length);
     if (!(span > 0)) return [];
     const co = Math.cos(b.yaw), si = Math.sin(b.yaw);
     const out = [];
-    for (let s = 1; s < spans; s++) {
-      const zc = -b.length * 0.5 + 2.0 + s * span + (s - 0.5) * pierW;
-      out.push({ x: b.x + zc * si, z: b.z + zc * co, r: b.width * 0.5 + 0.4 });
+    for (const zc of pierZ) {
+      // The cutwaters reach 1.45 m past the parapet line on each side, so the
+      // standing wash has to break that far out or the masonry appears to sit
+      // ON the water rather than IN it.
+      out.push({ x: b.x + zc * si, z: b.z + zc * co, r: b.width * 0.5 + 1.6 });
     }
     return out;
   }

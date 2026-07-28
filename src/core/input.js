@@ -59,8 +59,20 @@ export const Input = {
     Input._el = el;
   },
 
-  requestLock() { Input._el?.requestPointerLock?.(); },
-  exitLock() { document.exitPointerLock?.(); },
+  // Pointer lock is a request, not a guarantee: the browser refuses it when the
+  // document is not the active one, when a previous lock is still unwinding, or
+  // when it does not believe a user gesture is in play. Since Chrome 111 that
+  // refusal arrives as a rejected promise, so leaving it unhandled turns an
+  // entirely normal outcome into an uncaught console error. The game reads
+  // `Input.pointerLocked` (set from the pointerlockchange event) and plays fine
+  // unlocked, so a refusal is genuinely nothing to report.
+  requestLock() {
+    const p = Input._el?.requestPointerLock?.();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  },
+  exitLock() {
+    try { document.exitPointerLock?.(); } catch { /* not locked */ }
+  },
 
   update() {
     justDown.clear();

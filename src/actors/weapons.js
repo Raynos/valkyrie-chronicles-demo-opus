@@ -262,7 +262,12 @@ function buildGallianRifle(variant) {
   const scale = variant === 'B' ? 0.96 : 1;
   return {
     body: bodyB.finishStatic(), mag: magB.finishStatic(), bolt: boltB.finishStatic(),
-    muzzle: [0, 0.006, recvZ1 + 0.428], foreGrip: [0, -0.004, recvZ1 + 0.145],
+    // foreGrip sits at the REAR of the handguard, 0.275 m ahead of the trigger
+    // grip. It used to be 0.345 m out at the mid-handguard, which is where you
+    // hold a rifle when it is shouldered — but the low-ready solver places the
+    // whole weapon from this node, and every extra centimetre forward here
+    // throws the butt plate another centimetre outboard behind the shooter.
+    muzzle: [0, 0.006, recvZ1 + 0.428], foreGrip: [0, -0.004, recvZ1 + 0.075],
     eject: [0.024, 0.014, recvZ0 + 0.085], sight: [0, 0.027, recvZ0 + 0.155],
     boltPivot: [0.016, 0.014, recvZ0 + 0.105], boltThrow: -0.055, scale,
   };
@@ -542,7 +547,7 @@ function buildSniper() {
 
   return {
     body: b.finishStatic(), mag: magB.finishStatic(), bolt: boltB.finishStatic(),
-    muzzle: [0, 0.008, recvZ1 + 0.578], foreGrip: [0, -0.008, recvZ1 + 0.135],
+    muzzle: [0, 0.008, recvZ1 + 0.578], foreGrip: [0, -0.008, recvZ1 + 0.070],
     eject: [0.024, 0.016, recvZ0 + 0.14], sight: [0, scY, scZ - 0.10],
     boltPivot: [0.018, 0.014, recvZ0 + 0.165], boltThrow: -0.06, scale: 1,
   };

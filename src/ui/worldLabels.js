@@ -8,14 +8,43 @@
 
 import * as THREE from 'three';
 import { V0, clamp01, easeOutBack, easeOutCubic } from '../core/math.js';
-import { h, clear } from './dom.js';
-import { splat, captureRing, inkRule, inkGauge } from './icons.js';
+import { h, clear, svgEl } from './dom.js';
+import {
+  captureRing, inkRule, inkGauge, damagePlate, wobblyPath, splatPath, hatchPath,
+} from './icons.js';
 import { deckleClip } from './style.js';
 
 const DMG_POOL = 28;
 const BANNER_POOL = 10;
 // How many Imperial name slips may be on the page at once (nearest win).
-const MAX_FOE_TAGS = 5;
+const MAX_FOE_TAGS = 3;
+// And how many slips of ANY colour. Beyond this the page stops being a drawing
+// of a fight and becomes a list of names laid over one.
+const MAX_TAGS = 6;
+// Line-of-sight is re-tested this often (seconds). A slip over a man who is
+// behind a house is the single most damning HUD tell there is, but the answer
+// does not change at 140 fps.
+const OCCLUSION_PERIOD = 0.11;
+
+/** Gallian mark: a small pennant on a staff, inked in indigo. */
+function allyMark(seed) {
+  const s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">' +
+    '<path d="' + wobblyPath(4.5, 1.5, 4.5, 14.5, { seed, amp: 0.35, segs: 4 }) +
+    '" stroke="#2f4258" stroke-width="1.5" fill="none" stroke-linecap="round"/>' +
+    '<path d="M5 2.6 L13.4 5.4 L5 8.6 Z" fill="#37536f" stroke="#22364a" stroke-width="1" ' +
+    'stroke-linejoin="round" filter="url(#vc-rough)"/></svg>';
+  return svgEl(s);
+}
+
+/** Imperial mark: a stamped lozenge on a hatched ground, in oxide red. */
+function foeMark(seed) {
+  const s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">' +
+    '<path d="' + hatchPath(1, 1, 14, 14, { spacing: 3.1, angle: -0.85, seed: seed + 3 }) +
+    '" stroke="#7a2822" stroke-width="0.7" opacity="0.42" fill="none"/>' +
+    '<path d="' + splatPath(8, 8, 6.4, { seed: seed + 11, lobes: 4, rough: 0.10 }) +
+    '" fill="#8d3730" stroke="#5e1c19" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+  return svgEl(s);
+}
 
 /** Stable 32-bit hash of a string, for per-name deckle seeds. */
 function hashStr(s) {
@@ -48,7 +77,19 @@ export class WorldLabels {
     this.rings = new Map();     // id   -> { el, anchor, circle, progress }
 
     this._p = new THREE.Vector3();
+    this._occPt = new THREE.Vector3();
     this._out = { x: 0, y: 0, depth: 0, visible: false };
+    /** (worldPoint, unit) => true when the camera can actually see that point. */
+    this.occluder = null;
+    /** The soldier the camera is riding: he never wears his own name slip. */
+    this.selfUnit = null;
+    /** Only these units may be annotated (null = anyone). */
+    this.filter = null;
+    /** Command mode is a MAP: a slip may sit over a canopy there quite legibly. */
+    this.useOcclusion = true;
+    /** Minimum screen-space rise above the anchor, in px at a 900px reference. */
+    this.screenLift = 0;
+    this._occClock = 0;
 
     this._spin = 0.3819660113;   // golden-ratio walk: deterministic pop scatter
     this.dmg = [];
@@ -67,6 +108,28 @@ export class WorldLabels {
   }
 
   setCamera(cam) { this.camera = cam; }
+
+  /**
+   * Install the line-of-sight test used to cull name slips.
+   * @param {(p:THREE.Vector3, unit:object)=>boolean} fn true when `p` is visible
+   */
+  setOccluder(fn) { this.occluder = typeof fn === 'function' ? fn : null; }
+
+  /** The unit the camera is attached to (his own slip is suppressed). */
+  setSelf(unit) { this.selfUnit = unit || null; }
+
+  /**
+   * How the page annotates units this phase.
+   * @param {{filter?:function|null, occlusion?:boolean, lift?:number}} o
+   *   `filter(unit)` -> may this unit be annotated at all
+   *   `occlusion`    -> cull slips whose soldier is out of sight
+   *   `lift`         -> extra screen-space rise above the anchor, in px
+   */
+  setPolicy({ filter = null, occlusion = true, lift = 0 } = {}) {
+    this.filter = typeof filter === 'function' ? filter : null;
+    this.useOcclusion = occlusion !== false;
+    this.screenLift = lift || 0;
+  }
 
   // ------------------------------------------------------------------ util
 
@@ -109,11 +172,20 @@ export class WorldLabels {
     slip.style.clipPath = deckleClip(seed, { perSide: 5, amp: 6 });
     el.appendChild(slip);
 
+    // The allegiance mark, pinned through the left edge of the slip: ours is an
+    // indigo pennant, theirs a stamped red lozenge over a hatched ground. The
+    // two must be distinguishable in a thumbnail and in monochrome, which two
+    // near-identical cream rectangles with slightly different text colour were
+    // not.
+    const pip = h('div', { class: 'pip' });
+    pip.appendChild(foe ? foeMark(seed) : allyMark(seed));
+    el.appendChild(pip);
+
     const t = h('div', { class: 't', text: name });
     el.appendChild(t);
     // the ink rule under the name, drawn
     const rule = inkRule({
-      w: 120, seed: seed ^ 0x2f, weight: 1.1,
+      w: 120, seed: seed ^ 0x2f, weight: foe ? 1.35 : 1.0,
       color: foe ? '#7a2822' : '#4a3c2c',
     });
     rule.classList.add('rule');
@@ -134,6 +206,7 @@ export class WorldLabels {
     this.tags.set(unit, {
       el, gauge, foe, hpKey: -1, height, maxDist, name: t,
       w: 0, hgt: 0, lane: 0, depth: 0, x: 0, y: 0, show: false,
+      seen: true, occT: -1,
     });
   }
 
@@ -155,15 +228,14 @@ export class WorldLabels {
 
   _makeDmg(i) {
     const el = h('div', { class: 'vc-wl vc-dmg' });
-    const sp = splat({ size: 78, seed: 101 + i * 37, color: '#7c2028', opacity: 0.8 });
-    sp.classList.add('splat');
-    const n = h('div', { class: 'n vc-num' });
-    const tag = h('div', { class: 'tag' });
-    el.appendChild(sp); el.appendChild(n); el.appendChild(tag);
+    // One drawn piece — blot, flicks and outlined figure together — rather than
+    // a bare DOM digit sitting on top of an SVG disc. See icons.js damagePlate.
+    const plate = damagePlate({ seed: 101 + i * 37 });
+    el.appendChild(plate);
     el.style.visibility = 'hidden';
     this.layer.appendChild(el);
     return {
-      el, n, tag, splat: sp, anchor: new THREE.Vector3(),
+      el, plate, anchor: new THREE.Vector3(),
       t: 0, life: 0, vx: 0, vy: 0, active: false, crit: false,
     };
   }
@@ -191,15 +263,19 @@ export class WorldLabels {
     d.t = 0;
     d.crit = crit;
     d.life = crit ? CRIT_LIFE : DMG_LIFE;
-    d.n.textContent = (heal ? '+' : '') + Math.max(0, Math.round(amount));
-    d.tag.textContent = tag || (crit ? 'CRITICAL!' : '');
-    d.el.classList.toggle('crit', !!crit);
+    const n = Math.max(0, Math.round(amount));
+    d.plate.set((heal ? '+' : '') + n, {
+      crit, heal, tagText: tag || (crit ? 'CRITICAL' : ''),
+    });
+    // A big hit hits the page harder: the plate grows with the number, so eight
+    // points and eighty do not read as the same event.
+    d.weight = clamp01((n - 4) / 46);
     // Fling direction walks by the golden ratio so stacked hits never overlap.
     this._spin = (this._spin + 0.6180339887) % 1;
     const r = seed ? ((seed >>> 0) % 997) / 997 : this._spin;
     d.vx = (r * 2 - 1) * 110;
     d.vy = -(340 + r * 130);
-    d.splat.style.opacity = heal ? '0.35' : (crit ? '1' : '0.8');
+    d.roll = (r * 2 - 1) * 9;
     d.el.style.visibility = 'hidden';   // shown on the first projected frame
   }
 
@@ -284,31 +360,64 @@ export class WorldLabels {
    * Tags are also culled to the frame proper — the projection's generous
    * offscreen margin used to leave slips sliced in half by the page edge.
    */
-  _updateTags() {
+  _updateTags(dt = 0) {
     const out = this._out;
     const order = this._tagOrder || (this._tagOrder = []);
     order.length = 0;
 
+    // Line of sight is re-tested on a clock, not per frame: the answer is a
+    // grid raycast and it does not change between two 7 ms frames.
+    this._occClock += dt;
+    let doOcc = false;
+    if (this.occluder && this._occClock >= OCCLUSION_PERIOD) { this._occClock = 0; doOcc = true; }
+
     for (const [unit, t] of this.tags) {
       t.show = false;
       if (!unit.pos || (unit.alive === false && !unit.downed)) continue;
+      if (this.filter && !this.filter(unit)) continue;
+      // The camera's own soldier does not wear a slip — but only when the lens
+      // is actually ON him. A scripted wide shot of the same phase still wants
+      // his name, so the suppression is a distance test, not a flag test.
+      if (unit === this.selfUnit && this.camera &&
+          Math.abs(unit.pos.x - this.camera.position.x) < 4.5 &&
+          Math.abs(unit.pos.z - this.camera.position.z) < 4.5) continue;
+      // A foe the section has not spotted is not on the page at all.
+      if (t.foe && unit.spotted === false) continue;
       V0.set(unit.pos.x, unit.pos.y + t.height, unit.pos.z);
       this.project(V0, out);
       // Imperials get a shorter leash than the squad: a slip on every enemy on
       // the far bank turns the sky into a wall of paper.
-      const lim = t.foe ? Math.min(t.maxDist, 62) : t.maxDist;
+      const lim = t.foe ? Math.min(t.maxDist, 54) : Math.min(t.maxDist, 72);
       if (!out.visible || out.depth > lim) continue;
+
+      // ---- occlusion ------------------------------------------------------
+      // A slip drawn over a man who is behind a house or a stand of poplars is
+      // the thing that makes the whole frame read as a sticker sheet: it labels
+      // masonry. Test the chest, not the crown of the head — a helmet clearing
+      // a parapet is not a visible soldier.
+      if (doOcc && this.occluder && this.useOcclusion) {
+        this._occPt.set(unit.pos.x, unit.pos.y + t.height * 0.62, unit.pos.z);
+        let vis = false;
+        try { vis = !!this.occluder(this._occPt, unit); } catch { vis = true; }
+        t.seen = vis;
+      }
+      if (this.useOcclusion && t.seen === false) continue;
+
       // Measure once; the slip only changes width when the name changes.
       if (!t.w) { t.w = t.el.offsetWidth || 84; t.hgt = t.el.offsetHeight || 26; }
-      const k = 1 - clamp01((out.depth - t.maxDist * 0.45) / (t.maxDist * 0.55));
-      const sc = 0.72 + 0.28 * k;
+      const k = 1 - clamp01((out.depth - lim * 0.35) / (lim * 0.65));
+      const sc = 0.68 + 0.32 * k;
       const halfW = (t.w * sc) / 2;
       const hgt = t.hgt * sc;
       // Cull to the frame itself, with just enough slack for the deckled edge.
       // The slip is anchored by its BOTTOM edge, so it occupies [y - hgt, y].
-      if (out.x < halfW + 12 || out.x > this.w - halfW - 12 ||
-          out.y - hgt < 14 || out.y > this.h - 30) continue;
-      t.x = out.x; t.y = out.y; t.depth = out.depth; t.k = k; t.sc = sc;
+      // The top guard is deliberately generous: a slip sliced by the frame rule
+      // at the head of the page is worse than no slip at all.
+      const ay = out.y - this.screenLift * this.scale;
+      if (out.x < halfW + 14 || out.x > this.w - halfW - 14 ||
+          ay - hgt < this.h * 0.055 || ay > this.h - 30) continue;
+      t.x = out.x; t.y = out.y - this.screenLift * this.scale; t.depth = out.depth;
+      t.k = k; t.sc = sc;
       t.halfW = halfW; t.rowH = hgt;
       t.show = true;
       order.push(t);
@@ -317,34 +426,37 @@ export class WorldLabels {
     // nearest first — the soldier you care about keeps his place on the page
     order.sort((a, b) => a.depth - b.depth);
 
-    // Only the nearest handful of Imperials are annotated. Beyond that the page
-    // stops being a map of the fight and becomes a list.
+    // Only the nearest handful of Imperials are annotated, and only a squad's
+    // worth of slips in total. Beyond that the page stops being a drawing of a
+    // fight and becomes a list of names laid over one.
     let foes = 0;
     for (let i = 0; i < order.length; i++) {
-      if (!order[i].foe) continue;
-      if (++foes > MAX_FOE_TAGS) { order[i].show = false; order.splice(i--, 1); }
+      if (order[i].foe && ++foes > MAX_FOE_TAGS) { order[i].show = false; order.splice(i--, 1); }
     }
+    for (let i = MAX_TAGS; i < order.length; i++) order[i].show = false;
+    order.length = Math.min(order.length, MAX_TAGS);
 
     const placed = this._placedTags || (this._placedTags = []);
     placed.length = 0;
+    const topGuard = this.h * 0.055;
     for (const t of order) {
       let lane = 0;
       for (; lane < 3; lane++) {
-        const top = t.y - t.rowH * (lane + 1) - lane * 2;
+        const top = t.y - t.rowH * (lane + 1) - lane * 3;
+        if (top < topGuard) { lane = 99; break; }
         let clash = false;
         for (const p of placed) {
-          if (Math.abs(p.cx - t.x) > p.halfW + t.halfW + 4) continue;
-          if (Math.abs(p.top - top) < Math.max(p.rowH, t.rowH) * 0.92) { clash = true; break; }
+          if (Math.abs(p.cx - t.x) > p.halfW + t.halfW + 6) continue;
+          if (Math.abs(p.top - top) < Math.max(p.rowH, t.rowH) * 0.96) { clash = true; break; }
         }
         if (!clash) break;
       }
+      // No room without either overlapping a neighbour or running off the top
+      // of the page: the slip is simply not drawn. Two half-legible names
+      // stacked on each other say less than one.
       if (lane >= 3) { t.show = false; continue; }
-      // Lifting must never push a slip off the top of the page — better to sit
-      // at lane 0 (or vanish) than to be drawn sliced by the frame edge.
-      while (lane > 0 && t.y - lane * (t.rowH + 2) - t.rowH < 14) lane--;
-      if (t.y - t.rowH < 14) { t.show = false; continue; }
       t.lane = lane;
-      placed.push({ cx: t.x, halfW: t.halfW, top: t.y - t.rowH * (lane + 1) - lane * 2, rowH: t.rowH });
+      placed.push({ cx: t.x, halfW: t.halfW, top: t.y - t.rowH * (lane + 1) - lane * 3, rowH: t.rowH });
     }
 
     for (const [unit, t] of this.tags) {
@@ -353,14 +465,17 @@ export class WorldLabels {
         if (el.style.visibility !== 'hidden') el.style.visibility = 'hidden';
         continue;
       }
-      const lift = t.lane * (t.rowH + 2);
+      const lift = t.lane * (t.rowH + 3);
       el.style.visibility = 'visible';
-      el.style.opacity = (0.3 + 0.7 * t.k).toFixed(2);
+      // Distance fade: the far slips wash out the way a pencil note does under
+      // aerial perspective, so the near ones own the reading order.
+      el.style.opacity = (0.52 + 0.48 * t.k * t.k).toFixed(2);
       el.style.transform = 'translate(' + t.x.toFixed(1) + 'px,' + (t.y - lift).toFixed(1) +
         'px) translate(-50%,-100%) scale(' + t.sc.toFixed(3) + ')';
-      // A leader line back down to the soldier, once the slip has been lifted.
-      el.classList.toggle('lifted', t.lane > 0);
-      if (t.lane > 0) el.style.setProperty('--lead', lift.toFixed(1) + 'px');
+      // The leader hairline back down to the soldier the slip belongs to. It is
+      // always drawn, so a plate is never floating over nothing.
+      el.style.setProperty('--lead',
+        (lift + 7 + this.screenLift * this.scale).toFixed(1) + 'px');
       if (t.gauge && unit.maxHp) {
         const key = Math.round((unit.hp / unit.maxHp) * 100);
         if (key !== t.hpKey) {
@@ -380,7 +495,7 @@ export class WorldLabels {
     const s = this.scale;
     const out = this._out;
 
-    this._updateTags();
+    this._updateTags(dt);
 
     // --- damage numerals
     for (const d of this.dmg) {
@@ -398,15 +513,15 @@ export class WorldLabels {
       const oy = (d.vy * t + 0.5 * DMG_GRAV * t * t) * s;
       const pop = easeOutBack(clamp01(t / 0.20));
       const fade = 1 - easeOutCubic(clamp01((t - d.life * 0.62) / (d.life * 0.38)));
-      const sc = (d.crit ? 1.0 : 0.9) * (0.35 + 0.65 * pop) *
-        (1 + 0.10 * Math.sin(t * 14) * Math.max(0, 1 - t * 4));
+      // The plate lands hard and settles — the ink is thrown, it does not float.
+      const sc = (d.crit ? 1.0 : 0.74 + 0.34 * (d.weight || 0)) * (0.35 + 0.65 * pop) *
+        (1 + 0.10 * Math.sin(t * 14) * Math.max(0, 1 - t * 4)) *
+        (0.85 + 0.15 * (this.h / 900));
       d.el.style.visibility = 'visible';
       d.el.style.opacity = fade.toFixed(3);
       d.el.style.transform = 'translate(' + (out.x + ox).toFixed(1) + 'px,' +
-        (out.y + oy).toFixed(1) + 'px) translate(-50%,-50%) scale(' + sc.toFixed(3) + ')';
-      // the splat lands first and stops growing — ink does not bounce
-      d.splat.style.transform = 'translate(-50%,-50%) scale(' +
-        (0.6 + 0.7 * easeOutCubic(clamp01(t / 0.28))).toFixed(3) + ')';
+        (out.y + oy).toFixed(1) + 'px) translate(-50%,-50%) rotate(' +
+        (d.roll || 0).toFixed(1) + 'deg) scale(' + sc.toFixed(3) + ')';
     }
 
     // --- banners

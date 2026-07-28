@@ -57,6 +57,20 @@ const CAPTURE_WARMUP = 10;
 /** Settle bounds after the shot. Deterministic: both are frame counts. */
 const SETTLE_MIN = 14;
 const SETTLE_MAX = 200;
+/**
+ * Total frames the settle stage ALWAYS runs, convergence or not.
+ *
+ * Convergence alone is not enough for a repeatable PNG. Everything in the world
+ * that moves — wind on the grass, the cloud FBM's scroll, the shared material
+ * clock, a contact-shadow or banding term that is a function of world time — is
+ * advanced once per settle frame, so its phase in the captured frame is a
+ * function of HOW MANY settle frames happened to run. That count depends on when
+ * the last shader finished compiling and when the foliage LOD stopped streaming,
+ * which is a property of the GPU and not of the shot. Padding to a fixed total
+ * removes the dependency entirely: the shutter always opens on frame
+ * CAPTURE_WARMUP + <shot frames> + SETTLE_TOTAL + finale, on every machine.
+ */
+const SETTLE_TOTAL = 120;
 /** Hard watchdog so the harness always gets a frame instead of a 45 s timeout. */
 const CAPTURE_WATCHDOG_MS = 32000;
 
@@ -439,7 +453,15 @@ function viewGroundFocus(camera, world, out) {
 function updateLighting(S, dt) {
   const { battle, camera, world, rig } = S;
 
-  if (battle.activeUnit && battle.activeUnit.pos) _focus.copy(battle.activeUnit.pos);
+  // A SCRIPTED SHOT is framed by its camera and by nothing else. Deferring to
+  // `battle.activeUnit` here is what left the tank, the bridge and half the
+  // landscape shots with no cast shadows at all: ensureBattle() leaves whichever
+  // soldier the battle happened to activate as the active unit, that soldier is
+  // usually not even visible in the shot, and the 26 m ortho frustum then gets
+  // snapped around HIM — so the object the frame is actually about falls outside
+  // the shadow map entirely and lands on the ground as a decal. Follow the lens.
+  if (CFG.capture) viewGroundFocus(camera, world, _focus);
+  else if (battle.activeUnit && battle.activeUnit.pos) _focus.copy(battle.activeUnit.pos);
   else if (battle.commandMode && battle.commandMode.active) _focus.copy(battle.commandMode.target);
   else viewGroundFocus(camera, world, _focus);
 
@@ -689,9 +711,13 @@ async function captureFlow(S) {
     lastKey = key;
     if (n >= SETTLE_MIN && stable >= 5) break;
   }
-  // Real render throughput, measured over the settle loop only — the warmup is
-  // all shader compilation and would report a fps nobody would ever see.
+  // Real render throughput, measured over the convergence loop only — the warmup
+  // is all shader compilation and would report a fps nobody would ever see.
   const fps = Math.round(fpsFrames / Math.max(0.001, (performance.now() - fpsT0) / 1000));
+  const converged = n;
+  // Then pad to the fixed budget so the animated phase of the captured frame is
+  // a function of the shot and nothing else. See SETTLE_TOTAL.
+  while (n < SETTLE_TOTAL) { await raf(); n++; }
 
   // The scripted VFX frames. A tracer lives for tenths of a second and a muzzle
   // flash for ~0.07 s, so neither can survive the settle loop above; the shot
@@ -720,14 +746,20 @@ async function captureFlow(S) {
 
   publishStats(S, {
     shot, requestedShot: requested, fallback: shot !== requested,
-    fps, settleFrames: n, finaleFrames: fin ? fin.frames : 0,
+    fps, settleFrames: n, convergedAt: converged, finaleFrames: fin ? fin.frames : 0,
   });
   window.__READY__ = true;
 }
 
 function publishStats(S, extra) {
-  const { renderer, battle, world, pipeline, engine } = S;
+  const { renderer, battle, world, pipeline, engine, camera } = S;
   const info = renderer.info;
+  // The camera pose belongs in the stats blob. A shot whose framing silently
+  // came out wrong is otherwise indistinguishable from a shot whose WORLD came
+  // out wrong, and the harness has no way to tell the reviewer which it was
+  // looking at. Three numbers make it obvious.
+  const r3 = (v) => +v.toFixed(2);
+  camera.getWorldDirection(_ray);
   window.__STATS__ = Object.assign({}, window.__STATS__, {
     drawCalls: info.render.calls,
     triangles: info.render.triangles,
@@ -741,6 +773,10 @@ function publishStats(S, extra) {
     units: battle.units.length,
     colliders: world.colliders.length,
     phase: battle.phase,
+    camPos: [r3(camera.position.x), r3(camera.position.y), r3(camera.position.z)],
+    camDir: [r3(_ray.x), r3(_ray.y), r3(_ray.z)],
+    camFov: r3(camera.fov),
+    groundUnderCam: r3(world.groundHeightAt(camera.position.x, camera.position.z)),
   }, extra);
 }
 

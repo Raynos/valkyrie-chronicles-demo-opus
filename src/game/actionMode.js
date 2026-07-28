@@ -87,6 +87,7 @@ export class ActionMode {
 
     // --- aiming -----------------------------------------------------------
     this.aimHold = 0;                 // seconds settled
+    this.aimToggled = false;          // Q-latch; see the aim block in update()
     this.bloom = 1;
     this.aimTarget = null;            // Unit under the reticle
     this.aimPart = null;
@@ -126,6 +127,7 @@ export class ActionMode {
     unit.extraAttacks = 0;
     this.endRequested = false;
     this.aimHold = 0;
+    this.aimToggled = false;
     this.bloom = 1;
     this.postFire = 0;
     this.interactProgress = 0;
@@ -443,11 +445,18 @@ export class ActionMode {
     if (Input.pressed('g') && u.grenades > 0 && this.attacksLeft > 0) {
       this.mode = this.mode === MODE.GRENADE ? MODE.MOVE : MODE.GRENADE;
       this.aimHold = 0;
+      this.aimToggled = false;   // else backing out of grenade mode snaps into aim
       Bus.emit('sfx', { name: this.mode === MODE.GRENADE ? 'aimIn' : 'aimOut' });
     }
 
-    // Aim toggle (hold RMB)
-    const wantAim = Input.mouse.right && this.attacksLeft > 0 && u.ammo > 0 && this.mode !== MODE.GRENADE;
+    // Aim: hold RMB, or latch with Q. A trackpad only has one physical click, so
+    // "hold right, click left" is unreachable there — Q gives it the same
+    // toggle-then-click shape the grenade already uses.
+    if (Input.pressed('q') && this.attacksLeft > 0 && u.ammo > 0 && this.mode !== MODE.GRENADE) {
+      this.aimToggled = !this.aimToggled;
+    }
+    const wantAim = (Input.mouse.right || this.aimToggled)
+      && this.attacksLeft > 0 && u.ammo > 0 && this.mode !== MODE.GRENADE;
     if (wantAim && this.mode !== MODE.AIM) this.enterAim();
     else if (!wantAim && this.mode === MODE.AIM) this.exitAim();
 
@@ -501,6 +510,7 @@ export class ActionMode {
     this.armTarget = u && u.isVehicle ? 8.5 : 3.45;
     this.shoulderTarget = 0.62;
     this.aimTarget = null;
+    this.aimToggled = false;
     this._lastClip = null;
     Bus.emit('aim:exit', { unit: u });
     Bus.emit('aim:target', { unit: u, target: null });

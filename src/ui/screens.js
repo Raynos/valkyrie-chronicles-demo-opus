@@ -10,6 +10,7 @@ import { Bus } from '../core/bus.js';
 import { h, clear, panel, clickable, label, typewriter, roman, numberWord, pad, replay } from './dom.js';
 import {
   icon, inkRule, ribbon, chapterVignette, terrainSketch, rankStamp, keyCap, compassRose,
+  roughRect,
 } from './icons.js';
 import { portrait, portraitMarkup } from './portraits.js';
 import { reducedMotion } from './style.js';
@@ -633,7 +634,20 @@ export class DialogueBar {
     this.porBox = h('div', { class: 'vc-dlg-por' });
     in_.appendChild(this.porBox);
     const body = h('div', { class: 'vc-dlg-body' });
+    // The speaker's name sits on a torn strip of red ribbon, drawn and deckled;
+    // it used to be a CSS linear-gradient chip with a clip-path chamfer, which
+    // is a web component wearing a period costume.
     this.nameEl = h('div', { class: 'vc-dlg-name' });
+    this.nameEl.innerHTML =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 34" ' +
+      'preserveAspectRatio="none"><path d="' +
+      roughRect(1, 1, 198, 32, { seed: 913, amp: 1.4, segs: 9, overshoot: 2.2 }) +
+      '" fill="url(#vc-ribbon-grad)" stroke="#5c1d22" stroke-width="1.6" ' +
+      'stroke-linejoin="round" filter="url(#vc-rough)"/><path d="' +
+      roughRect(5, 5, 190, 24, { seed: 917, amp: 1.0, segs: 7 }) +
+      '" fill="none" stroke="#f1dcc0" stroke-width="0.9" opacity="0.24"/></svg>' +
+      '<span></span>';
+    this.nameSpan = this.nameEl.querySelector('span');
     body.appendChild(this.nameEl);
     this.textEl = h('div', { class: 'vc-dlg-text' });
     body.appendChild(this.textEl);
@@ -675,7 +689,7 @@ export class DialogueBar {
         frame: false, bg: false,
       });
     } else this.porBox.style.display = 'none';
-    this.nameEl.textContent = line.name || '';
+    this.nameSpan.textContent = line.name || '';
     this.nameEl.style.display = line.name ? '' : 'none';
     this.tw?.cancel();
     this.next.style.opacity = '0';

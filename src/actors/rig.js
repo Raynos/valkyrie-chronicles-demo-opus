@@ -47,6 +47,11 @@ export function mixCol(a, b, t) {
 export const PALETTE = {
   tunic: rgbLin(0x9d8a5c),
   tunicShade: rgbLin(0x81714a),
+  // Headgear is deliberately a clear step DARKER and greener than the tunic.
+  // A cap in tunic colour sitting on a tan face reads as a bald head with a
+  // stripe on it — which is exactly what the overview shot showed.
+  cap: rgbLin(0x6f6a41),
+  capShade: rgbLin(0x585534),
   collar: rgbLin(0x6d5c3c),
   trouser: rgbLin(0x77704a),
   trouserCuff: rgbLin(0x615c3d),
@@ -54,6 +59,7 @@ export const PALETTE = {
   belt: rgbLin(0x473527),
   boot: rgbLin(0x3d2d22),
   bootSole: rgbLin(0x2e2620),
+  bootWelt: rgbLin(0x51392a),
   glove: rgbLin(0x6d5238),
   metal: rgbLin(0x6f6c64),
   metalDark: rgbLin(0x44413c),
@@ -61,9 +67,12 @@ export const PALETTE = {
   trim: rgbLin(0xe8dec4),
   accent: rgbLin(0x8f3c2d),
   wood: rgbLin(0x7c5535),
-  canvas: rgbLin(0xa79a76),
+  canvas: rgbLin(0x8e8460),
   scarf: rgbLin(0xd8ccab),
-  eyeWhite: rgbLin(0xefe8de),
+  // NOT paper-white. At 20 m the sclera is two pixels and a 0xefe8de lens under
+  // the warm key blooms into a pair of glowing dots where the eyes should be —
+  // the darker lash line has to be the thing that survives, not the white.
+  eyeWhite: rgbLin(0xcfc6b6),
   lip: rgbLin(0xb07a68),
   brow: rgbLin(0x4a3526),
   // Imperial (team 1)
@@ -81,9 +90,14 @@ export const SKIN_TONES = [
   rgbLin(0xc7946a), rgbLin(0xa87a55), rgbLin(0x82593f), rgbLin(0x60412e),
 ];
 
+// Hair has to survive the palette-discipline rule as well as the band shader.
+// The old auburn 0x9a4a2b measured HSV sat 0.72 and under the warm key + bloom
+// it blew out to a saturated orange band across the back of every helmeted
+// head — the "smeared red band" the overview critique named. Everything here
+// now sits under sat 0.45.
 export const HAIR_TONES = [
-  rgbLin(0x2b2320), rgbLin(0x3a2b21), rgbLin(0x50381f), rgbLin(0x6f5031),
-  rgbLin(0x8d6a3a), rgbLin(0xbd9a5a), rgbLin(0x9a4a2b), rgbLin(0x6d6154),
+  rgbLin(0x2b2320), rgbLin(0x3a2b21), rgbLin(0x4b3a24), rgbLin(0x6a5133),
+  rgbLin(0x87693e), rgbLin(0xa8905e), rgbLin(0x7a5236), rgbLin(0x6d6154),
 ];
 
 // ---------------------------------------------------------------------------
@@ -104,53 +118,81 @@ export const HAIR_TONES = [
 
 const B = (name, parent, pos, o = {}) => ({ name, parent, pos, soft: 0.05, ws: 1, axial: false, tail: null, ...o });
 
+// PROPORTION CONTRACT (canonical 'medium' soldier, metres):
+//   sole 0.000 · hip 0.955 · shoulder 1.389 · chin 1.4985 · crown 1.737
+// which is 7.28 heads tall with a 0.160 x 0.233 x 0.197 m skull — VC's
+// stylised-realistic figure. The previous table put the shoulders at 1.362 and
+// the head bone at 1.497 with a 0.195 x 0.252 x 0.228 skull: 6.4 heads, a head
+// 22% too wide, and only 13 mm of throat between the collar and the jaw, which
+// is why every soldier read as a balloon on a sack. Shoulders up 27 mm, neck
+// bone up 42 mm, head bone up 52 mm, skull down 18% in width and 8% in height.
 export const BONE_DEFS = [
   B('root', null, [0, 0, 0], { soft: 0.4, ws: 0.001, tail: [0, 0.2, 0] }),
-  B('hips', 'root', [0, 0.955, 0], { soft: 0.06, ws: 1.15, axial: true, tail: [0, 1.055, 0] }),
-  B('spine1', 'hips', [0, 1.055, 0], { soft: 0.045, axial: true }),
-  B('spine2', 'spine1', [0, 1.155, 0.004], { soft: 0.045, axial: true }),
-  B('spine3', 'spine2', [0, 1.265, 0.006], { soft: 0.05, axial: true, ws: 1.05 }),
-  B('neck', 'spine3', [0, 1.408, 0.004], { soft: 0.03, axial: true }),
-  B('head', 'neck', [0, 1.497, 0.004], { soft: 0.05, ws: 1.3, tail: [0, 1.66, 0.012] }),
-  B('headTop', 'head', [0, 1.66, 0.012], { soft: 0.09, ws: 0.2, tail: [0, 1.78, 0.012] }),
+  B('hips', 'root', [0, 0.955, 0], { soft: 0.06, ws: 1.15, axial: true, tail: [0, 1.060, 0] }),
+  B('spine1', 'hips', [0, 1.060, 0], { soft: 0.045, axial: true }),
+  B('spine2', 'spine1', [0, 1.168, 0.004], { soft: 0.045, axial: true }),
+  B('spine3', 'spine2', [0, 1.288, 0.006], { soft: 0.05, axial: true, ws: 1.05 }),
+  B('neck', 'spine3', [0, 1.450, 0.006], { soft: 0.03, axial: true }),
+  B('head', 'neck', [0, 1.549, 0.006], { soft: 0.05, ws: 1.3, tail: [0, 1.700, 0.014] }),
+  B('headTop', 'head', [0, 1.700, 0.014], { soft: 0.09, ws: 0.2, tail: [0, 1.82, 0.014] }),
 
-  B('clavicleL', 'spine3', [0.036, 1.376, 0.014], { soft: 0.05, ws: 0.85 }),
-  B('upperArmL', 'clavicleL', [0.176, 1.362, 0.004], { soft: 0.05 }),
-  B('foreArmL', 'upperArmL', [0.199, 1.092, 0.011], { soft: 0.048 }),
-  B('handL', 'foreArmL', [0.216, 0.845, 0.015], { soft: 0.028, ws: 1.1, tail: [0.222, 0.757, 0.021] }),
-  B('fingersL', 'handL', [0.222, 0.757, 0.021], { soft: 0.02, tail: [0.224, 0.706, 0.026] }),
-  B('thumbL', 'handL', [0.194, 0.799, 0.045], { soft: 0.018, ws: 0.9, tail: [0.186, 0.771, 0.072] }),
+  B('clavicleL', 'spine3', [0.038, 1.405, 0.016], { soft: 0.05, ws: 0.85 }),
+  B('upperArmL', 'clavicleL', [0.181, 1.389, 0.004], { soft: 0.05 }),
+  B('foreArmL', 'upperArmL', [0.203, 1.112, 0.012], { soft: 0.048 }),
+  B('handL', 'foreArmL', [0.220, 0.859, 0.016], { soft: 0.028, ws: 1.1, tail: [0.226, 0.771, 0.022] }),
+  B('fingersL', 'handL', [0.226, 0.771, 0.022], { soft: 0.02, tail: [0.228, 0.718, 0.027] }),
+  B('thumbL', 'handL', [0.198, 0.813, 0.046], { soft: 0.018, ws: 0.9, tail: [0.190, 0.785, 0.073] }),
 
-  B('clavicleR', 'spine3', [-0.036, 1.376, 0.014], { soft: 0.05, ws: 0.85 }),
-  B('upperArmR', 'clavicleR', [-0.176, 1.362, 0.004], { soft: 0.05 }),
-  B('foreArmR', 'upperArmR', [-0.199, 1.092, 0.011], { soft: 0.048 }),
-  B('handR', 'foreArmR', [-0.216, 0.845, 0.015], { soft: 0.028, ws: 1.1, tail: [-0.222, 0.757, 0.021] }),
-  B('fingersR', 'handR', [-0.222, 0.757, 0.021], { soft: 0.02, tail: [-0.224, 0.706, 0.026] }),
-  B('thumbR', 'handR', [-0.194, 0.799, 0.045], { soft: 0.018, ws: 0.9, tail: [-0.186, 0.771, 0.072] }),
+  B('clavicleR', 'spine3', [-0.038, 1.405, 0.016], { soft: 0.05, ws: 0.85 }),
+  B('upperArmR', 'clavicleR', [-0.181, 1.389, 0.004], { soft: 0.05 }),
+  B('foreArmR', 'upperArmR', [-0.203, 1.112, 0.012], { soft: 0.048 }),
+  B('handR', 'foreArmR', [-0.220, 0.859, 0.016], { soft: 0.028, ws: 1.1, tail: [-0.226, 0.771, 0.022] }),
+  B('fingersR', 'handR', [-0.226, 0.771, 0.022], { soft: 0.02, tail: [-0.228, 0.718, 0.027] }),
+  B('thumbR', 'handR', [-0.198, 0.813, 0.046], { soft: 0.018, ws: 0.9, tail: [-0.190, 0.785, 0.073] }),
 
-  B('thighL', 'hips', [0.094, 0.921, 0.002], { soft: 0.058 }),
-  B('shinL', 'thighL', [0.099, 0.512, 0.013], { soft: 0.05 }),
-  B('footL', 'shinL', [0.102, 0.088, -0.014], { soft: 0.035, ws: 1.1 }),
-  B('toeL', 'footL', [0.102, 0.026, 0.108], { soft: 0.022, tail: [0.102, 0.022, 0.16] }),
+  B('thighL', 'hips', [0.095, 0.919, 0.002], { soft: 0.058 }),
+  B('shinL', 'thighL', [0.100, 0.508, 0.013], { soft: 0.05 }),
+  B('footL', 'shinL', [0.103, 0.082, -0.016], { soft: 0.035, ws: 1.1 }),
+  B('toeL', 'footL', [0.103, 0.024, 0.112], { soft: 0.022, tail: [0.103, 0.020, 0.166] }),
 
-  B('thighR', 'hips', [-0.094, 0.921, 0.002], { soft: 0.058 }),
-  B('shinR', 'thighR', [-0.099, 0.512, 0.013], { soft: 0.05 }),
-  B('footR', 'shinR', [-0.102, 0.088, -0.014], { soft: 0.035, ws: 1.1 }),
-  B('toeR', 'footR', [-0.102, 0.026, 0.108], { soft: 0.022, tail: [-0.102, 0.022, 0.16] }),
+  B('thighR', 'hips', [-0.095, 0.919, 0.002], { soft: 0.058 }),
+  B('shinR', 'thighR', [-0.100, 0.508, 0.013], { soft: 0.05 }),
+  B('footR', 'shinR', [-0.103, 0.082, -0.016], { soft: 0.035, ws: 1.1 }),
+  B('toeR', 'footR', [-0.103, 0.024, 0.112], { soft: 0.022, tail: [-0.103, 0.020, 0.166] }),
 ];
 
 export const BONE_NAMES = BONE_DEFS.map((b) => b.name);
 
-/** Body-type variants. A six-person squad picks from these so nobody looks cloned. */
+/**
+ * Body-type variants. A six-person squad picks from these so nobody looks cloned.
+ *
+ * `height` used to double up with `legs`/`torso`: the bone table was scaled by
+ * legs+torso AND the whole group scaled again by height, so a `tall` soldier
+ * came out 1.99 m and a `petite` one 1.61 m. It is now a small trim on top of
+ * the table, and `head` stays inside +/-3% so no body type falls out of the
+ * 7.0-7.5 heads window.
+ */
 export const BODY_TYPES = {
-  medium: { height: 1.00, legs: 1.00, torso: 1.00, shoulder: 1.00, hip: 1.00, girth: 1.00, arm: 1.00, head: 1.00 },
-  lean: { height: 1.02, legs: 1.035, torso: 0.985, shoulder: 0.945, hip: 0.955, girth: 0.90, arm: 1.03, head: 0.98 },
-  stocky: { height: 0.965, legs: 0.955, torso: 1.015, shoulder: 1.075, hip: 1.06, girth: 1.16, arm: 0.97, head: 1.02 },
-  tall: { height: 1.055, legs: 1.06, torso: 1.03, shoulder: 1.02, hip: 0.99, girth: 0.98, arm: 1.05, head: 0.955 },
-  petite: { height: 0.935, legs: 0.955, torso: 0.975, shoulder: 0.90, hip: 1.02, girth: 0.88, arm: 0.95, head: 1.055 },
+  medium: { height: 1.000, legs: 1.000, torso: 1.000, shoulder: 1.000, hip: 1.000, girth: 1.00, arm: 1.00, head: 1.000 },
+  lean: { height: 1.005, legs: 1.030, torso: 0.990, shoulder: 0.955, hip: 0.960, girth: 0.90, arm: 1.03, head: 0.998 },
+  stocky: { height: 0.985, legs: 0.965, torso: 1.015, shoulder: 1.070, hip: 1.055, girth: 1.15, arm: 0.97, head: 0.990 },
+  tall: { height: 1.015, legs: 1.035, torso: 1.018, shoulder: 1.020, hip: 0.990, girth: 0.98, arm: 1.04, head: 1.005 },
+  petite: { height: 0.968, legs: 0.960, torso: 0.978, shoulder: 0.905, hip: 1.015, girth: 0.88, arm: 0.95, head: 1.012 },
 };
 
+// Reference heights the body-type scaler pivots around. These MUST track the
+// BONE_DEFS table above — they are the hip, shoulder and head-bone rows.
 const HIP_Y = 0.955;
+const SHOULDER_Y = 1.389;
+const HEAD_Y = 1.549;
+
+/**
+ * Distance, in rig units, from the ankle bone down to the UNDERSIDE OF THE
+ * SOLE. buildBoots() authors the whole boot against this number, and
+ * anim.js's foot IK plants the ankle exactly this far above the terrain, so
+ * the two must not drift apart. Change it here or the squad sinks.
+ */
+export const SOLE_DROP = 0.082;
 
 // ---------------------------------------------------------------------------
 // Rest-basis construction
@@ -201,13 +243,13 @@ export function makeRig(opts = {}) {
     if (isArm) {
       x *= P.shoulder;
       // Arm length scales about the shoulder height.
-      const sy = HIP_Y * P.legs + (1.362 - HIP_Y) * P.torso;
+      const sy = HIP_Y * P.legs + (SHOULDER_Y - HIP_Y) * P.torso;
       y = sy + (y - sy) * P.arm;
       if (d.name.startsWith('clavicle')) y = sy + (y - sy);
     } else if (isLeg) {
       x *= P.hip;
     } else if (/^(head|headTop)/.test(d.name)) {
-      const ny = HIP_Y * P.legs + (1.497 - HIP_Y) * P.torso;
+      const ny = HIP_Y * P.legs + (HEAD_Y - HIP_Y) * P.torso;
       y = ny + (y - ny) * P.head;
     }
     worldPos.set(d.name, new THREE.Vector3(x, y, z));
@@ -884,7 +926,11 @@ function buildMat(opts, fallbackColor) {
 export function actorBodyMaterial() {
   if (!_bodyMat) {
     _bodyMat = buildMat({
-      color: 0xffffff, roughness: 0.86, hatch: 1.0, rim: 0.5, paper: 0.9,
+      // hatch is deliberately LOW on skin and cloth. VC hatches its terrain and
+      // its masonry; it does not scribble graphite across a face. At hatch 1.0
+      // the screen-space stripe field rode straight over the cheek and the
+      // throat of every closeup and turned the portrait into a woodcut.
+      color: 0xffffff, roughness: 0.86, hatch: 0.34, rim: 0.5, paper: 0.9,
       skinning: true, vertexColors: true, subsurface: 0.22, outlineWidth: 1.15,
     }, 0xbca77c);
     _bodyMat.name = 'actorBody';
@@ -929,60 +975,148 @@ const bp = (rig, name) => {
 };
 
 /**
- * Torso: tunic shell swept along the spine with an elliptical section that
- * narrows at the waist and broadens across the chest, plus a flared hem.
+ * A partial ring: a tube swept along an elliptical arc about (0, y, zc).
+ * Collars, cuffs and open plackets all need an arc rather than a closed lathe,
+ * because the GAP is the thing that reads — a full band round the neck is a
+ * pipe, an arc with an opening at the throat is a collar.
+ */
+function addArc(b, o) {
+  const n = o.div || 9;
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const a = lerp(o.a0, o.a1, t);
+    pts.push({
+      p: [Math.sin(a) * o.rx, o.y + (o.dy ? o.dy(t) : 0), o.zc + Math.cos(a) * o.rz],
+      rx: o.tx * (o.taper ? o.taper(t) : 1),
+      rz: o.tz * (o.taper ? o.taper(t) : 1),
+    });
+  }
+  b.addTube(pts, { seg: o.seg || seg(8), capStart: o.cap || 'round', capEnd: o.cap || 'round' });
+}
+
+/**
+ * Torso: tunic shell swept along the spine.
+ *
+ * The old section list ran 0.135 -> 0.176 over the whole trunk — a 30% swell
+ * spread across 45 cm, i.e. a sack. VC's uniform silhouette is a WEDGE: a
+ * narrow waist, a broad chest, and a hard shoulder shelf the deltoid sits on.
+ * The waist is now 0.128 and the upper chest 0.178 (a 39% swell over 29 cm),
+ * which both reads as a torso and gives the band quantiser a surface whose
+ * normal actually sweeps through a terminator, instead of a near-cylinder that
+ * lands entirely inside one band.
  */
 function buildTorso(b, rig, o) {
   const g = o.girth, sh = o.shoulder;
-  const hy = rig.restWorld.hips.pos.y, cy = rig.restWorld.spine3.pos.y, ny = rig.restWorld.neck.pos.y;
+  const hy = rig.restWorld.hips.pos.y, ny = rig.restWorld.neck.pos.y;
   const zc = 0.006;
   b.setBones(TORSO).setColor(o.tunic).setMottle(0.075);
   b.addTube([
-    { p: [0, hy - 0.135, zc - 0.004], rx: 0.135 * g, rz: 0.098 * g },
-    { p: [0, hy - 0.075, zc], rx: 0.155 * g, rz: 0.111 * g },
-    { p: [0, hy - 0.005, zc], rx: 0.148 * g, rz: 0.104 * g },
-    { p: [0, lerp(hy, cy, 0.32), zc + 0.002], rx: 0.134 * g, rz: 0.096 * g },   // waist
-    { p: [0, lerp(hy, cy, 0.62), zc + 0.004], rx: 0.146 * g, rz: 0.101 * g },
-    { p: [0, cy - 0.03, zc + 0.006], rx: 0.168 * g * sh, rz: 0.112 * g },       // chest
-    { p: [0, cy + 0.055, zc + 0.006], rx: 0.176 * g * sh, rz: 0.114 * g },
-    { p: [0, cy + 0.105, zc + 0.004], rx: 0.163 * g * sh, rz: 0.106 * g },      // shoulder shelf
-    { p: [0, ny - 0.018, zc], rx: 0.112 * g, rz: 0.083 * g },                    // traps
-    { p: [0, ny - 0.002, zc], rx: 0.079 * g, rz: 0.064 * g },
+    { p: [0, hy - 0.150, zc - 0.006], rx: 0.128 * g, rz: 0.095 * g },
+    { p: [0, hy - 0.075, zc - 0.002], rx: 0.153 * g, rz: 0.113 * g },      // hip shelf
+    { p: [0, hy - 0.010, zc], rx: 0.146 * g, rz: 0.106 * g },
+    { p: [0, hy + 0.090, zc + 0.004], rx: 0.128 * g, rz: 0.095 * g },      // waist (narrowest)
+    { p: [0, hy + 0.190, zc + 0.006], rx: 0.144 * g, rz: 0.101 * g },      // lower ribs
+    { p: [0, hy + 0.300, zc + 0.008], rx: 0.163 * g * sh, rz: 0.112 * g }, // chest
+    { p: [0, hy + 0.380, zc + 0.008], rx: 0.178 * g * sh, rz: 0.114 * g }, // upper chest
+    { p: [0, hy + 0.445, zc + 0.004], rx: 0.172 * g * sh, rz: 0.106 * g }, // shoulder shelf
+    { p: [0, ny - 0.038, zc], rx: 0.126 * g, rz: 0.090 * g },              // traps
+    { p: [0, ny - 0.020, zc + 0.002], rx: 0.090 * g, rz: 0.074 * g },      // neck hole
   ], { seg: seg(18), capStart: 'round', capEnd: 'none' });
 
-  // Tunic hem — a short flared skirt that reads as heavy wool.
+  // Pectoral planes — two shallow shields on the front of the chest. Without
+  // them the chest is a smooth cylinder and the shading has nothing to bite on.
+  b.setColor(o.tunic).setMottle(0.06);
+  for (const side of [1, -1]) {
+    b.addEllipsoid({
+      center: [side * 0.062 * g, hy + 0.328, zc + 0.056 * g],
+      radius: [0.074 * g, 0.072 * g, 0.062 * g],
+      seg: seg(12), rings: seg(8),
+      displace: (dx, dy, dz) => [1, 1, 0.52 + 0.48 * clamp01(dz)],
+    });
+  }
+
+  // Tunic hem — a short skirt below the belt line. It starts at hy+0.030 (just
+  // under the belt) rather than hy-0.040, where it used to swallow the belt
+  // entirely: the skirt was 0.155*g and the belt only 0.143*g, so the one
+  // horizontal accent that cuts the figure at the waist was buried inside the
+  // cloth and every soldier read as an unbroken sack from collar to knee.
   const v0 = b.vertexCount;
   b.setColor(o.tunicShade);
   b.addTube([
-    { p: [0, hy - 0.055, zc], rx: 0.157 * g, rz: 0.113 * g },
-    { p: [0, hy - 0.135, zc - 0.004], rx: 0.171 * g, rz: 0.124 * g },
-    { p: [0, hy - 0.185, zc - 0.008], rx: 0.176 * g, rz: 0.129 * g },
-    { p: [0, hy - 0.196, zc - 0.009], rx: 0.170 * g, rz: 0.123 * g },
+    { p: [0, hy + 0.030, zc + 0.002], rx: 0.138 * g, rz: 0.100 * g },
+    { p: [0, hy - 0.055, zc - 0.002], rx: 0.158 * g, rz: 0.117 * g },
+    { p: [0, hy - 0.130, zc - 0.006], rx: 0.166 * g, rz: 0.122 * g },
+    { p: [0, hy - 0.148, zc - 0.007], rx: 0.157 * g, rz: 0.114 * g },
   ], { seg: seg(18), capEnd: 'none' });
   b.tintRange(v0, b.vertexCount, 0.94);
 
-  // Collar. Kept LOW deliberately: the old one topped out above the jawline,
-  // so it ate the neck entirely and the head read as a ball resting on the
-  // chest. A soldier needs ~3 cm of visible throat for the silhouette to work.
-  b.setColor(o.collar).setMottle(0.05);
+  // --- Collar. An OPEN stand collar: two arcs sweeping from the throat round
+  // to the nape, with the gap at the front. There is now 40 mm of visible neck
+  // above it (chin 1.4985, collar top 1.462) where the old build left 13 mm.
+  // The collar sits ON the tunic's neck hole (0.090*g) and stands ~0.018 proud
+  // of it, so the whole arc is outside the shell. Placed any tighter it
+  // disappears inside the trapezius cone and only the piping pokes through,
+  // which reads as a couple of cream splinters sticking out of the shoulders.
+  const colY = ny - 0.018;
+  const colR = 0.098 * g, colD = 0.081 * g;
+  for (const side of [1, -1]) {
+    b.setColor(o.collar).setMottle(0.045);
+    addArc(b, {
+      y: colY, zc: zc - 0.002, rx: colR, rz: colD,
+      a0: side * 0.44, a1: side * 2.76, tx: 0.015, tz: 0.012, div: 8,
+      dy: (t) => 0.018 * smoothstep(0, 0.55, t), seg: seg(7),
+    });
+    // Cream piping along the collar's top edge — VC's uniforms are trimmed.
+    b.setColor(o.trim).setMottle(0.02);
+    addArc(b, {
+      y: colY + 0.013, zc: zc - 0.002, rx: colR, rz: colD,
+      a0: side * 0.47, a1: side * 2.73, tx: 0.0034, tz: 0.0030, div: 8,
+      dy: (t) => 0.018 * smoothstep(0, 0.55, t), seg: seg(5),
+    });
+    // Lapel point: the collar corner folding down onto the chest.
+    b.setColor(o.collar).setMottle(0.04);
+    b.addTube([
+      { p: [side * 0.040 * g, colY + 0.014, zc + 0.074 * g], rx: 0.016, rz: 0.008 },
+      { p: [side * 0.062 * g, colY - 0.028, zc + 0.086 * g], rx: 0.018, rz: 0.009 },
+      { p: [side * 0.068 * g, colY - 0.060, zc + 0.084 * g], rx: 0.010, rz: 0.006 },
+    ], { seg: seg(7), capStart: 'flat', capEnd: 'round' });
+  }
+
+  // Shoulder yoke: a second layer of cloth over the shoulders with a piped
+  // edge. This is the piece that makes the silhouette read as a UNIFORM rather
+  // than a jumper, and its hard lower edge is a permanent ink line across the
+  // chest no matter how the light falls.
+  b.setColor(o.tunicShade).setMottle(0.055);
   b.addTube([
-    { p: [0, ny - 0.020, zc - 0.002], rx: 0.094 * g, rz: 0.077 * g },
-    { p: [0, ny + 0.008, zc - 0.002], rx: 0.081 * g, rz: 0.069 * g },
-    { p: [0, ny + 0.020, zc - 0.002], rx: 0.075 * g, rz: 0.065 * g },
-  ], { seg: seg(16) });
+    { p: [0, hy + 0.442, zc + 0.004], rx: 0.180 * g * sh, rz: 0.111 * g },
+    { p: [0, hy + 0.386, zc + 0.008], rx: 0.185 * g * sh, rz: 0.120 * g },
+    { p: [0, hy + 0.332, zc + 0.008], rx: 0.173 * g * sh, rz: 0.119 * g },
+    { p: [0, hy + 0.318, zc + 0.008], rx: 0.167 * g * sh, rz: 0.115 * g },
+  ], { seg: seg(18), capEnd: 'none' });
+  // Yoke piping. Kept to a MUTED ochre rather than the cream used on the
+  // collar: a 2 mm pure-cream tube round the chest at 5 m renders as a single
+  // blown-out pixel line and reads as a wire stretched across the soldier's
+  // back, not as a piped seam.
+  b.setColor(mixCol(o.trim, o.tunicShade, 0.55)).setMottle(0.03);
+  b.addTube([
+    { p: [0, hy + 0.328, zc + 0.008], rx: 0.1725 * g * sh, rz: 0.1190 * g },
+    { p: [0, hy + 0.318, zc + 0.008], rx: 0.1735 * g * sh, rz: 0.1198 * g },
+    { p: [0, hy + 0.310, zc + 0.008], rx: 0.1725 * g * sh, rz: 0.1190 * g },
+  ], { seg: seg(18), capEnd: 'none' });
 
   // Chest placket + buttons: a raised strip down the front centre.
-  b.setColor(o.tunicShade);
+  b.setColor(o.tunicShade).setMottle(0.05);
   b.addTube([
-    { p: [0, cy + 0.09, 0.108 * g], rx: 0.021, rz: 0.011 },
-    { p: [0, cy - 0.06, 0.116 * g], rx: 0.023, rz: 0.012 },
-    { p: [0, hy + 0.03, 0.107 * g], rx: 0.022, rz: 0.011 },
-    { p: [0, hy - 0.09, 0.101 * g], rx: 0.020, rz: 0.010 },
+    { p: [0, colY - 0.028, 0.084 * g], rx: 0.020, rz: 0.010 },
+    { p: [0, hy + 0.300, 0.112 * g], rx: 0.023, rz: 0.012 },
+    { p: [0, hy + 0.120, 0.106 * g], rx: 0.022, rz: 0.011 },
+    { p: [0, hy - 0.040, 0.108 * g], rx: 0.020, rz: 0.010 },
   ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
   b.setColor(o.brass);
   for (let i = 0; i < 4; i++) {
     const t = i / 3;
-    const y = lerp(cy + 0.06, hy - 0.055, t);
+    const y = lerp(hy + 0.300, hy + 0.000, t);
     b.setTransform(new THREE.Matrix4().makeTranslation(0, y, 0.121 * g));
     b.addLathe([[0, -0.006], [0.0085, -0.004], [0.0095, 0.002], [0.006, 0.005], [0, 0.006]], { seg: seg(8) });
     b.setTransform(null);
@@ -1007,26 +1141,47 @@ function buildShoulders(b, rig, o) {
     const cl = rig.restWorld['clavicle' + s].pos;
     // Sit the cap between the clavicle tip and the humerus head: that is where
     // an actual deltoid is, and it guarantees an overlap with the chest.
-    const px = lerp(cl.x, p.x, 0.62), pz = lerp(cl.z, p.z, 0.70);
+    const px = lerp(cl.x, p.x, 0.60), pz = lerp(cl.z, p.z, 0.70);
     b.setBones(side > 0 ? ARM_L : ARM_R).setColor(o.tunic).setMottle(0.07);
     b.addEllipsoid({
-      center: [px, p.y + 0.016, pz + 0.002],
-      radius: [0.088 * g, 0.072 * g, 0.082 * g],
+      center: [px, p.y + 0.014, pz + 0.002],
+      radius: [0.092 * g, 0.078 * g, 0.086 * g],
       seg: seg(16), rings: seg(11),
-      displace: (dx, dy) => {
-        // Flatten the top into a shelf, taper the underside into the armpit.
-        const up = clamp01(dy);
-        const dn = clamp01(-dy);
-        return [1 - up * up * 0.10, 1 - up * up * 0.20 - dn * dn * 0.10, 1 - up * up * 0.08];
+      displace: (dx, dy, dz) => {
+        // A deltoid is not a ball: flat shelf on top, a lateral head that bulges
+        // OUTBOARD, and a taper into the armpit. The lateral bulge is what the
+        // band terminator lands on — a smooth cap has no such landing.
+        const up = clamp01(dy), dn = clamp01(-dy);
+        const out = clamp01(dx * side);
+        const lat = out * (1 - up * up) * (1 - dn * dn);
+        return [
+          1 - up * up * 0.14 + lat * 0.10,
+          1 - up * up * 0.22 - dn * dn * 0.14,
+          1 - up * up * 0.10 - clamp01(-dz) * 0.06,
+        ];
       },
     });
     // Short sweep down the humerus so the cap dies into the sleeve.
     const el = rig.restWorld['foreArm' + s].pos;
     b.addTube([
-      { p: [lerp(px, p.x, 0.7), p.y + 0.008, lerp(pz, p.z, 0.7)], rx: 0.062 * g, rz: 0.064 * g },
-      { p: [lerp(p.x, el.x, 0.10), lerp(p.y, el.y, 0.10), lerp(p.z, el.z, 0.10)], rx: 0.058 * g, rz: 0.060 * g },
-      { p: [lerp(p.x, el.x, 0.30), lerp(p.y, el.y, 0.30), lerp(p.z, el.z, 0.30)], rx: 0.050 * g, rz: 0.053 * g },
+      { p: [lerp(px, p.x, 0.7), p.y + 0.006, lerp(pz, p.z, 0.7)], rx: 0.064 * g, rz: 0.066 * g },
+      { p: [lerp(p.x, el.x, 0.10), lerp(p.y, el.y, 0.10), lerp(p.z, el.z, 0.10)], rx: 0.059 * g, rz: 0.061 * g },
+      { p: [lerp(p.x, el.x, 0.30), lerp(p.y, el.y, 0.30), lerp(p.z, el.z, 0.30)], rx: 0.051 * g, rz: 0.054 * g },
     ], { seg: seg(12) });
+
+    // Armscye seam. A raised welt where the sleeve is set into the shoulder —
+    // 3 mm of geometry, but it is a CREASE, so the outline pass draws a line
+    // round the shoulder in every pose and at every light angle. Without it the
+    // deltoid and the sleeve are one continuous surface and the arm reads as a
+    // tube growing straight out of the ribcage.
+    b.setColor(o.tunicShade).setMottle(0.05);
+    const sx0 = lerp(px, p.x, 0.86), sz0 = lerp(pz, p.z, 0.86);
+    b.addTube([
+      { p: [sx0, p.y - 0.006, sz0], rx: 0.0625 * g, rz: 0.0645 * g },
+      { p: [lerp(sx0, el.x, 0.055), lerp(p.y - 0.006, el.y, 0.055), lerp(sz0, el.z, 0.055)], rx: 0.0665 * g, rz: 0.0685 * g },
+      { p: [lerp(sx0, el.x, 0.115), lerp(p.y - 0.006, el.y, 0.115), lerp(sz0, el.z, 0.115)], rx: 0.0605 * g, rz: 0.0625 * g },
+    ], { seg: seg(12) });
+    b.setColor(o.tunic);
   }
 }
 
@@ -1036,82 +1191,129 @@ function buildArms(b, rig, o) {
     const grp = side > 0 ? ARM_L : ARM_R;
     const sh = bp(rig, 'upperArm' + s), el = bp(rig, 'foreArm' + s), wr = bp(rig, 'hand' + s);
     const g = o.girth;
+    const at = (a, b2, t) => [lerp(a[0], b2[0], t), lerp(a[1], b2[1], t), lerp(a[2], b2[2], t)];
     b.setBones(grp).setColor(o.tunic).setMottle(0.07);
-    // Upper arm: sleeve, thickest at the deltoid insertion.
+    // Upper arm: sleeve over a bicep belly. The swell at 0.40 and the pinch
+    // above the elbow are deliberate — a straight taper is a cone, and a cone
+    // gives the quantiser a single unbroken wash from shoulder to wrist.
     b.addTube([
-      { p: [lerp(sh[0], el[0], -0.12), lerp(sh[1], el[1], -0.12), lerp(sh[2], el[2], -0.12)], rx: 0.056 * g, rz: 0.058 * g },
-      { p: [lerp(sh[0], el[0], 0.18), lerp(sh[1], el[1], 0.18), lerp(sh[2], el[2], 0.18)], rx: 0.052 * g, rz: 0.055 * g },
-      { p: [lerp(sh[0], el[0], 0.58), lerp(sh[1], el[1], 0.58), lerp(sh[2], el[2], 0.58)], rx: 0.045 * g, rz: 0.048 * g },
-      { p: [lerp(sh[0], el[0], 0.94), lerp(sh[1], el[1], 0.94), lerp(sh[2], el[2], 0.94)], rx: 0.042 * g, rz: 0.045 * g },
-      { p: el, rx: 0.043 * g, rz: 0.046 * g },
+      { p: at(sh, el, -0.12), rx: 0.057 * g, rz: 0.059 * g },
+      { p: at(sh, el, 0.16), rx: 0.055 * g, rz: 0.058 * g },
+      { p: at(sh, el, 0.40), rx: 0.052 * g, rz: 0.056 * g },   // bicep belly
+      { p: at(sh, el, 0.72), rx: 0.044 * g, rz: 0.047 * g },
+      { p: at(sh, el, 0.94), rx: 0.041 * g, rz: 0.045 * g },
+      { p: el, rx: 0.043 * g, rz: 0.046 * g },                  // elbow
     ], { seg: seg(12) });
-    // Forearm: sleeve swelling at the belly of the muscle, cuff at the wrist.
+
+    // --- Rolled sleeve. The cuff stops at 45% of the forearm and the rest is
+    // bare skin. Two things fall out of that: the sleeve's hard rolled edge is
+    // a permanent ink line mid-forearm at any light angle, and the hand stops
+    // being a tan blob on a tan sleeve — the arm now reads sleeve / skin / hand
+    // as three separate values, which is why the extremity survives to 40 m.
+    const rollT = 0.44;
     b.addTube([
       { p: el, rx: 0.043 * g, rz: 0.046 * g },
-      { p: [lerp(el[0], wr[0], 0.22), lerp(el[1], wr[1], 0.22), lerp(el[2], wr[2], 0.22)], rx: 0.045 * g, rz: 0.047 * g },
-      { p: [lerp(el[0], wr[0], 0.62), lerp(el[1], wr[1], 0.62), lerp(el[2], wr[2], 0.62)], rx: 0.036 * g, rz: 0.038 * g },
-      { p: [lerp(el[0], wr[0], 0.86), lerp(el[1], wr[1], 0.86), lerp(el[2], wr[2], 0.86)], rx: 0.031 * g, rz: 0.033 * g },
+      { p: at(el, wr, 0.16), rx: 0.045 * g, rz: 0.047 * g },   // forearm belly
+      { p: at(el, wr, rollT - 0.02), rx: 0.040 * g, rz: 0.042 * g },
     ], { seg: seg(12) });
-    b.setColor(o.collar);
+    // The roll itself: a thicker band of doubled cloth.
+    b.setColor(o.tunicShade);
     b.addTube([
-      { p: [lerp(el[0], wr[0], 0.83), lerp(el[1], wr[1], 0.83), lerp(el[2], wr[2], 0.83)], rx: 0.034 * g, rz: 0.036 * g },
-      { p: [lerp(el[0], wr[0], 0.99), lerp(el[1], wr[1], 0.99), lerp(el[2], wr[2], 0.99)], rx: 0.031 * g, rz: 0.033 * g },
-    ], { seg: seg(12), capEnd: 'none' });
-    // Bare wrist.
+      { p: at(el, wr, rollT - 0.04), rx: 0.043 * g, rz: 0.045 * g },
+      { p: at(el, wr, rollT + 0.02), rx: 0.050 * g, rz: 0.052 * g },
+      { p: at(el, wr, rollT + 0.09), rx: 0.048 * g, rz: 0.050 * g },
+      { p: at(el, wr, rollT + 0.12), rx: 0.040 * g, rz: 0.042 * g },
+    ], { seg: seg(12), capEnd: 'flat' });
+
+    // Bare forearm + wrist, tapering into the hand.
     b.setBones(side > 0 ? HAND_L : HAND_R).setColor(o.skin).setMottle(0.035);
     b.addTube([
-      { p: [lerp(el[0], wr[0], 0.97), lerp(el[1], wr[1], 0.97), lerp(el[2], wr[2], 0.97)], rx: 0.029, rz: 0.031 },
-      { p: wr, rx: 0.028, rz: 0.030 },
-    ], { seg: seg(10) });
+      { p: at(el, wr, rollT + 0.04), rx: 0.038, rz: 0.040 },
+      { p: at(el, wr, 0.66), rx: 0.034, rz: 0.036 },
+      { p: at(el, wr, 0.88), rx: 0.029, rz: 0.031 },
+      { p: wr, rx: 0.027, rz: 0.030 },
+    ], { seg: seg(11) });
   }
 }
 
+/**
+ * Hands. A hand only reads at 10 m if it has an OUTLINE that is not the same
+ * shape as the arm above it, so the priorities here are, in order: a palm that
+ * is visibly wider than the wrist, a knuckle line, and four fingers with
+ * different lengths and a visible gap between them. The previous build was a
+ * bevelled lozenge with four identical parallel sausages — at range that is a
+ * blunt tube end, which is exactly what the overview critique reported.
+ */
 function buildHands(b, rig, o) {
   for (const side of [1, -1]) {
     const s = side > 0 ? 'L' : 'R';
     const grp = side > 0 ? HAND_L : HAND_R;
     const wr = rig.restWorld['hand' + s].pos, fg = rig.restWorld['fingers' + s].pos;
     const col = o.gloves ? o.glove : o.skin;
-    b.setBones(grp).setColor(col).setMottle(0.04);
-    // Palm — a flattened rounded box aligned with the forearm.
     const q = new THREE.Quaternion().copy(rig.restWorld['hand' + s].quat);
+    b.setBones(grp).setColor(col).setMottle(0.04);
+
+    // Palm — flattened, and FLARED toward the knuckles: 0.084 across the
+    // knuckle line against a 0.055 wrist. In hand-bone space local +Y runs
+    // down the bone, local +Z is forward, local +X is lateral (thickness).
     const m = new THREE.Matrix4().compose(
-      new THREE.Vector3(lerp(wr.x, fg.x, 0.42), lerp(wr.y, fg.y, 0.42), lerp(wr.z, fg.z, 0.42) + 0.002), q, new THREE.Vector3(1, 1, 1));
+      new THREE.Vector3(lerp(wr.x, fg.x, 0.44), lerp(wr.y, fg.y, 0.44), lerp(wr.z, fg.z, 0.44) + 0.003),
+      q, new THREE.Vector3(1, 1, 1));
     b.setTransform(m);
-    b.addRoundedBox({ size: [0.017, 0.045, 0.037], bevel: 0.014, div: 3 });
+    b.addRoundedBox({ size: [0.0148, 0.046, 0.0410], bevel: 0.0125, div: 3 });
+    // Thenar pad — the muscle at the base of the thumb. Small, but it is the
+    // difference between a hand and a paddle in silhouette.
+    b.addEllipsoid({
+      center: [0, 0.006, side > 0 ? 0.031 : 0.031], radius: [0.0135, 0.028, 0.017],
+      seg: seg(9), rings: seg(6),
+    });
     b.setTransform(null);
+
+    // Knuckle ridge across the top of the palm.
+    const dir = new THREE.Vector3().copy(fg).sub(wr).normalize();
+    const kn = [fg.x + dir.x * 0.004, fg.y + dir.y * 0.004 + 0.024, fg.z + dir.z * 0.004];
+    b.addTube([
+      { p: [kn[0] - side * 0.006, kn[1], kn[2] - 0.030], rx: 0.0092, rz: 0.0080 },
+      { p: [kn[0], kn[1] + 0.003, kn[2] - 0.004], rx: 0.0108, rz: 0.0092 },
+      { p: [kn[0] + side * 0.004, kn[1] + 0.001, kn[2] + 0.026], rx: 0.0094, rz: 0.0082 },
+    ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
+
     // Fingers, built already CURLED. These hands spend essentially all of their
     // time closed around a rifle — there is no finger rig to close them — so a
     // straight splayed finger reads as an open hand floating next to the weapon
     // even when the wrist is perfectly placed on the grip. Curling the rest pose
     // costs nothing and makes every carry, aim and reload pose read as a hold.
     b.setBones([`fingers${s}`, `hand${s}`]);
-    const dir = new THREE.Vector3().copy(fg).sub(wr).normalize();
-    const palmF = 0.94;                        // curl direction: toward the palm (+Z)
+    const palmF = 0.96;                        // curl direction: toward the palm (+Z)
+    // index, middle, ring, little — real relative lengths, so the fingertip arc
+    // is a curve rather than a straight cut.
+    const FLEN = [0.058, 0.062, 0.057, 0.047];
+    const FRAD = [0.0100, 0.0102, 0.0094, 0.0082];
     for (let f = 0; f < 4; f++) {
-      const lat = (f - 1.5) * 0.017;
-      const len = 0.055 - Math.abs(f - 1.2) * 0.006;
-      const px = fg.x + side * lat * 0.25, pz = fg.z + lat * 0.95;
-      const y0 = fg.y + 0.028;
+      const lat = (f - 1.5) * 0.0185;
+      const len = FLEN[f], r0 = FRAD[f];
+      const px = fg.x + side * lat * 0.22, pz = fg.z + lat * 0.98;
+      const y0 = fg.y + 0.026;
       const at = (t, curl) => [
-        px + dir.x * len * t,
+        px + dir.x * len * t - side * 0.004 * t * t,
         y0 + dir.y * len * t,
         pz + dir.z * len * t + palmF * curl,
       ];
       b.addTube([
-        { p: at(0.00, 0.0000), rx: 0.0098, rz: 0.0090 },
-        { p: at(0.42, 0.0050), rx: 0.0094, rz: 0.0086 },
-        { p: at(0.74, 0.0175), rx: 0.0082, rz: 0.0076 },
-        { p: at(0.92, 0.0330), rx: 0.0066, rz: 0.0062 },
+        { p: at(0.00, 0.0000), rx: r0, rz: r0 * 0.92 },
+        { p: at(0.34, 0.0042), rx: r0 * 1.02, rz: r0 * 0.94 },   // proximal knuckle
+        { p: at(0.62, 0.0150), rx: r0 * 0.88, rz: r0 * 0.82 },
+        { p: at(0.84, 0.0300), rx: r0 * 0.80, rz: r0 * 0.74 },
+        { p: at(0.96, 0.0410), rx: r0 * 0.64, rz: r0 * 0.60 },
       ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
     }
     // Thumb, laid across the closed fingers rather than sticking out sideways.
     b.setBones([`thumb${s}`, `hand${s}`]);
     const th = rig.restWorld['thumb' + s];
     b.addTube([
-      { p: [th.pos.x, th.pos.y, th.pos.z], rx: 0.0118, rz: 0.0108 },
-      { p: [lerp(th.pos.x, th.tail.x, 0.6) - side * 0.004, lerp(th.pos.y, th.tail.y, 0.7), lerp(th.pos.z, th.tail.z, 0.55) + 0.006], rx: 0.0100, rz: 0.0092 },
-      { p: [th.tail.x - side * 0.014, th.tail.y - 0.008, th.tail.z - 0.004], rx: 0.0080, rz: 0.0075 },
+      { p: [th.pos.x, th.pos.y, th.pos.z], rx: 0.0122, rz: 0.0112 },
+      { p: [lerp(th.pos.x, th.tail.x, 0.6) - side * 0.004, lerp(th.pos.y, th.tail.y, 0.7), lerp(th.pos.z, th.tail.z, 0.55) + 0.006], rx: 0.0104, rz: 0.0096 },
+      { p: [th.tail.x - side * 0.015, th.tail.y - 0.009, th.tail.z - 0.005], rx: 0.0082, rz: 0.0077 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
   }
 }
@@ -1122,69 +1324,110 @@ function buildLegs(b, rig, o) {
     const s = side > 0 ? 'L' : 'R';
     const grp = side > 0 ? LEG_L : LEG_R;
     const hp = bp(rig, 'thigh' + s), kn = bp(rig, 'shin' + s), an = bp(rig, 'foot' + s);
+    const at = (a, b2, t) => [lerp(a[0], b2[0], t), lerp(a[1], b2[1], t), lerp(a[2], b2[2], t)];
     b.setBones(grp).setColor(o.trouser).setMottle(0.07);
     b.addTube([
-      { p: [hp[0], hp[1] + 0.055, hp[2]], rx: 0.085 * g, rz: 0.088 * g },
-      { p: [lerp(hp[0], kn[0], 0.14), lerp(hp[1], kn[1], 0.14), lerp(hp[2], kn[2], 0.14)], rx: 0.082 * g, rz: 0.086 * g },
-      { p: [lerp(hp[0], kn[0], 0.52), lerp(hp[1], kn[1], 0.52), lerp(hp[2], kn[2], 0.52)], rx: 0.071 * g, rz: 0.076 * g },
-      { p: [lerp(hp[0], kn[0], 0.9), lerp(hp[1], kn[1], 0.9), lerp(hp[2], kn[2], 0.9)], rx: 0.059 * g, rz: 0.062 * g },
-      { p: kn, rx: 0.058 * g, rz: 0.061 * g },
-      { p: [lerp(kn[0], an[0], 0.18), lerp(kn[1], an[1], 0.18), lerp(kn[2], an[2], 0.18)], rx: 0.062 * g, rz: 0.067 * g }, // calf
-      { p: [lerp(kn[0], an[0], 0.42), lerp(kn[1], an[1], 0.42), lerp(kn[2], an[2], 0.42)], rx: 0.056 * g, rz: 0.059 * g },
+      { p: [hp[0], hp[1] + 0.055, hp[2]], rx: 0.086 * g, rz: 0.090 * g },
+      { p: at(hp, kn, 0.14), rx: 0.083 * g, rz: 0.088 * g },
+      { p: at(hp, kn, 0.52), rx: 0.072 * g, rz: 0.077 * g },
+      { p: at(hp, kn, 0.88), rx: 0.058 * g, rz: 0.062 * g },
+      { p: kn, rx: 0.057 * g, rz: 0.060 * g },                  // knee
+      { p: at(kn, an, 0.20), rx: 0.063 * g, rz: 0.068 * g },    // calf belly
+      { p: at(kn, an, 0.42), rx: 0.055 * g, rz: 0.058 * g },
     ], { seg: seg(13), capStart: 'round' });
-    // Trouser blousing over the boot top.
+    // Trouser blousing gathered over the boot top.
     b.setColor(o.trouserCuff);
     b.addTube([
-      { p: [lerp(kn[0], an[0], 0.40), lerp(kn[1], an[1], 0.40), lerp(kn[2], an[2], 0.40)], rx: 0.058 * g, rz: 0.061 * g },
-      { p: [lerp(kn[0], an[0], 0.52), lerp(kn[1], an[1], 0.52), lerp(kn[2], an[2], 0.52)], rx: 0.064 * g, rz: 0.067 * g },
-      { p: [lerp(kn[0], an[0], 0.60), lerp(kn[1], an[1], 0.60), lerp(kn[2], an[2], 0.60)], rx: 0.058 * g, rz: 0.061 * g },
-    ], { seg: seg(13) });
+      { p: at(kn, an, 0.38), rx: 0.056 * g, rz: 0.059 * g },
+      { p: at(kn, an, 0.50), rx: 0.068 * g, rz: 0.071 * g },
+      { p: at(kn, an, 0.60), rx: 0.062 * g, rz: 0.065 * g },
+      { p: at(kn, an, 0.64), rx: 0.052 * g, rz: 0.055 * g },
+    ], { seg: seg(13), capEnd: 'flat' });
   }
 }
 
+/**
+ * Boots. The old build tapered the foot to rz 0.026 at the toe and hid the sole
+ * inside the upper, so from any distance the leg was a stick that came to a
+ * point — the overview critique's "two tapered leg tubes with no boots or
+ * ground contact". A boot has to do three things in silhouette: be WIDER than
+ * the calf above it, project fore and aft of the ankle, and show a sole slab
+ * that overhangs the upper so there is a hard horizontal line at the ground.
+ * Length here is 0.265 m, width 0.098 m, and the welt stands 8 mm proud of the
+ * upper all the way round.
+ */
 function buildBoots(b, rig, o) {
   const g = o.girth;
   for (const side of [1, -1]) {
     const s = side > 0 ? 'L' : 'R';
     const grp = side > 0 ? FOOT_L : FOOT_R;
     const kn = bp(rig, 'shin' + s), an = rig.restWorld['foot' + s].pos, to = rig.restWorld['toe' + s].pos;
-    b.setBones(grp).setColor(o.boot).setMottle(0.05);
-    // Shaft up the lower shin.
-    b.addTube([
-      { p: [lerp(kn[0], an.x, 0.52), lerp(kn[1], an.y, 0.52), lerp(kn[2], an.z, 0.52)], rx: 0.055 * g, rz: 0.058 * g },
-      { p: [lerp(kn[0], an.x, 0.74), lerp(kn[1], an.y, 0.74), lerp(kn[2], an.z, 0.74)], rx: 0.049 * g, rz: 0.053 * g },
-      { p: [an.x, an.y + 0.012, an.z + 0.004], rx: 0.046 * g, rz: 0.052 * g },
-    ], { seg: seg(12), capStart: 'flat' });
-    // Foot: heel block, instep and rounded toe cap.
     const fwd = new THREE.Vector3(to.x - an.x, 0, to.z - an.z).normalize();
-    const heel = new THREE.Vector3(an.x - fwd.x * 0.055, an.y - 0.05, an.z - fwd.z * 0.055);
-    const ball = new THREE.Vector3(to.x, an.y - 0.058, to.z);
-    const tip = new THREE.Vector3(to.x + fwd.x * 0.055, an.y - 0.052, to.z + fwd.z * 0.055);
+    b.setBones(grp).setColor(o.boot).setMottle(0.05);
+    // Shaft up the lower shin — a boot, so it is FATTER than the trouser cuff.
     b.addTube([
-      { p: [heel.x, heel.y + 0.014, heel.z], rx: 0.041, rz: 0.030 },
-      { p: [an.x, an.y - 0.022, an.z], rx: 0.046, rz: 0.042 },
-      { p: [lerp(an.x, ball.x, 0.5), an.y - 0.04, lerp(an.z, ball.z, 0.5)], rx: 0.048, rz: 0.044 },
-      { p: [ball.x, ball.y + 0.014, ball.z], rx: 0.046, rz: 0.038 },
-      { p: [tip.x, tip.y + 0.012, tip.z], rx: 0.036, rz: 0.026 },
+      { p: [lerp(kn[0], an.x, 0.56), lerp(kn[1], an.y, 0.56), lerp(kn[2], an.z, 0.56)], rx: 0.058 * g, rz: 0.062 * g },
+      { p: [lerp(kn[0], an.x, 0.78), lerp(kn[1], an.y, 0.78), lerp(kn[2], an.z, 0.78)], rx: 0.052 * g, rz: 0.057 * g },
+      { p: [an.x, an.y + 0.020, an.z + 0.002], rx: 0.048 * g, rz: 0.056 * g },
+    ], { seg: seg(12), capStart: 'flat' });
+
+    // Foot upper: heel counter, instep, toe box. NOTE the frames — this tube's
+    // spine runs horizontally, so `rz` is the VERTICAL half-height and `rx` the
+    // half-width, the opposite of the vertical shaft tube above.
+    // Everything below is expressed against the ankle so that the underside of
+    // the sole lands at exactly ankle - 0.082, which for the canonical skeleton
+    // is world y = 0 — the plane the foot IK plants the ankle against. Get this
+    // wrong by a centimetre and every soldier in the game sinks into the turf.
+    const heelZ = -0.055, tipZ = 0.050;
+    const A = an.y;
+    const heel = new THREE.Vector3(an.x + fwd.x * heelZ, A, an.z + fwd.z * heelZ);
+    const ball = new THREE.Vector3(to.x, A, to.z);
+    const tip = new THREE.Vector3(to.x + fwd.x * tipZ, A, to.z + fwd.z * tipZ);
+    b.addTube([
+      { p: [heel.x, A - 0.028, heel.z], rx: 0.040, rz: 0.024 },                             // heel counter
+      { p: [lerp(heel.x, an.x, 0.5), A - 0.024, lerp(heel.z, an.z, 0.5)], rx: 0.046, rz: 0.028 },
+      { p: [an.x, A - 0.019, an.z], rx: 0.049, rz: 0.034 },                                 // instep
+      { p: [lerp(an.x, ball.x, 0.55), A - 0.021, lerp(an.z, ball.z, 0.55)], rx: 0.050, rz: 0.032 },
+      { p: [ball.x, A - 0.023, ball.z], rx: 0.048, rz: 0.030 },                             // ball
+      { p: [tip.x, A - 0.028, tip.z], rx: 0.039, rz: 0.024 },                               // toe box
     ], { seg: seg(12), capStart: 'round', capEnd: 'round' });
-    // Sole slab.
-    b.setColor(o.bootSole);
+
+    // Welt: a rand standing proud of the upper the whole way round. This is the
+    // hard horizontal line that tells the eye a boot is SITTING on the ground
+    // rather than a trouser tube fading into it.
+    b.setColor(o.bootWelt).setMottle(0.035);
     b.addTube([
-      { p: [heel.x, an.y - 0.062, heel.z], rx: 0.042, rz: 0.012 },
-      { p: [an.x, an.y - 0.070, an.z], rx: 0.047, rz: 0.013 },
-      { p: [ball.x, an.y - 0.072, ball.z], rx: 0.047, rz: 0.013 },
-      { p: [tip.x, an.y - 0.068, tip.z], rx: 0.036, rz: 0.011 },
-    ], { seg: seg(10), capStart: 'round', capEnd: 'round' });
+      { p: [heel.x, A - 0.061, heel.z], rx: 0.048, rz: 0.008 },
+      { p: [an.x, A - 0.062, an.z], rx: 0.056, rz: 0.008 },
+      { p: [ball.x, A - 0.062, ball.z], rx: 0.056, rz: 0.008 },
+      { p: [tip.x, A - 0.061, tip.z], rx: 0.047, rz: 0.007 },
+    ], { seg: seg(11), capStart: 'round', capEnd: 'round' });
+    // Sole. Thicker under the heel (a stacked heel) than under the ball, with a
+    // few millimetres of toe spring, so the profile is a boot and not a plank.
+    b.setColor(o.bootSole).setMottle(0.03);
+    b.addTube([
+      { p: [heel.x, A - 0.073, heel.z], rx: 0.046, rz: 0.009 },
+      { p: [lerp(heel.x, an.x, 0.7), A - 0.074, lerp(heel.z, an.z, 0.7)], rx: 0.053, rz: 0.008 },
+      { p: [ball.x, A - 0.075, ball.z], rx: 0.053, rz: 0.007 },
+      { p: [tip.x, A - 0.071, tip.z], rx: 0.044, rz: 0.006 },
+    ], { seg: seg(11), capStart: 'round', capEnd: 'round' });
   }
 }
 
+/**
+ * Neck. 100 mm of column between the collar and the jaw, thickening into the
+ * trapezius at the base so the head is joined to the shoulders by a wedge
+ * rather than balanced on a stalk.
+ */
 function buildNeck(b, rig, o) {
   const ny = rig.restWorld.neck.pos.y, hy = rig.restWorld.head.pos.y;
-  b.setBones(NECK).setColor(o.skin).setMottle(0.035);
+  b.setBones(NECK).setColor(o.skin).setMottle(0.03);
   b.addTube([
-    { p: [0, ny - 0.02, 0.002], rx: 0.058, rz: 0.054 },
-    { p: [0, ny + 0.03, 0.004], rx: 0.050, rz: 0.047 },
-    { p: [0, hy + 0.005, 0.006], rx: 0.047, rz: 0.046 },
+    { p: [0, ny - 0.052, 0.000], rx: 0.072, rz: 0.064 },   // trapezius root
+    { p: [0, ny - 0.014, 0.004], rx: 0.056, rz: 0.052 },
+    { p: [0, ny + 0.034, 0.007], rx: 0.048, rz: 0.046 },
+    { p: [0, hy - 0.010, 0.009], rx: 0.046, rz: 0.045 },
+    { p: [0, hy + 0.028, 0.006], rx: 0.051, rz: 0.050 },   // into the skull base
   ], { seg: seg(12) });
 }
 
@@ -1197,10 +1440,12 @@ function buildNeck(b, rig, o) {
 export function buildHead(b, rig, o, f) {
   const hb = rig.restWorld.head.pos;
   const hs = rig.proportions.head;
-  // Deliberately oversized: VC's stylised-realistic proportion is ~6.5 heads
-  // tall, not the ~8 heads a strictly anatomical skull on this skeleton gives.
-  const cx = 0, cy = hb.y + 0.070 * hs, cz = hb.z + 0.004;
-  const R = [0.097 * f.width * hs, 0.126 * f.length * hs, 0.114 * f.depth * hs];
+  // 0.160 x 0.233 x 0.197 m — a slightly-large but human skull, giving 7.28
+  // heads to the figure. The previous 0.195 x 0.252 x 0.228 was 6.4 heads and
+  // 22% over-wide, which is the whole of "the head is enormous and
+  // balloon-shaped, roughly a third of the visible figure".
+  const cx = 0, cy = hb.y + 0.066 * hs, cz = hb.z + 0.004;
+  const R = [0.0800 * f.width * hs, 0.1165 * f.length * hs, 0.0985 * f.depth * hs];
 
   /**
    * The skull's radial displacement, factored out of addEllipsoid so the face
@@ -1210,34 +1455,57 @@ export function buildHead(b, rig, o, f) {
    * an eyeball's protrusion, so a lens authored at a fixed 0.80·R sat *inside*
    * the head and the face rendered as a blank egg.
    */
+  const gauss = (v, w) => Math.exp(-(v / w) * (v / w));
   const skull = (dx, dy, dz) => {
     let sx = 1, sy = 1, sz = 1;
     const front = clamp01(dz);
-    // Jaw + chin: narrow the lower third, push the chin forward.
-    const low = clamp01((-dy - 0.05) / 0.85);
-    sx -= low * (0.24 - f.jaw * 0.16);
-    sz -= low * 0.06 * (1 - f.chin);
-    if (dy < -0.35 && dz > 0.25) sz += (f.chin * 0.10) * smoothstep(0.25, 0.8, dz) * smoothstep(-0.35, -0.75, dy);
-    // Cranium: slightly boxy at the back, tapered at the temples.
-    const up = clamp01(dy);
-    sx += up * up * 0.045 * f.cranium;
-    if (dz < -0.3) sz += 0.045 * f.cranium * smoothstep(-0.3, -0.9, dz);
-    // Brow ridge.
-    const brow = smoothstep(0.05, 0.32, dy) * (1 - smoothstep(0.32, 0.62, dy)) * front;
-    sz += brow * 0.05 * f.brow;
-    // Eye sockets — a shallow recess so the eye pieces sit in shadow.
-    const eye = smoothstep(0.55, 0.95, front) * Math.exp(-Math.pow((dy - 0.03) / 0.16, 2)) * Math.exp(-Math.pow((Math.abs(dx) - 0.42) / 0.26, 2));
-    sz -= eye * 0.045;
-    // Cheekbones.
-    const cheek = Math.exp(-Math.pow((dy + 0.16) / 0.2, 2)) * Math.exp(-Math.pow((Math.abs(dx) - 0.6) / 0.3, 2)) * clamp01(dz + 0.2);
-    sx += cheek * 0.055 * f.cheek;
-    sz += cheek * 0.02 * f.cheek;
-    // Temples pinch.
-    const temple = Math.exp(-Math.pow((dy - 0.28) / 0.2, 2)) * Math.exp(-Math.pow((Math.abs(dx) - 0.85) / 0.3, 2));
-    sx -= temple * 0.035;
-    // Flatten the very top a touch — helmets have to sit somewhere.
-    if (dy > 0.8) sy -= (dy - 0.8) * 0.09;
-    return [sx, sy, sz];
+    const up = clamp01(dy), dn = clamp01(-dy);
+    const ax = Math.abs(dx);
+
+    // --- cranium: occipital bulge behind, parietal width above, flat crown so
+    // headgear has somewhere to sit.
+    sx += up * up * 0.032 * f.cranium;
+    sz += 0.055 * f.cranium * smoothstep(-0.25, -0.90, dz);
+    if (dy > 0.78) sy -= (dy - 0.78) * 0.13;
+    // Temples: pinched above and behind the eyes.
+    sx -= 0.055 * gauss(dy - 0.30, 0.24) * gauss(ax - 0.86, 0.30);
+
+    // --- THE FACE PLANE. The single biggest "balloon" fix. A sphere shades as
+    // one continuous gradient, which is precisely what the closeup critique
+    // measured on the cheek (143,149,152,154,155 — 1 LSB per pixel, no
+    // terminator anywhere). Flattening the front of the head from brow to chin
+    // into a plane gives the quantiser a normal that swings hard at the edge of
+    // that plane, so the band boundary has somewhere to land.
+    const facePlane = smoothstep(0.28, 0.86, dz) * (1 - smoothstep(0.52, 1.0, ax));
+    sz -= facePlane * 0.090;
+
+    // --- brow ridge, and the socket recess under it.
+    sz += gauss(dy - 0.30, 0.13) * front * 0.080 * f.brow;
+    sz -= gauss(dy - 0.05, 0.13) * gauss(ax - 0.40, 0.26) * smoothstep(0.40, 0.88, dz) * 0.072;
+
+    // --- cheekbone, then the hollow under it. This pair is the terminator VC
+    // draws under every face: a lit plane above, a flat wash below, one hard
+    // wobbling pigment edge between them.
+    const zyg = gauss(dy + 0.10, 0.15) * gauss(ax - 0.62, 0.24) * clamp01(dz + 0.35);
+    sx += zyg * 0.075 * f.cheek;
+    sz += zyg * 0.045 * f.cheek;
+    const hollow = gauss(dy + 0.34, 0.16) * gauss(ax - 0.52, 0.22) * front;
+    sx -= hollow * 0.048;
+    sz -= hollow * 0.038;
+
+    // --- jaw: narrow the lower third, then put a gonial corner back into it so
+    // there is an actual jaw ANGLE rather than an egg tapering to a point.
+    const low = smoothstep(0.10, 0.92, dn);
+    sx -= low * (0.30 - f.jaw * 0.14);
+    sz -= low * 0.11;
+    sx += gauss(dy + 0.52, 0.17) * gauss(ax - 0.66, 0.24) * (1 - smoothstep(0.10, 0.72, dz))
+      * 0.105 * (0.5 + f.jaw * 0.6);
+    // --- chin (mental protuberance).
+    const chin = gauss(dy + 0.74, 0.20) * gauss(dx, 0.30) * smoothstep(0.08, 0.62, dz);
+    sz += chin * 0.165 * (0.55 + f.chin * 0.50);
+    sy -= chin * 0.045;
+
+    return [clamp(sx, 0.5, 1.4), clamp(sy, 0.5, 1.4), clamp(sz, 0.5, 1.4)];
   };
 
   b.setBones(HEAD).setColor(o.skin).setMottle(0.03);
@@ -1261,18 +1529,33 @@ export function buildHead(b, rig, o, f) {
   /** Direction with the given lateral/vertical bias and the front hemisphere. */
   const face = (dx, dy, lift = 0) => surf(dx, dy, Math.sqrt(Math.max(0.04, 1 - dx * dx - dy * dy)), lift);
 
-  // --- Nose: a short wedge, not a snout. VC noses are barely more than a
-  // shadowed plane and a nostril line; the old profile stuck out 19 mm.
+  // --- Nose. Built as three real pieces — bridge, ball, wings — because the
+  // face plane above is now flat, so the nose is the ONLY thing casting a
+  // shadow across the middle of the face. The old single wedge projected 9 mm
+  // off a spherical face and vanished; this one stands 20 mm proud of the
+  // plane and puts a hard vertical crease down the centre.
   {
-    const root = face(0, 0.16, 0);
-    const tip = face(0, -0.12, 0);
-    const nw = 0.0066 * f.width, nl = 0.0090 * f.nose;
+    const nBridgeY = 0.235, nTipY = -0.115;
+    const bridge = face(0, nBridgeY, 0);
+    const tip = face(0, nTipY, 0);
+    const nw = 0.0062 * f.width;
+    const proj = 0.0125 * f.nose;                 // ball projection past the skin
+    const midY = lerp(nBridgeY, nTipY, 0.55);
+    const mid = face(0, midY, 0);
     b.addTube([
-      { p: [0, root[1], root[2] - 0.010], rx: nw * 0.66, rz: 0.005 },
-      { p: [0, lerp(root[1], tip[1], 0.52), lerp(root[2], tip[2], 0.52) + 0.0030 * f.nose], rx: nw * 0.82, rz: nl * 0.62 },
-      { p: [0, lerp(root[1], tip[1], 0.86), lerp(root[2], tip[2], 0.86) + 0.0062 * f.nose], rx: nw * 1.24, rz: nl },
-      { p: [0, tip[1], tip[2] + 0.0024 * f.nose], rx: nw * 1.30, rz: nl * 0.66 },
+      { p: [0, bridge[1], bridge[2] - 0.006], rx: nw * 0.58, rz: 0.0045 },
+      { p: [0, mid[1], mid[2] + proj * 0.42], rx: nw * 0.72, rz: proj * 0.60 },
+      { p: [0, lerp(mid[1], tip[1], 0.62), lerp(mid[2], tip[2], 0.62) + proj * 0.90], rx: nw * 1.10, rz: proj * 0.94 },
+      { p: [0, tip[1], tip[2] + proj * 0.80], rx: nw * 1.26, rz: proj * 0.86 },   // ball
+      { p: [0, tip[1] - 0.0055, tip[2] + proj * 0.30], rx: nw * 1.20, rz: proj * 0.50 },
     ], { seg: seg(9), capEnd: 'round' });
+    // Nostril wings.
+    for (const side of [1, -1]) {
+      b.addEllipsoid({
+        center: [side * nw * 1.42, tip[1] - 0.0015, tip[2] + proj * 0.40],
+        radius: [nw * 0.86, 0.0056, proj * 0.66], seg: seg(8), rings: seg(5),
+      });
+    }
   }
 
   // --- Ears, seated on the real skin so they are not swallowed by the temples.
@@ -1284,7 +1567,7 @@ export function buildHead(b, rig, o, f) {
       new THREE.Vector3(1, 1, 1));
     b.setTransform(m);
     b.addEllipsoid({
-      radius: [0.023, 0.034 * f.ear, 0.014], seg: seg(9), rings: seg(7),
+      radius: [0.0195, 0.0300 * f.ear, 0.0120], seg: seg(9), rings: seg(7),
       displace: (dx, dy, dz) => [1, 1, dz > 0 ? 1 - 0.45 * clamp01(1 - Math.hypot(dx, dy) * 1.5) : 1],
     });
     b.setTransform(null);
@@ -1294,7 +1577,7 @@ export function buildHead(b, rig, o, f) {
   // lens, a dark iris, and — the piece that actually reads at 40 m — a heavy
   // graphite upper lash line. Everything is placed relative to the displaced
   // socket and lifted clear of it, so nothing z-fights with the skin.
-  const eDX = 0.44, eDY = 0.045;
+  const eDX = 0.42, eDY = 0.030;
   const eyeS = f.eye * (0.98 + 0.10 * clamp01(f.eye - 1));
   for (const side of [1, -1]) {
     const pe = face(side * eDX, eDY, 0);
@@ -1310,23 +1593,23 @@ export function buildHead(b, rig, o, f) {
     // the face, so keep the depth small and let the lash line carry the form.
     b.setColor(PALETTE.eyeWhite).setMottle(0);
     b.setTransform(at(-0.0022));
-    b.addEllipsoid({ radius: [0.0198 * eyeS, 0.0126 * eyeS, 0.0062], seg: seg(11), rings: seg(7) });
+    b.addEllipsoid({ radius: [0.0168 * eyeS, 0.0112 * eyeS, 0.0055], seg: seg(11), rings: seg(7) });
     // Iris + pupil.
     b.setColor(f.eyeColor);
-    b.setTransform(at(0.0016));
-    b.addEllipsoid({ radius: [0.0100 * eyeS, 0.0106 * eyeS, 0.0040], seg: seg(10), rings: seg(6) });
+    b.setTransform(at(0.0015));
+    b.addEllipsoid({ radius: [0.0086 * eyeS, 0.0094 * eyeS, 0.0036], seg: seg(10), rings: seg(6) });
     b.setColor(mixCol(f.eyeColor, [0.01, 0.01, 0.012], 0.75));
-    b.setTransform(at(0.0034));
-    b.addEllipsoid({ radius: [0.0046 * eyeS, 0.0050 * eyeS, 0.0026], seg: seg(8), rings: seg(5) });
+    b.setTransform(at(0.0031));
+    b.addEllipsoid({ radius: [0.0040 * eyeS, 0.0044 * eyeS, 0.0024], seg: seg(8), rings: seg(5) });
     b.setTransform(null);
 
     // Upper lash line — the single strongest feature on a VC face.
     b.setColor(mixCol(f.hairColor, [0.02, 0.017, 0.016], 0.45)).setMottle(0.02);
-    const lx = 0.0196 * eyeS, ly = 0.0128 * eyeS;
+    const lx = 0.0168 * eyeS, ly = 0.0114 * eyeS;
     b.addTube([
-      { p: [p[0] - side * lx * 0.94, p[1] + ly * 0.30, p[2] + 0.0016], rx: 0.0026, rz: 0.0022 },
-      { p: [p[0] - side * lx * 0.30, p[1] + ly * 0.90, p[2] + 0.0050], rx: 0.0036, rz: 0.0030 },
-      { p: [p[0] + side * lx * 0.42, p[1] + ly * 0.86, p[2] + 0.0046], rx: 0.0034, rz: 0.0028 },
+      { p: [p[0] - side * lx * 0.94, p[1] + ly * 0.30, p[2] + 0.0014], rx: 0.0026, rz: 0.0022 },
+      { p: [p[0] - side * lx * 0.30, p[1] + ly * 0.92, p[2] + 0.0046], rx: 0.0036, rz: 0.0030 },
+      { p: [p[0] + side * lx * 0.42, p[1] + ly * 0.88, p[2] + 0.0042], rx: 0.0034, rz: 0.0028 },
       { p: [p[0] + side * lx * 1.02, p[1] + ly * 0.34, p[2] + 0.0006], rx: 0.0022, rz: 0.0019 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
     // Lower lid: a thin warm crease that stops the eye floating.
@@ -1341,23 +1624,23 @@ export function buildHead(b, rig, o, f) {
   // --- Brows: thicker and darker than before, and lifted onto the brow ridge.
   b.setColor(mixCol(f.hairColor, [0.02, 0.016, 0.014], 0.25)).setMottle(0.03);
   for (const side of [1, -1]) {
-    const bY = eDY + 0.175 + f.browHeight * 0.05;
+    const bY = eDY + 0.190 + f.browHeight * 0.05;
     const p0 = face(side * (eDX - 0.13), bY - 0.02, 0.0022);
     const p1 = face(side * eDX, bY, 0.0026);
-    const p2 = face(side * (eDX + 0.17), bY - 0.03, 0.0020);
+    const p2 = face(side * (eDX + 0.16), bY - 0.03, 0.0020);
     b.addTube([
-      { p: [p0[0], p0[1], p0[2]], rx: 0.0052, rz: 0.0042 },
-      { p: [p1[0], p1[1], p1[2]], rx: 0.0072, rz: 0.0056 },
-      { p: [p2[0], p2[1], p2[2]], rx: 0.0050, rz: 0.0040 },
+      { p: [p0[0], p0[1], p0[2]], rx: 0.0048, rz: 0.0040 },
+      { p: [p1[0], p1[1], p1[2]], rx: 0.0068, rz: 0.0054 },
+      { p: [p2[0], p2[1], p2[2]], rx: 0.0046, rz: 0.0038 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
   }
 
   // --- Mouth: a soft lip wedge on the surface, with a darker seam.
   {
-    const mDY = -0.50;
-    const c0 = face(-0.145 * f.width, mDY + 0.035, 0.0018);
+    const mDY = -0.48;
+    const c0 = face(-0.125 * f.width, mDY + 0.035, 0.0018);
     const c1 = face(0, mDY, 0.0030);
-    const c2 = face(0.145 * f.width, mDY + 0.035, 0.0018);
+    const c2 = face(0.125 * f.width, mDY + 0.035, 0.0018);
     b.setColor(PALETTE.lip).setMottle(0.02);
     b.addTube([
       { p: [c0[0], c0[1], c0[2]], rx: 0.0040, rz: 0.0034 },

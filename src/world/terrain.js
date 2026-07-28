@@ -377,17 +377,29 @@ export class Terrain {
         const track = layout.trackSDF(x, z);
         const vm = layout.villageMask(x, z);
 
-        // Three noise scales, each doing a different job:
+        // Five noise scales, each doing a different job:
         //   field  ~90 m — which pasture this is (grazed, hay, rough)
         //   mottle ~29 m — variation inside one field
         //   clump  ~5 m  — the tufting you see from standing height
+        //   tuft   ~1.6 m— individual tussocks
+        //   grit   ~0.7 m— the finest thing the 0.625 m vertex grid can carry;
+        //                  this is the difference between a 3 m patch of ground
+        //                  that has something in it and a flat fill
         const field = fbm2(x * 0.011, z * 0.011, { octaves: 3, seed: this.seed + 733 });
         const mottle = fbm2(x * 0.035, z * 0.035, { octaves: 4, seed: this.seed + 401 });
         const clump = fbm2(x * 0.19, z * 0.19, { octaves: 2, seed: this.seed + 877 });
         const tuft = valueNoise2(x * 0.62, z * 0.62, this.seed + 1471);
+        const grit = valueNoise2(x * 1.55, z * 1.55, this.seed + 2213);
+        const pebble = valueNoise2(x * 3.1 + 17.3, z * 3.1 - 8.1, this.seed + 3319);
+        const path = layout.pathSDF(x, z);
 
-        // rock only on genuinely steep faces — a rolling pasture is not scree
-        let rock = smoothstep(0.22, 0.50, slope) * (0.5 + mottle * 0.9);
+        // Rock on genuinely steep faces — a rolling pasture is not scree — plus
+        // a scatter of stony patches where a convex crest has had its soil
+        // washed off it. `crest` is a cheap convexity proxy: high ground with an
+        // open horizon.
+        const crest = clamp01((AO[k] - 0.94) * 11.0) * clamp01((h - 9.0) * 0.09);
+        let rock = smoothstep(0.22, 0.50, slope) * (0.5 + mottle * 0.9)
+          + crest * clamp01((clump - 0.60) * 4.2) * 0.55;
         // Mud hugs the waterline: a narrow shingle margin, not a broad beach.
         // The carved bank rises very gently, so a height-based wet test with any
         // width at all paints eight metres of bare sand up both banks.
@@ -405,7 +417,13 @@ export class Terrain {
         const td = track.d / 2.4;
         const trut = Math.exp(-Math.pow((td - 0.55) / 0.38, 2));
         const trackM = (1 - smoothstep(0.9, 1.5, td)) * (0.28 + 0.6 * trut) * 0.9;
-        let dirt = clamp01(Math.max(roadM, trackM) * (0.85 + mottle * 0.3) + vm * 0.13);
+        // Desire lines: a 0.6-1.1 m ribbon of bare, beaten earth with a frayed
+        // edge, painted only — never carved.
+        const pw = 0.55 + 0.35 * grit;
+        const pathM = (1 - smoothstep(pw, pw + 0.85 + tuft * 0.6, path.d)) * path.wear
+          * (0.55 + 0.55 * clump);
+        let dirt = clamp01(Math.max(Math.max(roadM, trackM), pathM * 0.92)
+          * (0.85 + mottle * 0.3) + vm * 0.13);
         // crater scorch => bare, burnt earth
         let burn = 0;
         for (let c = 0; c < layout.craters.length; c++) {
@@ -446,12 +464,19 @@ export class Terrain {
         _col.copy(cGrass);
         _col.lerp(cGrassLush, damp * 0.9);
         _col.lerp(cGrassDry, dry * 0.80);
-        // Tufting: value break-up at the two scales a soldier actually sees —
-        // 5 m patches of richer and poorer grazing, and 1.6 m tussocks inside
-        // them. Without this the pasture is a billiard cloth.
+        // Tufting: colour break-up at the three scales a soldier actually sees.
+        // 5 m patches of richer and poorer grazing; 3 m tussocks of coarse,
+        // ungrazed straw the cattle leave standing; 1.6 m clumps inside those.
+        // The 3 m term is the load-bearing one — round 1 had only value jitter
+        // at that scale and a 400x220 patch of lit meadow measured a luma stdev
+        // of 13, i.e. "reads as a flat fill". A HUE break, not a value one, is
+        // what puts something in it to look at.
         _col.multiplyScalar(0.86 + clump * 0.30);
-        _col.lerp(cGrassLush, clamp01(tuft - 0.55) * 0.55);
-        _col.multiplyScalar(0.95 + tuft * 0.11);
+        const tussock = valueNoise2(x * 0.33 - 4.2, z * 0.33 + 7.7, this.seed + 91);
+        _col.lerp(cGrassDry, clamp01((tussock - 0.56) * 2.6) * 0.50);
+        _col.lerp(cGrassDark, clamp01((0.40 - tussock) * 2.6) * 0.34);
+        _col.lerp(cGrassLush, clamp01(tuft - 0.52) * 0.62);
+        _col.multiplyScalar(0.93 + tuft * 0.15);
         // shaded hollows deepen toward the darkest green rather than to grey
         _col.lerp(cGrassDark, clamp01(0.62 - ao) * 1.35);
 
@@ -460,12 +485,32 @@ export class Terrain {
         // bright sand ribbon through a green valley reads as a beach.
         _colB.copy(cDirt).lerp(cSand, clamp01(mottle * 0.34 + roadM * 0.22));
         _colB.lerp(cDirtDark, clamp01(0.62 - mottle) * 0.85);
+        // Cart-rut structure: the two wheel tracks are polished and damp, the
+        // grassed crown between them is not, and both are strewn with the
+        // gravel that gets kicked out of the surface.
+        const inRut = Math.max(rut, trut);
+        _colB.lerp(cDirtDark, clamp01(inRut - 0.45) * 0.85);
+        _colB.multiplyScalar(0.90 + grit * 0.22);
+        if (pebble > 0.66) _colB.lerp(cRock, (pebble - 0.66) * 1.7);
         _col.lerp(_colB, d2 * 0.95);
-        _col.lerp(cRock, r2 * 0.92);
-        _col.lerp(cMud, m2 * 0.9);
+        // Rock: not one grey. Lit faces bleach toward warm stone, the joints
+        // between them go umber, and a lichen speckle rides over the top.
+        _colB.copy(cRock).lerp(cSand, clamp01(grit - 0.42) * 0.75);
+        _colB.lerp(cDirtDark, clamp01(0.46 - pebble) * 0.55);
+        _col.lerp(_colB, r2 * 0.92);
+        // Mud and shingle at the waterline: wet umber right at the edge, a pale
+        // gravel strand just above it, cobbles showing through both.
+        const wetness = clamp01((WATER_Y + 0.30 - h) * 2.2);
+        _colB.copy(cMud).lerp(cSand, clamp01(0.72 - wetness) * 0.85);
+        _colB.lerp(cDirtDark, wetness * 0.45);
+        if (pebble > 0.58) _colB.lerp(cRock, (pebble - 0.58) * 1.5 * (0.4 + grit));
+        _colB.multiplyScalar(0.92 + grit * 0.18);
+        _col.lerp(_colB, m2 * 0.92);
 
-        // grain: fine value variation so the wash is never flat
-        const grain = 0.94 + valueNoise2(x * 1.4, z * 1.4, this.seed + 5) * 0.14;
+        // grain: fine value variation so the wash is never flat. Two scales —
+        // 0.7 m grit and a 0.32 m speckle — because the vertex grid is 0.625 m
+        // and this is the whole of the near-field incident the ground gets.
+        const grain = 0.92 + grit * 0.17 + (pebble - 0.5) * 0.055;
         _col.multiplyScalar(grain);
 
         // scorching from the shelling — toward the warm brown-violet floor,

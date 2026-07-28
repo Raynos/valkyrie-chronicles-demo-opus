@@ -225,24 +225,59 @@ export function iconMarkup(name, {
 /** Live SVG element for an icon. */
 export function icon(name, opts) { return svgEl(iconMarkup(name, opts)); }
 
-/** Class emblem inside a hand-inked hexagonal badge. */
+/**
+ * Class emblem inside a hand-inked hexagonal badge.
+ *
+ * The whole device is GRAPHITE on a laid ochre wash — it used to be drawn flat
+ * in #37536f, which put a saturated web blue and a flat blue weapon glyph in the
+ * bottom-left corner of every action frame. Allegiance is carried instead by a
+ * wax seal blotted onto the lower point of the hex, which is how a field journal
+ * would mark it: red for the Empire, indigo for Gallia.
+ */
 export function classBadge(cls, { size = 46, team = 0, seed = 5 } = {}) {
   const c = CLASS_ICONS[String(cls || '').toLowerCase()] || 'scout';
-  const col = team === 1 ? '#8d3730' : '#37536f';
+  const seal = team === 1 ? '#8d3730' : '#37536f';
+  const ink = '#3f3227';
   const w = size, hgt = size * 1.08;
-  const hex = 'M' + (w * 0.5) + ' ' + (hgt * 0.02) + 'L' + (w * 0.95) + ' ' + (hgt * 0.27) +
-    'L' + (w * 0.95) + ' ' + (hgt * 0.74) + 'L' + (w * 0.5) + ' ' + (hgt * 0.99) +
-    'L' + (w * 0.05) + ' ' + (hgt * 0.74) + 'L' + (w * 0.05) + ' ' + (hgt * 0.27) + 'Z';
+  const pt = (fx, fy) => [w * fx, hgt * fy];
+  const P = [pt(0.5, 0.03), pt(0.94, 0.28), pt(0.94, 0.73), pt(0.5, 0.98), pt(0.06, 0.73),
+    pt(0.06, 0.28)];
+  // Six hand-ruled runs, each wandering and overshooting its corner — a drawn
+  // hexagon rather than a vector one.
+  let rim = '', rim2 = '';
+  for (let i = 0; i < 6; i++) {
+    const a = P[i], b = P[(i + 1) % 6];
+    rim += wobblyPath(a[0], a[1], b[0], b[1],
+      { seed: seed + i * 11, amp: size * 0.022, segs: 4, overshoot: size * 0.03 }) + ' ';
+    rim2 += wobblyPath(a[0], a[1], b[0], b[1],
+      { seed: seed + 97 + i * 11, amp: size * 0.030, segs: 4 }) + ' ';
+  }
+  const hexFill = 'M' + P.map((p) => p[0].toFixed(2) + ' ' + p[1].toFixed(2)).join('L') + 'Z';
   return svgEl(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + hgt + '" width="' + w +
     '" height="' + hgt + '">' +
-    '<path d="' + hex + '" fill="' + col + '" fill-opacity="0.16" stroke="' + col +
-    '" stroke-width="1.5" filter="url(#vc-rough)"/>' +
-    '<path d="' + roughCircle(w * 0.5, hgt * 0.5, w * 0.40, { seed, amp: 0.5, segs: 20 }) +
-    '" fill="none" stroke="' + col + '" stroke-width="0.8" opacity="0.5"/>' +
-    '<g transform="translate(' + (w * 0.5 - w * 0.32) + ' ' + (hgt * 0.5 - w * 0.32) +
-    ') scale(' + ((w * 0.64) / 24).toFixed(3) + ')" fill="none" stroke="' + col +
-    '" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + PATHS[c] + '</g>' +
+    '<path d="' + hexFill + '" fill="#c9b184" fill-opacity="0.26"/>' +
+    '<path d="' + splatPath(w * 0.42, hgt * 0.44, w * 0.30, { seed: seed + 5, lobes: 11, rough: 0.4 }) +
+    '" fill="#8f7c53" opacity="0.13"/>' +
+    '<path d="' + hatchPath(w * 0.10, hgt * 0.56, w * 0.80, hgt * 0.38,
+      { spacing: 2.8, angle: -0.9, seed: seed + 13 }) +
+    '" stroke="' + ink + '" stroke-width="0.5" opacity="0.20" fill="none"/>' +
+    // double-struck rim: a fat pass and a hairline ghost beside it
+    '<path d="' + rim + '" fill="none" stroke="' + ink + '" stroke-width="' +
+    (size * 0.062).toFixed(2) + '" stroke-linecap="round" opacity="0.92"/>' +
+    '<path d="' + rim2 + '" fill="none" stroke="' + ink + '" stroke-width="' +
+    (size * 0.020).toFixed(2) + '" stroke-linecap="round" opacity="0.34"/>' +
+    '<path d="' + roughCircle(w * 0.5, hgt * 0.5, w * 0.38, { seed: seed + 3, amp: 0.6, segs: 20 }) +
+    '" fill="none" stroke="' + ink + '" stroke-width="0.75" opacity="0.34"/>' +
+    '<g transform="translate(' + (w * 0.5 - w * 0.30) + ' ' + (hgt * 0.5 - w * 0.30) +
+    ') scale(' + ((w * 0.60) / 24).toFixed(3) + ')" fill="none" stroke="' + ink +
+    '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ' +
+    'filter="url(#vc-rough)">' + PATHS[c] + '</g>' +
+    // the wax seal blotted onto the lower point, inside the rim
+    '<path d="' + splatPath(w * 0.5, hgt * 0.865, w * 0.085, { seed: seed + 71, lobes: 9, rough: 0.34 }) +
+    '" fill="' + seal + '" opacity="0.92"/>' +
+    '<path d="' + roughCircle(w * 0.5, hgt * 0.865, w * 0.048, { seed: seed + 73, amp: 0.4, segs: 12 }) +
+    '" fill="none" stroke="#f3e6c9" stroke-width="0.7" opacity="0.42"/>' +
     '</svg>');
 }
 
@@ -349,49 +384,81 @@ export function cornerFlourish({ size = 84, seed = 9, color = '#4a3c2c' } = {}) 
     '</g></svg>');
 }
 
+// The sight picture is DRAWN, never vector-white. Every stroke in it goes down
+// twice: a broad graphite pass that gives the mark its body and lets it read
+// against a bleached stucco wall, then a narrower chalk pass laid inside it.
+// A single uniform near-white hairline is the tell that gave the aim frame away.
+const SIGHT_INK = '#2b211a';
+const SIGHT_CHALK = '#f0e1bd';
+
+/** Broad ink pass + chalk pass over the same path list. */
+function doubleStroke(d, { ink = SIGHT_INK, chalk = SIGHT_CHALK, w = 1.5, spread = 2.1 } = {}) {
+  return '<path d="' + d + '" fill="none" stroke="' + ink + '" stroke-width="' +
+    (w + spread).toFixed(2) + '" stroke-linecap="round" opacity="0.62"/>' +
+    '<path d="' + d + '" fill="none" stroke="' + chalk + '" stroke-width="' + w.toFixed(2) +
+    '" stroke-linecap="round" opacity="0.94"/>';
+}
+
 /** The AIM corner brackets that converge while aiming. */
-export function aimBrackets({ w = 340, h = 240, seed = 31, color = '#f3e7cd' } = {}) {
-  const L = Math.min(w, h) * 0.16, o = 2;
+export function aimBrackets({ w = 340, h = 240, seed = 31 } = {}) {
+  const L = Math.min(w, h) * 0.16, o = 3;
   const corner = (x, y, sx, sy, sd) =>
-    '<path d="' + wobblyPath(x, y + sy * L, x, y, { seed: sd, amp: 0.9, segs: 4 }) + ' ' +
-    wobblyPath(x, y, x + sx * L, y, { seed: sd + 3, amp: 0.9, segs: 4 }) + '"/>';
+    wobblyPath(x, y + sy * L, x, y, { seed: sd, amp: 1.1, segs: 4 }) + ' ' +
+    wobblyPath(x, y, x + sx * L, y, { seed: sd + 3, amp: 1.1, segs: 4 });
+  const d = [corner(o, o, 1, 1, seed), corner(w - o, o, -1, 1, seed + 11),
+    corner(o, h - o, 1, -1, seed + 21), corner(w - o, h - o, -1, -1, seed + 31)].join(' ');
   return svgEl(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" width="' + w +
     '" height="' + h + '" preserveAspectRatio="none">' +
-    '<g fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" ' +
-    'style="filter:drop-shadow(0 1px 2px rgba(40,20,16,.85))">' +
-    corner(o, o, 1, 1, seed) + corner(w - o, o, -1, 1, seed + 11) +
-    corner(o, h - o, 1, -1, seed + 21) + corner(w - o, h - o, -1, -1, seed + 31) +
-    '</g></svg>');
+    doubleStroke(d, { w: 1.9, spread: 2.6 }) + '</svg>');
 }
 
 /** The fine ink crosshair (centre of the targeting overlay). */
-export function crosshair({ size = 240, seed = 47, color = '#f6ecd6', gap = 0.10, arm = 0.20 } = {}) {
+export function crosshair({ size = 240, seed = 47, gap = 0.10, arm = 0.20 } = {}) {
   const c = size / 2, g = size * gap, a = size * arm;
-  const line = (x1, y1, x2, y2, sd) =>
-    '<path d="' + wobblyPath(x1, y1, x2, y2, { seed: sd, amp: 0.7, segs: 5 }) + '"/>';
+  // Arms taper: a fat root at the gap thinning to a hairline at the tip, which
+  // is what a nib does and what a plotted vector line never does.
+  const arms = [
+    wobblyPath(c, c - g, c, c - g - a, { seed, amp: 1.0, segs: 5 }),
+    wobblyPath(c, c + g, c, c + g + a, { seed: seed + 5, amp: 1.0, segs: 5 }),
+    wobblyPath(c - g, c, c - g - a, c, { seed: seed + 9, amp: 1.0, segs: 5 }),
+    wobblyPath(c + g, c, c + g + a, c, { seed: seed + 13, amp: 1.0, segs: 5 }),
+  ];
+  // Root halves get the heavier weight, tips the lighter one.
+  const roots = [
+    wobblyPath(c, c - g, c, c - g - a * 0.45, { seed, amp: 0.8, segs: 3 }),
+    wobblyPath(c, c + g, c, c + g + a * 0.45, { seed: seed + 5, amp: 0.8, segs: 3 }),
+    wobblyPath(c - g, c, c - g - a * 0.45, c, { seed: seed + 9, amp: 0.8, segs: 3 }),
+    wobblyPath(c + g, c, c + g + a * 0.45, c, { seed: seed + 13, amp: 0.8, segs: 3 }),
+  ].join(' ');
   return svgEl(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + size + ' ' + size + '" width="' + size +
     '" height="' + size + '">' +
-    '<g fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round" ' +
-    'style="filter:drop-shadow(0 1px 2px rgba(40,20,16,.9))">' +
-    line(c, c - g, c, c - g - a, seed) + line(c, c + g, c, c + g + a, seed + 5) +
-    line(c - g, c, c - g - a, c, seed + 9) + line(c + g, c, c + g + a, c, seed + 13) +
-    '<circle cx="' + c + '" cy="' + c + '" r="1.5" fill="' + color + '" stroke="none"/>' +
-    '</g></svg>');
+    doubleStroke(arms.join(' '), { w: 1.25, spread: 1.9 }) +
+    doubleStroke(roots, { w: 2.0, spread: 2.2 }) +
+    // the aiming dot: a blotted point of ink with a chalk highlight, not a circle
+    '<path d="' + splatPath(c, c, 2.4, { seed: seed + 41, lobes: 8, rough: 0.3 }) +
+    '" fill="' + SIGHT_INK + '" opacity="0.8"/>' +
+    '<path d="' + splatPath(c - 0.4, c - 0.4, 1.2, { seed: seed + 43, lobes: 7, rough: 0.3 }) +
+    '" fill="' + SIGHT_CHALK + '" opacity="0.85"/>' +
+    '</svg>');
 }
 
 /** Dashed accuracy circle; radius is driven by the caller each frame. */
-export function accuracyRing({ size = 260, seed = 53, color = '#f2e3c4' } = {}) {
+export function accuracyRing({ size = 260, seed = 53 } = {}) {
   const c = size / 2, r = size * 0.42;
+  const d = roughCircle(c, c, r, { seed, amp: r * 0.035, segs: 44 });
   return svgEl(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + size + ' ' + size + '" width="' + size +
     '" height="' + size + '">' +
-    '<path d="' + roughCircle(c, c, r, { seed, amp: r * 0.03, segs: 44 }) +
-    '" fill="none" stroke="' + color + '" stroke-width="1.4" stroke-dasharray="7 6" opacity="0.85" ' +
-    'style="filter:drop-shadow(0 1px 2px rgba(40,20,16,.8))"/>' +
-    '<path d="' + roughCircle(c, c, r * 0.985, { seed: seed + 7, amp: r * 0.02, segs: 40 }) +
-    '" fill="none" stroke="#2a1d18" stroke-width="0.9" stroke-dasharray="7 6" opacity="0.35"/>' +
+    '<path d="' + d + '" fill="none" stroke="' + SIGHT_INK + '" stroke-width="3.4" ' +
+    'stroke-dasharray="8 7" opacity="0.5"/>' +
+    '<path d="' + d + '" fill="none" stroke="' + SIGHT_CHALK + '" stroke-width="1.5" ' +
+    'stroke-dasharray="8 7" opacity="0.9"/>' +
+    // a second, drier pass just inside it — the compass slipped on the first go
+    '<path d="' + roughCircle(c, c, r * 0.965, { seed: seed + 7, amp: r * 0.025, segs: 40 }) +
+    '" fill="none" stroke="' + SIGHT_INK + '" stroke-width="0.9" stroke-dasharray="3 9" ' +
+    'opacity="0.42"/>' +
     '</svg>');
 }
 
@@ -609,6 +676,91 @@ export function splat({ size = 76, seed = 1, color = '#7c2028', opacity = 0.85 }
     '" fill="' + color + '" opacity="' + opacity + '" filter="url(#vc-splat)"/></svg>');
 }
 
+/**
+ * A damage pop, drawn as one piece: a thrown blot of ink with the figure struck
+ * through it in a heavy nib, outlined so it holds against ANY background.
+ *
+ * Bare DOM digits with a text-shadow — which is what this used to be — read as
+ * floating browser text the instant they cross a busy hillside. Here the numeral
+ * is SVG with `paint-order:stroke`, so the ink outline is real ink laid under
+ * real chalk, and it never disappears into the terrain behind it.
+ *
+ * @returns {SVGElement} root with `.set(text, {crit, heal, tag})`
+ */
+export function damagePlate({ seed = 1 } = {}) {
+  const W = 160, H = 118, cx = W / 2, cy = 58;
+  const rng = makeRng((seed >>> 0) || 1);
+  // Two overlapping throws of ink plus a spray of flicks: a splash, not a disc.
+  let blot = '<path class="b1" d="' + splatPath(cx, cy, 34, { seed, lobes: 11, rough: 0.52 }) +
+    '" filter="url(#vc-splat)"/>' +
+    '<path class="b2" d="' + splatPath(cx + 6, cy + 4, 23, { seed: seed + 17, lobes: 9, rough: 0.6 }) +
+    '" filter="url(#vc-splat)"/>';
+  for (let i = 0; i < 7; i++) {
+    const a = rng() * Math.PI * 2, dist = 34 + rng() * 40, r = 1.3 + rng() * 3.4;
+    blot += '<path class="b3" d="' + splatPath(cx + Math.cos(a) * dist, cy + Math.sin(a) * dist * 0.72,
+      r, { seed: seed + 31 + i * 7, lobes: 7, rough: 0.45 }) + '"/>';
+  }
+  const root = svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '" width="' + W +
+    '" height="' + H + '" class="vc-dmg-svg">' +
+    '<g class="blot">' + blot + '</g>' +
+    '<text class="num" x="' + cx + '" y="' + (cy + 15) + '" text-anchor="middle" ' +
+    'font-size="52" letter-spacing="0.5" ' +
+    'style="paint-order:stroke fill;stroke-linejoin:round" ' +
+    'font-family="Iowan Old Style,Palatino,Georgia,serif">0</text>' +
+    '<text class="tag" x="' + cx + '" y="' + (cy + 40) + '" text-anchor="middle" font-size="15" ' +
+    'letter-spacing="3.2" font-family="Iowan Old Style,Palatino,Georgia,serif"></text>' +
+    '</svg>');
+  const num = root.querySelector('.num');
+  const tag = root.querySelector('.tag');
+  root.set = (text, { crit = false, heal = false, tagText = '' } = {}) => {
+    num.textContent = text;
+    tag.textContent = tagText;
+    root.setAttribute('class', 'vc-dmg-svg' + (crit ? ' crit' : '') + (heal ? ' heal' : ''));
+  };
+  return root;
+}
+
+/** The heading caret nailed to the centre of the compass tape. */
+export function compassPip({ w = 13, seed = 5 } = {}) {
+  const h0 = w * 0.9;
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h0 + '" width="' + w +
+    '" height="' + h0 + '">' +
+    '<path d="' + wobblyPath(1, 1, w / 2, h0 - 1, { seed, amp: 0.4, segs: 3 }) + ' ' +
+    wobblyPath(w / 2, h0 - 1, w - 1, 1, { seed: seed + 5, amp: 0.4, segs: 3 }) + ' ' +
+    wobblyPath(w - 1, 1, 1, 1, { seed: seed + 9, amp: 0.4, segs: 3 }) +
+    '" fill="#a32f34" stroke="#6d1f22" stroke-width="1" stroke-linejoin="round"/></svg>');
+}
+
+/** One nibbed compass tick. `major` 0 minor / 1 half / 2 cardinal. */
+export function compassTick({ major = 0, seed = 3, color = '#4a3c2c' } = {}) {
+  const h0 = major === 2 ? 11 : major === 1 ? 7.5 : 4.5;
+  const wdt = major === 2 ? 1.9 : major === 1 ? 1.35 : 1.0;
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 12" width="4" height="12">' +
+    '<path d="' + wobblyPath(2, 0.4, 2, h0, { seed, amp: 0.32, segs: 2 }) +
+    '" stroke="' + color + '" stroke-width="' + wdt + '" stroke-linecap="round" fill="none" ' +
+    'opacity="' + (major === 2 ? 0.92 : major === 1 ? 0.6 : 0.4) + '"/></svg>');
+}
+
+/** The camera's field of view, brushed onto the tactical survey. */
+export function viewWedge({ w = 40, h: hgt = 46, seed = 29 } = {}) {
+  const gid = 'vcw' + (++_gid);
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + hgt + '" width="' + w +
+    '" height="' + hgt + '">' +
+    '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0" stop-color="#f6e9c6" stop-opacity="0.72"/>' +
+    '<stop offset="1" stop-color="#f6e9c6" stop-opacity="0"/></linearGradient></defs>' +
+    '<path d="M' + (w / 2) + ' 1 L' + (w - 1) + ' ' + (hgt - 1) + ' L1 ' + (hgt - 1) +
+    'Z" fill="url(#' + gid + ')" filter="url(#vc-wash)"/>' +
+    '<path d="' + wobblyPath(w / 2, 2, w - 2, hgt - 2, { seed, amp: 0.7, segs: 4 }) + ' ' +
+    wobblyPath(w / 2, 2, 2, hgt - 2, { seed: seed + 7, amp: 0.7, segs: 4 }) +
+    '" fill="none" stroke="#5d4d3b" stroke-width="0.9" opacity="0.55" stroke-linecap="round"/>' +
+    '</svg>');
+}
+
 /** Capture-progress ring drawn over a base camp in world space. */
 export function captureRing({ size = 86, progress = 0, team = 0, seed = 63 } = {}) {
   const c = size / 2, r = size * 0.40;
@@ -754,13 +906,36 @@ export function frameRule({ w = 1600, h = 900, seed = 202 } = {}) {
 // --------------------------------------------------------------------------
 
 /**
- * A ruled gauge trough with a brushed pigment fill.
+ * The pigments a gauge may be laid in. Every one is an EARTH — sap green, raw
+ * sienna, burnt umber, red oxide. The previous set held a #6d92b1 web blue and a
+ * flat #8a9c56 that existed nowhere else in the painting, and a critic named
+ * exactly that as the automatic-reject "browser-default control".
+ *   a    the thin edge of the wash, where the paper still shows through
+ *   b    the body of the colour
+ *   pool where the pigment settled and dried darkest
+ */
+const PIGMENT = {
+  hp: { a: '#aeac89', b: '#818458', pool: '#575c37' },
+  warn: { a: '#e0c184', b: '#b8862f', pool: '#8a5f1c' },
+  crit: { a: '#c58b6c', b: '#9d4331', pool: '#71271f' },
+  ap: { a: '#e8dcc0', b: '#c08a3e', pool: '#966522' },
+  foe: { a: '#c2926f', b: '#9c4a3f', pool: '#6f2b23' },
+  ink: { a: '#a89372', b: '#6f5738', pool: '#463218' },
+};
+
+let _gid = 0;
+
+/**
+ * A ruled gauge trough with a brushed pigment wash.
  *
- * Three layers, so the reading never collapses into a CSS progress bar:
+ * Four layers, so the reading can never collapse into a CSS progress bar:
  *   back  graphite hatch laid inside the trough (the empty run is *paper*)
- *   fill  a gouache wash clipped to the value, with a nib where the brush lifted
- *   face  segment ticks + a hand-ruled box drawn ON TOP of the pigment, so the
- *         rule reads as ink over paint rather than as a border around a bar
+ *   wash  a full-length painted band — irregular top and bottom edges, pigment
+ *         mottled with blots, settled dark along the foot — CLIPPED to the
+ *         value rather than scaled, so the wobble keeps its own drawn length
+ *   nib   the wet edge: where the brush lifted, the pigment pools and bleeds
+ *   face  segment ticks + a hand-ruled box drawn ON TOP of the paint, so the
+ *         rule reads as ink over pigment rather than as a border around a bar
  *
  * @param {{w?:number,h?:number,seed?:number,segs?:number,tone?:string}} o
  * @returns {HTMLElement} root with `.set(frac, tone?)` attached
@@ -769,6 +944,7 @@ export function inkGauge({ w = 200, h: hgt = 14, seed = 11, segs = 8, tone = 'hp
   const pad = 1.4;
   const iw = w - pad * 2, ih = hgt - pad * 2;
   const vb = ' viewBox="0 0 ' + w + ' ' + hgt + '" preserveAspectRatio="none"';
+  const gid = 'vcg' + (++_gid);
 
   const back = svgEl(
     '<svg xmlns="http://www.w3.org/2000/svg"' + vb + '>' +
@@ -780,6 +956,74 @@ export function inkGauge({ w = 200, h: hgt = 14, seed = 11, segs = 8, tone = 'hp
     '" stroke="#3a2f28" stroke-width="0.7" opacity="0.16" fill="none"/></svg>');
   back.classList.add('vc-g-back');
 
+  // ---- the wash ----------------------------------------------------------
+  // The band is a closed path: a wandering top edge, a wandering foot, joined
+  // at the ends. Laid as a rectangle it read as a filled div no matter what
+  // colour went in it.
+  const segsE = Math.max(6, Math.round(w / 14));
+  const top = pad + ih * 0.13, bot = pad + ih * 0.90;
+  const edge = (y, s, amp) => {
+    const rng = makeRng((s >>> 0) || 1);
+    let d = '';
+    for (let i = 0; i <= segsE; i++) {
+      const x = pad + (i / segsE) * iw;
+      const yy = y + (rng() * 2 - 1) * amp;
+      d += (i === 0 ? '' : 'L') + x.toFixed(2) + ' ' + yy.toFixed(2);
+    }
+    return d;
+  };
+  const band = 'M' + edge(top, seed + 101, ih * 0.09) +
+    'L' + (pad + iw).toFixed(2) + ' ' + bot.toFixed(2) +
+    'L' + edge(bot, seed + 137, ih * 0.08).split('L').reverse().join('L') + 'Z';
+  let wash =
+    '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="1" y2="0.35">' +
+    '<stop offset="0" style="stop-color:var(--pig-a)"/>' +
+    '<stop offset="0.42" style="stop-color:var(--pig-b)"/>' +
+    '<stop offset="1" style="stop-color:var(--pig-pool)"/></linearGradient></defs>' +
+    '<g filter="url(#vc-wash)">' +
+    '<path d="' + band + '" fill="url(#' + gid + ')"/>';
+  // blots: where the brush loaded and where it ran dry
+  const brng = makeRng(((seed + 7) >>> 0) || 1);
+  for (let i = 0; i < 4; i++) {
+    const cx = pad + (0.10 + brng() * 0.85) * iw;
+    const cy = pad + (0.28 + brng() * 0.5) * ih;
+    wash += '<path d="' + splatPath(cx, cy, ih * (0.36 + brng() * 0.55),
+      { seed: seed + 41 + i * 13, lobes: 9, rough: 0.5 }) +
+      '" style="fill:var(--pig-pool)" opacity="' + (0.14 + brng() * 0.20).toFixed(2) + '"/>';
+  }
+  // Dry-brush breaks: where the tooth of the paper took no pigment at all.
+  for (let i = 0; i < 3; i++) {
+    const x0 = pad + (0.12 + brng() * 0.72) * iw;
+    wash += '<path d="' + wobblyPath(x0, pad + ih * 0.30, x0 + iw * 0.08, pad + ih * 0.30,
+      { seed: seed + 201 + i * 9, amp: ih * 0.12, segs: 4 }) +
+      '" stroke="#fdf6e4" stroke-width="' + (ih * 0.13).toFixed(2) +
+      '" fill="none" opacity="0.30" stroke-linecap="round"/>';
+  }
+  // pigment settles along the foot of a wet band, and the top edge stays pale
+  wash += '<path d="' + wobblyPath(pad, bot - ih * 0.10, pad + iw, bot - ih * 0.10,
+    { seed: seed + 167, amp: ih * 0.06, segs: segsE }) +
+    '" style="stroke:var(--pig-pool)" stroke-width="' + (ih * 0.26).toFixed(2) +
+    '" fill="none" opacity="0.34"/>' +
+    '<path d="' + wobblyPath(pad, top + ih * 0.13, pad + iw, top + ih * 0.13,
+      { seed: seed + 173, amp: ih * 0.05, segs: segsE }) +
+    '" stroke="#fdf6e4" stroke-width="' + (ih * 0.16).toFixed(2) +
+    '" fill="none" opacity="0.22"/></g>';
+  const washEl = svgEl('<svg xmlns="http://www.w3.org/2000/svg"' + vb + '>' + wash + '</svg>');
+  const washBox = h('div', { class: 'vc-g-wash' });
+  washBox.appendChild(washEl);
+
+  // The nib: pigment pools and bleeds out where the brush was lifted.
+  const nib = svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 ' + hgt +
+    '" preserveAspectRatio="none">' +
+    '<path d="' + splatPath(3.4, hgt * 0.66, hgt * 0.36, { seed: seed + 59, lobes: 8, rough: 0.55 }) +
+    '" style="fill:var(--pig-pool)" opacity="0.72"/>' +
+    '<path d="' + wobblyPath(3.0, top - 0.4, 3.0, bot + 0.4, { seed: seed + 61, amp: 1.0, segs: 4 }) +
+    '" style="stroke:var(--pig-pool)" stroke-width="3.0" fill="none" stroke-linecap="round" ' +
+    'opacity="0.88"/></svg>');
+  nib.classList.add('vc-g-nib');
+
+  // ---- the ink over the paint --------------------------------------------
   // Ticks are struck twice — a pale ghost under a graphite stroke — so the same
   // rule reads whether it crosses bare paper or laid pigment.
   let face = '';
@@ -793,34 +1037,46 @@ export function inkGauge({ w = 200, h: hgt = 14, seed = 11, segs = 8, tone = 'hp
       '<path d="' + d + '" stroke="#3a2f28" stroke-width="' + (tall ? 0.85 : 0.6) +
       '" opacity="' + (tall ? 0.5 : 0.32) + '" fill="none"/>';
   }
-  face += '<path d="' + roughRect(pad, pad, iw, ih, { seed, amp: 0.5, segs: 6, overshoot: 1.7 }) +
-    '" fill="none" stroke="#3a2f28" stroke-width="1.1" opacity="0.86" stroke-linecap="round"/>';
+  // The trough is ruled, not bordered: two hand-drawn rules along the long
+  // edges with the short ends barely closed, the way a ledger column is struck.
+  face += '<path d="' + wobblyPath(pad - 0.6, pad, pad + iw + 0.9, pad,
+    { seed: seed + 3, amp: 0.45, segs: Math.max(5, w / 22), overshoot: 1.6 }) +
+    '" fill="none" stroke="#3a2f28" stroke-width="1.35" opacity="0.88" stroke-linecap="round"/>' +
+    '<path d="' + wobblyPath(pad - 0.9, pad + ih, pad + iw + 0.6, pad + ih,
+      { seed: seed + 9, amp: 0.5, segs: Math.max(5, w / 22), overshoot: 1.9 }) +
+    '" fill="none" stroke="#3a2f28" stroke-width="1.05" opacity="0.78" stroke-linecap="round"/>' +
+    '<path d="' + wobblyPath(pad, pad - 0.4, pad, pad + ih + 0.4, { seed: seed + 15, amp: 0.35, segs: 2 }) +
+    ' ' + wobblyPath(pad + iw, pad - 0.4, pad + iw, pad + ih + 0.4, { seed: seed + 21, amp: 0.35, segs: 2 }) +
+    '" fill="none" stroke="#3a2f28" stroke-width="0.85" opacity="0.6" stroke-linecap="round"/>';
   const faceEl = svgEl('<svg xmlns="http://www.w3.org/2000/svg"' + vb + '>' + face + '</svg>');
   faceEl.classList.add('vc-g-face');
 
   const root = h('div', { class: 'vc-g' });
-  const fill = h('div', { class: 'vc-g-fill ' + tone });
-  // The nib: where the brush was lifted the pigment pools and the edge is ragged.
-  const nib = svgEl(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 ' + hgt +
-    '" preserveAspectRatio="none"><path d="' +
-    wobblyPath(3, pad + 0.6, 3, hgt - pad - 0.6, { seed: seed + 61, amp: 0.7, segs: 4 }) +
-    '" stroke="rgba(40,28,22,.44)" stroke-width="2.1" fill="none" stroke-linecap="round"/></svg>');
-  nib.classList.add('vc-g-nib');
-  fill.appendChild(nib);
   root.appendChild(back);
-  root.appendChild(fill);
+  root.appendChild(washBox);
+  root.appendChild(nib);
   root.appendChild(faceEl);
 
-  let last = -1, lastTone = tone;
+  let last = -1, lastTone = '';
+  const paint = (t) => {
+    const p = PIGMENT[t] || PIGMENT.hp;
+    lastTone = t;
+    root.style.setProperty('--pig-a', p.a);
+    root.style.setProperty('--pig-b', p.b);
+    root.style.setProperty('--pig-pool', p.pool);
+  };
+  paint(tone);
   root.set = (frac, t) => {
     const v = clamp01(frac);
-    if (t && t !== lastTone) { lastTone = t; fill.className = 'vc-g-fill ' + t; }
+    if (t && t !== lastTone) paint(t);
     const k = Math.round(v * 400);
     if (k === last) return;
     last = k;
-    fill.style.width = (v * 100).toFixed(2) + '%';
-    fill.style.opacity = v < 0.004 ? '0' : '1';
+    // Clipped, never scaled: the drawn edges must keep their own wobble length.
+    washBox.style.clipPath = 'inset(0 ' + ((1 - v) * 100).toFixed(2) + '% 0 0)';
+    washBox.style.opacity = v < 0.004 ? '0' : '1';
+    nib.style.left = 'calc(' + (v * 100).toFixed(2) + '% - 4px)';
+    nib.style.opacity = v < 0.02 || v > 0.995 ? '0' : '1';
     // Hatching belongs to the DRY part of the trough only: laid under the wash
     // it turned the pigment into a hatched swatch instead of a laid colour.
     back.style.clipPath = 'inset(0 0 0 ' + (v * 100).toFixed(2) + '%)';
@@ -853,19 +1109,25 @@ export function marchLine({ w = 150, h: hgt = 10, seed = 21, paces = 9 } = {}) {
     '" preserveAspectRatio="none">' + g + '</svg>');
   back.classList.add('vc-m-back');
 
+  // The route already stepped off: a broad sepia wash under a firm nib line.
+  // It used to be laid in #3a5872 over #8fa6b8 — a web blue with no counterpart
+  // anywhere in the painting, which is precisely the axis-11 tell.
   const runSvg = svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + hgt +
     '" preserveAspectRatio="none"><path d="' +
     wobblyPath(2, y, w - 6, y, { seed: seed + 71, amp: 0.55, segs: Math.max(6, w / 18) }) +
-    '" stroke="#8fa6b8" stroke-width="3.4" fill="none" stroke-linecap="round" opacity="0.55"/>' +
+    '" stroke="#b79a68" stroke-width="3.6" fill="none" stroke-linecap="round" opacity="0.50"/>' +
     '<path d="' + wobblyPath(2, y - 0.5, w - 6, y - 0.5,
       { seed: seed + 73, amp: 0.5, segs: Math.max(6, w / 18) }) +
-    '" stroke="#3a5872" stroke-width="2.1" fill="none" stroke-linecap="round"/></svg>');
+    '" stroke="#5d4426" stroke-width="2.0" fill="none" stroke-linecap="round"/></svg>');
   const run = h('div', { class: 'vc-m-run' });
   run.appendChild(runSvg);
 
+  // A surveyor's flag pinned at the head of the run, inked in the book's red.
   const pin = svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 ' + hgt + '">' +
-    '<path d="M4.5 ' + (hgt * 0.10) + 'V' + (hgt * 0.94) + '" stroke="#3a5872" stroke-width="1.8" ' +
-    'stroke-linecap="round"/><path d="M4.5 ' + (hgt * 0.14) + 'l3.6 1.6-3.6 1.7Z" fill="#3a5872"/></svg>');
+    '<path d="' + wobblyPath(4.5, hgt * 0.06, 4.5, hgt * 0.98, { seed: seed + 81, amp: 0.35, segs: 3 }) +
+    '" stroke="#8d2f31" stroke-width="1.7" fill="none" stroke-linecap="round"/>' +
+    '<path d="M4.5 ' + (hgt * 0.10).toFixed(2) + 'l4.0 1.7-4.0 1.9Z" fill="#a32f34" ' +
+    'stroke="#6d1f22" stroke-width="0.6" stroke-linejoin="round"/></svg>');
   pin.classList.add('vc-m-pin');
 
   const root = h('div', { class: 'vc-m' });

@@ -188,8 +188,11 @@ export function bladeTexture(kind = 'grass', seed = 3) {
       const v = 1 - y / S;                    // 1 at tip
       // The EAR is the top fifth of a wheat stem, not the top two thirds: a
       // long fat head reads as a leaf, and a field of leaves is not a crop.
+      // The stem has to survive to a pixel or the ear reads as a yellow
+      // teardrop hanging in mid-air with nothing under it — which is exactly
+      // what a 2 px stem on a 64 px map does at 15 m.
       let half = wheat
-        ? (v > 0.80 ? 0.20 * Math.sin((v - 0.80) / 0.20 * Math.PI) + 0.035 : 0.032)
+        ? (v > 0.80 ? 0.20 * Math.sin((v - 0.80) / 0.20 * Math.PI) + 0.055 : 0.055)
         : 0.19 * Math.pow(1 - v, 0.55) + 0.012;
       half *= S;
       const cx = S * 0.5;
@@ -215,6 +218,69 @@ export function bladeTexture(kind = 'grass', seed = 3) {
       }
     }
     toDetailCutout(g, S, { strength: 0.26, contrast: 1.0, lift: 0.14 });
+    const t = finish(c);
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    return t;
+  });
+}
+
+/**
+ * Wildflower: a drawn stem with a lobed rosette at the top, cut out on alpha.
+ *
+ * Round 1 gave matFlower no map at all, so `alphaTest: 0.05` was a no-op and
+ * every buttercup rendered as an opaque axis-aligned RECTANGLE — literal
+ * coloured squares hanging over the meadow. The silhouette has to come from
+ * somewhere, and this is it. Value-only, like every other foliage map: the
+ * pigment arrives per instance.
+ */
+export function blossomTexture(kind = 'a', seed = 5) {
+  return cached(`blossom:${kind}:${seed}`, () => {
+    const S = 64;
+    const c = canvas(S);
+    const g = c.getContext('2d');
+    const rng = makeRng(seed * 613 + 11);
+    g.clearRect(0, 0, S, S);
+
+    // stem: a wobbling line from the bottom edge up to the head
+    const headY = S * 0.30;
+    g.strokeStyle = 'rgba(96,110,64,0.95)';
+    g.lineWidth = 2.0;
+    g.beginPath();
+    g.moveTo(S * 0.5, S);
+    for (let i = 1; i <= 6; i++) {
+      const t = i / 6;
+      g.lineTo(S * (0.5 + Math.sin(t * 2.1) * 0.045), S - t * (S - headY));
+    }
+    g.stroke();
+    // a leaf off the stem
+    g.fillStyle = 'rgba(104,118,70,0.92)';
+    g.beginPath();
+    g.ellipse(S * 0.40, S * 0.72, S * 0.11, S * 0.045, -0.5, 0, TAU);
+    g.fill();
+
+    // head: five to seven petals round a dark eye
+    const petals = kind === 'c' ? 12 : 5 + ((rng() * 3) | 0);
+    const R = S * (kind === 'b' ? 0.30 : 0.26);
+    for (let i = 0; i < petals; i++) {
+      const a = (i / petals) * TAU + rng() * 0.2;
+      const px = S * 0.5 + Math.cos(a) * R * 0.52;
+      const py = headY + Math.sin(a) * R * 0.52;
+      const grad = g.createRadialGradient(px, py, 1, px, py, R * 0.62);
+      grad.addColorStop(0, 'rgba(246,238,206,1)');
+      grad.addColorStop(0.75, 'rgba(226,214,176,0.98)');
+      grad.addColorStop(1, 'rgba(200,188,152,0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.ellipse(px, py, R * 0.50, R * 0.34, a, 0, TAU);
+      g.fill();
+    }
+    // eye
+    g.fillStyle = 'rgba(120,100,60,0.9)';
+    g.beginPath();
+    g.arc(S * 0.5, headY, R * 0.20, 0, TAU);
+    g.fill();
+
+    toDetailCutout(g, S, { strength: 0.30, contrast: 1.0, lift: 0.18 });
     const t = finish(c);
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     return t;
@@ -290,53 +356,89 @@ export function stuccoTexture(seed = 23, base = [214, 202, 176]) {
   });
 }
 
-/** Coursed rubble stone for bridge, walls and foundations. */
+/**
+ * Coursed rubble stone for bridge, walls and foundations.
+ *
+ * The old version laid a regular 9 x N grid of same-size rectangles with
+ * aligned vertical joints, which tiled visibly across a 45 m bridge deck as an
+ * obvious checkerboard — an automatic rejection. Every dimension here is now
+ * jittered: course heights vary +/-35%, each course's joint phase is hashed
+ * independently so joints never line up between neighbours, one block in six is
+ * a long stretcher, and each block carries its own value. A recessed mortar
+ * shadow is drawn into every joint so the coursing reads as depth, not as a
+ * pattern printed on a flat card.
+ */
 export function stoneTexture(seed = 31) {
   return cached(`stone:${seed}`, () => {
-    const S = 256;
+    const S = 512;
     const c = canvas(S);
     const g = c.getContext('2d');
     const rng = makeRng(seed * 1301 + 17);
-    g.fillStyle = '#8a8188';
+
+    // mortar bed
+    g.fillStyle = '#726a70';
     g.fillRect(0, 0, S, S);
-    const rows = 9;
-    const rh = S / rows;
-    for (let r = 0; r < rows; r++) {
-      let x = -rng() * 40;
-      while (x < S) {
-        const w = 18 + rng() * 34;
-        const inset = 1.4;
-        const tone = 0.72 + rng() * 0.46;
-        const warm = rng() < 0.4;
-        const R = (warm ? 152 : 136) * tone, G = (warm ? 140 : 134) * tone, B = (warm ? 126 : 140) * tone;
-        g.fillStyle = `rgb(${R | 0},${G | 0},${B | 0})`;
-        const y = r * rh + inset;
-        const h = rh - inset * 2;
-        g.beginPath();
-        // slightly irregular quadrilateral block, not a rectangle
-        g.moveTo(x + inset + rng() * 2, y + rng() * 2);
-        g.lineTo(x + w - inset - rng() * 2, y + rng() * 2);
-        g.lineTo(x + w - inset - rng() * 2, y + h - rng() * 2);
-        g.lineTo(x + inset + rng() * 2, y + h - rng() * 2);
-        g.closePath();
-        g.fill();
+
+    // Course heights that sum to exactly S, so the map still tiles vertically.
+    const nRows = 11;
+    const raw = [];
+    let sum = 0;
+    for (let r = 0; r < nRows; r++) { const v = 0.65 + rng() * 0.70; raw.push(v); sum += v; }
+    const rowY = [0];
+    for (let r = 0; r < nRows; r++) rowY.push(rowY[r] + (raw[r] / sum) * S);
+
+    for (let r = 0; r < nRows; r++) {
+      const y0 = rowY[r], h = rowY[r + 1] - rowY[r];
+      // independent joint phase per course — never aligned with its neighbour
+      let x = -rng() * 70;
+      const wide = 26 + rng() * 22;
+      while (x < S + 8) {
+        // ~1 in 6 blocks is a long stretcher
+        const w = (rng() < 0.17 ? wide * 1.9 : wide) * (0.62 + rng() * 0.78);
+        const inset = 1.1 + rng() * 1.1;
+        const tone = 0.74 + rng() * 0.44;
+        const warm = rng() < 0.42;
+        const R = (warm ? 158 : 138) * tone, G = (warm ? 145 : 136) * tone, B = (warm ? 128 : 144) * tone;
+        const bx0 = x + inset, bx1 = x + w - inset;
+        const by0 = y0 + inset, by1 = y0 + h - inset;
+        if (bx1 > bx0 + 3 && by1 > by0 + 2) {
+          // block face
+          g.fillStyle = `rgb(${R | 0},${G | 0},${B | 0})`;
+          g.beginPath();
+          g.moveTo(bx0 + rng() * 2.2, by0 + rng() * 2.0);
+          g.lineTo(bx1 - rng() * 2.2, by0 + rng() * 2.0);
+          g.lineTo(bx1 - rng() * 2.2, by1 - rng() * 2.0);
+          g.lineTo(bx0 + rng() * 2.2, by1 - rng() * 2.0);
+          g.closePath();
+          g.fill();
+          // AO into the recessed joint: a dark rake along the bottom + one side
+          const grad = g.createLinearGradient(0, by0, 0, by1);
+          grad.addColorStop(0, 'rgba(255,255,255,0.10)');
+          grad.addColorStop(0.62, 'rgba(0,0,0,0)');
+          grad.addColorStop(1, 'rgba(40,32,38,0.34)');
+          g.fillStyle = grad;
+          g.fillRect(bx0, by0, bx1 - bx0, by1 - by0);
+        }
         x += w;
       }
     }
-    // mortar shadow + speckle
+
+    // fine speckle + a broad blotch so no two square metres of wall match
     const img = g.getImageData(0, 0, S, S);
     const d = img.data;
     for (let y = 0; y < S; y++) {
       for (let x = 0; x < S; x++) {
         const i = (y * S + x) * 4;
         const n = valueNoise2(x * 0.55, y * 0.55, seed + 9) - 0.5;
-        d[i] = clamp01(d[i] / 255 + n * 0.12) * 255;
-        d[i + 1] = clamp01(d[i + 1] / 255 + n * 0.12) * 255;
-        d[i + 2] = clamp01(d[i + 2] / 255 + n * 0.11) * 255;
+        const blot = fbm2(x * 0.012, y * 0.012, { octaves: 3, seed: seed + 77 }) - 0.5;
+        const k = n * 0.10 + blot * 0.20;
+        d[i] = clamp01(d[i] / 255 + k) * 255;
+        d[i + 1] = clamp01(d[i + 1] / 255 + k) * 255;
+        d[i + 2] = clamp01(d[i + 2] / 255 + k * 0.92) * 255;
       }
     }
     g.putImageData(img, 0, 0);
-    toDetail(g, S, { strength: 0.40, contrast: 1.3 });
+    toDetail(g, S, { strength: 0.44, contrast: 1.25 });
     return finish(c, { repeat: 1 });
   });
 }

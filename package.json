@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "shoot": "node tools/shoot.mjs"
+    "shoot": "node tools/shoot.mjs",
+    "cloc": "cloc --exclude-ext=json --vcs=git ."
   },
   "keywords": [],
   "author": "",

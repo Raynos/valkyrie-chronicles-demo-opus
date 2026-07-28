@@ -13,7 +13,7 @@
 import * as THREE from 'three';
 import { Bus } from '../core/bus.js';
 import { CFG } from '../core/config.js';
-import { makeRng, rngRange, rngPick, valueNoise2 } from '../core/rng.js';
+import { makeRng, rngRange, valueNoise2 } from '../core/rng.js';
 import { clamp01, TAU, lerp } from '../core/math.js';
 import {
   mergeGeoms, setGeomColor, tx, box, cyl, loft, wobble,
@@ -95,6 +95,59 @@ export function buildSandbagWall(rng, length, courses = 4, curve = 0.18) {
     });
   }
   return { bins, colliders, height: top };
+}
+
+/**
+ * A field boulder with actual FORM.
+ *
+ * Round 1's rocks were `IcosahedronGeometry(r, 0)` painted a single near-black
+ * (PALETTE.darkest) and lifted clear of the ground, which renders as a flat
+ * dark pentagon with a uniform outline round it and no shading inside — the
+ * closeup critique called them out by name. Three things fix that:
+ *
+ *   1. subdivision 1 + ridged displacement, so there are 80 faces at three
+ *      different scales and the light actually breaks across them;
+ *   2. a per-FACE albedo ramp keyed to the face normal — the up-facing planes
+ *      go pale lichen-grey, the down-facing ones go umber — so the stone reads
+ *      as volume even before the lighting touches it;
+ *   3. the rock is BEDDED: its lower third is pushed under the ground plane so
+ *      it emerges from the turf instead of resting on it.
+ *
+ * @returns {THREE.BufferGeometry} in local space, y = 0 at the ground line.
+ */
+export function boulderGeom(rng, radius, palette = [PALETTE.rock, PALETTE.stoneWarm, PALETTE.mud]) {
+  // 80 faces where the silhouette is big enough to read them, 20 for pebbles.
+  const g = new THREE.IcosahedronGeometry(radius, radius > 0.20 ? 1 : 0);
+  // two octaves: broad lumps, then a chipped facet break-up
+  wobble(g, radius * 0.30, 2.6 / Math.max(0.25, radius), (rng() * 997) | 0);
+  wobble(g, radius * 0.11, 7.5 / Math.max(0.25, radius), (rng() * 997) | 0);
+  // squat it and bed it: a boulder sits low and is half buried
+  tx(g, {
+    rx: rng() * TAU, ry: rng() * TAU, rz: rngRange(rng, -0.4, 0.4),
+    sy: rngRange(rng, 0.58, 0.82),
+  });
+  g.computeVertexNormals();
+  const base = new THREE.Color(palette[(rng() * palette.length) | 0]);
+  const warm = new THREE.Color(PALETTE.stoneWarm);
+  const dark = new THREE.Color(PALETTE.mud);
+  const c = new THREE.Color();
+  const p = g.getAttribute('position');
+  const n = g.getAttribute('normal');
+  const col = new Float32Array(p.count * 3);
+  for (let i = 0; i < p.count; i++) {
+    const ny = n.getY(i);
+    c.copy(base);
+    // sun-bleached, lichened top; damp umber underside
+    c.lerp(warm, Math.max(0, ny) * 0.55);
+    c.lerp(dark, Math.max(0, -ny) * 0.60);
+    // per-face value jitter so no two planes match
+    const v = 0.86 + valueNoise2(p.getX(i) * 9.1, p.getZ(i) * 9.1 + p.getY(i) * 5.3, 733) * 0.32;
+    col[i * 3] = c.r * v; col[i * 3 + 1] = c.g * v; col[i * 3 + 2] = c.b * v;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  // bed the lower third
+  g.translate(0, radius * 0.30, 0);
+  return g;
 }
 
 /** Czech hedgehog: three crossed girders bolted at the centre. */
@@ -419,6 +472,7 @@ export class Props {
     this._buildWire();
     this._buildTelegraph();
     this._buildCraterDebris();
+    this._buildStones();
     this._buildWrecks();
     this._commit();
   }
@@ -797,11 +851,12 @@ export class Props {
         const x = c.x + Math.cos(a) * r, z = c.z + Math.sin(a) * r;
         if (!this.terrain.inBounds(x, z)) continue;
         const y = this.terrain.heightAt(x, z);
-        const s = rngRange(rng, 0.09, 0.3);
-        const g = new THREE.IcosahedronGeometry(s, 0);
-        wobble(g, s * 0.4, 6, (i * 13) | 0);
-        tx(g, { x, y: y + s * 0.4, z, rx: rng() * TAU, ry: rng() * TAU, sy: 0.7 });
-        setGeomColor(g, rngPick(rng, [PALETTE.mud, PALETTE.dirtDark, PALETTE.darkest]), 0.14, rng);
+        const s = rngRange(rng, 0.11, 0.34);
+        // Ejecta is turned earth and broken stone, NOT charcoal: PALETTE.darkest
+        // on a flat-shaded 20-face solid is exactly the "flat black pentagon"
+        // the closeup critique picked out.
+        const g = boulderGeom(rng, s, [PALETTE.dirtDark, PALETTE.mud, PALETTE.rock, PALETTE.stoneWarm]);
+        tx(g, { x, y: y - s * 0.12, z, ry: rng() * TAU });
         parts.push(g);
       }
       // splintered timber thrown clear
@@ -822,6 +877,99 @@ export class Props {
         this.bins.stone.push(g);
       }
     }
+  }
+
+  /**
+   * Field stone. Three populations, all placed against terrain facts so they
+   * land where a geologist would put them rather than sprinkled at random:
+   *
+   *   outcrop  — on the steep faces, where the terrain splat already paints
+   *              rock, in tight groups so the ridge reads as broken ground;
+   *   shingle  — cobbles and pebbles along the waterline, which is the ONE
+   *              place a river valley reliably has loose stone;
+   *   clearance— the stones a farmer pulled out of a field and dumped at the
+   *              hedge line, in small cairns.
+   *
+   * This is also what gives the near ground something to look at: the round-1
+   * critique's "flat fills" note is as much about a total absence of 20-50 cm
+   * incident as it is about the terrain shader.
+   */
+  _buildStones() {
+    const rng = makeRng(this.seed ^ 0x5704);
+    const T = this.terrain;
+    const half = T.size * 0.5 - 4;
+    const sp = [0, 0, 0, 0];
+    const parts = [];
+    const place = (x, z, radius, pal, sink = 0) => {
+      if (!T.inBounds(x, z)) return false;
+      if (this.occupiedTest(x, z)) return false;
+      const g = boulderGeom(rng, radius, pal);
+      tx(g, { x, y: T.heightAt(x, z) - radius * sink, z, ry: rng() * TAU });
+      parts.push(g);
+      return true;
+    };
+
+    // --- outcrops on the rocky slopes
+    let placed = 0;
+    for (let i = 0; i < 5200 && placed < 190; i++) {
+      const x = rngRange(rng, -half, half), z = rngRange(rng, -half, half);
+      T.splatAt(x, z, sp);
+      const rocky = sp[2];
+      if (rocky < 0.24) continue;
+      if (rng() > rocky * 1.25) continue;
+      if (T.heightAt(x, z) < WATER_Y + 0.35) continue;
+      // a knot of two to five stones, so they group like an outcrop
+      const n = 2 + ((rng() * 4) | 0);
+      for (let k = 0; k < n; k++) {
+        const a = rng() * TAU, rr = Math.sqrt(rng()) * 1.5;
+        if (place(x + Math.cos(a) * rr, z + Math.sin(a) * rr,
+          rngRange(rng, 0.20, 0.62), [PALETTE.rock, PALETTE.stone, PALETTE.stoneWarm], 0.30)) placed++;
+      }
+      this.footprints.push({ x, z, r: 1.6 });
+    }
+
+    // --- shingle and cobbles along the river margin
+    const riv = this.layout.river;
+    for (let i = 1; i < riv.n - 1; i++) {
+      const t = riv.cum[i] / riv.length;
+      let tx0 = riv.x[i + 1] - riv.x[i - 1], tz0 = riv.z[i + 1] - riv.z[i - 1];
+      const tl = Math.hypot(tx0, tz0) || 1;
+      const nx = -tz0 / tl, nz = tx0 / tl;
+      const w = this.layout.riverHalfWidth(t);
+      for (let k = 0; k < 7; k++) {
+        const side = rng() < 0.5 ? -1 : 1;
+        const off = side * (w + rngRange(rng, -1.4, 3.4));
+        const x = riv.x[i] + nx * off, z = riv.z[i] + nz * off;
+        if (!T.inBounds(x, z)) continue;
+        const h = T.heightAt(x, z);
+        if (h < WATER_Y - 0.45 || h > WATER_Y + 0.85) continue;
+        place(x, z, rngRange(rng, 0.07, 0.26),
+          [PALETTE.rock, PALETTE.stoneWarm, PALETTE.sand, PALETTE.mud], 0.45);
+      }
+    }
+
+    // --- field-clearance cairns at the hedge lines
+    for (const line of this.layout.hedges) {
+      for (let s = 0; s < line.length - 1; s++) {
+        if (rng() > 0.55) continue;
+        const f = rng();
+        const x = line[s].x + (line[s + 1].x - line[s].x) * f + rngRange(rng, -2.5, 2.5);
+        const z = line[s].z + (line[s + 1].z - line[s].z) * f + rngRange(rng, -2.5, 2.5);
+        if (!T.inBounds(x, z) || T.heightAt(x, z) < WATER_Y + 0.5) continue;
+        const n = 4 + ((rng() * 6) | 0);
+        for (let k = 0; k < n; k++) {
+          const a = rng() * TAU, rr = Math.sqrt(rng()) * 1.1;
+          place(x + Math.cos(a) * rr, z + Math.sin(a) * rr,
+            rngRange(rng, 0.13, 0.36), [PALETTE.rock, PALETTE.stone, PALETTE.stoneWarm], 0.15);
+        }
+        this.footprints.push({ x, z, r: 1.5 });
+      }
+    }
+
+    if (!parts.length) return;
+    const g = mergeGeoms(parts);
+    for (const p of parts) p.dispose();
+    this.bins.stone.push(g);
   }
 
   _buildWrecks() {

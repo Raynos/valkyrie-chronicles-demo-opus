@@ -101,7 +101,51 @@ export function pose(ctx, unit, x, z, yaw = 0, clip = 'idle', stance = STANCE.ST
   unit.actor?.play?.(clip, { fade: opts.fade !== undefined ? opts.fade : 0 });
   if (opts.phase !== undefined) stride(unit, opts.phase);
   unit.syncActor?.();
+  // A VEHICLE ignores syncActor. TankPhysics owns root.position and root.rotation
+  // and rewrites both from its own state inside Tank.update(), which runs after
+  // us on every subsequent frame — so posing a tank the way we pose a soldier
+  // moved the gameplay Unit and left the model wherever the simulation had
+  // parked it at deployment. Every shot that "placed" the Edelweiss was in fact
+  // photographing it at its spawn point. Drive the simulation instead, and pin
+  // the brakes on so it cannot creep down a slope during the settle loop.
+  const tank = unit.isVehicle ? unit.actor : null;
+  if (tank?.teleport) {
+    tank.teleport(x, z, yaw);
+    tank.setThrottle?.(0);
+    tank.setSteer?.(0);
+    tank.setBrake?.(1);
+    // Keep the gameplay Y in step with where the physics actually dropped it.
+    if (opts.y === undefined) unit.pos.y = tank.root.position.y;
+    if (tank.setAimAngles) tank.setAimAngles(unit.aimYaw - yaw, unit.aimPitch);
+    // Slew is rate-limited at 1.15 rad/s; a scripted shot wants the turret
+    // already there, not converging on it for the first two seconds.
+    tank.turretYaw = tank.turretYawTarget;
+    tank.gunPitch = tank.gunPitchTarget;
+    tank.turret.rotation.y = tank.turretYaw;
+    tank.gun.rotation.x = -tank.gunPitch;
+  }
   if (unit.root) unit.root.visible = true;
+  return unit;
+}
+
+/**
+ * Traverse a vehicle's turret to an absolute world bearing and SNAP it there.
+ *
+ * The gameplay path only ever sets a target; Tank.update slews toward it at
+ * 1.15 rad/s, and the settle loop is a quarter of a second. A shot that asks
+ * for a 130-degree traverse and then photographs it gets 15 degrees.
+ */
+export function turretTo(unit, aimYaw, aimPitch = 0) {
+  if (!unit) return unit;
+  unit.aimYaw = aimYaw;
+  unit.aimPitch = aimPitch;
+  unit.syncActor?.();
+  const tk = unit.isVehicle ? unit.actor : null;
+  if (!tk || !tk.turret) return unit;
+  tk.turretYaw = tk.turretYawTarget;
+  tk.gunPitch = tk.gunPitchTarget;
+  tk.turret.rotation.y = tk.turretYaw;
+  tk.gun.rotation.x = -tk.gunPitch;
   return unit;
 }
 
@@ -260,33 +304,50 @@ export const SHOTS = {
    */
   async overview(ctx) {
     const b = ensureBattle(ctx);
-    setSun(ctx, 0.27, 1.35);
+    // Key almost straight down the road: the glacis of everything facing the crossing takes
+    // the cream band and every left flank falls into violet, which is the split the band
+    // quantiser needs before it can show a terminator at all.
+    setSun(ctx, 0.26, 0.42);
     uiMode(ctx, 'none');
     b.setPhase('command');
+    // Nothing is "acting" in a landscape, and a stale active unit drags the shadow frustum
+    // off to wherever that soldier is standing — see updateLighting() in main.js.
+    b.activeUnit = null;
 
     const bx = 4, bz = 4;                 // the crossing: everyone is looking at it
 
-    // The Vasel is a 35 m channel here — everything below y=2 is water, so the whole squad
-    // lives on the south bank at z >= 26 and the garrison on the north bank at z <= -12.
-    // Strung out along the camera's own line of sight rather than across it: the near man is
-    // eight metres off the lens and cropped by the left edge, the last is thirty metres out
-    // and small. That single file is what gives a landscape its depth and its scale.
-    const advance = [
-      ['Rosie Stark', -13.2, 34.2, 'crouchIdle', STANCE.CROUCH],
-      ['Largo Potter', -7.6, 33.2, 'idle', STANCE.STAND],
-      ['Marina Wulfstan', -7.7, 37.5, 'idle', STANCE.STAND],
-      ['Alicia Melchiott', -7.0, 29.8, 'walk', STANCE.STAND],
-      ['Edy Nelson', -10.5, 24.5, 'walk', STANCE.STAND],
-      ['Isara Gunther', -4.7, 23.6, 'idle', STANCE.STAND],
+    // FOUR planes, near to far, and the frame is built out of them rather than around a
+    // subject standing in the middle of a field:
+    //   6 m   Alicia, on the left third, at 0.45 of frame height, walking away from the lens
+    //   9-19 m the rest of the section, staggered across the middle band
+    //   22 m  the Edelweiss, three-quarter, cropped by the right edge
+    //   34 m+ the crossing, then the mill town on the far bank under its smoke
+    // Every placement below is authored in CAMERA space (depth along the view axis, lateral
+    // across it) and then converted, because "put him on the left third" is a statement about
+    // the picture and not about the map.
+    const hx = -7.7, hz = 30.1;
+    pose(ctx, unitNamed(ctx, 'Alicia Melchiott'), hx, hz, facing(hx, hz, bx, bz),
+      'walk', STANCE.STAND, { phase: 0.31 });
+
+    const section = [
+      ['Largo Potter', -8.0, 26.9, 'idle', STANCE.STAND, 0],
+      ['Edy Nelson', -3.4, 26.7, 'walk', STANCE.STAND, 0.62],
+      ['Rosie Stark', -9.43, 31.14, 'crouchIdle', STANCE.CROUCH, 0],
+      ['Marina Wulfstan', 0.7, 19.7, 'walk', STANCE.STAND, 0.12],
     ];
-    for (const [name, x, z, clip, stance] of advance) {
-      pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, bx, bz), clip, stance, { phase: 0.31 });
+    for (const [name, x, z, clip, stance, ph] of section) {
+      pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, bx, bz), clip, stance, { phase: ph });
     }
+    const isara = unitNamed(ctx, 'Isara Gunther');
+    if (isara) pose(ctx, isara, 0.4, 22.9, facing(0.4, 22.9, 2.90, 19.55) + 0.9, 'idle');
+
+    // The Edelweiss halted on the shoulder, angled across the frame so it reads as a wedge
+    // and not as a side elevation, gun traversed toward the town. It also gives the right
+    // third of the frame something with hard edges and real value contrast in it.
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
     if (tank) {
-      pose(ctx, tank, -18.5, 36.5, facing(-18.5, 36.5, bx, bz) + 0.18, 'idle');
-      tank.aimYaw = facing(-18.5, 36.5, 8, -12);
-      tank.syncActor?.();
+      pose(ctx, tank, 2.90, 19.55, facing(2.90, 19.55, bx, bz) - 0.55, 'idle');
+      turretTo(tank, facing(2.90, 19.55, 30, -30));
     }
 
     // The garrison, small, on the far bank — the frame's stakes, not its subject.
@@ -298,13 +359,16 @@ export const SHOTS = {
         i % 2 ? STANCE.CROUCH : STANCE.STAND);
     });
 
-    // Eye level on the lip of the south bank. A camera thirty metres up turns soldiers into
-    // specks and the valley into a map; standing on the bank keeps the human scale and still
-    // shows the whole crossing, because the bank is six metres above the water.
-    aimCameraG(ctx, -15.0, 1.85, 41.0, 8.0, 2.0, -16.0, 40);
+    // Eye level on the lip of the south bank, pitched down about seven degrees so the sky
+    // takes the top third and no more — the old framing gave forty-five per cent of the page
+    // to an empty wash.
+    aimCameraG(ctx, -8.8, 2.05, 36.3, -1.0, 1.55, 18.0, 40);
 
     finale(ctx, 6, (i) => {
-      if (i === 0) smokeColumn(ctx, 34, -46, 9, 8, { size: 1.9, alpha: 0.30, drift: 5, frames: 6 });
+      if (i === 0) {
+        smokeColumn(ctx, 34, -46, 9, 8, { size: 1.9, alpha: 0.30, drift: 5, frames: 6 });
+        smokeColumn(ctx, 18, -30, 6, 5, { size: 1.4, alpha: 0.22, drift: 3, frames: 6 });
+      }
     });
     await frames(14);
   },
@@ -317,9 +381,13 @@ export const SHOTS = {
    */
   async bridge(ctx) {
     const b = ensureBattle(ctx);
-    setSun(ctx, 0.25, 1.45);
+    // Low, and behind the span. The east face the camera sees therefore sits in the shade
+    // band while the arch rings and the parapet carry a warm rim, which is the only way a
+    // masonry vault reads as a curved solid rather than as a flat grey elevation.
+    setSun(ctx, 0.17, -1.72);
     uiMode(ctx, 'none');
     hideAll(ctx);
+    b.activeUnit = null;
 
     // A sentry standing on the span itself gives the arches their scale; the rest of the
     // picket is dug in where the road leaves the bridge on the north bank.
@@ -339,13 +407,15 @@ export const SHOTS = {
     pose(ctx, alicia, 26.0, 24.0, facing(26, 24, 5, 4), 'crouchIdle', STANCE.CROUCH);
     pose(ctx, largo, 30.5, 27.0, facing(30.5, 27, 5, 4), 'crouchIdle', STANCE.CROUCH);
 
-    // Out over the water downstream, a metre or two above the surface: from here the span
-    // runs diagonally across the frame, the arches are open all the way through, and the
-    // channel itself leads the eye into them. Heights come off the water and the deck rather
-    // than the riverbed, so the shot cannot end up buried inside the bank.
+    // THREE-QUARTER, not broadside. Standing off the south-east corner of the crossing and
+    // low — a metre and a half over the pool — puts the near abutment in the bottom-right
+    // corner, runs the span away to the upper left at about fifty degrees to the lens, and
+    // opens all three arches so you can see daylight through them. The channel comes out of
+    // the bottom of the frame and leads straight into the near arch, and because the camera
+    // is barely off the water the whole span gets a reflection under it.
     aimCamera(ctx.camera,
-      30.0, Math.max(surfaceAt(ctx, 30, 20) + 0.35, WATER_Y + 3.2), 20.0,
-      5.0, deckY(ctx) - 0.95, 2.0, 34);
+      17.5, Math.max(surfaceAt(ctx, 17.5, 26.5) + 0.30, WATER_Y + 1.35), 26.5,
+      1.0, deckY(ctx) - 2.15, -2.0, 40);
     await frames(14);
   },
 
@@ -426,15 +496,21 @@ export const SHOTS = {
     const alicia = unitNamed(ctx, 'Alicia Melchiott');
     cm.select(alicia);
     cm.showThreat = true;
-    // Look down the axis of the mission — squad bottom-left, bridge centre, town top-right —
-    // at an oblique that still reads the terrain as terrain. The old near-plan pitch flattened
-    // the whole valley into an unreadable wash under the overlays.
-    cm.focusOn(_v.set(4, 0, 8), true);
-    cm.distWant = cm.dist = 62;
-    cm.pitchWant = cm.pitch = -0.62;
+    // The overlays have to sit on something a reader can name. Focused on the CROSSING rather
+    // than on the empty approach, at a shallower oblique and closer in, the frame under the
+    // wash is bridge, river, road and the first row of frontages — drawn objects with edges —
+    // instead of forty metres of unmodulated hillside.
+    cm.focusOn(_v.set(4, 0, 6), true);
+    cm.distWant = cm.dist = 52;
+    cm.pitchWant = cm.pitch = -0.55;
     // Looking north, the way the player is attacking: our own section reads across the bottom
     // of the map, the crossing in the middle, their held ground at the top.
-    cm.yawWant = cm.yaw = 0.46 + Math.PI;
+    cm.yawWant = cm.yaw = 0.34 + Math.PI;
+    // A tactical map read through a lens is not a map. The pipeline switches its depth of
+    // field on for this camera, and because the whole frustum falls outside the focus range
+    // every fill in the frame is blurred while the ink composited on top of it stays razor
+    // sharp — soft wash under hard line, which is the single thing a painting cannot do.
+    if (ctx.pipeline && ctx.pipeline.dof) ctx.pipeline.dof.enabled = false;
     cm.buildMoveOverlay();
     cm.buildThreatOverlay();
     cm.buildFireArcs();
@@ -491,6 +567,16 @@ export const SHOTS = {
     // Let the spring arm converge on the shoulder.
     for (let i = 0; i < 24; i++) { am.updateCamera(1 / 60); await raf(); }
     b.interception.enabled = false;
+    // Then STOP HER. She is still holding the run pose — the animator phase is pinned at
+    // 0.18 below and again on every finale frame, so the picture is unchanged — but the
+    // gameplay position stops advancing. Left running, the camera rides forward all the way
+    // to the shutter, the foliage LOD keeps streaming in and out around it, and main.js's
+    // settle loop never sees a stable draw list: this shot was the one shot in the set that
+    // hit the 200-frame cap without ever converging, i.e. __READY__ fired on a frame that had
+    // not finished loading. Frozen, it settles in well under the budget.
+    am.scriptedMove = { x: 0, y: 0 };
+    am.speedSmoothed = alicia.classDef.speed.run;   // keep the camera in its "sprinting" pose
+    alicia.speed = 0;
     stride(alicia, 0.18);
 
     const shooters = [foe[0], foe[3]].filter(Boolean);
@@ -658,29 +744,51 @@ export const SHOTS = {
   /** The Edelweiss, three-quarter low angle, crew alongside, the valley falling away behind. */
   async tank(ctx) {
     const b = ensureBattle(ctx);
-    setSun(ctx, 0.27, 1.70);
+    // The key sits almost square on the glacis and a few degrees off the left flank, so the
+    // front plates take the cream band, the whole left side drops through the terminator into
+    // violet, and the cast shadow rakes left across the road instead of hiding under the hull.
+    setSun(ctx, 0.24, 0.93);
     uiMode(ctx, 'none');
     hideAll(ctx);
+    b.activeUnit = null;
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
     const isara = unitNamed(ctx, 'Isara Gunther');
     const largo = unitNamed(ctx, 'Largo Potter');
     show(ctx, [tank, isara, largo]);
-    // Nose swung toward the camera and the turret traversed away toward the crossing: the
-    // three-quarter FRONT is the angle that shows glacis, sponson, running gear and gun in
-    // one silhouette. Rear-on, a tank is a box.
-    pose(ctx, tank, 1.0, 24.0, 0.62, 'idle');
-    if (tank) { tank.aimYaw = facing(1, 24, 6, -12); tank.syncActor?.(); }
-    pose(ctx, isara, -3.4, 26.8, facing(-3.4, 26.8, 1, 24) + 0.1, 'idle');
-    pose(ctx, largo, 6.8, 21.0, facing(6.8, 21.0, 1, 24) - 0.15, 'crouchIdle', STANCE.CROUCH);
 
-    // Seven metres out and below the sponson line: the Edelweiss should fill two thirds of
-    // the frame and be looked UP at, the way a tank is looked at by the infantry beside it.
-    aimCameraG(ctx, 7.6, 1.42, 30.0, 0.9, 1.50, 24.0, 38);
+    // The camera, the Edelweiss, the crossing and the mill town are put on ONE LINE, sixty-six
+    // metres of it, so the tank has a town behind it instead of a bare hillside: hull at ten
+    // metres just left of centre, the bridge clipping the left edge, the village dead centre
+    // in the haze. The old framing was a catalogue broadside against an empty slope.
+    //
+    // Hull yaw 0.50 is not arbitrary either. It puts the glacis normal exactly on the sun
+    // bearing and the left flank exactly ON the terminator, so the two plates the camera can
+    // see land in different bands — cream front, violet side — which is the whole point of a
+    // quantised shader and something a side-on shot can never show.
+    // It sits ON THE ROAD, and so does the camera. The road corridor is the only ground on
+    // this map that is carved flat, and a low camera on a heightfield otherwise spends the
+    // shot looking over the crest of whatever bank lies between it and the subject — which
+    // buries the running gear, the one part of a tank that has to be visible.
+    const tx = 2.6, tz = 19.96;
+    pose(ctx, tank, tx, tz, 0.63, 'idle');
+    // Gun raking across the frame to the right rather than pointing down the lens —
+    // a barrel aimed at the camera is a circle.
+    turretTo(tank, facing(tx, tz, 42, 2), 0.03);
+
+    // Two crew, on two different depth planes: Largo cropped low-left four metres off the
+    // lens, Isara eight metres out at the tank's shoulder.
+    pose(ctx, largo, 0.89, 23.32, facing(0.89, 23.32, tx, tz) - 0.3, 'crouchIdle', STANCE.CROUCH);
+    pose(ctx, isara, 5.71, 22.25, facing(5.71, 22.25, tx + 0.5, tz - 0.5), 'idle');
+
+    // Ten metres out, at the chest height of a kneeling man, looking slightly UP at the
+    // sponson line. A tank photographed from standing height is a diagram.
+    aimCameraG(ctx, 2.73, 1.02, 28.51, tx, 1.34, tz, 38);
 
     finale(ctx, 5, (i) => {
       if (i !== 0 || !ctx.fx || !tank) return;
-      // Idling exhaust off the rear deck.
-      _v.set(3.1, tank.pos.y + 1.55, 26.6);
+      // Idling exhaust off the rear deck, and the town burning behind.
+      smokeColumn(ctx, 30, -42, 13, 9, { size: 3.0, alpha: 0.34, drift: 6, frames: 5 });
+      _v.set(tx - 0.4, tank.pos.y + 1.5, tz + 2.0);
       _d.set(0.25, 0.9, 0.4);
       for (let k = 0; k < 4; k++) {
         _v.y += 0.35;
@@ -771,21 +879,33 @@ export const SHOTS = {
    */
   async dusk(ctx) {
     const b = ensureBattle(ctx);
-    setSun(ctx, 0.87, -1.95);
+    // ACTUAL dusk. At t = 0.87 the sun is still twenty-eight degrees up and the ramp has
+    // barely left afternoon, which is why the last pass read as hazy daylight; 0.925 puts it
+    // at seventeen degrees on the ember end of the ramp, and that is where the shadows get
+    // long enough to be the subject. Bearing is set eight degrees off the lens axis so the
+    // squad is contre-jour — rim on every helmet, shadows running straight at the camera and
+    // then raking left across the field.
+    setSun(ctx, 0.955, -2.14);
     uiMode(ctx, 'none');
+    b.setPhase('command');
+    b.activeUnit = null;
+    // Laid out in CAMERA space and converted: depth 8 to 27 metres, laterals alternating
+    // either side of the axis, so the section reads as a section strung across the field
+    // rather than as a row, and nobody hides behind anybody.
     const squad = [
-      ['Alicia Melchiott', 12.0, 30.0],
-      ['Rosie Stark', 17.0, 33.5],
-      ['Largo Potter', 7.0, 34.5],
-      ['Isara Gunther', 20.5, 38.0],
-      ['Edy Nelson', 2.5, 30.0],
-      ['Marina Wulfstan', 13.0, 40.0],
+      ['Rosie Stark', 28.1, 39.1],
+      ['Isara Gunther', 18.6, 42.2],
+      ['Alicia Melchiott', 21.7, 37.9],
+      ['Largo Potter', 24.2, 30.3],
+      ['Edy Nelson', 13.8, 32.2],
+      ['Marina Wulfstan', 16.7, 24.4],
     ];
     for (const [name, x, z] of squad) {
       pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, 4, 2), 'idle');
     }
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
-    pose(ctx, tank, 20.5, 39.0, facing(20.5, 39, 4, 2), 'idle');
+    pose(ctx, tank, 17.97, 37.3, facing(17.97, 37.3, 4, 2) - 0.35, 'idle');
+    turretTo(tank, facing(17.97, 37.3, -6, 10));
 
     const foe = b.units.filter((u) => u.team === 1 && !u.isVehicle).slice(0, 5);
     const foeSpots = [[3, -7], [11, -11], [-4, -5], [15, -20], [6, -23]];
@@ -794,7 +914,10 @@ export const SHOTS = {
       pose(ctx, u, x, z, facing(x, z, 8, 24), 'idle');
     });
 
-    aimCameraG(ctx, 42, 11.0, 58, -4, 2.5, -12, 34);
+    // Down off the eleven-metre map camera and onto the field. From here the squad is ten to
+    // twenty-five metres out with a whole field of shadow in front of them, the crossing sits
+    // on the far third and the town goes violet behind it.
+    aimCameraG(ctx, 30.0, 2.45, 48.0, 14.6, 0.6, 23.8, 38);
 
     finale(ctx, 6, (i) => {
       if (i === 0) smokeColumn(ctx, 34, -46, 11, 9, { size: 2.2, alpha: 0.32, drift: 5, frames: 6 });

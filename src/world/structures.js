@@ -19,6 +19,7 @@ import { lerp, TAU } from '../core/math.js';
 import {
   mergeGeoms, setGeomColor, tx, box, cyl, loft, hipRoof, ribbonWall,
   rubblePile, raggedEdge, carveGeometry, worldUV, scorch,
+  smoothNormals, extrudeElevation,
 } from './geoutil.js';
 import { makeSurfaceMaterial, PALETTE } from './worldMaterials.js';
 import { stuccoTexture, stoneTexture, woodTexture } from './textures.js';
@@ -377,124 +378,198 @@ export function buildBarn(rng, opts = {}) {
 // stone arch bridge
 // ---------------------------------------------------------------------------
 
+// Span geometry, shared with water.js so the pier wash breaks exactly where the
+// masonry stands in the stream. Changing the bridge means changing this ONE
+// function; nothing else may hard-code the span arithmetic.
+export const BRIDGE_SPANS = 3;
+export const BRIDGE_PIER_W = 1.9;
+export const BRIDGE_ABUT = 2.6;
+
+/** @returns {{span:number, pierZ:number[], spanZ:{z0:number,z1:number}[]}} */
+export function bridgeSpanLayout(length) {
+  const spans = BRIDGE_SPANS, pierW = BRIDGE_PIER_W, abut = BRIDGE_ABUT;
+  const span = (length - pierW * (spans - 1) - abut * 2) / spans;
+  const spanZ = [];
+  const pierZ = [];
+  for (let s = 0; s < spans; s++) {
+    const z0 = -length * 0.5 + abut + s * (span + pierW);
+    spanZ.push({ z0, z1: z0 + span });
+  }
+  for (let s = 1; s < spans; s++) {
+    pierZ.push(-length * 0.5 + abut + s * span + (s - 0.5) * pierW);
+  }
+  return { span, pierZ, spanZ };
+}
+
 /**
- * Three-span masonry bridge. The spandrel walls are built as a picket of thin
- * vertical blocks whose bottoms follow the arch intrados, which produces a true
- * arch silhouette (and a real shadow) for a fraction of the cost of a swept
- * vault. The barrel underside is a separate lofted strip so the arch reads as
- * a tunnel when you look along the river.
+ * Three-span masonry bridge.
+ *
+ * The whole body — deck, spandrels, piers, abutments AND the barrel vaults — is
+ * ONE extrusion of a single elevation profile with three elliptical holes
+ * punched through it. That is the only way to get a C1-continuous intrados: the
+ * previous build stepped 0.30 m boxes along each arch, which produced a literal
+ * staircase silhouette and a stack of laminated black-edged slabs inside every
+ * span, because the outline pass draws a crease at every facet break.
+ * `smoothNormals` then welds the barrel's 5-degree facets into a continuous
+ * surface while leaving the 90-degree arris at the spandrel face intact.
  *
  * Local frame: length along +Z, width along X, deck top at y = 0.
  */
-export function buildBridge(rng, length, width, deckY, riverBedY) {
+export function buildBridge(rng, length, width, deckY, riverBedY, waterY) {
   const bins = newBins();
   const colliders = [];
-  const spans = 3;
-  const pierW = 1.5;
-  const clearLen = length - pierW * (spans - 1) - 4.0;   // minus abutments
-  const span = clearLen / spans;
+  const { span, pierZ, spanZ } = bridgeSpanLayout(length);
+  const pierW = BRIDGE_PIER_W;
 
   const half = width * 0.5;
-  const deckT = 0.55;
+  const deckT = 0.72;
 
   // Everything is measured relative to the deck TOP at y = 0.
   const bedRel = riverBedY - deckY;                      // negative
-  const crownY = -deckT - 0.32;                          // intrados at the crown
-  let springY = bedRel + 0.7;                            // springing just off the bed
+  const waterRel = (waterY ?? WATER_Y) - deckY;          // negative
+  // Just enough footing to be bedded in the gravel. Any deeper and the
+  // foundation shows THROUGH the translucent river as a dark wedge.
+  const baseY = bedRel - 0.30;
+  const crownY = -deckT - 0.26;                          // intrados at the crown
+  // Springing sits a hand above the waterline, the way a village bridge does,
+  // not down on the riverbed.
+  let springY = Math.max(bedRel + 0.55, waterRel + 0.30);
   let rise = crownY - springY;
-  if (rise < 0.8) { rise = 0.8; springY = crownY - rise; }
+  if (rise < 0.9) { rise = 0.9; springY = crownY - rise; }
   // A segmental (elliptical) arch: semicircular only when rise == span/2.
 
-  // deck slab
-  bins.stone.push(box(width, deckT, length, PALETTE.stone,
-    { y: -deckT * 0.5, variation: 0.09 }));
-  // road surface on top
-  bins.stone.push(box(width - 0.9, 0.10, length, PALETTE.dirtDark,
+  // --- the body: one profile, three holes, one sweep ------------------------
+  const shape = new THREE.Shape();
+  shape.moveTo(-length * 0.5, baseY);
+  shape.lineTo(length * 0.5, baseY);
+  shape.lineTo(length * 0.5, 0);
+  shape.lineTo(-length * 0.5, 0);
+  shape.closePath();
+  for (const { z0, z1 } of spanZ) {
+    const zc = (z0 + z1) * 0.5;
+    const hole = new THREE.Path();
+    hole.moveTo(z0, baseY);
+    hole.lineTo(z0, springY);
+    hole.absellipse(zc, springY, span * 0.5, rise, Math.PI, 0, true);
+    hole.lineTo(z1, baseY);
+    hole.closePath();
+    shape.holes.push(hole);
+  }
+  let body = extrudeElevation(shape, width, 40);
+  setGeomColor(body, PALETTE.stone, 0.085);
+  body = smoothNormals(body, 40);
+  bins.stone.push(body);
+
+  // road surface on top of the deck
+  bins.stone.push(box(width - 1.5, 0.10, length, PALETTE.dirtDark,
     { y: 0.02, variation: 0.12 }));
 
-  // spandrels + arches
-  const step = 0.30;
-  for (let s = 0; s < spans; s++) {
-    const z0 = -length * 0.5 + 2.0 + s * (span + pierW);
-    const zc = z0 + span * 0.5;
-    for (let z = z0; z < z0 + span - 1e-4; z += step) {
-      const u = ((z + step * 0.5) - zc) / (span * 0.5);      // -1..1
-      const arch = Math.sqrt(Math.max(0, 1 - u * u));
-      const yBot = springY + arch * rise;                    // crown highest
-      const hgt = -deckT - yBot;
-      if (hgt <= 0.05) continue;
-      for (const side of [-1, 1]) {
-        bins.stone.push(box(0.42, hgt, step * 1.02, PALETTE.stone, {
-          x: side * (half - 0.21), y: yBot + hgt * 0.5, z: z + step * 0.5,
-          variation: 0.13,
-        }));
-      }
-      // barrel vault underside
-      bins.stone.push(box(width - 0.84, 0.26, step * 1.02, PALETTE.stoneWarm, {
-        y: yBot + 0.10, z: z + step * 0.5, variation: 0.1,
-      }));
-      // voussoir ring, slightly proud of the spandrel face
-      for (const side of [-1, 1]) {
-        bins.stone.push(box(0.16, 0.38, step * 1.0, PALETTE.stoneWarm, {
-          x: side * (half + 0.03), y: yBot + 0.16, z: z + step * 0.5,
-          rx: Math.atan2(u, arch || 0.001) * 0.35, variation: 0.11,
-        }));
-      }
-    }
-  }
-
-  // piers down to the bed, with pointed cutwaters facing upstream
-  const pierBottom = bedRel - 0.9;
-  const pierTop = -deckT;
-  const pierH = pierTop - pierBottom;
-  const pierYc = (pierTop + pierBottom) * 0.5;
-  for (let s = 1; s < spans; s++) {
-    const zc = -length * 0.5 + 2.0 + s * span + (s - 0.5) * pierW;
-    bins.stone.push(box(width, pierH, pierW, PALETTE.stone,
-      { y: pierYc, z: zc, variation: 0.12 }));
+  // --- voussoir ring: a band of dressed stone standing proud of the spandrel
+  //     face, following the SAME ellipse as the intrados.
+  const ringT = 0.44;
+  for (const { z0, z1 } of spanZ) {
+    const zc = (z0 + z1) * 0.5;
+    const rxi = span * 0.5 - 0.06, ryi = rise - 0.06;
+    const rxo = rxi + ringT, ryo = ryi + ringT;
+    const skew = springY - 0.42;
+    const band = new THREE.Shape();
+    band.moveTo(zc - rxo, skew);
+    band.absellipse(zc, springY, rxo, ryo, Math.PI, 0, true);
+    band.lineTo(zc + rxo, skew);
+    band.lineTo(zc + rxi, skew);
+    band.absellipse(zc, springY, rxi, ryi, 0, Math.PI, false);
+    band.lineTo(zc - rxi, skew);
+    band.closePath();
     for (const side of [-1, 1]) {
-      const cut = new THREE.CylinderGeometry(0.95, 1.1, pierH, 3, 1);
-      setGeomColor(cut, PALETTE.stone, 0.12, rng);
-      tx(cut, {
-        x: side * (half + 0.30), y: pierYc, z: zc,
-        ry: side > 0 ? Math.PI * 0.5 : -Math.PI * 0.5,
-      });
-      bins.stone.push(cut);
+      let ring = extrudeElevation(band, 0.17, 40);
+      setGeomColor(ring, PALETTE.stoneWarm, 0.10);
+      ring = smoothNormals(ring, 40);
+      ring.translate(side * (half + 0.055), 0, 0);
+      bins.stone.push(ring);
     }
   }
-  // abutments carry the deck onto the banks
-  for (const s of [-1, 1]) {
-    bins.stone.push(box(width + 1.0, pierH, 4.0, PALETTE.stone,
-      { y: pierYc, z: s * (length * 0.5 - 1.6), variation: 0.1 }));
+
+  // --- string course under the parapet: the horizontal shadow line that tells
+  //     you where the structure stops and the balustrade begins.
+  bins.stone.push(box(width + 0.34, 0.19, length, PALETTE.stoneWarm,
+    { y: -0.30, variation: 0.09 }));
+
+  // --- piers: pointed cutwaters running from the foundation to a sloped
+  //     starling cap just under the springing, in ONE hexagonal-plan solid per
+  //     pier so both noses and the pier shaft are a single continuous form.
+  // The nose only exists where a cutwater has work to do: from a hand under the
+  // waterline up to the springing. Carrying it all the way to the foundation
+  // hangs two metres of fully-inked masonry inside a translucent river, and the
+  // outline pass draws that as a pair of black fins floating in the water.
+  const reach = 0.95;
+  for (const zc of pierZ) {
+    const capBase = Math.min(springY - 0.12, waterRel + 1.9);
+    const g = loft([
+      // The nose STOPS at the waterline. Below it there is only the plain pier
+      // shaft (which is part of the extruded body). The river does not write
+      // depth, so anything submerged still gets a full-weight graphite outline
+      // drawn over the water by the composite — carrying a 2 m tapered cutwater
+      // down to the bed therefore reads as a pair of inked blades hanging in the
+      // channel, which is exactly what it looked like.
+      { c: { x: 0, y: waterRel - 0.45, z: zc }, r: 1, sx: half + reach * 0.97, sz: pierW * 0.550 },
+      { c: { x: 0, y: waterRel + 0.10, z: zc }, r: 1, sx: half + reach, sz: pierW * 0.555 },
+      { c: { x: 0, y: capBase, z: zc }, r: 1, sx: half + reach * 0.90, sz: pierW * 0.55 },
+      { c: { x: 0, y: capBase + 0.75, z: zc }, r: 1, sx: half * 0.97, sz: pierW * 0.50 },
+    ], 6, true, true);
+    setGeomColor(g, PALETTE.stone, 0.10, rng);
+    bins.stone.push(g);
+    // a dark waterline course — algae and wet stone where the river washes it
+    const wl = loft([
+      { c: { x: 0, y: waterRel - 0.30, z: zc }, r: 1, sx: half + reach * 1.00, sz: pierW * 0.562 },
+      { c: { x: 0, y: waterRel + 0.28, z: zc }, r: 1, sx: half + reach * 1.005, sz: pierW * 0.560 },
+    ], 6, false, false);
+    setGeomColor(wl, PALETTE.mud, 0.13, rng);
+    bins.stone.push(wl);
   }
 
-  // parapets with coping
+  // --- wing walls: the abutments splay into the bank so the deck never ends
+  //     on a floating card.
+  for (const s of [-1, 1]) {
+    for (const side of [-1, 1]) {
+      const wing = box(0.7, -baseY, 4.6, PALETTE.stone, {
+        x: side * (half + 0.55), y: baseY * 0.5,
+        z: s * (length * 0.5 + 1.1), ry: side * s * 0.34, variation: 0.11,
+      });
+      bins.stone.push(wing);
+    }
+    bins.stone.push(box(width + 1.3, -baseY * 0.9, 2.8, PALETTE.stone,
+      { y: baseY * 0.45, z: s * (length * 0.5 + 0.9), variation: 0.1 }));
+  }
+
+  // --- parapets with coping
+  const parapetStart = bins.stone.length;
   for (const side of [-1, 1]) {
     const pts = [];
     const segs = 14;
     for (let i = 0; i <= segs; i++) {
       const t = i / segs;
-      pts.push({ x: side * (half - 0.24), z: -length * 0.5 + t * length });
+      pts.push({ x: side * (half - 0.26), z: -length * 0.5 + t * length });
     }
-    const par = ribbonWall(pts, 0, 0.92, 0.48);
+    const par = ribbonWall(pts, 0, 0.92, 0.52);
     setGeomColor(par, PALETTE.stone, 0.12, rng);
     bins.stone.push(par);
-    const cop = ribbonWall(pts, 0.92, 1.06, 0.62);
+    const cop = ribbonWall(pts, 0.92, 1.08, 0.68);
     setGeomColor(cop, PALETTE.stoneWarm, 0.09, rng);
     bins.stone.push(cop);
 
     colliders.push({
-      cx: side * (half - 0.24), cy: 0.53, cz: 0,
-      hx: 0.31, hy: 0.53, hz: length * 0.5, yaw: 0,
+      cx: side * (half - 0.26), cy: 0.54, cz: 0,
+      hx: 0.34, hy: 0.54, hz: length * 0.5, yaw: 0,
       opts: { cover: 1, solid: true, blocksLos: false, tag: 'parapet', destructible: true, hp: 220 },
     });
   }
 
-  // a shell hole knocked through one parapet — the crossing has been fought over
+  // a shell hole knocked through one parapet — the crossing has been fought
+  // over. Only the balustrade is bitten into; the arch body is left whole.
   const holeZ = rngRange(rng, -length * 0.22, length * 0.22);
   const holeSide = rng() < 0.5 ? -1 : 1;
   const holeHalf = rngRange(rng, 0.95, 1.5);
-  for (let i = 0; i < bins.stone.length; i++) {
+  for (let i = parapetStart; i < bins.stone.length; i++) {
     const g = bins.stone[i];
     // torn, not sawn: the bite radius wobbles along the parapet
     bins.stone[i] = carveGeometry(g, (x, y, z) => {
@@ -508,7 +583,7 @@ export function buildBridge(rng, length, width, deckY, riverBedY) {
   spill.translate(holeSide * (half - 0.4), 0.05, holeZ);
   bins.stone.push(spill);
 
-  return { bins, colliders, length, width, deckY, deckT };
+  return { bins, colliders, length, width, deckY, deckT, springY, rise, span };
 }
 
 // ---------------------------------------------------------------------------
@@ -924,7 +999,7 @@ export class Structures {
   _buildBridge() {
     const b = this.layout.bridge;
     const bedY = WATER_Y - 2.1;
-    const built = buildBridge(this.rng, b.length, b.width, b.deckY, bedY);
+    const built = buildBridge(this.rng, b.length, b.width, b.deckY, bedY, WATER_Y);
     // The bridge's local +Z runs along the road; buildBridge works with the
     // deck top at y = 0, so we place it at the carved deck elevation.
     const co = Math.cos(b.yaw), si = Math.sin(b.yaw);

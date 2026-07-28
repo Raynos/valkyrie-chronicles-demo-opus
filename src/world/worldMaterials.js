@@ -36,16 +36,24 @@ export const PALETTE = {
   dirt: 0x967c4e,
   dirtDark: 0x715a37,
   mud: 0x5b5140,
-  rock: 0x8f8b8e,
+  rock: 0x928c80,
   sand: 0xc2ad83,
   // architecture
   stucco: 0xd6cab0,
   stuccoWarm: 0xd9c49c,
   stuccoGrey: 0xbfb8a8,
-  tileA: 0xb15c42,
-  tileB: 0xc4794f,
-  tileDark: 0x8d4636,
-  stone: 0x9a9296,
+  // Pantile is DUSTY BRICK. Round 1 authored these hot enough that they came
+  // out at HSV sat 0.59-0.62, val 0.88 on screen while the rest of the frame sat
+  // at 0.09-0.40 — the roofs were the highest-chroma object in every shot and
+  // pulled the eye clean off the action.
+  tileA: 0x8e5340,
+  tileB: 0x9c6248,
+  tileDark: 0x74392c,
+  // Masonry is a WARM grey. Authoring it cool (0x9a9296, blue over green) is how
+  // the bridge and every retaining wall came out as a lavender slab — the
+  // coldest thing in frame and off the palette. Let vcShadowColour supply the
+  // violet where the light actually falls away.
+  stone: 0xa39a8c,
   stoneWarm: 0xa79a8c,
   brick: 0xa15b46,
   timber: 0x7d5c3c,
@@ -129,11 +137,14 @@ uniform vec3  uShadeTint;
 uniform vec3  uFloorCol;
 uniform sampler2D uPaperTex;
 
-// Soft quantiser: floor() with a smoothstep across each boundary so the band
-// edge "bleeds" the way a wet wash does against dry paper, and the boundary
-// itself is warped by paper fibre so it is never a straight contour line.
+// Quantiser. The boundary is HARD — uEdge is a few hundredths of a band, not a
+// third of one — and the irregularity comes from WARPING the band coordinate
+// before the floor, so the whole edge moves off the geometric iso-line instead
+// of being feathered into the gradient it was supposed to destroy. The warp
+// argument wants a low-frequency field (30-60 screen px lobes); a
+// high-frequency one dissolves the plateau, which is what round 1 measured.
 float bandify(float s, float warp) {
-  float sc = (s + warp) * uBands;
+  float sc = clamp(s, 0.0, 1.35) * uBands + warp * uBands;
   float f  = floor(sc);
   float fr = sc - f;
   return (f + smoothstep(0.5 - uEdge, 0.5 + uEdge, fr)) / uBands;
@@ -149,25 +160,36 @@ const NPR_BODY = /* glsl */ `
   vec3 npBase = diffuseColor.rgb;
   float npLum = max(1e-4, dot(npBase, vec3(0.33333)));
 
-  // Recover (N.L * shadow) from three's Lambert accumulation:
+  // Recover the FULL diffuse response — direct AND indirect — from three's
+  // Lambert accumulation:
   //   directDiffuse = sunColor * NdotL * shadow * diffuse / PI
-  // Valid while the scene has exactly one directional light, which is how
-  // World sets it up (it adopts an existing 'sun' rather than adding a second).
-  float npShade = dot(reflectedLight.directDiffuse, vec3(0.33333)) / (npLum * uSunLum);
+  // Quantising the direct term alone and then letting the unbanded hemisphere
+  // term back in afterwards is what dissolved every plateau in round 1: the
+  // measured shadow ramp came out as a continuous 80->164 gradient. The whole
+  // lighting value goes into the quantiser and the banded result is what gets
+  // written; nothing is re-added after it.
+  float npShade = dot(reflectedLight.directDiffuse + reflectedLight.indirectDiffuse,
+                      vec3(0.33333)) / (npLum * uSunLum);
   npShade = clamp(npShade, 0.0, 1.35);
 
   vec2 npPx = gl_FragCoord.xy;
-  float npFibre = texture2D(uPaperTex, npPx * 0.0021).r;
+  // ~55 px wet-edge lobes plus a ~160 px swell. Low frequency on purpose: a
+  // high-frequency warp does not bleed, it dissolves.
+  float npFibre = texture2D(uPaperTex, npPx * 0.0182).r;
   float npFibre2 = texture2D(uPaperTex, npPx * 0.0073 + vec2(0.37, 0.61)).r;
+  float npSwell = texture2D(uPaperTex, npPx * 0.0062 + vec2(0.71, 0.13)).b;
+  float npWarp = ((npFibre - 0.5) * 0.65 + (npSwell - 0.5) * 0.35) * uBleed;
 
-  float npQ = bandify(npShade, (npFibre - 0.5) * uBleed);
+  float npQ = bandify(npShade, npWarp);
 
   // Warm in light, violet-blue in shade. Never grey, never black.
-  vec3 npShadeCol = mix(npBase * uShadeTint, uShadeTint, 0.30);
+  vec3 npShadeCol = mix(npBase * uShadeTint, uShadeTint, 0.55);
+  // blue must lead red in the shaded wash — the CANVAS rule round 1 failed
+  npShadeCol.b = max(npShadeCol.b, npShadeCol.r * 1.10);
   vec3 npMidCol   = npBase * uMidTint;
   vec3 npLitCol   = npBase * uLitTint + vec3(0.045, 0.038, 0.022);
-  vec3 npCol = mix(npShadeCol, npMidCol, smoothstep(0.0, 0.52, npQ));
-  npCol = mix(npCol, npLitCol, smoothstep(0.48, 1.0, npQ));
+  vec3 npCol = mix(npShadeCol, npMidCol, smoothstep(0.05, 0.58, npQ));
+  npCol = mix(npCol, npLitCol, smoothstep(0.52, 1.0, npQ));
 
   // Rim: a thin straw-coloured halo where the surface turns away, stepped so
   // it reads as a drawn highlight rather than a fresnel gradient.
@@ -178,22 +200,28 @@ const NPR_BODY = /* glsl */ `
 
   // Pencil hatching, screen-space aligned, only in the lower bands. The stroke
   // phase is jittered by paper fibre so the lines waver like a real hand.
-  float npHatchAmt = uHatch * smoothstep(0.66, 0.10, npQ);
+  // Gated on the BAND INDEX, not on a continuous ramp: a band is a flat wash,
+  // so its hatching goes in at one weight across the whole wash and stops dead
+  // at the wet edge. The old smoothstep gate let the same stripe ride the lit
+  // stucco at a fraction of an amplitude, which reads as a printed screen.
+  float npBi = npQ * uBands;
+  float npHatchAmt = uHatch * (1.0 - smoothstep(0.85, 1.75, npBi));
   if (npHatchAmt > 0.001) {
-    float npWob = (npFibre2 - 0.5) * 5.0;
-    float npL1 = sin((npPx.x * 0.7071 + npPx.y * 0.7071) * 0.52 + npWob);
-    float npHatch = smoothstep(0.10, 0.78, npL1);
+    float npWob = (npFibre2 - 0.5) * 6.5;
+    float npL1 = sin((npPx.x * 0.819 + npPx.y * 0.574) * 0.52 + npWob);
+    float npHatch = smoothstep(0.24, 0.72, npL1);
     // cross-hatch the darkest band only
-    float npDeep = smoothstep(0.34, 0.04, npQ);
-    float npL2 = sin((npPx.x * 0.7071 - npPx.y * 0.7071) * 0.49 - npWob * 0.8);
-    npHatch = mix(npHatch, max(npHatch, smoothstep(0.10, 0.78, npL2)), npDeep);
+    float npDeep = 1.0 - smoothstep(0.05, 0.95, npBi);
+    float npL2 = sin((npPx.x * 0.966 - npPx.y * 0.259) * 0.47 - npWob * 0.8);
+    npHatch = mix(npHatch, max(npHatch, smoothstep(0.24, 0.72, npL2)), npDeep);
     npCol *= 1.0 - npHatchAmt * npHatch * 0.42;
   }
 
-  // Paper grain bites hardest through the midtones and disappears in the
-  // highlights, exactly like pigment sitting in the tooth of cold-press stock.
+  // Paper grain. Kept small: the frame already gets its cold-press tooth from
+  // the grade pass, and a 26% multiply here would flatten every plateau the
+  // quantiser just built.
   float npMid = 1.0 - abs(npQ * 2.0 - 1.0);
-  npCol *= mix(1.0, 0.74 + npFibre * 0.52, uPaper * npMid);
+  npCol *= mix(1.0, 0.93 + npFibre2 * 0.14, uPaper * npMid);
 
   // Lift the black point to a warm brown-violet.
   npCol = uFloorCol + npCol * (1.0 - uFloorCol);
@@ -255,16 +283,18 @@ function nprUniforms(opts) {
   return {
     uWTime: { value: 0 },
     uBands: { value: opts.bands ?? CFG.render.bands ?? 4 },
-    uEdge: { value: opts.edge ?? 0.16 },
-    uBleed: { value: opts.bleed ?? 0.075 },
+    // A HARD boundary (0.055 of a band) with a WIDE warp (0.30 of a band). The
+    // old 0.16/0.075 pair was exactly backwards and smeared every plateau.
+    uEdge: { value: opts.edge ?? 0.055 },
+    uBleed: { value: opts.bleed ?? 0.30 },
     uHatch: { value: opts.hatch ?? CFG.render.hatchStrength ?? 0.6 },
     uPaper: { value: opts.paper ?? CFG.render.paperStrength ?? 0.42 },
     uRim: { value: opts.rim ?? 0.5 },
     uSunLum: { value: sunLum() },
     uLitTint: { value: new THREE.Color(opts.litTint ?? 0xfff2d8) },
     uMidTint: { value: new THREE.Color(opts.midTint ?? 0xd8cfc0) },
-    uShadeTint: { value: new THREE.Color(opts.shadeTint ?? 0x584a63) },
-    uFloorCol: { value: new THREE.Color(opts.floorCol ?? 0x241d21) },
+    uShadeTint: { value: new THREE.Color(opts.shadeTint ?? 0x4b4270) },
+    uFloorCol: { value: new THREE.Color(opts.floorCol ?? 0x231d26) },
     uPaperTex: { value: paperTexture(512, 77) },
   };
 }

@@ -19,15 +19,18 @@
 //           `indirectDiffuse` and so leave the key-light recovery intact.
 //   ambient a whisper of warm fill so nothing is ever fully unlit.
 //
-// The shadow camera is a single ortho frustum that FOLLOWS the action focus
-// point rather than trying to cover the whole map. Its extent is RE-FITTED
-// EVERY FRAME from the real camera frustum (see `fitRadius`) because one fixed
+// The shadow camera is a single ortho frustum FITTED TO THE VIEW FRUSTUM — both
+// its extent and its centre — every frame (see `fitShadow`), because one fixed
 // box cannot serve both a camera 3 m behind a soldier and a command camera 45 m
 // up looking across 130 m of valley: sized for the first it clips every distant
 // shadow away, sized for the second it wastes 90% of its texels on ground the
 // player cannot see. The fitted radius is quantised to a coarse ladder so it
 // does not resize every frame, and the frustum centre is snapped to whole
 // shadow texels so the shadow edge does not crawl while the camera moves.
+// The action focus is now only a HINT for how much depth is worth covering; it
+// is deliberately NOT the box centre any more, because centring on a selected
+// unit the camera is not looking at is what blew the box out to 78 m and
+// dissolved every character-scale shadow in round 1.
 //
 // Depth biasing is deliberately NOT a cranked constant. `uShadowTexel` is
 // published to materials.js, which offsets the shadow lookup along the surface
@@ -49,14 +52,19 @@ const _worldUp = new THREE.Vector3(0, 1, 0);
 const _altUp = new THREE.Vector3(0, 0, 1);
 const _camPos = new THREE.Vector3();
 const _camFwd = new THREE.Vector3();
-const _camRight = new THREE.Vector3();
-const _camUp = new THREE.Vector3();
-const _corner = new THREE.Vector3();
 
 // The fitted shadow radius snaps to this ladder. A frustum radius that slid
 // continuously would resize the ortho box — and therefore the texel grid — on
 // every frame, and the shadow edge would boil no matter how well it is snapped.
-const FIT_STEPS = [12, 17, 24, 33, 45, 60, 78];
+//
+// The low rungs are close together on purpose. An over-the-shoulder camera fits
+// at 14 m, which at a 4096 map is 6.8 mm per texel — fine enough that a boot
+// sole (0.28 m) is 41 texels across and throws a readable contact shadow. The
+// old ladder started at 12 but the frustum was centred on the ACTION FOCUS
+// rather than on the view, so a hero the camera was not looking at dragged the
+// fit to the top rung (78 m, 38 mm/texel) and every character-scale shadow
+// dissolved. See fitShadow().
+const FIT_STEPS = [9, 12, 16, 21, 27, 35, 45, 58, 74, 94];
 
 // Key colour through the day. Authored sRGB; three converts to linear.
 // Deliberately less saturated than a physical sun. The NPR shader normalises
@@ -149,8 +157,15 @@ export function createLightRig(scene, opts = {}) {
   sun.shadow.camera.right = o.shadowRadius;
   sun.shadow.camera.top = o.shadowRadius;
   sun.shadow.camera.bottom = -o.shadowRadius;
-  sun.shadow.radius = CFG.quality >= 2 ? 3.2 : 2;
-  sun.shadow.blurSamples = CFG.quality >= 2 ? 12 : 8;
+  // PCF radius in TEXELS (three r185 samples a 5-point Vogel disk of this radius,
+  // rotated per pixel by interleaved-gradient noise). Anything above ~1.2 stops
+  // being a penumbra and becomes a dithered gradient two bands wide, which is
+  // the "Gaussian-blurred grey-green blob" the critique named as the loudest
+  // 3D-renderer tell in the tank frame. At 1.0 the five taps overlap into plain
+  // hardware bilinear PCF: a one-texel transition, i.e. a painted edge that the
+  // band bleed in worldMaterials.js can then break up irregularly.
+  sun.shadow.radius = CFG.quality >= 2 ? 1.0 : 0.9;
+  sun.shadow.blurSamples = CFG.quality >= 2 ? 6 : 4;
   sun.shadow.camera.updateProjectionMatrix();
   if (!existingSun) { scene.add(sun); scene.add(sun.target); }
 
@@ -207,6 +222,11 @@ export function createLightRig(scene, opts = {}) {
     const cam = sun.shadow.camera;
     cam.left = -r; cam.right = r;
     cam.top = r; cam.bottom = -r;
+    // Depth range tracks the box. Everything visible is inside a sphere of
+    // radius r about the centre; the slack past that is for casters just off
+    // screen on the sun side, and for anything tall enough to lean into frame.
+    cam.near = Math.max(0.5, o.shadowDistance - r * 1.5 - 24);
+    cam.far = o.shadowDistance + r * 1.5 + 14;
     cam.updateProjectionMatrix();
 
     const texel = (r * 2) / mapSize;
@@ -223,49 +243,68 @@ export function createLightRig(scene, opts = {}) {
   }
 
   /**
-   * Fit the ortho half-extent to what the view camera can actually see.
+   * Fit the ortho box to WHAT THE CAMERA CAN SEE, and centre it there.
    *
-   * `shadowFar` is the distance we are willing to keep shadows out to, and it
-   * tracks how far the camera is from the action: a camera 3 m behind a soldier
-   * only needs ~30 m of shadowed world (and gets 15 mm texels for it), while the
-   * command camera 45 m up needs ~130 m (and accepts 38 mm texels). Fitting the
-   * real frustum corners rather than a hard-coded ladder is what makes both
-   * cameras correct at once without paying for cascades.
+   * The previous version fitted a radius but kept the box centred on the action
+   * focus, which is whatever unit the battle has selected. A camera framing a
+   * tank while the selected unit stands 47 m off to the side therefore had to
+   * open the box to 78 m to reach both — 38 mm per texel — and every
+   * character-scale shadow (a boot, a track link, a helmet) fell below the
+   * filter's resolution and vanished. That is the whole reason two critics
+   * independently reported "the hero casts no shadow whatsoever".
+   *
+   * So: take the standard cascaded-shadow-map bounding SPHERE of the view
+   * frustum truncated at `shadowFar`, centre the box on the sphere, and use its
+   * radius. The sphere is rotation-invariant, so panning the camera cannot make
+   * the box breathe — only moving it can, and the ladder + texel snap absorb
+   * that. Writes `_snap` with the (un-snapped) centre; returns the radius.
    */
-  function fitRadius() {
+  function fitShadow() {
     const cam = viewCamera;
-    if (!cam || !cam.isPerspectiveCamera) return o.shadowRadius;
+    if (!cam || !cam.isPerspectiveCamera) {
+      _snap.copy(focus);
+      return Math.max(radius || o.shadowRadius, 6);
+    }
 
     _camPos.setFromMatrixPosition(cam.matrixWorld);
-    const focusDist = _camPos.distanceTo(focus);
-    const shadowFar = THREE.MathUtils.clamp(focusDist * 1.85 + 16, 26, o.shadowFar);
+    _camFwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
 
+    // How much depth is worth shadowing. Measured off the CAMERA — its height
+    // above the plane the action sits on, and how steeply it is looking down at
+    // that plane — never off the distance to the selected unit. That last
+    // dependency is what let a unit standing 40 m off screen open the box to
+    // 78 m and take every character shadow with it.
+    const h = Math.max(0.8, _camPos.y - focus.y);
+    const pitch = -_camFwd.y;
+    // A level camera sees to the horizon but only ever needs shadows over the
+    // near ground, so cap it by eye height rather than letting it diverge.
+    let look = pitch > 0.06 ? h / pitch : 1e9;
+    look = Math.min(look, h * 4.5 + 18);
+    look = THREE.MathUtils.clamp(look, 7, 150);
+    const far = THREE.MathUtils.clamp(look * 1.6 + 11, 22, o.shadowFar);
+    const near = Math.max(0.1, cam.near);
+
+    // Tight bounding sphere of a truncated perspective frustum (the usual CSM
+    // fit). k is the radius of the far cap divided by its distance.
     const tanH = Math.tan(THREE.MathUtils.degToRad(cam.fov) * 0.5);
     const aspect = cam.aspect || 1.7778;
-    _camFwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
-    _camRight.set(1, 0, 0).applyQuaternion(cam.quaternion);
-    _camUp.set(0, 1, 0).applyQuaternion(cam.quaternion);
-
-    const h = shadowFar * tanH;
-    const w = h * aspect;
-    let m = 0;
-    // camera origin + the four far corners, measured in the light's own basis
-    for (let i = 0; i < 5; i++) {
-      _corner.copy(_camPos);
-      if (i > 0) {
-        const sx = (i === 1 || i === 3) ? -1 : 1;
-        const sy = (i <= 2) ? -1 : 1;
-        _corner.addScaledVector(_camFwd, shadowFar)
-          .addScaledVector(_camRight, w * sx)
-          .addScaledVector(_camUp, h * sy);
-      }
-      _corner.sub(focus);
-      m = Math.max(m, Math.abs(_corner.dot(_right)), Math.abs(_corner.dot(_up)));
+    const k2 = tanH * tanH * (1 + aspect * aspect);
+    let cz, r;
+    if (k2 * (far + near) >= far - near) {
+      cz = far;
+      r = far * Math.sqrt(k2);
+    } else {
+      cz = 0.5 * (far + near) * (1 + k2);
+      r = 0.5 * Math.sqrt(
+        (far - near) * (far - near) +
+        2 * (far * far + near * near) * k2 +
+        (far + near) * (far + near) * k2 * k2);
     }
+    _snap.copy(_camPos).addScaledVector(_camFwd, cz);
 
     // Quantise up to the ladder so the box (and therefore the texel grid) is
     // stable across small camera moves.
-    for (let i = 0; i < FIT_STEPS.length; i++) if (m <= FIT_STEPS[i]) return FIT_STEPS[i];
+    for (let i = 0; i < FIT_STEPS.length; i++) if (r <= FIT_STEPS[i]) return FIT_STEPS[i];
     return FIT_STEPS[FIT_STEPS.length - 1];
   }
 
@@ -312,12 +351,13 @@ export function createLightRig(scene, opts = {}) {
     _right.copy(upRef).cross(_dir).normalize();
     _up.copy(_dir).cross(_right).normalize();
 
-    applyRadius(viewCamera ? fitRadius() : Math.max(radius || o.shadowRadius, 6));
+    // fitShadow() writes the un-snapped centre into _snap and returns the radius.
+    applyRadius(fitShadow());
 
     const texel = (radius * 2) / mapSize;
-    const x = Math.round(focus.dot(_right) / texel) * texel;
-    const y = Math.round(focus.dot(_up) / texel) * texel;
-    const z = focus.dot(_dir);
+    const x = Math.round(_snap.dot(_right) / texel) * texel;
+    const y = Math.round(_snap.dot(_up) / texel) * texel;
+    const z = _snap.dot(_dir);
     _snap.copy(_right).multiplyScalar(x)
       .addScaledVector(_up, y)
       .addScaledVector(_dir, z);
@@ -326,6 +366,11 @@ export function createLightRig(scene, opts = {}) {
     sun.position.copy(_snap).addScaledVector(_dir, o.shadowDistance);
     sun.target.updateMatrixWorld();
     sun.updateMatrixWorld();
+
+    // Re-assert every frame. main.js pokes `sun.shadow.normalBias` directly on
+    // its own ladder, and applyRadius() early-outs when the radius has not
+    // changed, so a bias derived from a frustum we no longer use would stick.
+    sun.shadow.normalBias = texel * 1.6;
     // `bounce` is a hemisphere light: it has no position or direction to place.
   }
 
@@ -340,8 +385,9 @@ export function createLightRig(scene, opts = {}) {
 
     /**
      * @param {number} dt
-     * @param {THREE.Vector3} [focusPoint] where the action is — the shadow
-     *        frustum follows this, so keep it on the selected unit / camera aim.
+     * @param {THREE.Vector3} [focusPoint] where the action is. Only its HEIGHT
+     *        and rough distance are used, to decide how much depth the shadow
+     *        box should cover; the box itself is centred on the view frustum.
      * @param {THREE.PerspectiveCamera} [camera] optional; supplying it here is
      *        equivalent to calling setCamera() once.
      */

@@ -37,15 +37,21 @@ const _yAxis = new THREE.Vector3(0, 1, 0);
 // ============================================================================
 const PAL = {
   // Gallian regular armour: pale sage-grey field with warm ochre trim.
-  paint: 0x9aa196,
-  paintAlt: 0x8b9186,
-  darkMetal: 0x565049,       // gun, hatches, weld-proud steel
-  track: 0x53483f,           // umber steel, worn bright on the wear faces
-  rubber: 0x4a4348,
-  ochre: 0x9c7c4e,           // canvas, stowage, tool handles
-  wood: 0x8a6b47,
+  //
+  // These are the values the band quantiser sees. They are pitched HIGH on
+  // purpose: the detail map multiplies in at ~0.93 mean, and a quantiser can
+  // only split a surface into a cream band and a violet band if the surface has
+  // the headroom to go both ways. Armour authored at slate-green has nowhere to
+  // go but darker, which is exactly how the hull ended up as one flat mass.
+  paint: 0xaeb5a6,
+  paintAlt: 0x9ea595,
+  darkMetal: 0x6d675d,       // gun, hatches, weld-proud steel
+  track: 0x6a5c4e,           // umber steel, worn bright on the wear faces
+  rubber: 0x554d51,
+  ochre: 0xa88654,           // canvas, stowage, tool handles
+  wood: 0x94734c,
   glass: 0xd8d2b8,
-  grille: 0x4e5c5e,          // radiator: cool teal so it reads as "the spot"
+  grille: 0x5f767a,          // radiator: cool teal so it reads as "the spot"
   hot: 0xd8763a,
   scorch: 0x3a2f33,          // the darkest value permitted in frame
 };
@@ -251,6 +257,52 @@ function hullRing(w, yBot, yTop, chamfer = 0.16, crown = 0.02) {
   ];
 }
 
+/**
+ * A hull cross-section with a SPONSON: a narrow lower hull between the tracks,
+ * a shelf where it flares out, and the full-width superstructure above.
+ *
+ * This is the difference between a tank and a box with stripes painted on it.
+ * The old rings were a constant 1.21 m half-width, and the track centreline is
+ * at gauge/2 = 1.21 with a 0.42 m shoe — so exactly half of every track shoe
+ * and half of every road wheel was *inside* the hull solid. Nothing of the
+ * running gear could be seen except a 0.21 m sliver, which is why the critic
+ * read the whole lower half as one dark undifferentiated mass with no ground
+ * contact. The lower hull now stops at `wLow`, inboard of the track, and the
+ * upper hull overhangs it — so the wheels, the return run and the sprocket all
+ * sit in the shadow pocket under the sponson where they belong.
+ *
+ * 14 points, clockwise seen from +Z, same winding as hullRing.
+ */
+function sponsonRing(w, wLow, yBot, yTop, chamfer = 0.16, crown = 0.02, shelfY = 0.26) {
+  const span = Math.max(0.02, yTop - yBot);
+  const c = Math.min(chamfer, span * 0.4);
+  const th = Math.min(0.06, span * 0.16);          // sponson underside rise
+  const cb = Math.min(0.10, span * 0.22);          // belly chamfer
+  const wl = Math.min(wLow, w - 0.04);
+  // Keep the shelf strictly between the belly chamfer and the deck chamfer so
+  // no edge of the section can collapse to zero area (a degenerate quad here
+  // becomes a NaN vertex normal in computeVertexNormals).
+  const lo = yBot + cb * 0.7 + span * 0.06;
+  const hi = yTop - c - th - span * 0.06;
+  const ys = hi > lo ? Math.min(Math.max(shelfY, lo), hi) : (lo + hi) * 0.5;
+  return [
+    [-wl + cb * 0.7, yBot],
+    [-wl, yBot + cb * 0.7],
+    [-wl, ys],
+    [-w, ys + th],
+    [-w, yTop - c],
+    [-w + c * 0.85, yTop],
+    [-w * 0.42, yTop + crown],
+    [w * 0.42, yTop + crown],
+    [w - c * 0.85, yTop],
+    [w, yTop - c],
+    [w, ys + th],
+    [wl, ys],
+    [wl, yBot + cb * 0.7],
+    [wl - cb * 0.7, yBot],
+  ];
+}
+
 /** A bead of weld running around one cross-section ring. */
 function weldRing(pts, z, radius, rng, skipBelly = true) {
   const parts = [];
@@ -301,38 +353,50 @@ function canvas2d(size) {
 }
 
 /**
- * Painted armour: a gouache wash of the base colour with mottled value
- * variation, chipped paint showing warm primer at the edges, and dirt
- * accumulating low down. The renderer bands the lighting; this supplies the
- * *pigment* variation that keeps a flat band from looking like plastic.
+ * Painted armour, as a *modulation* map — NOT a pigment map.
+ *
+ * makeCanvasMaterial does `albedo = uColor * texture2D(uMap).rgb`, so a texture
+ * that is itself painted in the base colour multiplies the paint by itself:
+ * 0x9aa196 squared lands on #5d6658, which is why the Edelweiss rendered as one
+ * flat slate-green mass with no lit/shade split to band. The map therefore has
+ * to sit AROUND 1.0 and carry only the brush variation — mottle, chipped primer
+ * and rain-washed grime — while the pigment stays in uColor where the band
+ * quantiser can actually see it.
+ *
+ * White is the ceiling of a multiply, so the field is authored at `hi` (just
+ * under white) and everything else works downward from there; `mean` lands
+ * around 0.93 of the base and the palette entries are pitched to suit.
  */
-function makeArmourTexture(seed, base = PAL.paint, size = 256) {
+function makeArmourTexture(seed, tint = 0x000000, size = 256) {
   const rng = makeRng(seed);
   const { c, g } = canvas2d(size);
-  const col = new THREE.Color(base);
-  g.fillStyle = `#${col.getHexString()}`;
+  // The field: a hair off white so a "warm" wash still has somewhere to go up.
+  g.fillStyle = '#fbfbfa';
   g.fillRect(0, 0, size, size);
 
-  // Gouache mottling: overlapping soft washes, warm and cool.
-  for (let i = 0; i < 160; i++) {
-    const x = rng() * size, y = rng() * size, r = size * (0.03 + rng() * 0.14);
+  // Gouache mottling: overlapping soft washes. Warm ones barely darken and pull
+  // the hue toward cream; cool ones darken more and pull toward violet-grey, so
+  // the plate has an underlying temperature drift before the light hits it.
+  for (let i = 0; i < 170; i++) {
+    const x = rng() * size, y = rng() * size, r = size * (0.03 + rng() * 0.15);
     const warm = rng() < 0.5;
-    const l = warm ? 1.11 + rng() * 0.1 : 0.86 - rng() * 0.08;
-    const t = col.clone().multiplyScalar(l);
-    if (warm) { t.r = Math.min(1, t.r * 1.05 + 0.03); t.g = Math.min(1, t.g * 1.01); }
-    else { t.b = Math.min(1, t.b * 1.08 + 0.02); t.r *= 0.96; }
+    const col = warm
+      ? [255, 250 - (rng() * 10) | 0, 236 - (rng() * 14) | 0]
+      : [206 - (rng() * 16) | 0, 209 - (rng() * 14) | 0, 224 - (rng() * 8) | 0];
+    const a = warm ? 0.20 + rng() * 0.26 : 0.10 + rng() * 0.20;
     const grd = g.createRadialGradient(x, y, 0, x, y, r);
-    grd.addColorStop(0, `rgba(${(t.r * 255) | 0},${(t.g * 255) | 0},${(t.b * 255) | 0},${0.1 + rng() * 0.16})`);
+    grd.addColorStop(0, `rgba(${col[0]},${col[1]},${col[2]},${a})`);
     grd.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = grd;
     g.fillRect(x - r, y - r, r * 2, r * 2);
   }
 
-  // Paint chips: small hard-edged flecks of warm primer.
+  // Paint chips: small hard-edged flecks that read as warm primer under the
+  // sage once they multiply through.
   for (let i = 0; i < 90; i++) {
     const x = rng() * size, y = rng() * size;
     const w = 1 + rng() * 4, h = 1 + rng() * 3;
-    g.fillStyle = `rgba(${120 + (rng() * 25) | 0},${86 + (rng() * 20) | 0},${62 + (rng() * 16) | 0},${0.3 + rng() * 0.45})`;
+    g.fillStyle = `rgba(${168 + (rng() * 26) | 0},${124 + (rng() * 22) | 0},${94 + (rng() * 18) | 0},${0.28 + rng() * 0.4})`;
     g.beginPath();
     g.ellipse(x, y, w, h, rng() * Math.PI, 0, Math.PI * 2);
     g.fill();
@@ -343,7 +407,7 @@ function makeArmourTexture(seed, base = PAL.paint, size = 256) {
     const x = rng() * size;
     const y0 = rng() * size * 0.5;
     const len = size * (0.1 + rng() * 0.4);
-    g.strokeStyle = `rgba(74,60,52,${0.05 + rng() * 0.1})`;
+    g.strokeStyle = `rgba(150,138,124,${0.10 + rng() * 0.16})`;
     g.lineWidth = 0.6 + rng() * 2.2;
     g.beginPath();
     g.moveTo(x, y0);
@@ -352,8 +416,81 @@ function makeArmourTexture(seed, base = PAL.paint, size = 256) {
     }
     g.stroke();
   }
+
+  // An optional whole-sheet tint, for buckets (gun steel, track) that want the
+  // same brush marks at a different value without a second canvas.
+  if (tint) {
+    const t = new THREE.Color(tint);
+    g.globalCompositeOperation = 'multiply';
+    g.fillStyle = `#${t.getHexString()}`;
+    g.fillRect(0, 0, size, size);
+    g.globalCompositeOperation = 'source-over';
+  }
+
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/**
+ * The Gallian roundel, as a decal sheet with alpha: a cream disc, a red bar
+ * across it and a hand-drawn ink rim. Stencilled on, so the edges are ragged
+ * and the paint is thin enough that the plate's own mottle reads through.
+ */
+function makeInsigniaTexture(seed, size = 128) {
+  const rng = makeRng(seed);
+  const { c, g } = canvas2d(size);
+  g.clearRect(0, 0, size, size);
+  const cx = size / 2, cy = size / 2, R = size * 0.40;
+
+  // Ragged stencil disc — a polygon of jittered radii, not a perfect circle.
+  const ring = (rr, jitter) => {
+    g.beginPath();
+    for (let i = 0; i <= 48; i++) {
+      const a = (i / 48) * TAU;
+      const r = rr * (1 + (rng() - 0.5) * jitter);
+      const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.closePath();
+  };
+
+  g.globalAlpha = 0.88;
+  g.fillStyle = '#e6dcc0';
+  ring(R, 0.06); g.fill();
+
+  // The bar.
+  g.globalAlpha = 0.92;
+  g.fillStyle = '#a34434';
+  g.save();
+  g.translate(cx, cy); g.rotate(-0.06);
+  g.fillRect(-R * 0.98, -R * 0.30, R * 1.96, R * 0.60);
+  g.restore();
+
+  // Ink rim, drawn twice with a wobble so it reads as a pen line.
+  g.globalAlpha = 0.85;
+  g.strokeStyle = '#3b3128';
+  for (let k = 0; k < 2; k++) {
+    g.lineWidth = 1.6 + k * 0.7;
+    ring(R * (1 - k * 0.015), 0.045);
+    g.stroke();
+  }
+
+  // Wear: knock holes out of the paint so the stencil is not pristine.
+  g.globalAlpha = 1;
+  g.globalCompositeOperation = 'destination-out';
+  for (let i = 0; i < 40; i++) {
+    const a = rng() * TAU, r = R * (0.2 + rng() * 0.95);
+    g.beginPath();
+    g.ellipse(cx + Math.cos(a) * r, cy + Math.sin(a) * r,
+      1 + rng() * 3.5, 1 + rng() * 3, rng() * Math.PI, 0, TAU);
+    g.fill();
+  }
+  g.globalCompositeOperation = 'source-over';
+
+  const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
   return tex;
@@ -463,6 +600,11 @@ export class Tank {
     this.trackWidth = 0.42;
     this.wheelCount = 6;
     this.axleY = -(this.rideHeight - this.wheelRadius);   // -0.26
+    // Where the narrow lower hull flares out into the full-width superstructure.
+    // Everything below it is running gear; everything above it overhangs the
+    // track. Must clear the top of the return run — see sponsonRing().
+    this.sponsonY = this.axleY + 0.53;                    // 0.27
+    this.fenderY = this.axleY + 0.59;                     // 0.33
 
     // Hit volumes consumed by src/physics/ballistics.js.
     this.hitDims = {
@@ -515,6 +657,7 @@ export class Tank {
     this._buildHull();
     this._buildTurret();
     this._buildRunningGear();
+    this._buildMarkings();
     this._buildTrack();
     this._buildDamageDecals();
     this._buildFx(cfg.scene || null);
@@ -562,8 +705,11 @@ export class Tank {
 
   _buildMaterials() {
     const texSize = byQ([128, 256, 256]);
-    const paintTex = makeArmourTexture(this.seed ^ 0x51ab, PAL.paint, texSize);
-    const metalTex = makeArmourTexture(this.seed ^ 0x9f11, PAL.darkMetal, texSize >> 1);
+    // One brush sheet for the painted armour and a darker-tinted copy for the
+    // bare steel. Both are modulation maps around 1.0 (see makeArmourTexture),
+    // so the pigment stays in `color` where the quantiser can band it.
+    const paintTex = makeArmourTexture(this.seed ^ 0x51ab, 0, texSize);
+    const metalTex = makeArmourTexture(this.seed ^ 0x9f11, 0xdcd8d0, texSize >> 1);
     this.textures.push(paintTex, metalTex);
 
     const mk = (name, opts) => {
@@ -572,26 +718,35 @@ export class Tank {
       return m;
     };
 
+    // The armour is the largest single surface in any shot it appears in, so it
+    // carries the frame's banding score. Five levels with a wide wet edge is
+    // what turns a rolled plate into a cream deck band meeting a violet side
+    // band along one wandering pigment boundary.
+    const armourBands = Math.max(4, (CFG.render.bands | 0) + 1);
+
     this.mat = {
       paint: mk('paint', {
-        color: PAL.paint, roughness: 0.78, hatch: 1.0, rim: 0.55, paper: 1.0,
+        color: PAL.paint, roughness: 0.78, hatch: 1.25, rim: 0.55, paper: 1.0,
         outlineWidth: 1.25, map: paintTex, mapRepeat: [3, 2.5],
+        bands: armourBands, bandBleed: 1.7, hatchSpacing: 4.2, wrap: 0.30,
       }),
       metal: mk('metal', {
-        color: PAL.darkMetal, roughness: 0.62, hatch: 1.0, rim: 0.85, paper: 0.85,
+        color: PAL.darkMetal, roughness: 0.62, hatch: 1.1, rim: 0.85, paper: 0.85,
         outlineWidth: 1.1, map: metalTex, mapRepeat: [2, 2],
+        bands: armourBands, bandBleed: 1.5, hatchSpacing: 4.2, wrap: 0.32,
       }),
       track: mk('track', {
         color: PAL.track, roughness: 0.7, hatch: 0.9, rim: 0.7, paper: 0.8,
-        outlineWidth: 0.85, instanced: true,
+        outlineWidth: 0.85, instanced: true, bands: armourBands, bandBleed: 1.4,
+        wrap: 0.34,
       }),
       rubber: mk('rubber', {
         color: PAL.rubber, roughness: 0.95, hatch: 0.8, rim: 0.35, paper: 0.7,
-        outlineWidth: 1.0, instanced: true,
+        outlineWidth: 1.0, instanced: true, wrap: 0.34,
       }),
       ochre: mk('ochre', {
         color: PAL.ochre, roughness: 0.92, hatch: 1.0, rim: 0.4, paper: 1.0,
-        outlineWidth: 1.15, subsurface: 0.25,
+        outlineWidth: 1.15, subsurface: 0.25, bands: armourBands, bandBleed: 1.5,
       }),
       wood: mk('wood', { color: PAL.wood, roughness: 0.88, hatch: 0.9, rim: 0.4, paper: 1.0 }),
       glass: mk('glass', {
@@ -606,7 +761,14 @@ export class Tank {
         color: PAL.paintAlt, roughness: 0.7, hatch: 0.8, rim: 0.9, paper: 0.9,
         instanced: true, outlineWidth: 0.6,
       }),
+      insignia: mk('insignia', {
+        color: 0xffffff, roughness: 0.85, hatch: 0.5, rim: 0.3, paper: 1.0,
+        map: makeInsigniaTexture(this.seed ^ 0x71c3), alphaTest: 0.35,
+        outline: false, bands: armourBands, bandBleed: 1.5, wrap: 0.30,
+        side: THREE.DoubleSide, name: 'vcTankInsignia',
+      }),
     };
+    this.textures.push(this.mat.insignia.uniforms.uMap.value);
   }
 
   /** Hull, fenders, stowage, tools, lamps, exhaust, radiator. */
@@ -619,17 +781,20 @@ export class Tank {
     // Stations run rear -> nose. The deck drops sharply from z=1.4 forward:
     // that is the glacis, and its slope is what the penetration model reads.
     const stations = [
-      { z: -2.56, w: 1.14, yBot: -0.06, yTop: 0.40, ch: 0.14 },
-      { z: -2.10, w: 1.20, yBot: -0.13, yTop: 0.50, ch: 0.16 },
-      { z: -1.20, w: 1.21, yBot: -0.14, yTop: 0.52, ch: 0.17 },
-      { z: 0.10, w: 1.21, yBot: -0.14, yTop: 0.52, ch: 0.17 },
-      { z: 1.05, w: 1.21, yBot: -0.14, yTop: 0.51, ch: 0.17 },
-      { z: 1.42, w: 1.20, yBot: -0.14, yTop: 0.48, ch: 0.17 },
-      { z: 1.98, w: 1.14, yBot: -0.12, yTop: 0.26, ch: 0.14 },
-      { z: 2.34, w: 1.02, yBot: -0.01, yTop: 0.07, ch: 0.09 },
+      { z: -2.56, w: 1.14, wl: 0.94, yBot: -0.06, yTop: 0.40, ch: 0.14 },
+      { z: -2.10, w: 1.20, wl: 0.97, yBot: -0.13, yTop: 0.50, ch: 0.16 },
+      { z: -1.20, w: 1.21, wl: 0.97, yBot: -0.14, yTop: 0.52, ch: 0.17 },
+      { z: 0.10, w: 1.21, wl: 0.97, yBot: -0.14, yTop: 0.52, ch: 0.17 },
+      { z: 1.05, w: 1.21, wl: 0.97, yBot: -0.14, yTop: 0.51, ch: 0.17 },
+      { z: 1.42, w: 1.20, wl: 0.96, yBot: -0.14, yTop: 0.48, ch: 0.17 },
+      { z: 1.98, w: 1.14, wl: 0.92, yBot: -0.12, yTop: 0.26, ch: 0.14 },
+      { z: 2.34, w: 1.02, wl: 0.86, yBot: -0.01, yTop: 0.07, ch: 0.09 },
     ];
+    // The shelf clears the top of the return run (y = rollerY + rollerR) so the
+    // whole track loop lives in the pocket under the overhang.
+    const shelfY = this.sponsonY;
     const rings = stations.map((s) => ({
-      z: s.z, pts: hullRing(s.w, s.yBot, s.yTop, s.ch, 0.018),
+      z: s.z, pts: sponsonRing(s.w, s.wl, s.yBot, s.yTop, s.ch, 0.018, shelfY),
     }));
     B.paint.push(loft(subdivideStations(rings, byQ([1, 3, 4]), byQ([1, 2, 3])), true, true));
 
@@ -641,13 +806,23 @@ export class Tank {
     for (const i of weldAt) {
       for (const g of weldRing(rings[i].pts, rings[i].z, beadR, rng)) B.metal.push(g);
     }
-    // A longitudinal seam down each side where the upper and lower hull meet.
+    // A longitudinal seam down each side, along the sponson shelf — the join
+    // between the lower hull tub and the superstructure that sits on top of it.
     for (const sx of [-1, 1]) {
       let pz = -2.5;
-      while (pz < 2.2) {
-        const nz = Math.min(2.2, pz + 0.42);
-        B.metal.push(cylBetween(sx * 1.212, -0.02 + Math.sin(pz) * 0.004, pz,
-          sx * 1.212, -0.02 + Math.sin(nz) * 0.004, nz, beadR * 0.8, 5));
+      const sy = shelfY + 0.062;
+      while (pz < 2.05) {
+        const nz = Math.min(2.05, pz + 0.42);
+        B.metal.push(cylBetween(sx * 1.208, sy + Math.sin(pz) * 0.004, pz,
+          sx * 1.208, sy + Math.sin(nz) * 0.004, nz, beadR * 0.8, 5));
+        pz = nz;
+      }
+      // And a second one down the lower tub, where the belly plate is welded on.
+      pz = -2.4;
+      while (pz < 1.9) {
+        const nz = Math.min(1.9, pz + 0.52);
+        B.metal.push(cylBetween(sx * 0.968, -0.10 + Math.cos(pz * 0.7) * 0.004, pz,
+          sx * 0.968, -0.10 + Math.cos(nz * 0.7) * 0.004, nz, beadR * 0.7, 5));
         pz = nz;
       }
     }
@@ -728,7 +903,9 @@ export class Tank {
     this.chassis.add(this.exhaustPort);
 
     // ---- fenders + mud flaps ---------------------------------------------
-    const fenderY = this.axleY + 0.62;
+    // Sat level with the sponson underside so the fender reads as the sponson
+    // floor carried out over the track, not as a shelf floating beside the hull.
+    const fenderY = this.fenderY;
     for (const sx of [-1, 1]) {
       const plate = new THREE.BoxGeometry(0.44, 0.028, 4.5);
       place(plate, sx * 1.30, fenderY, -0.05);
@@ -740,9 +917,12 @@ export class Tank {
       const flap = new THREE.BoxGeometry(0.42, 0.30, 0.022);
       place(flap, sx * 1.30, fenderY - 0.15, -2.30, -0.16, 0, 0);
       B.ochre.push(flap);
-      // Support brackets.
+      // Support brackets: diagonal struts from under the outboard lip of the
+      // fender up to the sponson side. They must stay OUTSIDE the track's
+      // return run, which now passes under the overhang at x ±1.00..1.42.
       for (const z of [1.8, 0.7, -0.5, -1.7]) {
-        B.metal.push(cylBetween(sx * 1.21, fenderY + 0.005, z, sx * 1.21, fenderY - 0.22, z + 0.1, 0.018, 4));
+        B.metal.push(cylBetween(sx * 1.46, fenderY - 0.012, z,
+          sx * 1.205, fenderY + 0.15, z + 0.06, 0.018, 4));
       }
       // Rivets along the fender edge.
       for (let z = -2.2; z <= 2.15; z += rivetSpacing * 1.6) {
@@ -1229,8 +1409,11 @@ export class Tank {
     this.idlerX = [-halfG, halfG];
 
     // ---- return rollers ---------------------------------------------------
+    // Low enough that the whole return run passes UNDER the sponson overhang
+    // (top of run = rollerY + rollerR + half a shoe, which must clear
+    // this.sponsonY) instead of driving straight through the hull side.
     this.rollerR = 0.095;
-    this.rollerY = this.axleY + 0.50;
+    this.rollerY = this.axleY + 0.36;
     this.rollerZ = [1.15, 0.05, -1.05];
     const rollerGeo = mergeGeos([
       place(new THREE.CylinderGeometry(this.rollerR, this.rollerR, 0.15, Math.max(6, seg >> 1)), 0, 0, 0, 0, 0, Math.PI / 2),
@@ -1242,6 +1425,65 @@ export class Tank {
     this.rollerMesh.frustumCulled = false;
     this.rollerMesh.name = 'rollers';
     this.chassis.add(this.rollerMesh);
+
+    // ---- suspension arms + axle stubs -------------------------------------
+    // Now that the lower hull is inboard of the track there is a visible gap
+    // between the tub and the wheels, and a road wheel hanging in that gap on
+    // nothing is worse than no gap at all. A trailing torsion-bar arm per
+    // station, plus its bump-stop bracket on the tub, fills it and gives the
+    // running gear the row of repeated verticals that reads as suspension.
+    const armParts = [];
+    for (const sx of SIDES) {
+      for (let i = 0; i < this.wheelCount; i++) {
+        const z = this.wheelZ[i];
+        const dir = i < this.wheelCount / 2 ? 1 : -1;     // arms trail outward
+        armParts.push(cylBetween(sx * 0.985, this.axleY + 0.17, z + dir * 0.30,
+          sx * 1.08, this.axleY, z, 0.046, 5));
+        armParts.push(placeS(new THREE.BoxGeometry(1, 1, 1),
+          sx * 1.00, this.axleY + 0.255, z + dir * 0.30, 0.10, 0.10, 0.17));
+      }
+      // Final-drive housing behind the sprocket and the idler tensioner block.
+      armParts.push(place(new THREE.CylinderGeometry(0.17, 0.20, 0.26, byQ([6, 10, 12])),
+        sx * 1.05, this.sprocketY, this.sprocketZ, 0, 0, Math.PI / 2));
+      armParts.push(placeS(new THREE.BoxGeometry(1, 1, 1),
+        sx * 1.02, this.idlerY + 0.06, this.idlerZ - 0.22, 0.14, 0.18, 0.44));
+    }
+    const armMesh = new THREE.Mesh(mergeGeos(armParts), this.mat.metal);
+    armMesh.castShadow = true;
+    armMesh.receiveShadow = true;
+    armMesh.userData.outline = true;
+    armMesh.userData.tank = this;
+    armMesh.name = 'suspension';
+    this.chassis.add(armMesh);
+    this.suspensionMesh = armMesh;
+  }
+
+  /**
+   * Painted markings. A stencilled Gallian roundel on each turret cheek and one
+   * on the glacis — the only high-chroma thing on the vehicle, and the thing
+   * that tells you at a glance whose tank it is.
+   */
+  _buildMarkings() {
+    this.markings = [];
+    const add = (w, px, py, pz, rx, ry, parent) => {
+      const g = new THREE.PlaneGeometry(w, w);
+      const m = new THREE.Mesh(g, this.mat.insignia);
+      m.position.set(px, py, pz);
+      m.rotation.set(rx, ry, 0);
+      m.castShadow = false;
+      m.receiveShadow = true;
+      m.userData.outline = false;
+      m.name = 'marking';
+      parent.add(m);
+      this.markings.push(m);
+      return m;
+    };
+    // Turret cheeks, facing ±X off the flat of the shell.
+    add(0.23, 0.868, 0.20, 0.02, 0, Math.PI / 2, this.turret);
+    add(0.23, -0.868, 0.20, 0.02, 0, -Math.PI / 2, this.turret);
+    // Glacis, lying in the slope of the plate (drop 0.22 m over 0.56 m of run).
+    const slope = Math.atan2(0.22, 0.56);
+    add(0.26, 0.72, 0.386, 1.705, -Math.PI / 2 + slope, 0, this.chassis);
   }
 
   /** One track shoe. Quality 0 collapses it to two boxes. */

@@ -29,7 +29,7 @@
 import * as THREE from 'three';
 import { CFG } from '../core/config.js';
 import { Bus } from '../core/bus.js';
-import { GLSL_HASH, GLSL_NOISE, GLSL_COLOR, GLSL_TONEMAP, FS_VERT } from './shaderLib.js';
+import { GLSL_HASH, GLSL_NOISE, GLSL_COLOR, GLSL_BANDS, GLSL_TONEMAP, FS_VERT } from './shaderLib.js';
 import { getPaperTexture, getGrainTexture, getNoiseTexture } from './textures.js';
 import { MaterialRegistry, getGenericPrepassMaterial, PALETTE } from './materials.js';
 
@@ -166,6 +166,122 @@ void main() {
 }
 `;
 
+// ---- contact shadow + ambient occlusion -------------------------------------
+// Two screen-space terms, both read straight out of the G-buffer, both about
+// ONE thing: making a figure sit ON the ground instead of in front of it.
+//
+//   .r  hemisphere occlusion (Alchemy estimator) — the general darkening in a
+//       crease, at the root of a grass sward, where a wall meets a road.
+//   .g  a short ray-march toward the sun — the hard little dark seam directly
+//       under a boot or a track link. This exists because it is INDEPENDENT of
+//       shadow-map resolution: a 0.28 m boot sole is below the filter width of
+//       any single-cascade shadow map that also has to cover a valley, and that
+//       is exactly why round 1's hero "cast no shadow whatsoever".
+//
+// Output is a visibility pair (1 = open sky). The composite turns it into a
+// painted wash, not a grey multiply — see COMPOSITE_FRAG.
+const CONTACT_FRAG = /* glsl */`
+${COMMON}
+uniform sampler2D tND;
+uniform sampler2D tNoise;
+uniform vec2  uResolution;     // of THIS target
+uniform float uFar;
+uniform float uTanHalfFov;
+uniform float uAspect;
+uniform vec3  uSunV;           // view-space unit vector TOWARD the sun
+uniform float uAoRadius;       // metres
+uniform float uRayLength;      // metres
+uniform float uThickness;      // metres — how deep a hit still counts as a hit
+varying vec2 vUv;
+
+const int   AO_TAPS = 10;
+const float GA = 2.39996323;
+
+vec3 rayAt(vec2 uv) {
+  vec2 n = uv * 2.0 - 1.0;
+  return vec3(n.x * uTanHalfFov * uAspect, n.y * uTanHalfFov, -1.0);
+}
+vec2 uvOf(vec3 p) {
+  float z = max(-p.z, 1e-3);
+  return vec2(p.x / (z * uTanHalfFov * uAspect), p.y / (z * uTanHalfFov)) * 0.5 + 0.5;
+}
+
+void main() {
+  vec4 nd = texture2D(tND, vUv);
+  float lz = nd.a;
+  // sky: fully open, and never let the ray-march use it as an occluder
+  if (lz <= 0.0001 || length(nd.xyz) < 0.4) { gl_FragColor = vec4(1.0, 1.0, 0.0, 1.0); return; }
+
+  vec3 P = rayAt(vUv) * (lz * uFar);
+  vec3 N = normalize(nd.xyz);
+  float z = -P.z;
+
+  // Rotating the sample pattern by a LOW-FREQUENCY field rather than per-pixel
+  // hash matters: the wash is quantised downstream, and a per-pixel rotation
+  // would quantise into salt-and-pepper. Correlated over ~40 px it quantises
+  // into blotches, which is what pigment does.
+  vec2 sPx = vUv * uResolution;
+  float phi = texture2D(tNoise, sPx / 41.0).r * 6.2831853;
+
+  // ---- hemisphere occlusion ------------------------------------------------
+  float rUv = uAoRadius * 0.5 / (uTanHalfFov * max(z, 0.30));
+  float r2max = uAoRadius * uAoRadius * 1.8;
+  float ao = 0.0;
+  for (int i = 0; i < AO_TAPS; i++) {
+    float fi = float(i) + 0.5;
+    float rr = sqrt(fi / float(AO_TAPS));
+    float a = fi * GA + phi;
+    vec2 suv = vUv + vec2(cos(a) / uAspect, sin(a)) * rr * rUv;
+    vec4 snd = texture2D(tND, suv);
+    float slz = snd.a;
+    float valid = step(0.0001, slz) * step(0.4, length(snd.xyz));
+    vec3 v = rayAt(suv) * (slz * uFar) - P;
+    float vv = dot(v, v);
+    ao += max(0.0, dot(v, N) - z * 0.0018) / (vv + 0.02)
+        * step(vv, r2max) * valid;
+  }
+  float vis = clamp(1.0 - (2.0 * uAoRadius / float(AO_TAPS)) * ao, 0.0, 1.0);
+
+  // ---- contact ray-march toward the sun ------------------------------------
+  // Only for surfaces that FACE the sun. A wall whose normal points away is
+  // already on the dark side of its own terminator, and marching a ray out of
+  // it just skims along inside the geometry and reports a hit at every step —
+  // which stamped a full-strength second shadow over the entire shaded face of
+  // the bridge. The N.L gate is what makes a screen-space contact term usable
+  // at all; without it it is a back-face detector.
+  float ndl = dot(N, uSunV);
+  float occ = 0.0;
+  if (ndl > 0.03) {
+    float steps = 8.0;
+    float stepLen = uRayLength / steps;
+    float jit = texture2D(tNoise, sPx / 19.0 + 0.53).g;
+    // Start off the surface by more than a depth texel's worth of slope, or a
+    // grazing plane self-intersects on the very first step.
+    float startOff = 0.010 + z * 0.0025 + (1.0 - ndl) * 0.030;
+    vec3 rp = P + N * startOff + uSunV * stepLen * (0.30 + 0.70 * jit);
+    for (int i = 0; i < 8; i++) {
+      rp += uSunV * stepLen;
+      vec2 suv = uvOf(rp);
+      float inside = step(0.0, suv.x) * step(suv.x, 1.0) * step(0.0, suv.y) * step(suv.y, 1.0);
+      vec4 snd = texture2D(tND, suv);
+      float sz = snd.a * uFar;
+      float diff = -rp.z - sz;                     // >0 = the ray is behind geometry
+      float hit = smoothstep(0.018, 0.055, diff) * (1.0 - smoothstep(uThickness * 0.65, uThickness, diff));
+      hit *= inside * step(0.0001, snd.a) * step(0.4, length(snd.xyz));
+      occ = max(occ, hit * (1.0 - float(i) / steps * 0.5));
+    }
+    // fade the term out as the surface approaches its own terminator, where the
+    // shading is taking over anyway
+    occ *= smoothstep(0.03, 0.28, ndl);
+  }
+  // A contact seam is a near-field read. Past ~35 m it is smaller than a pixel
+  // and all it can contribute is shimmer.
+  occ *= 1.0 - smoothstep(26.0, 62.0, z);
+
+  gl_FragColor = vec4(vis, 1.0 - occ, 0.0, 1.0);
+}
+`;
+
 // ---- depth of field ---------------------------------------------------------
 const DOF_FRAG = /* glsl */`
 ${COMMON}
@@ -215,12 +331,14 @@ void main() {
 // ---- composite: bloom + graphite outline ------------------------------------
 const COMPOSITE_FRAG = /* glsl */`
 ${COMMON}
+${GLSL_BANDS}
 uniform sampler2D tColor;
 uniform sampler2D tBloom;
 uniform sampler2D tND;
 uniform sampler2D tMeta;
 uniform sampler2D tGrain;
 uniform sampler2D tNoise;
+uniform sampler2D tContact;
 
 uniform vec2  uTexel;
 uniform vec2  uResolution;
@@ -235,11 +353,22 @@ uniform float uHorizonLine;
 uniform vec3  uInk;
 uniform vec3  uBloomTint;
 
+// ink recession
+uniform float uInkFadeStart;  // metres — ink is full strength nearer than this
+uniform float uInkFadeEnd;    // metres — and at its faintest past this
+
+// contact wash
+uniform float uAoStrength;
+uniform float uContactStrength;
+uniform vec3  uContactViolet;
+uniform vec3  uInkFloor;
+
 // aerial perspective
 uniform mat4  uViewToWorld;
 uniform vec3  uHazeColor;
 uniform float uHazeDensity;   // 1/metres
 uniform float uHazeStart;     // metres of clear air in front of the camera
+uniform float uHazeRefK;      // ...or this fraction of the subject distance
 uniform float uHazeMax;
 uniform float uHazeHeight;    // metres of scale height above uHazeBase
 uniform float uHazeBase;
@@ -287,68 +416,138 @@ void main() {
   vec3 bloom = texture2D(tBloom, uv).rgb;
   color += bloom * uBloomStrength * uBloomTint;
 
-  // ---- flow-field wobble ---------------------------------------------------
   vec2 sPx = uv * uResolution;
-  vec2 flow = texture2D(tNoise, sPx / 190.0).rg - 0.5;
-  flow += (texture2D(tNoise, sPx / 47.0 + 0.37).gb - 0.5) * 0.42;
-  vec2 wuv = uv + flow * uTexel * uWobble * 3.4;
+  vec4 ndC = texture2D(tND, uv);
+  float isSkyC = step(length(ndC.xyz), 0.4);
+  float distC = ndC.a * uFar;
+
+  // ---- how far away the SUBJECT is -----------------------------------------
+  // Nine fixed taps over the middle of the frame, sky excluded. Every fragment
+  // computes the same number, so this is one coherent fetch group, not a
+  // dependent read.
+  //
+  // Aerial perspective and ink recession are both RELATIVE effects: a painter
+  // draws whatever the picture is about crisply and lets everything behind it
+  // recede. An absolute distance ramp cannot express that — tuned so a village
+  // at 60 m recedes in the over-the-shoulder frame, it also greys out the whole
+  // command plate, where the nearest ground is already 45 m away and the map is
+  // supposed to read like a clean illustrated page.
+  float refZ;
+  {
+    float s = 0.0, n = 0.0;
+    for (int i = 0; i < 9; i++) {
+      vec2 t = vec2(float(i - (i / 3) * 3) * 0.25 + 0.25, float(i / 3) * 0.22 + 0.28);
+      vec4 d = texture2D(tND, t);
+      float ok = step(0.4, length(d.xyz));
+      s += d.a * uFar * ok; n += ok;
+    }
+    refZ = n > 0.5 ? s / n : 40.0;
+  }
+  float hazeStart = clamp(max(uHazeStart, refZ * uHazeRefK), uHazeStart, 90.0);
+  float inkStart = max(uInkFadeStart, refZ * 0.85);
+  float inkEnd = inkStart + max(8.0, uInkFadeEnd - uInkFadeStart);
+
+  // ---- contact wash --------------------------------------------------------
+  // Screen-space occlusion, PAINTED. A straight multiply would give the same
+  // airbrushed grey ramp the critique called out on the cast shadows; instead
+  // the occlusion is quantised into the same kind of stepped wash the surface
+  // shading uses, with the step boundary dragged around by paper fibre, and it
+  // is applied as a SHADE COLOUR (violet-cooled pigment) rather than a grey.
+  {
+    vec2 cs = texture2D(tContact, uv).rg;
+    float occ = clamp((1.0 - cs.r) * uAoStrength + (1.0 - cs.g) * uContactStrength, 0.0, 1.0);
+    occ *= 1.0 - isSkyC;
+    if (occ > 0.004) {
+      float f1 = vcFbm3(sPx / 33.0);
+      float f2 = vcFbm3(sPx / 13.0 + 7.3);
+      vec2 q = vcQuantiseBands(1.0 - occ, 3.0, 0.55, f1, f2);
+      float wash = clamp(1.0 - q.x, 0.0, 1.0);
+      // the wet rim of a drying wash dries darker than its middle
+      wash = clamp(wash * (1.0 + q.y * 0.22), 0.0, 1.0);
+      color = mix(color, vcShadowColour(color, uContactViolet, uInkFloor), wash * 0.9);
+    }
+  }
+
+  // ---- flow-field wobble ---------------------------------------------------
+  // Three octaves, and enough amplitude that the stroke visibly LEAVES the
+  // geometric edge — a machine-traced contour is the loudest linework tell
+  // there is. The long octave drifts the whole line, the short one gives it the
+  // small tremor of a hand.
+  vec2 flow = texture2D(tNoise, sPx / 215.0).rg - 0.5;
+  flow += (texture2D(tNoise, sPx / 61.0 + 0.37).gb - 0.5) * 0.52;
+  flow += (texture2D(tNoise, sPx / 17.0 + 0.71).br - 0.5) * 0.20;
+  vec2 wuv = uv + flow * uTexel * uWobble * 6.2;
 
   Gb c = sampleGb(wuv);
   float isSky = step(length(c.n), 0.4);
+  float distM = c.lz * uFar;
 
   vec3 P = rayAt(wuv) * (c.lz * uFar);
   vec3 N = normalize(c.n + vec3(0.0, 0.0, 1e-5));
 
-  // ---- width: fat graphite on near silhouettes, fine line far away ---------
-  float depthScale = mix(2.05, 0.62, smoothstep(0.0, 0.14, c.lz));
+  // ---- width: fat graphite on near silhouettes, hairline on interior creases
+  // Depth is read in METRES, not in normalised depth — with uFar at 900 m the
+  // old smoothstep(0.0, 0.14, lz) did not finish until 126 m, so a house at
+  // 60 m still got a near-field stroke.
+  float depthScale = mix(2.45, 0.55, smoothstep(3.5, 52.0, distM));
   float fat = uOutlineWidth * depthScale;
-  float thin = uOutlineWidth * 0.72;
+  // A crease offset below ~1 texel samples the same G-buffer texel twice and
+  // reports no normal difference at all, so the hairline is made thin in INK
+  // WEIGHT rather than in radius.
+  float thin = max(1.0, uOutlineWidth * 0.42);
 
   vec2 oF = uTexel * fat;
   vec2 oT = uTexel * thin;
 
   // ---- silhouette term: depth discontinuity + object id break --------------
+  // Eight taps on a circle rather than four on a square: the average of eight
+  // binary id tests is a NINE-LEVEL coverage value, which is what anti-aliases
+  // the stroke. The old 4-tap max() produced a hard 0/1 edge, i.e. the
+  // stair-stepping the critique named.
   float sil = 0.0;
   float skyEdge = 0.0;
   float lineW = c.w;
+  float silMag = 0.0;
   {
-    vec2 d1 = vec2(oF.x, oF.y);
-    vec2 d2 = vec2(oF.x, -oF.y);
-    Gb s1 = sampleGb(wuv + d1);
-    Gb s2 = sampleGb(wuv - d1);
-    Gb s3 = sampleGb(wuv + d2);
-    Gb s4 = sampleGb(wuv - d2);
+    float dAcc = 0.0, idAcc = 0.0, nbW = 0.0, skyN = 0.0, errMax = 0.0, nMax = 0.0;
+    float tol = 0.030 + distM * 0.0115 + fat * 0.010;
+    for (int i = 0; i < 8; i++) {
+      float ang = float(i) * 0.7853981634 + 0.31;
+      vec2 off = vec2(cos(ang), sin(ang)) * oF;
+      Gb s = sampleGb(wuv + off);
+      float e = planeError(P, N, wuv + off, s.lz);
+      errMax = max(errMax, e);
+      dAcc += smoothstep(tol, tol * 2.8, e);
+      idAcc += step(0.006, length(s.id - c.id));
+      nbW = max(nbW, s.w);
+      skyN = max(skyN, step(length(s.n), 0.4));
+      nMax = max(nMax, length(s.n - c.n));
+    }
+    float dEdge = clamp(dAcc * 0.125 * 2.2, 0.0, 1.0);
 
-    float e1 = planeError(P, N, wuv + d1, s1.lz);
-    float e2 = planeError(P, N, wuv - d1, s2.lz);
-    float e3 = planeError(P, N, wuv + d2, s3.lz);
-    float e4 = planeError(P, N, wuv - d2, s4.lz);
-    float err = max(max(e1, e2), max(e3, e4));
-
-    // tolerance grows with distance so far-away geometry does not smear
-    float tol = 0.030 + c.lz * uFar * 0.0115 + fat * 0.010;
-    float dEdge = smoothstep(tol, tol * 3.4, err);
-
-    float idE = 0.0;
-    idE = max(idE, step(0.006, length(s1.id - c.id)));
-    idE = max(idE, step(0.006, length(s2.id - c.id)));
-    idE = max(idE, step(0.006, length(s3.id - c.id)));
-    idE = max(idE, step(0.006, length(s4.id - c.id)));
+    // COPLANAR-JOIN SUPPRESSION. An id break with neither a depth step nor a
+    // normal turn is two boxes of the same wall meeting flush — the bridge
+    // barrel's "staircase of individually-outlined boxes". Gate the id term on
+    // there actually being a discontinuity to draw.
+    float idGate = max(smoothstep(tol * 0.55, tol * 2.2, errMax),
+                       smoothstep(0.20, 0.72, nMax));
+    float idE = clamp(idAcc * 0.125 * 2.2, 0.0, 1.0) * idGate;
 
     // The stroke belongs to the OUTLINED object, drawn just inside its own
     // silhouette; the far side gets only a faint outer halo. Taking a plain
     // max() here would draw the full line on both sides of every boundary,
     // which is what turns grass in front of a wall into black scribble.
-    float nbW = max(max(s1.w, s2.w), max(s3.w, s4.w));
     lineW = max(lineW, nbW * 0.42);
 
     // terrain silhouetted against the sky still wants a horizon stroke even
     // though the ground itself is not an outlined object
-    float skyN = max(max(step(length(s1.n), 0.4), step(length(s2.n), 0.4)),
-                     max(step(length(s3.n), 0.4), step(length(s4.n), 0.4)));
     skyEdge = skyN * (1.0 - isSky);
 
     sil = max(dEdge, idE * 0.92);
+    // How big the jump is, i.e. how much pressure the pencil gets. A true
+    // silhouette against distant ground is a hard press; a 4 cm step in a wall
+    // is a light one.
+    silMag = clamp(errMax / max(tol * 2.6, 1e-4), 0.0, 1.0);
   }
 
   // ---- crease term: normal discontinuity at a tight radius ----------------
@@ -363,25 +562,34 @@ void main() {
     float a = length(n1 - n2);
     float b = length(n3 - n4);
     float nd = sqrt(a * a + b * b);
-    // fade creases out with distance — an interior fold at 80 m is not drawn
-    crease = smoothstep(0.62, 1.32, nd) * mix(1.0, 0.15, smoothstep(0.03, 0.28, c.lz));
+    // Raised from 0.62: a near-coplanar pair of faces (a bevel, a shallow roof
+    // hip, two boxes 5 degrees apart) was clearing the old threshold and got
+    // the same weight as a real fold.
+    crease = smoothstep(0.78, 1.45, nd) * mix(1.0, 0.12, smoothstep(2.5, 36.0, distM));
   }
-
-  float line = max(sil, crease * 0.66) * lineW * 2.0;
-  line = max(line, skyEdge * uHorizonLine);
-  line *= 1.0 - isSky;                     // never draw inside the sky itself
 
   // ---- graphite tooth ------------------------------------------------------
   float grain = texture2D(tGrain, sPx / (256.0 * uPixelRatio) * 1.35).r;
   float grainFine = texture2D(tGrain, sPx / (256.0 * uPixelRatio) * 4.1 + 0.21).b;
-  line *= mix(0.52, 1.30, grain * 0.65 + grainFine * 0.35);
+
+  // Variable pressure. A silhouette with a big depth jump gets the full weight;
+  // a shallow one gets a light stroke. Creases are hairlines: same radius,
+  // barely any graphite, and broken up hard by the tooth so they read as a
+  // pencil skipping over cold-press rather than a traced contour.
+  float silLine = sil * mix(0.42, 1.0, silMag);
+  float creaseLine = crease * 0.44 * mix(0.30, 1.0, grain);
+  float line = max(silLine, creaseLine) * lineW * 2.0;
+  line = max(line, skyEdge * uHorizonLine);
+  line *= 1.0 - isSky;                     // never draw inside the sky itself
+
+  line *= mix(0.42, 1.32, grain * 0.62 + grainFine * 0.38);
 
 #ifdef VC_DOUBLE_STROKE
   // The sketch double-stroke: real VC linework has a fainter ghost line a
   // pixel or two off the main one, where the pencil was laid down twice.
   {
     vec2 dir = normalize(flow + vec2(0.31, -0.19));
-    vec2 duv = wuv + dir * uTexel * (1.7 + 1.4 * grain);
+    vec2 duv = wuv + dir * uTexel * (1.9 + 1.8 * grain);
     Gb g0 = sampleGb(duv);
     vec3 P2 = rayAt(duv) * (g0.lz * uFar);
     vec3 N2 = normalize(g0.n + vec3(0.0, 0.0, 1e-5));
@@ -390,14 +598,24 @@ void main() {
                   planeError(P2, N2, duv - dd, sampleGb(duv - dd).lz));
     float tol2 = 0.030 + g0.lz * uFar * 0.0115;
     float d2 = smoothstep(tol2, tol2 * 3.4, e) * g0.w * 2.0;
-    line = max(line, d2 * 0.34 * mix(0.6, 1.2, grainFine));
+    line = max(line, d2 * 0.30 * mix(0.5, 1.2, grainFine));
   }
 #endif
+
+  // ---- ink recession -------------------------------------------------------
+  // The round-1 pass shrank its SAMPLE OFFSET with depth but never its opacity,
+  // so a house at 60 m carried linework as black as a soldier at 9 m and the
+  // frame's depth cues ran backwards. Ink loses density with distance and, more
+  // importantly, loses its BLACKNESS: far strokes are grey-violet, the colour
+  // of the air they are seen through.
+  float far01 = smoothstep(inkStart, inkEnd, distM);
+  line *= mix(1.0, 0.18, far01);
 
   float a = clamp(line, 0.0, 1.0);
   // Graphite over a wash is never opaque black — it takes the value of what is
   // under it, which is why a pencil line on a lit surface reads warm.
-  vec3 ink = uInk * (0.55 + 0.75 * vcLum(color));
+  vec3 inkCol = mix(uInk, uHazeColor * 0.60, far01 * 0.9);
+  vec3 ink = inkCol * (0.55 + 0.75 * vcLum(color));
   color = mix(color, min(color, ink), a);
 
   // ---- aerial perspective --------------------------------------------------
@@ -405,16 +623,13 @@ void main() {
   // with everything else, so a hedgerow at 150 m must lose its outline as well
   // as its contrast. Skipping the sky keeps the dome's own gradient intact.
   {
-    float lz = texture2D(tND, uv).a;
-    float sky = step(length(texture2D(tND, uv).xyz), 0.4);
-    float dist = lz * uFar;
     // Reconstruct world height so a hill top hazes less than the valley floor
     // it stands in — that vertical gradient is most of what reads as "air".
-    vec3 vpos = rayAt(uv) * dist;
+    vec3 vpos = rayAt(uv) * distC;
     float wy = (uViewToWorld * vec4(vpos, 1.0)).y;
     float hFall = exp(-max(wy - uHazeBase, 0.0) / max(uHazeHeight, 1.0));
-    float haze = (1.0 - exp(-max(dist - uHazeStart, 0.0) * uHazeDensity));
-    haze *= mix(0.55, 1.0, hFall) * uHazeMax * (1.0 - sky);
+    float haze = (1.0 - exp(-max(distC - hazeStart, 0.0) * uHazeDensity));
+    haze *= mix(0.55, 1.0, hFall) * uHazeMax * (1.0 - isSkyC);
     // haze both LIGHTENS and WARMS; carrying a little of the pixel's own value
     // into the mix stops distant darks turning into flat grey cut-outs
     vec3 hz = uHazeColor * (0.86 + 0.30 * vcLum(color));
@@ -500,10 +715,13 @@ void main() {
   // a visible cyan/yellow fringe on every hard edge across two thirds of the
   // frame, which on any dark silhouette reads as colour noise rather than as a
   // lens. Only the extreme corners should show it at all.
-  vec2 ca = d * uChroma * (0.02 + r2 * r2 * 4.4);
+  // Halved again in round 2: on sub-pixel geometry (telegraph wires, grass
+  // tips) the fringe stops reading as a lens and starts reading as a crawling
+  // colour stipple, and it put saturated 176,38,41 pixels into the closeup.
+  vec2 ca = d * uChroma * (0.01 + r2 * r2 * 2.0);
   float rr = texture2D(tColor, uv + ca).r;
   float bb = texture2D(tColor, uv - ca).b;
-  c = vec3(mix(c.r, rr, 0.85), c.g, mix(c.b, bb, 0.85));
+  c = vec3(mix(c.r, rr, 0.60), c.g, mix(c.b, bb, 0.60));
 #endif
 
   // ---- tonemap to a cream white point --------------------------------------
@@ -558,10 +776,13 @@ void main() {
   c *= 1.0 + (cockle - 0.5) * 0.10 * uPaperStrength;
 
   // ---- vignette (warm umber, never a neutral grey wash) --------------------
+  // The HUE shift stays; the VALUE crush is nearly gone. A 26% corner darkening
+  // is a lens artefact, and a page of gouache has no lens — what a painted page
+  // does have is warmer, slightly duller corners where the wash was laid last.
   float vig = 1.0 - uVignette * pow(clamp(r2 * 2.0, 0.0, 1.0), 1.25);
   vec3 vT = uVignetteTint / max(lumaOf(uVignetteTint), 1e-4);
   c *= mix(vT, vec3(1.0), vig);
-  c *= mix(0.74, 1.0, vig);
+  c *= mix(0.93, 1.0, vig);
 
   // 8-bit dither so the big flat washes do not band on the way out
   float dith = (vcHash21(gl_FragCoord.xy + fract(uTime) * 61.3) - 0.5) / 255.0;
@@ -586,8 +807,11 @@ export class CanvasRenderPipeline {
     this.autoUpdateMaterials = true;
     this.lightRig = null;
 
-    // depth of field — the command-mode camera turns this on
-    this.dof = { enabled: false, focus: 18, range: 22, maxCoC: 6.5 };
+    // Depth of field. Deliberately small, and it runs AFTER the ink (see
+    // render()). Round 1 blurred the wash and left the linework razor-sharp on
+    // top of it, which is a thing no painting can do and was the single tell
+    // that lost the command frame.
+    this.dof = { enabled: false, focus: 18, range: 22, maxCoC: 2.2 };
     this._dofBlend = 0;
 
     this.clearColor = new THREE.Color(0xb9b39a);
@@ -612,11 +836,13 @@ export class CanvasRenderPipeline {
     this._buildTargets();
     this.setQuality(this.quality);
 
-    // The command phase is a considered, map-reading view — shallow depth of
-    // field there and nowhere else reads as "illustration plate" rather than
-    // "camera trick".
+    // Command mode is a MAP. Valkyria Chronicles draws it as a flat illustrated
+    // plate with everything legible; the round-1 build put 6.5 px of bokeh over
+    // the whole valley there and it was the frame's blind-test tell. The only
+    // place a focus falloff belongs is the over-the-shoulder action camera, and
+    // even there it is a hairline.
     this._offPhase = Bus.on('phase:change', ({ to }) => {
-      this.dof.enabled = (to === 'command');
+      this.dof.enabled = (to === 'action');
     });
   }
 
@@ -653,12 +879,28 @@ export class CanvasRenderPipeline {
       name: 'vcBloomUp',
     });
 
+    this.mContact = new THREE.ShaderMaterial({
+      uniforms: {
+        tND: { value: null }, tNoise: { value: noise },
+        uResolution: { value: new THREE.Vector2() },
+        uFar: { value: this.camera.far },
+        uTanHalfFov: { value: 0.3 },
+        uAspect: { value: 1.6 },
+        uSunV: { value: new THREE.Vector3(0.35, 0.6, 0.72) },
+        uAoRadius: { value: 0.50 },
+        uRayLength: { value: 0.42 },
+        uThickness: { value: 0.30 },
+      },
+      vertexShader: FS_VERT, fragmentShader: CONTACT_FRAG,
+      depthTest: false, depthWrite: false, name: 'vcContact',
+    });
+
     this.mDof = new THREE.ShaderMaterial({
       uniforms: {
         tColor: { value: null }, tND: { value: null },
         uTexel: { value: new THREE.Vector2() },
         uFar: { value: this.camera.far },
-        uFocus: { value: 18 }, uRange: { value: 22 }, uMaxCoC: { value: 6.5 },
+        uFocus: { value: 18 }, uRange: { value: 22 }, uMaxCoC: { value: 2.2 },
       },
       vertexShader: FS_VERT, fragmentShader: DOF_FRAG,
       depthTest: false, depthWrite: false, name: 'vcDof',
@@ -669,6 +911,7 @@ export class CanvasRenderPipeline {
         tColor: { value: null }, tBloom: { value: null },
         tND: { value: null }, tMeta: { value: null },
         tGrain: { value: grain }, tNoise: { value: noise },
+        tContact: { value: null },
         uTexel: { value: new THREE.Vector2() },
         uResolution: { value: new THREE.Vector2() },
         uPixelRatio: { value: this.dpr },
@@ -681,13 +924,25 @@ export class CanvasRenderPipeline {
         uHorizonLine: { value: 0.52 },
         uInk: { value: new THREE.Color(0x35292b) },
         uBloomTint: { value: new THREE.Color(0xffdcae) },
+        uInkFadeStart: { value: 16 },
+        uInkFadeEnd: { value: 78 },
+        uAoStrength: { value: 0.62 },
+        uContactStrength: { value: 0.70 },
+        // The contact wash is skylight-only pigment, same violet the surface
+        // shaders use for shade, so a boot seam and a cast shadow agree.
+        uContactViolet: { value: new THREE.Color(0x6c6a86) },
+        uInkFloor: { value: PALETTE.inkFloor.clone() },
         uViewToWorld: { value: new THREE.Matrix4() },
         // Warm straw-grey: the air over Gallia in the afternoon, not blue
         // distance fog. Aerial perspective in gouache lightens AND warms.
         uHazeColor: { value: new THREE.Color(0xd7cbac) },
-        uHazeDensity: { value: 0.0060 },
-        uHazeStart: { value: 24 },
-        uHazeMax: { value: 0.58 },
+        // Round 1 measured 0.22 haze at 60 m, which is why the village read
+        // SHARPER than the 9 m hero. Air is thicker than that and it starts
+        // much closer to the eye.
+        uHazeDensity: { value: 0.0175 },
+        uHazeStart: { value: 9 },
+        uHazeRefK: { value: 0.80 },
+        uHazeMax: { value: 0.70 },
         uHazeHeight: { value: 34 },
         uHazeBase: { value: 0 },
       },
@@ -745,10 +1000,16 @@ export class CanvasRenderPipeline {
     this.dofRT = rt(w, h);
     this.comp = rt(w, h);
 
+    // Contact / AO. Half res below ultra — the term is a soft wash and the
+    // bilinear upsample doubles as its blur. At ultra it runs full res so the
+    // seam under a boot stays a seam.
+    const aoDiv = this.quality >= 2 ? 1 : 2;
+    this.aoRT = rt(Math.max(2, Math.floor(w / aoDiv)), Math.max(2, Math.floor(h / aoDiv)));
+
     // bloom chain
     const startDiv = this.quality <= 0 ? 4 : 2;
     const maxMips = this.quality <= 0 ? 4 : (this.quality === 1 ? 5 : 6);
-    this._bloomKey = `${w}x${h}:${startDiv}:${maxMips}`;
+    this._bloomKey = `${w}x${h}:${startDiv}:${maxMips}:${aoDiv}`;
     this.bloomMips = [];
     let bwv = Math.max(2, Math.floor(w / startDiv));
     let bhv = Math.max(2, Math.floor(h / startDiv));
@@ -765,6 +1026,11 @@ export class CanvasRenderPipeline {
     u.uPixelRatio.value = this.dpr;
     u.tND.value = this.gbuf.textures[0];
     u.tMeta.value = this.gbuf.textures[1];
+    u.tContact.value = this.aoRT.texture;
+
+    const k = this.mContact.uniforms;
+    k.tND.value = this.gbuf.textures[0];
+    k.uResolution.value.set(this.aoRT.width, this.aoRT.height);
 
     const g = this.mGrade.uniforms;
     g.uTexel.value.set(1 / w, 1 / h);
@@ -784,6 +1050,7 @@ export class CanvasRenderPipeline {
     this.hdr?.dispose();
     this.dofRT?.dispose();
     this.comp?.dispose();
+    this.aoRT?.dispose();
     if (this.bloomMips) for (const m of this.bloomMips) m.dispose();
     this.bloomMips = null;
   }
@@ -816,10 +1083,11 @@ export class CanvasRenderPipeline {
     // low quality trades bloom fidelity for bandwidth
     this.mUp.uniforms.uRadius.value = (1 + CFG.render.bloomRadius) * (this.quality <= 0 ? 0.8 : 1);
 
-    // only pay for a target rebuild if the bloom chain shape actually changed
+    // only pay for a target rebuild if the target shapes actually changed
     const startDiv = this.quality <= 0 ? 4 : 2;
     const maxMips = this.quality <= 0 ? 4 : (this.quality === 1 ? 5 : 6);
-    if (this._bloomKey !== `${this.bw}x${this.bh}:${startDiv}:${maxMips}`) this._buildTargets();
+    const aoDiv = this.quality >= 2 ? 1 : 2;
+    if (this._bloomKey !== `${this.bw}x${this.bh}:${startDiv}:${maxMips}:${aoDiv}`) this._buildTargets();
   }
 
   setFocus(distance, range) {
@@ -858,11 +1126,27 @@ export class CanvasRenderPipeline {
     const cam = this.camera;
     cam.updateMatrixWorld();
     const compU = this.mComposite.uniforms;
+    const aspect = cam.aspect || (this.bw / this.bh);
+    const tanH = Math.tan(THREE.MathUtils.degToRad(cam.fov || 45) * 0.5);
     compU.uFar.value = cam.far;
-    compU.uAspect.value = cam.aspect || (this.bw / this.bh);
-    compU.uTanHalfFov.value = Math.tan(THREE.MathUtils.degToRad(cam.fov || 45) * 0.5);
+    compU.uAspect.value = aspect;
+    compU.uTanHalfFov.value = tanH;
     compU.uViewToWorld.value.copy(cam.matrixWorld);
     this.mDof.uniforms.uFar.value = cam.far;
+
+    // The contact pass needs the key direction in VIEW space, and the haze
+    // wants to know what time of day it is — both come off the rig.
+    const ku = this.mContact.uniforms;
+    ku.uFar.value = cam.far;
+    ku.uAspect.value = aspect;
+    ku.uTanHalfFov.value = tanH;
+    _m4.copy(cam.matrixWorld).invert();
+    if (this.lightRig?.sunDirection) this.lightRig.sunDirection(_v);
+    else if (this.lightRig?.isDirectionalLight) {
+      _v.copy(this.lightRig.position).sub(this.lightRig.target.position).normalize();
+    } else _v.set(0.35, 0.62, 0.70);
+    ku.uSunV.value.copy(_v).transformDirection(_m4);
+    this._updateHaze();
 
     const sm = r.shadowMap;
     const prevAutoShadow = sm.autoUpdate;
@@ -888,7 +1172,13 @@ export class CanvasRenderPipeline {
     this._prepassEnd();
     this.scene.background = prevBg;
 
-    // ---------------------------------------------------- 2. main colour pass
+    // ------------------------------------------- 2. contact shadow / occlusion
+    // Reads only the G-buffer, so it runs before the colour pass and its result
+    // is ready for the composite. This is what grounds a figure regardless of
+    // what the shadow map can resolve.
+    this._quad.draw(r, this.mContact, this.aoRT, true);
+
+    // ---------------------------------------------------- 3. main colour pass
     sm.needsUpdate = true;                  // shadow maps refresh exactly once
     r.setClearColor(this.clearColor, 1);
     r.setRenderTarget(this.hdr);
@@ -896,35 +1186,38 @@ export class CanvasRenderPipeline {
     r.render(this.scene, cam);
     sm.needsUpdate = false;
 
-    let colorTex = this.hdr.texture;
-
-    // ---------------------------------------------------- 3. depth of field
-    const wantDof = this.quality >= 2 && this.dof.enabled;
-    this._dofBlend += ((wantDof ? 1 : 0) - this._dofBlend) * Math.min(1, dt * 4);
-    if (this.quality >= 2 && this._dofBlend > 0.02) {
-      const u = this.mDof.uniforms;
-      u.tColor.value = colorTex;
-      u.uFocus.value = this.dof.focus;
-      u.uRange.value = this.dof.range;
-      u.uMaxCoC.value = this.dof.maxCoC * this._dofBlend;
-      this._quad.draw(r, this.mDof, this.dofRT, true);
-      colorTex = this.dofRT.texture;
-    }
-
     // ---------------------------------------------------- 4. bloom
-    this._bloom(colorTex);
+    this._bloom(this.hdr.texture);
 
     // ---------------------------------------------------- 5. composite
-    compU.tColor.value = colorTex;
-    compU.tBloom.value = this.bloomMips.length ? this.bloomMips[0].texture : colorTex;
+    compU.tColor.value = this.hdr.texture;
+    compU.tBloom.value = this.bloomMips.length ? this.bloomMips[0].texture : this.hdr.texture;
     compU.uOutlineWidth.value = CFG.render.outlineWidth;
     compU.uWobble.value = CFG.render.outlineWobble;
     compU.uBloomStrength.value = CFG.render.bloomStrength;
     this._quad.draw(r, this.mComposite, this.comp, true);
 
-    // ---------------------------------------------------- 6. grade + paper
+    let gradeTex = this.comp.texture;
+
+    // ---------------------------------------------------- 6. depth of field
+    // AFTER the ink. Blurring the wash and leaving the graphite sharp on top of
+    // it is physically impossible on paper and reads instantly as a post stack;
+    // out-of-focus pencil has to go soft with the pigment it was drawn over.
+    const wantDof = this.quality >= 2 && this.dof.enabled;
+    this._dofBlend += ((wantDof ? 1 : 0) - this._dofBlend) * Math.min(1, dt * 4);
+    if (this.quality >= 2 && this._dofBlend > 0.02) {
+      const u = this.mDof.uniforms;
+      u.tColor.value = gradeTex;
+      u.uFocus.value = this.dof.focus;
+      u.uRange.value = this.dof.range;
+      u.uMaxCoC.value = this.dof.maxCoC * this._dofBlend;
+      this._quad.draw(r, this.mDof, this.dofRT, true);
+      gradeTex = this.dofRT.texture;
+    }
+
+    // ---------------------------------------------------- 7. grade + paper
     const gu = this.mGrade.uniforms;
-    gu.tColor.value = this.comp.texture;
+    gu.tColor.value = gradeTex;
     gu.uExposure.value = CFG.render.exposure;
     gu.uVignette.value = CFG.render.vignette;
     gu.uChroma.value = CFG.render.chroma;
@@ -935,6 +1228,26 @@ export class CanvasRenderPipeline {
     r.setClearColor(this._prevClear, prevClearAlpha);
     r.toneMapping = prevToneMapping;
     sm.autoUpdate = prevAutoShadow;
+  }
+
+  /**
+   * Keep the aerial-perspective colour agreeing with the sky it fades into.
+   *
+   * The haze is authored as a warm straw-grey — that is the Gallia afternoon,
+   * and it must stay the anchor, because a haze taken straight off the light
+   * colours goes cool and blue and drags the whole palette with it. What the
+   * rig contributes is only the DRIFT: a lean toward the key's hue so a low
+   * evening sun stains the distance, and a value scale so dusk does not haze
+   * out to daylight cream.
+   */
+  _updateHaze() {
+    const rig = this.lightRig;
+    const sun = rig?.sun || (rig?.isDirectionalLight ? rig : null);
+    if (!sun) return;
+    const u = this.mComposite.uniforms.uHazeColor.value;
+    u.copy(HAZE_BASE).lerp(sun.color, 0.28);
+    const li = THREE.MathUtils.clamp((sun.intensity || 2.1) / 2.1, 0.40, 1.05);
+    u.multiplyScalar(0.56 + 0.48 * li);
   }
 
   /** Fallback so the shading still knows where the sun is if nobody told us. */
@@ -1057,7 +1370,13 @@ export class CanvasRenderPipeline {
     if (o.onBeforeRender === o.userData.__vcHookFn) return;
 
     if (o.userData.__vcIdR === undefined) {
-      const id = (++this._idCounter) * 37 + 11;   // spread ids so neighbours differ
+      // `userData.vcGroupId` lets a builder declare that several meshes are ONE
+      // drawn object — the eight boxes of a bridge pier, the four walls of a
+      // house — so the id-break term draws no line where they meet. Without it
+      // every sub-box gets its own contour and an arch reads as a stack of
+      // laminated slabs. Any integer will do; equal ids share a stroke.
+      const gid = o.userData.vcGroupId;
+      const id = (Number.isFinite(gid) ? (gid | 0) : (++this._idCounter)) * 37 + 11;
       o.userData.__vcIdR = ((id & 255) + 1) / 256;
       o.userData.__vcIdG = (((id >> 8) & 255) + 1) / 256;
     }
@@ -1080,10 +1399,13 @@ export class CanvasRenderPipeline {
     this._disposeTargets();
     this._quad.dispose();
     this.mDown.dispose(); this.mPrefilter.dispose(); this.mUp.dispose();
+    this.mContact.dispose();
     this.mDof.dispose(); this.mComposite.dispose(); this.mGrade.dispose();
   }
 }
 
 const _v = new THREE.Vector3();
+const _m4 = new THREE.Matrix4();
+const HAZE_BASE = new THREE.Color(0xd7cbac);
 
 export default CanvasRenderPipeline;

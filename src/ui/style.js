@@ -86,6 +86,21 @@ export function deckleClip(seed = 1, { perSide = 8, amp = 0.9 } = {}) {
   return 'polygon(' + p.join(',') + ')';
 }
 
+/**
+ * A hand-ruled ledger line as a repeatable tile. Used where a dashed CSS border
+ * would otherwise show up — a hairline dash pattern is the single most obvious
+ * "this is a web page" tell in the whole book.
+ */
+export function ruleUri({ w = 96, seed = 7, color = '#33291f', alpha = 0.42 } = {}) {
+  const rng = makeRng((seed >>> 0) || 1);
+  let d = 'M0 2';
+  for (let i = 1; i <= 8; i++) {
+    d += 'L' + ((i / 8) * w).toFixed(2) + ' ' + (2 + (rng() - 0.5) * 1.5).toFixed(2);
+  }
+  return svgUri('<path d="' + d + '" fill="none" stroke="' + color +
+    '" stroke-width="1" opacity="' + alpha + '" stroke-linecap="round"/>', w, 4);
+}
+
 /** A tiny seeded rotation, so pasted-in chips never line up perfectly. */
 export function deckleTilt(seed = 1, amp = 0.5) {
   const rng = makeRng(((seed >>> 0) || 1) ^ 0x9e3779b9);
@@ -279,16 +294,21 @@ function css() {
 /* Selection reads as the ribbon marker plus a warm glow bled in from the deckled
    edge — a crisp 1.6px inset ring read as a UI outline, not as a marked page. */
 .vc-ru.sel .vc-paper{
-  box-shadow:inset 0 0 0 1.1px rgba(163,47,52,.5), inset 0 0 14px rgba(163,47,52,.26),
-    inset 0 0 26px rgba(128,96,58,.24);
+  box-shadow:inset 0 0 16px rgba(163,47,52,.26), inset 0 0 30px rgba(128,96,58,.28);
 }
 /* A pencilled marginal bracket down the selected entry's fore-edge. */
-.vc-ru-mark{ position:absolute; left:-.15em; top:.12em; bottom:.12em; width:.7em;
-  opacity:0; transition:opacity .2s ease; }
+.vc-ru-mark{ position:absolute; left:-.28em; top:.06em; bottom:.06em; width:.95em;
+  opacity:0; transition:opacity .2s ease;
+  filter:drop-shadow(0 1px 1px rgba(58,47,51,.35)); }
 .vc-ru-mark svg{ width:100%; height:100%; }
 .vc-ru.sel .vc-ru-mark{ opacity:1; }
-/* "Acted" desaturates the page the way a pencil tick greys a completed line —
-   it must not read as a disabled control. */
+/* "Acted" desaturates the page the way a pencil tick greys a completed line,
+   and the line itself is struck through — it must not read as a disabled
+   control with 60% opacity, which is what a web form does. */
+.vc-ru-strike{ position:absolute; inset:0; z-index:3; opacity:0; pointer-events:none;
+  transition:opacity .22s ease; }
+.vc-ru-strike svg{ width:100%; height:100%; }
+.vc-ru.acted .vc-ru-strike{ opacity:1; }
 .vc-ru.acted{ filter:saturate(.42) opacity(.72); }
 .vc-ru.acted .vc-ru-por{ opacity:.8; }
 .vc-ru.downed{ filter:grayscale(.7) opacity(.5); }
@@ -333,29 +353,41 @@ function css() {
    filled run is a gouache gradient with a bled edge (filter:#vc-wash). */
 /* Every meter in the book is an inkGauge / marchLine (see below); the only
    survivor of the old CSS-bar era is the ghost of ground already given up. */
-.vc-bar-ghost{ position:absolute; left:0; top:0; bottom:0; background:rgba(163,47,52,.38);
+/* The ground already given up this action, pencilled in behind the wash. It is
+   INSET inside the trough: laid over the full box it haloed the whole gauge in
+   pink and turned the drawn rule into a coloured border. */
+.vc-bar-ghost{ position:absolute; left:2px; top:3px; bottom:3px; opacity:.5;
+  background-color:rgba(150,50,44,.30);
+  background-image:var(--vc-rule-uri); background-size:auto 4px; background-repeat:repeat;
   transition:width .7s ease .18s; }
 
 /* ---------- drawn gauges (icons.js inkGauge / marchLine) ------------------ */
-/* Three stacked layers: hatched paper trough, pigment wash, inked rule on top. */
+/* Four stacked layers: hatched paper trough, painted band, wet edge, inked rule.
+   NOTHING in here carries a background-color: every pigment in the book is laid
+   as an SVG wash through the paper's own grain, because a flat hex fill behind a
+   1px stroke is the browser-default control axis 11 rejects outright. */
 .vc-g{ position:relative; width:100%; height:.72em; }
 .vc-g-back, .vc-g-face{ position:absolute; inset:0; width:100%; height:100%; }
 /* The hatch is clipped to the dry run of the trough (see icons.js inkGauge.set). */
 .vc-g-back{ z-index:1; transition:clip-path .34s cubic-bezier(.3,.9,.3,1); }
 .vc-g-face{ z-index:3; pointer-events:none; }
-.vc-g-fill{
-  position:absolute; left:0; top:0; bottom:0; z-index:2; width:100%;
-  transition:width .34s cubic-bezier(.3,.9,.3,1);
-  background-image:
-    linear-gradient(180deg, rgba(255,252,242,.40) 0%, rgba(255,250,236,.08) 42%, rgba(40,28,22,.14) 100%),
-    linear-gradient(92deg, rgba(40,28,22,.10) 0%, rgba(40,28,22,0) 16%, rgba(40,28,22,.12) 100%);
+/* The painted run. Clipped, never width-scaled, so the drawn edge keeps its
+   wobble; the paper fibre multiplies over the pigment so the wash sits IN the
+   sheet rather than on top of it. */
+.vc-g-wash{
+  position:absolute; inset:0; z-index:2; pointer-events:none;
+  transition:clip-path .34s cubic-bezier(.3,.9,.3,1);
 }
-.vc-g-nib{ position:absolute; right:-2px; top:0; width:5px; height:100%; overflow:visible; }
-.vc-g-fill.hp{ background-color:#8a9c56; }
-.vc-g-fill.warn{ background-color:#c4933a; }
-.vc-g-fill.crit{ background-color:#a94235; }
-.vc-g-fill.ap{ background-color:#6d92b1; }
-.vc-g-fill.foe{ background-color:#9c4a3f; }
+.vc-g-wash > svg{ position:absolute; inset:0; width:100%; height:100%; }
+.vc-g-wash::after{
+  content:''; position:absolute; inset:0; mix-blend-mode:multiply; opacity:.55;
+  background-image:var(--grain); background-size:120px 120px;
+}
+/* Where the brush lifted. Rides the head of the wash. */
+.vc-g-nib{
+  position:absolute; top:0; width:8px; height:100%; z-index:2; overflow:visible;
+  pointer-events:none; transition:left .34s cubic-bezier(.3,.9,.3,1);
+}
 
 .vc-m{ position:relative; width:100%; height:.62em; }
 .vc-m-back{ position:absolute; inset:0; width:100%; height:100%; }
@@ -420,18 +452,47 @@ function css() {
 .vc-endturn:hover{ transform:translateX(-.5em) scale(1.03); }
 .vc-btnrow{ display:flex; gap:1.0em; justify-content:flex-end; align-items:center; margin-top:1.2em; }
 
-/* The order strip lives strictly between the roster and the survey panel, and
-   its cards shrink rather than collide when the viewport narrows. */
+/* Orders are SUMMONED, not garrisoned across the foot of the page.
+   A permanent six-card strip spanning the full width was the single biggest
+   thing wrong with the command frame: it turned a reconnaissance page into a
+   toolbar. Closed, the deck is a tab in the gutter; opened, it deals into a fan
+   held in the hand, cards overlapping and splayed about a pivot below the page
+   edge, which is what the CP economy actually feels like. */
 .vc-orders{
-  position:absolute; left:17em; right:24.6em; bottom:2.3em;
-  display:flex; gap:.6em; align-items:flex-end; justify-content:center;
+  position:absolute; left:15em; right:23em; bottom:5.4em; height:14.6em;
+  pointer-events:none;
 }
+.vc-orders.shut{ display:none; }
+.vc-orders-in{
+  position:absolute; left:50%; bottom:0; width:0; height:100%;
+}
+/* Each card is stepped along the hand and cocked a little further over, so the
+   spread arcs. The whole run is centred on the gutter and never touches either
+   the roster or the survey. */
 .vc-card{
-  position:relative; flex:0 1 9.4em; min-width:6.2em; cursor:pointer;
-  animation:vc-deal .46s cubic-bezier(.14,.85,.28,1.06) both;
-  transition:transform .18s cubic-bezier(.2,.9,.3,1.3), filter .18s ease;
+  position:absolute; left:0; bottom:0; width:9.8em; margin-left:-4.9em;
+  cursor:pointer; pointer-events:auto;
+  transform-origin:50% 150%;
+  transform:translateX(var(--fx,0em)) rotate(var(--fan,0deg)) translateY(var(--lift,0em));
+  animation:vc-deal .42s cubic-bezier(.14,.85,.28,1.06) backwards;
+  transition:transform .2s cubic-bezier(.2,.9,.3,1.3), filter .18s ease;
 }
-.vc-card:hover{ transform:translateY(-.75em) rotate(var(--tilt,0deg)) scale(1.045) !important; z-index:4; }
+.vc-card:hover{
+  transform:translateX(var(--fx,0em)) rotate(var(--fan,0deg))
+    translateY(calc(var(--lift,0em) - 1.5em)) scale(1.06) !important;
+  z-index:9;
+}
+/* The deck tab: a ruled paper flap in the gutter, with its CP purse beside it. */
+.vc-orders-tab{
+  position:absolute; left:15em; right:23em; bottom:2.0em; z-index:5;
+  display:flex; justify-content:center; pointer-events:none;
+}
+.vc-otab{ position:relative; width:13.2em; cursor:pointer; pointer-events:auto;
+  transition:transform .18s cubic-bezier(.2,.9,.3,1.3); }
+.vc-otab:hover{ transform:translateY(-.3em) rotate(var(--tilt,0deg)) scale(1.03) !important; }
+.vc-otab-in{ display:flex; align-items:center; gap:.5em; padding:.3em .8em .38em; }
+.vc-otab-in svg.g{ width:1.25em; height:1.25em; flex:0 0 auto; }
+.vc-otab-in .lbl{ flex:1 1 auto; }
 .vc-card.locked{ filter:grayscale(.55) opacity(.5); cursor:default; }
 .vc-card-in{ padding:.5em .55em .6em; display:flex; flex-direction:column; gap:.3em; }
 .vc-card-art{ width:100%; aspect-ratio:5/3; position:relative; }
@@ -501,13 +562,17 @@ function css() {
 .vc-compass-pin{ position:absolute; top:.16em; transform:translateX(-50%); text-align:center; }
 .vc-compass-pin svg{ width:1.1em; height:1.1em; margin:0 auto; }
 .vc-compass-pin span{ font-size:.56em; font-variant:small-caps; letter-spacing:.14em; }
+/* Every tick on the tape is a nibbed stroke (icons.js compassTick), not a 1px
+   div filled with currentColor — a grid of hairline rectangles over the render
+   is the "debug overlay" look axis 11 rejects. */
+.vc-compass-pin .tick{ width:.34em; height:.62em; margin:.1em auto 0; display:block; }
+.vc-compass-pin .tick svg{ width:100%; height:100%; }
 /* Heading pip: an inked caret nailed to the centre, outside the scrolling tape. */
 .vc-compass-pip{
-  position:absolute; left:50%; top:0; width:0; height:0; transform:translateX(-50%);
-  border-left:.34em solid transparent; border-right:.34em solid transparent;
-  border-top:.46em solid var(--red);
-  filter:drop-shadow(0 1px 1px rgba(58,47,51,.45));
+  position:absolute; left:50%; top:-.06em; width:.78em; transform:translateX(-50%);
+  filter:drop-shadow(0 1px 1px rgba(58,47,51,.45)); z-index:2;
 }
+.vc-compass-pip svg{ width:100%; height:auto; }
 
 .vc-alert{
   position:absolute; top:22%; left:50%; transform:translateX(-50%);
@@ -520,16 +585,28 @@ function css() {
 }
 .vc-alert-sub{ font-size:.72em; letter-spacing:.24em; font-variant:small-caps; color:var(--ink-2); }
 
+/* A wash of madder flooded in from the edges of the sheet, carrying the paper's
+   own fibre — not a clean CSS radial gradient. */
 .vc-dmgv{ position:absolute; inset:0; opacity:0; mix-blend-mode:multiply;
-  background:radial-gradient(120% 110% at 50% 50%, rgba(122,32,36,0) 42%, rgba(122,32,36,.55) 88%, rgba(84,20,26,.85) 100%);
+  background-image:var(--grain), var(--blotch),
+    radial-gradient(124% 112% at 48% 52%, rgba(122,32,36,0) 40%, rgba(122,32,36,.55) 86%, rgba(84,20,26,.88) 100%);
+  background-blend-mode:multiply, multiply, normal;
+  background-size:160px 160px, 420px 420px, 100% 100%;
 }
 .vc-intercept{ position:absolute; inset:0; opacity:0; mix-blend-mode:multiply;
   background:linear-gradient(90deg, rgba(163,47,52,.5), rgba(163,47,52,0) 11%, rgba(163,47,52,0) 89%, rgba(163,47,52,.5)); }
 .vc-intercept.on{ animation:vc-icept .5s steps(1,end) 3; }
 
 /* ---------- targeting overlay ------------------------------------------- */
-.vc-tgt{ position:absolute; inset:0; opacity:0; transition:opacity .18s ease; }
-.vc-tgt.on{ opacity:1; }
+/* The sight picture does not CROSS-FADE in — a linear opacity ramp is a web
+   transition. It is struck onto the page: it arrives a touch oversize and
+   slightly bled, and settles. */
+.vc-tgt{ position:absolute; inset:0; opacity:0; }
+.vc-tgt.on{ opacity:1; animation:vc-sight .22s cubic-bezier(.2,.9,.3,1.2) both; }
+@keyframes vc-sight{
+  from{ opacity:0; transform:scale(1.055); filter:blur(2.4px); }
+  to{ opacity:1; transform:none; filter:blur(0); }
+}
 .vc-cross{ position:absolute; left:50%; top:50%; width:15em; height:15em; transform:translate(-50%,-50%); }
 .vc-cross svg{ width:100%; height:100%; }
 .vc-acc{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); }
@@ -587,22 +664,49 @@ function css() {
   font-variant:small-caps; letter-spacing:.13em; color:var(--ink);
 }
 .vc-nametag .rule{ position:relative; z-index:1; display:block; height:5px; margin:-.05em 0 0; }
-.vc-nametag.foe .t{ color:#7a2822; }
+/* Allegiance has to read at a glance and in monochrome, so the two slips differ
+   in SHAPE and MARK, not only in hue: ours is a clean cream slip pinned with an
+   indigo pennant, theirs is a browner sheet, tipped the other way, stamped with
+   a red lozenge and hatched along its foot. */
+.vc-nametag .pip{
+  position:absolute; z-index:2; left:-.30em; top:50%; width:.9em; height:.9em;
+  transform:translateY(-50%);
+}
+.vc-nametag .pip svg{ width:100%; height:100%; }
+.vc-nametag.foe{ transform:translate(-50%,-100%) rotate(.6deg); }
+.vc-nametag.foe .t{ color:#7a2822; letter-spacing:.11em; }
 .vc-nametag.foe .slip{
   background-image:var(--grain),
-    linear-gradient(168deg, rgba(250,240,226,.95) 0%, rgba(238,218,203,.93) 55%, rgba(224,199,183,.92) 100%);
+    linear-gradient(168deg, rgba(238,222,196,.94) 0%, rgba(224,201,177,.93) 55%, rgba(206,178,156,.93) 100%);
 }
-/* When a slip has been lifted out of a crowd, drop a hairline back to its owner. */
-.vc-nametag.lifted::after{
-  content:''; position:absolute; left:50%; top:100%; width:1px; height:var(--lead,0px);
-  background:linear-gradient(180deg, rgba(58,47,51,.55), rgba(58,47,51,0));
+/* A hairline always drops from the slip to the head it belongs to: a plate
+   anchored to nothing is an automatic rejection, and the leader is what proves
+   there is a soldier under it. */
+.vc-nametag::after{
+  content:''; position:absolute; left:50%; top:100%; width:1px; height:var(--lead,7px);
+  background:linear-gradient(180deg, rgba(58,47,51,.62), rgba(58,47,51,0));
 }
 .vc-nametag .hp{ position:relative; z-index:1; width:5.6em; height:.38em; margin:.12em auto .04em; }
-.vc-dmg{ transform:translate(-50%,-50%); text-align:center; }
-.vc-dmg .n{ font-size:1.5em; color:#f6ecd4; text-shadow:0 0 .12em rgba(60,20,20,.9), 0 2px 0 rgba(60,20,20,.5); position:relative; z-index:1; }
-.vc-dmg.crit .n{ font-size:2.1em; color:#ffe9b8; }
-.vc-dmg .splat{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:0; }
-.vc-dmg .tag{ font-size:.62em; font-variant:small-caps; letter-spacing:.22em; color:#ffd48a; }
+/* A hit is a thrown blot of ink with the figure struck through it — one drawn
+   piece, outlined in real ink (paint-order:stroke), so it holds against a busy
+   hillside. Bare DOM digits under a text-shadow read as browser text. */
+.vc-dmg{ transform:translate(-50%,-50%); }
+.vc-dmg-svg{
+  display:block; width:5.6em; height:auto; overflow:visible;
+  filter:drop-shadow(0 2px 3px rgba(44,24,20,.5));
+}
+.vc-dmg-svg .b1{ fill:#7d2028; opacity:.88; }
+.vc-dmg-svg .b2{ fill:#4d1216; opacity:.66; }
+.vc-dmg-svg .b3{ fill:#5e181d; opacity:.74; }
+.vc-dmg-svg .num{ fill:#f9efd6; stroke:#3d1013; stroke-width:6.5; }
+.vc-dmg-svg .tag{ fill:#f2d193; }
+.vc-dmg-svg.crit{ width:8.2em; }
+.vc-dmg-svg.crit .num{ fill:#ffe3a4; stroke:#4a1409; stroke-width:7.5; }
+.vc-dmg-svg.crit .b1{ fill:#8f2a1c; opacity:.92; }
+.vc-dmg-svg.heal .b1{ fill:#54613a; }
+.vc-dmg-svg.heal .b2{ fill:#333d20; }
+.vc-dmg-svg.heal .b3{ fill:#3f4a26; }
+.vc-dmg-svg.heal .num{ fill:#f4f0d8; stroke:#2b3317; }
 .vc-banner{ transform:translate(-50%,-50%); text-align:center; white-space:nowrap;
   font-variant:small-caps; letter-spacing:.24em; font-size:1.0em; color:var(--red-deep); filter:url(#vc-bleed); }
 .vc-ring{ transform:translate(-50%,-50%); }
@@ -633,7 +737,8 @@ function css() {
   transition:transform .18s cubic-bezier(.2,.9,.3,1.3);
 }
 .vc-chip:hover{ transform:translateY(-.3em) rotate(var(--tilt,0deg)) scale(1.06) !important; }
-.vc-chip.on .vc-paper{ box-shadow:inset 0 0 0 2px rgba(163,47,52,.8), inset 0 0 16px rgba(128,96,58,.2); }
+/* Marked, not outlined: a 2px inset ring is a focus ring. */
+.vc-chip.on .vc-paper{ box-shadow:inset 0 0 14px rgba(163,47,52,.42), inset 0 0 30px rgba(128,96,58,.3); }
 .vc-chip-in{ padding:.35em .35em .45em; text-align:center; }
 .vc-chip-in svg.por{ width:100%; height:auto; }
 .vc-chip-n{ font-size:.68em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:.15em; }
@@ -642,7 +747,7 @@ function css() {
    page-wide letterbox — cap it and centre the row instead. */
 .vc-camps{ display:flex; gap:1.2em; align-items:flex-start; justify-content:center; flex-wrap:wrap; }
 .vc-camp{ flex:0 1 27em; min-width:16em; max-width:32em; padding:.7em .8em .9em; }
-.vc-camp.on .vc-paper{ box-shadow:inset 0 0 0 2px rgba(163,47,52,.7), inset 0 0 16px rgba(128,96,58,.2); }
+.vc-camp.on .vc-paper{ box-shadow:inset 0 0 16px rgba(163,47,52,.38), inset 0 0 32px rgba(128,96,58,.3); }
 .vc-camp-h{ display:flex; align-items:center; gap:.4em; margin-bottom:.4em; }
 .vc-camp-h svg{ width:1.3em; height:1.3em; }
 .vc-slots{ display:flex; flex-wrap:wrap; gap:.4em; min-height:5.6em; }
@@ -655,8 +760,10 @@ function css() {
   font-size:5.6em; color:var(--red-deep); line-height:1; padding-bottom:.06em;
 }
 .vc-stats{ display:flex; flex-direction:column; gap:.4em; margin-top:1.0em; }
+/* A ruled ledger line, drawn: a 1px dashed CSS border is the classic web tell. */
 .vc-stat{ display:flex; justify-content:space-between; align-items:baseline; gap:1.4em;
-  border-bottom:1px dashed rgba(51,41,31,.3); padding-bottom:.2em; }
+  padding-bottom:.28em; background-repeat:repeat-x; background-position:left bottom;
+  background-size:auto 4px; background-image:var(--vc-rule-uri); }
 .vc-stat b{ font-size:1.35em; font-weight:400; }
 .vc-stat.late{ animation:vc-stat-in .4s ease both; }
 
@@ -666,8 +773,9 @@ function css() {
   padding:.34em .7em; cursor:pointer; position:relative;
 }
 .vc-mi:hover{ background:rgba(163,47,52,.10); }
-.vc-mi:hover::before{ content:''; position:absolute; left:-.1em; top:50%; transform:translateY(-50%);
-  border:.34em solid transparent; border-left-color:var(--red); }
+/* The reader's own pencil tick beside the line he is on. */
+.vc-mi:hover::before{ content:'\\203A'; position:absolute; left:-.15em; top:50%;
+  transform:translateY(-52%) rotate(-4deg); color:var(--red); font-size:1.2em; }
 .vc-mi .v{ font-variant:small-caps; letter-spacing:.14em; color:var(--ink-2); font-size:.86em; }
 .vc-mi .k{ font-size:1.02em; }
 
@@ -681,10 +789,15 @@ function css() {
 .vc-dlg-por{ position:absolute; left:.7em; bottom:.1em; width:8.0em; }
 .vc-dlg-por svg{ width:100%; height:auto; filter:drop-shadow(0 3px 6px rgba(58,47,51,.42)); }
 .vc-dlg-body{ min-width:0; }
-.vc-dlg-name{ display:inline-block; position:relative; margin:-1.6em 0 .35em -1.0em; padding:.14em 1.1em .18em 1.0em;
+/* The speaker's name is a torn strip of red ribbon pasted over the box edge —
+   drawn, deckled and unevenly inked, not a CSS gradient with a clip-path chamfer. */
+.vc-dlg-name{ display:inline-block; position:relative; margin:-1.6em 0 .35em -1.0em;
+  padding:.16em 1.2em .2em 1.0em;
   color:#fbf2dd; font-variant:small-caps; letter-spacing:.2em; font-size:.86em;
-  background:linear-gradient(180deg,#b8393c,#7c2028);
-  box-shadow:0 2px 6px rgba(58,47,51,.4); clip-path:polygon(0 0,100% 0,calc(100% - .7em) 100%,0 100%); }
+  text-shadow:0 1px 0 rgba(60,12,16,.55);
+  filter:drop-shadow(0 2px 4px rgba(58,47,51,.4)); }
+.vc-dlg-name > svg{ position:absolute; inset:0; width:100%; height:100%; z-index:0; }
+.vc-dlg-name > span{ position:relative; z-index:1; }
 .vc-dlg-text{ font-size:.95em; line-height:1.5; min-height:3.2em; }
 .vc-caret{ display:inline-block; width:.5em; margin-left:.12em; animation:vc-blink 1s steps(1) infinite; }
 .vc-dlg-next{ position:absolute; right:1.0em; bottom:.5em; font-size:.6em; font-variant:small-caps;
@@ -728,9 +841,13 @@ function css() {
   from{ opacity:0; transform:translateY(1.6em) rotate(var(--tilt,0deg)); filter:blur(2px); }
   to{ opacity:1; transform:translateY(0) rotate(var(--tilt,0deg)); filter:blur(0); }
 }
+/* Dealt out of a stack held below the page edge, into the fan. The fill mode is
+   backwards, not both: once the card has landed the stylesheet's own fan
+   transform must take back over, or the hand freezes at the last keyframe. */
 @keyframes vc-deal{
-  from{ opacity:0; transform:translate(-9em, 4.5em) rotate(-16deg) scale(.86); }
-  to{ opacity:1; transform:translate(0,0) rotate(var(--tilt,0deg)) scale(1); }
+  from{ opacity:0; transform:translate(-7em, 6em) rotate(-26deg) scale(.82); }
+  to{ opacity:1; transform:translateX(var(--fx,0em)) rotate(var(--fan,0deg))
+        translateY(var(--lift,0em)); }
 }
 @keyframes vc-stamp{
   from{ transform:scale(2.1) rotate(-14deg); opacity:0; filter:blur(3px); }
@@ -780,7 +897,8 @@ function css() {
 @media (max-width:1400px){
   .vc-roster{ left:1.0em; gap:.42em; }
   .vc-ru{ width:13.2em; }
-  .vc-orders{ left:15.4em; right:22.6em; gap:.45em; }
+  .vc-orders, .vc-orders-tab{ left:13.4em; right:21em; }
+  .vc-card{ width:8.4em; margin-left:-4.2em; }
   .vc-card-name{ font-size:.74em; letter-spacing:.02em; }
   .vc-card-desc{ font-size:.58em; }
   .vc-map{ width:20em; }
@@ -815,7 +933,8 @@ export function injectStyles() {
     styleEl = document.createElement('style');
     styleEl.id = 'vc-ui-style';
     styleEl.textContent =
-      ':root{--vc-grain-uri:' + grainUri() + ';--vc-blotch-uri:' + blotchUri() + ';}\n' + css();
+      ':root{--vc-grain-uri:' + grainUri() + ';--vc-blotch-uri:' + blotchUri() +
+      ';--vc-rule-uri:' + ruleUri() + ';}\n' + css();
     document.head.appendChild(styleEl);
   }
   if (!defsHost) {

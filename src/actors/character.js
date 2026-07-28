@@ -96,6 +96,9 @@ export function makeAppearance(seed, cls, team) {
     belt: tint(PALETTE.belt, rngRange(rng, 0.9, 1.08)),
     boot: tint(PALETTE.boot, rngRange(rng, 0.88, 1.1)),
     bootSole: PALETTE.bootSole,
+    bootWelt: PALETTE.bootWelt,
+    cap: tint(imperial ? base.collar : PALETTE.cap, wear),
+    capShade: tint(imperial ? PALETTE.impLeather : PALETTE.capShade, wear),
     glove: PALETTE.glove,
     brass: PALETTE.brass,
     metal: PALETTE.metal,
@@ -168,11 +171,14 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
       phiMin: 0.35,
       phiMax: (u) => {
         const cz = Math.cos(u * TAU);              // +1 face, -1 nape
-        return 0.405 + 0.17 * (1 - clamp01(cz)) + 0.17 * clamp01(-cz);
+        // Stops at the top of the ear (phi 0.51) rather than running past it:
+        // the old 0.575 at the sides buried the ear and half the temple under
+        // one dark mass and every capped soldier came out with a bowl cut.
+        return 0.398 + 0.105 * (1 - clamp01(cz)) + 0.120 * clamp01(-cz);
       },
       displace: (dx, dy, dz, u, v) => {
         const k = D(dx, dy, dz);
-        const s = 1.050 * (1 + 0.022 * Math.sin(u * TAU * 6 + 0.7) * v)
+        const s = 1.038 * (1 + 0.022 * Math.sin(u * TAU * 6 + 0.7) * v)
           * (1 - 0.05 * smoothstep(0.85, 1.0, v));
         return [k[0] * s, k[1] * s, k[2] * s];
       },
@@ -180,9 +186,9 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
     // Sideburn wisps in front of each ear so the hairline is not a clean arc.
     for (const side of [1, -1]) {
       b.addTube([
-        { p: [side * R[0] * 0.86, C[1] + R[1] * 0.24, C[2] + R[2] * 0.30], rx: 0.012, rz: 0.010 },
-        { p: [side * R[0] * 0.94, C[1] - R[1] * 0.06, C[2] + R[2] * 0.24], rx: 0.013, rz: 0.011 },
-        { p: [side * R[0] * 0.92, C[1] - R[1] * 0.30, C[2] + R[2] * 0.14], rx: 0.009, rz: 0.008 },
+        { p: [side * R[0] * 0.88, C[1] + R[1] * 0.26, C[2] + R[2] * 0.32], rx: 0.008, rz: 0.007 },
+        { p: [side * R[0] * 0.95, C[1] + R[1] * 0.04, C[2] + R[2] * 0.27], rx: 0.009, rz: 0.008 },
+        { p: [side * R[0] * 0.93, C[1] - R[1] * 0.14, C[2] + R[2] * 0.20], rx: 0.006, rz: 0.005 },
       ], { seg: seg(7), capStart: 'flat', capEnd: 'round' });
     }
     return;
@@ -225,79 +231,90 @@ function band(b, y, rx, rz, h, thick, color) {
   b.setTransform(null);
 }
 
-/** Belt, Y-straps, ammo pouches, canteen, shoulder crest — worn by everyone. */
+/** Belt, cross-brace webbing, pouches, canteen, shoulder crest — worn by everyone. */
 function gearWebbing(b, rig, o, cls) {
   const g = o.girth;
-  const hy = rig.restWorld.hips.pos.y, cy = rig.restWorld.spine3.pos.y;
-  const beltY = hy - 0.035;
+  const hy = rig.restWorld.hips.pos.y;
+  // The belt rides the NATURAL WAIST (hy+0.045), which is the narrowest section
+  // of the torso (0.128*g) and just above the tunic skirt. Sitting on the hip
+  // at hy-0.030 it was inside the 0.155*g skirt and invisible.
+  const beltY = hy + 0.045;
   b.setBones(BONE_GROUPS.TORSO).setMottle(0.05);
 
-  band(b, beltY, 0.152 * g, 0.112 * g, 0.024, 0.030, o.belt);
-  // Buckle.
+  // Belt: wide, and standing ~17 mm proud of the waist so it cuts the figure at
+  // the narrowest point. That single horizontal break is most of what turns a
+  // sack into a uniform.
+  band(b, beltY, 0.144 * g, 0.107 * g, 0.030, 0.036, o.belt);
   b.setColor(o.brass);
-  b.addRoundedBox({ center: [0, beltY, 0.121 * g], size: [0.026, 0.020, 0.010], bevel: 0.004, div: 2 });
+  b.addRoundedBox({ center: [0, beltY, 0.120 * g], size: [0.030, 0.024, 0.012], bevel: 0.004, div: 2 });
 
-  // Y-straps: front lower -> over each shoulder -> back lower.
-  //
-  // The apex is derived from the deltoid cap, not from a fixed offset off the
-  // spine: the cap is the highest thing on the shoulder, and a strap routed
-  // below its crown vanishes inside it — which is exactly what happened and
-  // left every soldier with no visible webbing at all.
-  b.setColor(o.leather);
+  // --- Cross-brace. Two straps that CROSS on the sternum, run over opposite
+  // shoulders and down the back to the belt. The old routing put both straps
+  // near-vertical at x = +/-0.03..0.09 on the front, so they read as two faint
+  // parallel stripes; an X reads as harness at any distance and at any angle,
+  // and it is what Gallian militia webbing actually looks like.
+  b.setColor(o.leather).setMottle(0.045);
   for (const side of [1, -1]) {
     const s = side > 0 ? 'L' : 'R';
     const ua = rig.restWorld['upperArm' + s].pos, cl = rig.restWorld['clavicle' + s].pos;
-    const apexX = Math.abs(lerp(cl.x, ua.x, 0.52));
-    const apexY = ua.y + 0.086 * g;
+    const apexX = Math.abs(lerp(cl.x, ua.x, 0.50));
+    const apexY = ua.y + 0.082 * g;
+    const chestY = hy + 0.310;
     b.addTube([
-      { p: [side * 0.030, beltY + 0.008, 0.115 * g], rx: 0.022, rz: 0.007 },
-      { p: [side * 0.050, lerp(beltY, cy, 0.55), 0.112 * g], rx: 0.022, rz: 0.007 },
-      { p: [side * 0.076, cy + 0.052, 0.092 * g], rx: 0.023, rz: 0.007 },
-      { p: [side * apexX * 0.94, apexY - 0.018, 0.058 * g], rx: 0.024, rz: 0.008 },
-      { p: [side * apexX, apexY, 0.006 * g], rx: 0.025, rz: 0.008 },        // over the shoulder
-      { p: [side * apexX * 0.94, apexY - 0.024, -0.052 * g], rx: 0.024, rz: 0.008 },
-      { p: [side * 0.090, cy + 0.055, -0.084 * g], rx: 0.022, rz: 0.007 },
-      { p: [side * 0.058, lerp(beltY, cy, 0.5), -0.108 * g], rx: 0.021, rz: 0.007 },
-      { p: [side * 0.034, beltY + 0.006, -0.112 * g], rx: 0.020, rz: 0.007 },
+      // front: opposite hip -> across the sternum -> this shoulder
+      { p: [-side * 0.076 * g, beltY + 0.010, 0.102 * g], rx: 0.024, rz: 0.008 },
+      { p: [-side * 0.030 * g, hy + 0.150, 0.118 * g], rx: 0.024, rz: 0.008 },
+      { p: [side * 0.028 * g, chestY - 0.030, 0.122 * g], rx: 0.025, rz: 0.008 },
+      { p: [side * 0.088 * g, chestY + 0.052, 0.104 * g], rx: 0.025, rz: 0.008 },
+      { p: [side * apexX * 0.94, apexY - 0.020, 0.056 * g], rx: 0.025, rz: 0.008 },
+      { p: [side * apexX, apexY, 0.004 * g], rx: 0.026, rz: 0.009 },        // over the shoulder
+      { p: [side * apexX * 0.94, apexY - 0.026, -0.050 * g], rx: 0.025, rz: 0.008 },
+      { p: [side * 0.092 * g, chestY + 0.055, -0.086 * g], rx: 0.023, rz: 0.008 },
+      { p: [side * 0.056 * g, hy + 0.170, -0.110 * g], rx: 0.022, rz: 0.007 },
+      { p: [side * 0.034 * g, beltY + 0.008, -0.112 * g], rx: 0.021, rz: 0.007 },
     ], { seg: seg(8), capStart: 'flat', capEnd: 'flat' });
   }
+  // Brass D-ring where the straps cross.
+  b.setColor(o.brass);
+  b.addRoundedBox({ center: [0, hy + 0.250, 0.126 * g], size: [0.017, 0.014, 0.007], bevel: 0.003, div: 2 });
 
-  // Ammo pouches on the belt front.
+  // Ammo pouches on the belt front — bigger and squarer than before, with a
+  // buckled flap, so they survive as shapes rather than smudges.
   const pouches = cls === 'shock' ? 3 : cls === 'lancer' ? 1 : 2;
-  b.setColor(o.leather);
   for (let i = 0; i < pouches; i++) {
     const t = pouches === 1 ? 0 : (i / (pouches - 1)) * 2 - 1;
-    const a = t * 0.62;
-    b.addRoundedBox({
-      center: [Math.sin(a) * 0.125 * g, beltY - 0.030, Math.cos(a) * 0.108 * g + 0.012],
-      size: [0.032, 0.036, 0.020], bevel: 0.008, div: 2,
-    });
-    b.setColor(o.belt);
-    b.addRoundedBox({
-      center: [Math.sin(a) * 0.128 * g, beltY - 0.004, Math.cos(a) * 0.112 * g + 0.013],
-      size: [0.033, 0.011, 0.021], bevel: 0.005, div: 2,
-    });
+    const a = t * 0.66;
+    const px = Math.sin(a) * 0.132 * g, pz = Math.cos(a) * 0.114 * g + 0.014;
     b.setColor(o.leather);
+    b.addRoundedBox({ center: [px, beltY - 0.042, pz], size: [0.036, 0.042, 0.023], bevel: 0.008, div: 2 });
+    b.setColor(o.belt);
+    b.addRoundedBox({ center: [px * 1.02, beltY - 0.010, pz * 1.03], size: [0.037, 0.014, 0.024], bevel: 0.005, div: 2 });
+    b.setColor(o.brass);
+    b.addRoundedBox({ center: [px * 1.04, beltY - 0.026, pz * 1.06], size: [0.006, 0.008, 0.004], bevel: 0.002, div: 1 });
   }
 
   // Canteen on the right hip, bread bag on the left.
   b.setColor(mixCol(o.metal, o.canvas, 0.5));
-  b.setTransform(_m4.makeTranslation(-0.128 * g, beltY - 0.072, -0.030));
+  b.setTransform(_m4.makeTranslation(-0.140 * g, beltY - 0.088, -0.030));
   b.addRoundedBox({ size: [0.036, 0.048, 0.020], bevel: 0.014, div: 3 });
   b.setTransform(null);
   b.setColor(o.canvas);
-  b.addRoundedBox({ center: [0.132 * g, beltY - 0.070, -0.044], size: [0.038, 0.046, 0.024], bevel: 0.010, div: 2 });
+  b.addRoundedBox({ center: [0.144 * g, beltY - 0.086, -0.044], size: [0.038, 0.046, 0.024], bevel: 0.010, div: 2 });
 
-  // Squad 7 shoulder crest: a domed shield patch on the left upper arm.
+  // Squad 7 shoulder crest: a domed shield patch on the left upper arm, with a
+  // cream border so it reads as an insignia and not as a wound.
   const sh = rig.restWorld.upperArmL.pos;
-  b.setBones(BONE_GROUPS.ARM_L).setColor(o.accent).setMottle(0.04);
+  b.setBones(BONE_GROUPS.ARM_L).setMottle(0.04);
   b.setTransform(_m4.compose(
-    new THREE.Vector3(sh.x + 0.052 * g, sh.y - 0.052, sh.z + 0.006),
+    new THREE.Vector3(sh.x + 0.050 * g, sh.y - 0.050, sh.z + 0.006),
     new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI * 0.5, 0.1)),
     new THREE.Vector3(1, 1, 1)));
-  b.addEllipsoid({ radius: [0.030, 0.040, 0.016], seg: seg(10), rings: seg(6), phiMax: () => 0.5 });
-  b.setColor(o.trim);
-  b.addEllipsoid({ center: [0, 0.004, 0.004], radius: [0.017, 0.023, 0.015], seg: seg(9), rings: seg(5), phiMax: () => 0.46 });
+  b.setColor(mixCol(o.trim, o.tunicShade, 0.42));
+  b.addEllipsoid({ radius: [0.031, 0.041, 0.015], seg: seg(10), rings: seg(6), phiMax: () => 0.5 });
+  b.setColor(o.accent);
+  b.addEllipsoid({ center: [0, 0.002, 0.003], radius: [0.025, 0.034, 0.016], seg: seg(10), rings: seg(6), phiMax: () => 0.48 });
+  b.setColor(mixCol(o.trim, o.accent, 0.30));
+  b.addEllipsoid({ center: [0, 0.004, 0.006], radius: [0.011, 0.016, 0.014], seg: seg(9), rings: seg(5), phiMax: () => 0.44 });
   b.setTransform(null);
 
   // Rank chevrons on the right sleeve.
@@ -305,9 +322,9 @@ function gearWebbing(b, rig, o, cls) {
   b.setBones(BONE_GROUPS.ARM_R).setColor(o.trim);
   for (let i = 0; i < 2; i++) {
     b.addTube([
-      { p: [shR.x - 0.030, shR.y - 0.070 - i * 0.016, shR.z + 0.036], rx: 0.005, rz: 0.0025 },
-      { p: [shR.x - 0.048, shR.y - 0.062 - i * 0.016, shR.z + 0.006], rx: 0.005, rz: 0.0025 },
-      { p: [shR.x - 0.034, shR.y - 0.070 - i * 0.016, shR.z - 0.026], rx: 0.005, rz: 0.0025 },
+      { p: [shR.x - 0.030, shR.y - 0.072 - i * 0.017, shR.z + 0.038], rx: 0.005, rz: 0.0026 },
+      { p: [shR.x - 0.050, shR.y - 0.063 - i * 0.017, shR.z + 0.006], rx: 0.005, rz: 0.0026 },
+      { p: [shR.x - 0.034, shR.y - 0.072 - i * 0.017, shR.z - 0.028], rx: 0.005, rz: 0.0026 },
     ], { seg: seg(5), capStart: 'flat', capEnd: 'flat' });
   }
 }
@@ -339,22 +356,22 @@ function gearHead(b, rig, o, head, cls) {
     // a blank shell.
     const capEdge = (u) => {
       const cz = Math.cos(u * TAU);              // +1 face, -1 nape
-      return 0.475 - 0.075 * clamp01(cz) + 0.075 * clamp01(-cz);
+      return 0.455 - 0.075 * clamp01(cz) + 0.085 * clamp01(-cz);
     };
-    b.setColor(o.tunic);
+    b.setColor(o.cap);
     b.addEllipsoid({
       center: [C[0], C[1] + 0.010, C[2] - 0.004],
       radius: R, seg: seg(20), rings: seg(9),
       phiMax: capEdge,
-      displace: shell(1.075, (dx, dy) => [1 - 0.34 * clamp01(dy) * clamp01(dy), 1 + 0.06 * clamp01(dy), 1]),
+      displace: shell(1.085, (dx, dy) => [1 - 0.34 * clamp01(dy) * clamp01(dy), 1 + 0.06 * clamp01(dy), 1]),
     });
     // Turn-up band around the cap's lower edge.
-    b.setColor(o.tunicShade);
+    b.setColor(o.capShade);
     b.addEllipsoid({
       center: [C[0], C[1] + 0.006, C[2] - 0.004],
       radius: R, seg: seg(20), rings: seg(3),
-      phiMin: 0.34, phiMax: (u) => capEdge(u) + 0.035,
-      displace: shell(1.098, (dx, dy) => [1 - 0.20 * clamp01(dy) * clamp01(dy), 1, 1]),
+      phiMin: 0.34, phiMax: (u) => capEdge(u) + 0.038,
+      displace: shell(1.112, (dx, dy) => [1 - 0.20 * clamp01(dy) * clamp01(dy), 1, 1]),
     });
     // Regimental piping along the crown fold, front to back — not a band across
     // the brow, which is where it used to sit and read as a headband.
@@ -369,82 +386,112 @@ function gearHead(b, rig, o, head, cls) {
   }
 
   if (cls === 'shock' || cls === 'lancer') {
-    // Stamped steel helmet: dome, rolled brim, rivets, chin strap.
-    const hr = [R[0] * 1.20, R[1] * 1.06, R[2] * 1.16];
+    // Stamped steel helmet. Built as an offset SHELL of the skull with an
+    // angle-varying edge, not as a lathe: a lathe's rim is a horizontal circle,
+    // so to clear the ears at the side it had to sit below the brow at the
+    // front — which is exactly why the second soldier in the closeup shot had
+    // "no face, a blank tan oval with a flat crimson strip across the eye
+    // line". The edge now stops at dy >= +0.30 across the front (above the
+    // brow) and swings down over the ears and the nape.
+    const helmEdge = (u) => {
+      const cz = Math.cos(u * TAU);              // +1 face, -1 nape
+      return 0.400 - 0.100 * clamp01(cz) + 0.145 * clamp01(-cz);
+    };
     b.setColor(mixCol(o.metal, o.tunicShade, 0.45));
-    b.setTransform(_m4.makeTranslation(C[0], C[1] - 0.020, C[2] - 0.006).multiply(_m4b.makeScale(hr[0], 1, hr[2])));
-    b.addLathe([
-      [1.00, 0.006], [1.05, 0.010], [1.06, 0.026], [1.00, 0.034],
-      [0.985, 0.056], [0.94, 0.090], [0.86, 0.118], [0.72, 0.140],
-      [0.50, 0.156], [0.26, 0.164], [0, 0.166],
-    ], { seg: seg(18) });
-    b.setTransform(null);
-    b.setColor(mixCol(o.metal, o.tunicShade, 0.25));
+    b.addEllipsoid({
+      center: [C[0], C[1] + 0.004, C[2] - 0.008],
+      radius: R, seg: seg(20), rings: seg(10),
+      phiMax: helmEdge,
+      displace: shell(1.16, (dx, dy) => [1 + 0.04 * clamp01(-dy), 1 - 0.10 * clamp01(dy) * clamp01(dy), 1 + 0.03 * clamp01(-dy)]),
+    });
+    // Rolled brim, flared outboard — this is the silhouette that says
+    // "shocktrooper" from 60 m away.
+    b.setColor(mixCol(o.metal, PALETTE.metalDark, 0.35));
+    b.addEllipsoid({
+      center: [C[0], C[1] + 0.002, C[2] - 0.008],
+      radius: R, seg: seg(20), rings: seg(3),
+      phiMin: 0.30, phiMax: (u) => helmEdge(u) + 0.055,
+      displace: shell(1.235, (dx, dy) => [1, 1 - 0.16 * clamp01(dy), 1]),
+    });
+    // Rivets round the brim line.
+    b.setColor(mixCol(o.metal, o.tunicShade, 0.15));
     for (let i = 0; i < 3; i++) {
       const a = (i / 3) * TAU + 0.4;
+      const rr = R[0] * 1.20, rd = R[2] * 1.20;
       b.addTube([
-        { p: [C[0] + Math.sin(a) * hr[0] * 0.96, C[1] + 0.014, C[2] - 0.006 + Math.cos(a) * hr[2] * 0.96], rx: 0.007, rz: 0.007 },
-        { p: [C[0] + Math.sin(a) * hr[0] * 1.02, C[1] + 0.014, C[2] - 0.006 + Math.cos(a) * hr[2] * 1.02], rx: 0.006, rz: 0.006 },
+        { p: [C[0] + Math.sin(a) * rr * 0.94, C[1] + 0.012, C[2] - 0.008 + Math.cos(a) * rd * 0.94], rx: 0.0062, rz: 0.0062 },
+        { p: [C[0] + Math.sin(a) * rr * 1.02, C[1] + 0.012, C[2] - 0.008 + Math.cos(a) * rd * 1.02], rx: 0.0052, rz: 0.0052 },
       ], { seg: seg(6), capEnd: 'round' });
     }
+    // Chin strap, hanging clear of the jaw.
     b.setColor(o.leather);
     b.addTube([
-      { p: [C[0] + hr[0] * 0.92, C[1] - 0.010, C[2] - 0.010], rx: 0.010, rz: 0.004 },
-      { p: [C[0] + hr[0] * 0.72, C[1] - R[1] * 0.72, C[2] + R[2] * 0.30], rx: 0.010, rz: 0.004 },
-      { p: [C[0], C[1] - R[1] * 0.92, C[2] + R[2] * 0.44], rx: 0.011, rz: 0.004 },
-      { p: [C[0] - hr[0] * 0.72, C[1] - R[1] * 0.72, C[2] + R[2] * 0.30], rx: 0.010, rz: 0.004 },
-      { p: [C[0] - hr[0] * 0.92, C[1] - 0.010, C[2] - 0.010], rx: 0.010, rz: 0.004 },
+      { p: [C[0] + R[0] * 1.14, C[1] - 0.014, C[2] - 0.014], rx: 0.009, rz: 0.0038 },
+      { p: [C[0] + R[0] * 0.92, C[1] - R[1] * 0.74, C[2] + R[2] * 0.26], rx: 0.009, rz: 0.0038 },
+      { p: [C[0], C[1] - R[1] * 1.00, C[2] + R[2] * 0.40], rx: 0.010, rz: 0.0038 },
+      { p: [C[0] - R[0] * 0.92, C[1] - R[1] * 0.74, C[2] + R[2] * 0.26], rx: 0.009, rz: 0.0038 },
+      { p: [C[0] - R[0] * 1.14, C[1] - 0.014, C[2] - 0.014], rx: 0.009, rz: 0.0038 },
     ], { seg: seg(6), capStart: 'flat', capEnd: 'flat' });
     return true;
   }
 
   if (cls === 'engineer') {
-    // Peaked service cap.
-    b.setColor(o.tunic);
-    // The crown must clear the top of the skull (C.y + R.y ≈ 0.126) or the head
-    // pokes straight through the cap.
-    b.setTransform(_m4.makeTranslation(C[0], C[1] + 0.006, C[2] - 0.004).multiply(_m4b.makeScale(R[0] * 1.12, 1, R[2] * 1.12)));
-    b.addLathe([
-      [1.00, 0.006], [1.07, 0.014], [1.07, 0.034], [1.03, 0.064],
-      [0.97, 0.098], [0.82, 0.122], [0.46, 0.134], [0, 0.137],
-    ], { seg: seg(16) });
-    b.setTransform(null);
-    b.setColor(o.collar);
-    band(b, C[1] + 0.020, R[0] * 1.12, R[2] * 1.12, 0.013, 0.020, o.collar);
+    // Peaked service cap: a flat-topped crown on a band, with a long visor.
+    const capEdge = (u) => {
+      const cz = Math.cos(u * TAU);
+      return 0.410 - 0.070 * clamp01(cz) + 0.115 * clamp01(-cz);
+    };
+    b.setColor(o.cap);
+    b.addEllipsoid({
+      center: [C[0], C[1] + 0.016, C[2] - 0.004],
+      radius: R, seg: seg(18), rings: seg(8),
+      phiMax: capEdge,
+      // Flat top, flared out at the front — a service cap, not a beanie.
+      displace: shell(1.10, (dx, dy, dz) => [
+        1 + 0.10 * clamp01(dy) * clamp01(dz), 1 - 0.30 * clamp01(dy) * clamp01(dy), 1 + 0.12 * clamp01(dy) * clamp01(dz),
+      ]),
+    });
+    b.setColor(o.capShade);
+    b.addEllipsoid({
+      center: [C[0], C[1] + 0.008, C[2] - 0.004],
+      radius: R, seg: seg(18), rings: seg(3),
+      phiMin: 0.30, phiMax: (u) => capEdge(u) + 0.060,
+      displace: shell(1.115),
+    });
     // Visor.
     b.setColor(mixCol(o.leather, PALETTE.metalDark, 0.4));
     b.setTransform(_m4.compose(
-      new THREE.Vector3(C[0], C[1] + 0.006, C[2] + R[2] * 0.52),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.30, 0, 0)),
+      new THREE.Vector3(C[0], C[1] + 0.026, C[2] + R[2] * 0.60),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.34, 0, 0)),
       new THREE.Vector3(1, 1, 1)));
     b.addEllipsoid({
-      radius: [R[0] * 1.05, 0.010, R[2] * 0.86], seg: seg(14), rings: seg(5),
+      radius: [R[0] * 1.06, 0.008, R[2] * 0.90], seg: seg(14), rings: seg(5),
       phiMax: (u) => (Math.cos(u * TAU) > 0 ? 1 : 0.5),
     });
     b.setTransform(null);
     b.setColor(o.brass);
-    b.addRoundedBox({ center: [0, C[1] + 0.048, C[2] + R[2] * 1.02], size: [0.013, 0.012, 0.006], bevel: 0.003, div: 2 });
+    b.addRoundedBox({ center: [0, C[1] + 0.052, C[2] + R[2] * 1.06], size: [0.012, 0.011, 0.005], bevel: 0.003, div: 2 });
     return true;
   }
 
-  // sniper: soft field cap, worn back off the brow
-  b.setColor(mixCol(o.tunic, o.trouser, 0.45));
+  // sniper: soft field cap with a long bill, worn back off the brow
+  b.setColor(mixCol(o.cap, o.trouser, 0.35));
   b.addEllipsoid({
     center: [C[0], C[1] + 0.010, C[2] - 0.012],
     radius: R, seg: seg(16), rings: seg(7),
     phiMax: (u) => {
       const cz = Math.cos(u * TAU);
-      return 0.455 - 0.075 * clamp01(cz) + 0.085 * clamp01(-cz);
+      return 0.430 - 0.070 * clamp01(cz) + 0.100 * clamp01(-cz);
     },
-    displace: shell(1.070, (dx, dy, dz) => 1 + 0.04 * clamp01(-dz) * clamp01(dy)),
+    displace: shell(1.080, (dx, dy, dz) => 1 + 0.05 * clamp01(-dz) * clamp01(dy)),
   });
-  b.setColor(mixCol(o.tunicShade, o.trouser, 0.45));
+  b.setColor(mixCol(o.capShade, o.trouser, 0.35));
   b.setTransform(_m4.compose(
-    new THREE.Vector3(C[0], C[1] + 0.018, C[2] + R[2] * 0.56),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.22, 0, 0)),
+    new THREE.Vector3(C[0], C[1] + 0.030, C[2] + R[2] * 0.62),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.26, 0, 0)),
     new THREE.Vector3(1, 1, 1)));
   b.addEllipsoid({
-    radius: [R[0] * 0.94, 0.008, R[2] * 0.70], seg: seg(12), rings: seg(4),
+    radius: [R[0] * 0.98, 0.007, R[2] * 0.84], seg: seg(12), rings: seg(4),
     phiMax: (u) => (Math.cos(u * TAU) > 0 ? 1 : 0.5),
   });
   b.setTransform(null);
@@ -544,11 +591,23 @@ function gearClass(b, rig, o, cls) {
     return;
   }
 
-  // scout: light pack + map case
+  // scout: light pack + map case. The pack gets a buckled flap and two straps
+  // so it is a piece of kit rather than a pale card taped to the shoulders.
+  const py = lerp(hy, cy, 0.52);
   b.setColor(o.canvas);
-  b.addRoundedBox({ center: [0, lerp(hy, cy, 0.55), -0.126 * g], size: [0.070, 0.058, 0.028], bevel: 0.014, div: 2 });
+  b.addRoundedBox({ center: [0, py, -0.128 * g], size: [0.072, 0.056, 0.030], bevel: 0.016, div: 3 });
+  b.setColor(mixCol(o.canvas, o.leather, 0.45));
+  b.addRoundedBox({ center: [0, py + 0.040, -0.132 * g], size: [0.074, 0.020, 0.033], bevel: 0.010, div: 2 });
+  b.setColor(o.belt);
+  for (const sx of [-0.040, 0.040]) {
+    b.addTube([
+      { p: [sx, py + 0.058, -0.116 * g], rx: 0.009, rz: 0.004 },
+      { p: [sx, py + 0.020, -0.164 * g], rx: 0.009, rz: 0.004 },
+      { p: [sx, py - 0.030, -0.160 * g], rx: 0.009, rz: 0.004 },
+    ], { seg: seg(6), capStart: 'flat', capEnd: 'round' });
+  }
   b.setColor(o.leather);
-  b.addRoundedBox({ center: [0.118 * g, hy - 0.088, 0.030], size: [0.030, 0.038, 0.014], bevel: 0.008, div: 2 });
+  b.addRoundedBox({ center: [0.126 * g, hy - 0.092, 0.030], size: [0.030, 0.038, 0.014], bevel: 0.008, div: 2 });
 }
 
 // ---------------------------------------------------------------------------
@@ -563,8 +622,21 @@ const _cGoal = new THREE.Vector3(), _cPole = new THREE.Vector3();
 const _cBore = new THREE.Vector3(), _cFore = new THREE.Vector3(), _cAxis = new THREE.Vector3();
 const _cShHand = new THREE.Vector3();
 const _cWQ = new THREE.Quaternion();
-// Low-ready bore, in character space: 14 degrees across the body, 26 degrees down.
-const CARRY_YAW = 0.244, CARRY_PITCH = -0.454;
+// Low-ready bore, in character space: 37 degrees across the body, 21 degrees
+// down, with the foregrip 0.24 m forward and 0.38 m below the shoulder line.
+//
+// These five numbers are a solved constraint, not taste. A rifle is 0.65 m from
+// its foregrip back to its butt plate, so given a bore direction the butt lands
+// wherever it lands — and with the previous 14/26 hold and a foregrip only
+// 0.205 m below the shoulders, it landed at (-0.14, 1.53, -0.18): INSIDE the
+// upper chest, with the trigger hand itself buried in the ribs. That is the
+// closeup shot's rifle growing out of the shoulder. Solved by sweeping
+// (yaw, pitch, forward, down, lateral) for the pose that keeps the whole
+// grip->butt segment of all four weapon lengths outside an elliptical torso
+// model by >= 1.35 radii while the support hand stays inside 0.47 m of the
+// left shoulder and the muzzle still points at the ground.
+const CARRY_YAW = 0.58, CARRY_PITCH = -0.34;
+const CARRY_FWD = 0.240, CARRY_DOWN = -0.380, CARRY_LAT = -0.010;
 /** Exponential smoothing that is stable at any frame rate. */
 const damp = (cur, tgt, rate, dt) => tgt + (cur - tgt) * Math.exp(-rate * dt);
 const _cn = new THREE.Vector3(), _ce1 = new THREE.Vector3(), _ce2 = new THREE.Vector3();
@@ -951,6 +1023,7 @@ export class Character {
       tunic: app.tunic, tunicShade: app.tunicShade, collar: app.collar,
       trouser: app.trouser, trouserCuff: app.trouserCuff,
       leather: app.leather, belt: app.belt, boot: app.boot, bootSole: app.bootSole,
+      bootWelt: app.bootWelt, cap: app.cap, capShade: app.capShade,
       glove: app.glove, brass: app.brass, metal: app.metal,
       accent: app.accent, trim: app.trim, canvas: app.canvas,
       hairColor: app.hairColor,
@@ -962,7 +1035,11 @@ export class Character {
     gearWebbing(b, this.rig, opts, this.cls);
     gearClass(b, this.rig, opts, this.cls);
 
-    b.bakeAO({ res: CFG.quality >= 2 ? 48 : 36, strength: 0.52, radius: 0.10 });
+    // Radius tightened with the smaller skull: at 0.10 m the AO probe reached
+    // right across a 0.16 m-wide face and pooled soot in the eye sockets and
+    // under the cheekbone, which fought the band terminator that is supposed to
+    // draw that edge.
+    b.bakeAO({ res: CFG.quality >= 2 ? 48 : 36, strength: 0.48, radius: 0.082 });
     this.geometry = b.finish(this.rig);
     this.mesh = createSkinnedBody(this.geometry, this.rig, actorBodyMaterial());
     this.root.add(this.mesh);
@@ -1071,9 +1148,9 @@ export class Character {
     boneWorld(bm.upperArmL, _cA);
     boneWorld(bm.upperArmR, _cB);
     _cFore.addVectors(_cA, _cB).multiplyScalar(0.5)
-      .addScaledVector(_cFwd, 0.355 * s)
-      .addScaledVector(_cUp, -0.205 * s)
-      .addScaledVector(_cLeft, 0.02 * s);
+      .addScaledVector(_cFwd, CARRY_FWD * s)
+      .addScaledVector(_cUp, CARRY_DOWN * s)
+      .addScaledVector(_cLeft, CARRY_LAT * s);
 
     // Shouldered: target the TRIGGER HAND, not the handguard. The weapon's own
     // origin is the firing grip, so putting the hand under the cheek and pointing

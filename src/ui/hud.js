@@ -30,7 +30,7 @@ import {
   aimBrackets, crosshair, accuracyRing, bodyFigure, ammoPip, terrainSketch,
   wobblyPath, hatchPath, splatPath, roughRect, inkRule, compassRose, mapScaleBar,
   unitBlip, keyCap, inkGauge, marchLine, rankChevrons, marginBracket, contourMap,
-  dialGauge,
+  dialGauge, compassPip, compassTick, viewWedge,
 } from './icons.js';
 import { portraitFor } from './portraits.js';
 import { WorldLabels } from './worldLabels.js';
@@ -109,15 +109,15 @@ const TAPE_DEG = 1080;
 
 const LEGENDS = {
   command: [
-    ['Drag', 'Pan Map'], ['Wheel', 'Zoom'], ['LMB', 'Select Unit'],
+    ['Drag', 'Pan Map'], ['LMB', 'Select Unit'], ['Q', 'Orders'],
     ['Enter', 'Sortie'], ['E', 'End Turn'], ['Esc', 'Pause'],
   ],
   action: [
-    ['WASD', 'Move'], ['Shift', 'Sprint'], ['Ctrl', 'Crouch'], ['RMB', 'Aim'],
+    ['WASD', 'Move'], ['Shift', 'Sprint'], ['Ctrl', 'Crouch'], ['RMB / Q', 'Aim'],
     ['LMB', 'Fire'], ['R', 'Reload'], ['Enter', 'End Action'], ['Esc', 'Pause'],
   ],
   aim: [
-    ['LMB', 'Fire'], ['RMB', 'Lower Weapon'], ['Wheel', 'Magnify'],
+    ['LMB', 'Fire'], ['RMB / Q', 'Lower Weapon'], ['Wheel', 'Magnify'],
     ['Tab', 'Target Part'], ['Esc', 'Pause'],
   ],
   enemy: [['—', 'Imperial Turn']],
@@ -163,6 +163,8 @@ export class HUD {
     this.apShown = 0;
     this.markers = [];
     this.orders = DEFAULT_ORDERS;
+    // Orders are summoned, not garrisoned across the foot of the page.
+    this.ordersOpen = false;
     this.objectives = normObjectives(this.mission.objectives) || [
       { type: 'capture', text: 'Seize the Imperial base camp.' },
       { type: 'defend', text: 'Hold the bridge until relief arrives.', sub: true },
@@ -200,6 +202,14 @@ export class HUD {
     this.dialogue = new DialogueBar(this.root, {});
 
     this.labels = new WorldLabels(this.worldLayer, this.camera);
+    // Name slips are culled by REAL line of sight against the world's collider
+    // grid. A slip drawn over a soldier who is behind a house labels masonry,
+    // and a page full of plates anchored to nothing is an automatic rejection.
+    this.labels.setOccluder((p) => {
+      const w = this.battle && this.battle.world;
+      if (!w || typeof w.lineOfSight !== 'function' || !this.camera) return true;
+      return w.lineOfSight(this.camera.position, p);
+    });
 
     this._wire();
     this._setPhase(this.phase, true);
@@ -314,8 +324,29 @@ export class HUD {
     L.appendChild(this.endTurnBtn);
 
     // --- order cards -------------------------------------------------------
-    this.ordersEl = h('div', { class: 'vc-orders' });
+    // The deck lives shut. A permanent six-card strip spanning the width of the
+    // frame turned the reconnaissance page into a toolbar and was half of why
+    // the command shot read as an application rather than a book.
+    this.ordersEl = h('div', { class: 'vc-orders shut' });
+    this.ordersIn = h('div', { class: 'vc-orders-in' });
+    this.ordersEl.appendChild(this.ordersIn);
     L.appendChild(this.ordersEl);
+
+    this.ordersTab = h('div', { class: 'vc-orders-tab' });
+    const tabP = panel({ seed: 818, cls: 'vc-otab', tilt: -0.7, soft: true });
+    const tabIn = h('div', { class: 'vc-otab-in' });
+    const tabG = icon('radio', { size: 19, width: 1.6, rough: true });
+    tabG.classList.add('g');
+    tabIn.appendChild(tabG);
+    this.ordersTabLbl = h('div', { class: 'vc-label vc-tight lbl', text: 'Orders' });
+    tabIn.appendChild(this.ordersTabLbl);
+    const tabKey = h('span', { class: 'vc-key' });
+    tabKey.appendChild(keyCap('Q', { seed: 407 }));
+    tabIn.appendChild(tabKey);
+    tabP.content.appendChild(tabIn);
+    clickable(tabP.root, () => this._toggleOrders());
+    this.ordersTab.appendChild(tabP.root);
+    L.appendChild(this.ordersTab);
 
     this.root.appendChild(L);
     this._renderOrders();
@@ -340,12 +371,22 @@ export class HUD {
   }
 
   _renderOrders() {
-    clear(this.ordersEl);
+    clear(this.ordersIn);
     this._orderCards = [];
     const cp = this.cp;
+    // Splayed about a pivot below the page edge, the way a hand of cards sits.
+    const n = Math.max(1, this.orders.length);
+    const mid = (n - 1) / 2;
+    const step = Math.min(6.5, 34 / n);        // degrees of cock per card
+    const pitch = Math.min(8.0, 46 / n);       // em of hand advance per card
     this.orders.forEach((o, i) => {
-      const p = panel({ seed: 900 + i * 37, cls: 'vc-card', tilt: 1.1, under: false, amp: 1.1, soft: true });
-      p.root.style.animationDelay = (i * 0.055).toFixed(3) + 's';
+      const p = panel({ seed: 900 + i * 37, cls: 'vc-card', tilt: 0, under: false, amp: 1.1, soft: true });
+      p.root.style.setProperty('--fx', ((i - mid) * pitch).toFixed(2) + 'em');
+      p.root.style.setProperty('--fan', ((i - mid) * step).toFixed(2) + 'deg');
+      // The middle of the hand stands proudest, as a fan of cards does.
+      p.root.style.setProperty('--lift', (-(mid - Math.abs(i - mid)) * 0.55).toFixed(2) + 'em');
+      p.root.style.zIndex = String(10 + (i <= mid ? i : n - 1 - i));
+      p.root.style.animationDelay = (i * 0.045).toFixed(3) + 's';
       const in_ = h('div', { class: 'vc-card-in' });
 
       // Illustrated art plate. A flat `<rect fill>` reads as a hex-filled
@@ -397,11 +438,29 @@ export class HUD {
           Bus.emit('ui:order', { order: o, unit: this.selected });
           Bus.emit('sfx', { name: 'ui_order', vol: 0.8 });
           this.toast(o.name.toUpperCase() + ' ISSUED');
+          this._toggleOrders(false);
         });
       }
-      this.ordersEl.appendChild(p.root);
+      this.ordersIn.appendChild(p.root);
       this._orderCards.push({ o, root: p.root });
     });
+  }
+
+  /**
+   * Deal the hand out, or gather it back in. Closed is the resting state: the
+   * page is a reconnaissance drawing, and the deck is a tab in its margin.
+   */
+  _toggleOrders(on) {
+    const want = on == null ? !this.ordersOpen : !!on;
+    if (want === this.ordersOpen) return;
+    this.ordersOpen = want;
+    this.ordersEl.classList.toggle('shut', !want);
+    this.ordersEl.classList.toggle('open', want);
+    this.ordersTabLbl.textContent = want ? 'Close Orders' : 'Orders';
+    if (want && !CFG.capture) {
+      for (const c of this._orderCards || []) replay(c.root, 'vc-card');
+      Bus.emit('sfx', { name: 'ui_select', vol: 0.55 });
+    }
   }
 
   _refreshOrderLocks() {
@@ -527,19 +586,23 @@ export class HUD {
           text: card,
         }));
       }
-      el.appendChild(h('div', {
-        class: 'tick',
-        style: 'width:' + (card ? 1.6 : major ? 1.2 : 1) + 'px;height:' +
-          (card ? 9 : major ? 6 : 3.5) +
-          'px;margin:2px auto 0;background:currentColor;opacity:' +
-          (card ? 0.9 : major ? 0.6 : 0.38),
+      // Every tick is a nibbed stroke. A row of 1px divs filled with
+      // currentColor is a ruler printed by a browser, and over a painted
+      // landscape it reads as a debug overlay (rubric axis 11).
+      const tk = h('div', { class: 'tick' });
+      tk.appendChild(compassTick({
+        major: card ? 2 : major ? 1 : 0,
+        seed: 11 + d,
+        color: card ? (deg === 0 ? '#8d3730' : '#3a2f28') : '#6b5a44',
       }));
+      el.appendChild(tk);
       this.compassTape.appendChild(el);
     }
     // The heading pip: a small inked caret nailed to the centre of the widget,
     // outside the scrolling tape.
     if (!this._compassPip) {
       this._compassPip = h('div', { class: 'vc-compass-pip' });
+      this._compassPip.appendChild(compassPip({ w: 13, seed: 5 }));
       this.compass.appendChild(this._compassPip);
     }
   }
@@ -1105,7 +1168,8 @@ export class HUD {
 
   _keys() {
     if (Input.pressed('escape')) {
-      if (this.dialogue.visible) this.dialogue.hide();
+      if (this.ordersOpen) this._toggleOrders(false);
+      else if (this.dialogue.visible) this.dialogue.hide();
       else if (this.briefing.visible || this.deployment.visible) { /* modal screens own Esc */ }
       else this._setPaused(!this.pause.visible);
     }
@@ -1113,6 +1177,7 @@ export class HUD {
       this.dialogue.advance();
     }
     if (!this.pause.visible && this.phase === 'command' && Input.pressed('e')) this._endTurn();
+    if (!this.pause.visible && this.phase === 'command' && Input.pressed('q')) this._toggleOrders();
     if ((this.briefing.visible || this.deployment.visible) && Input.pressed('enter')) {
       if (this.briefing.visible) this.briefing.root.querySelector('.vc-rbtn')?.click();
       else this.deployment.root.querySelector('.vc-rbtn')?.click();
@@ -1233,6 +1298,18 @@ export class HUD {
       mark.appendChild(marginBracket({ w: 12, hgt: 60, seed: seed + 43 }));
       p.root.appendChild(mark);
 
+      // A soldier who has already gone gets his line struck through in pencil —
+      // the mark a quartermaster actually makes — on top of the greying.
+      const strike = h('div', { class: 'vc-ru-strike' });
+      strike.innerHTML =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 74" ' +
+        'preserveAspectRatio="none"><path d="' +
+        wobblyPath(8, 52, 212, 24, { seed: seed + 77, amp: 2.4, segs: 9, overshoot: 4 }) + ' ' +
+        wobblyPath(9, 55, 211, 27, { seed: seed + 83, amp: 3.0, segs: 7 }) +
+        '" fill="none" stroke="#5d4d3b" stroke-width="1.6" stroke-linecap="round" ' +
+        'opacity="0.42"/></svg>';
+      p.root.appendChild(strike);
+
       // "Acted" is a rubber stamp, so its box is inked and skewed, never a CSS
       // border-radius rectangle.
       const stamp = h('div', { class: 'vc-ru-stamp vc-hidden' });
@@ -1323,6 +1400,10 @@ export class HUD {
   }
 
   _syncSelection() {
+    // In action mode the camera rides the selected soldier: his own slip would
+    // land on the back of his head.
+    this.labels.setSelf(this.phase === 'action' ? this.selected : null);
+    this._applyLabelPolicy();
     for (const [u, c] of this._rosterCards) {
       const sel = u === this.selected;
       c.root.classList.toggle('sel', sel);
@@ -1428,11 +1509,13 @@ export class HUD {
     if (this.camera) {
       if (!this._camWedge) {
         this._camWedge = h('div', { style: 'position:absolute;left:0;top:0;width:0;height:0' });
-        this._camWedge.appendChild(h('div', {
-          style: 'position:absolute;left:-17px;top:0;width:34px;height:40px;' +
-            'background:radial-gradient(farthest-side at 50% 0%, rgba(243,232,206,.62), rgba(243,232,206,0));' +
-            'clip-path:polygon(50% 0%,100% 100%,0% 100%);transform-origin:50% 0%',
-        }));
+        // A brushed wedge with two ruled sight-lines down its edges, not a CSS
+        // clip-path triangle filled with a radial gradient.
+        const wedge = h('div', {
+          style: 'position:absolute;left:-19px;top:0;width:38px;height:44px;transform-origin:50% 0%',
+        });
+        wedge.appendChild(viewWedge({ w: 38, h: 44, seed: 29 }));
+        this._camWedge.appendChild(wedge);
         box.appendChild(this._camWedge);
       }
       const c = this.camera;
@@ -1612,12 +1695,14 @@ export class HUD {
     if (pct !== this._hitLast) {
       this._hitLast = pct;
       this.hitNum.textContent = pct + '%';
-      this.hitNum.style.color = pct >= 70 ? '#4c5b2c' : pct >= 40 ? '#8a6a24' : '#8d3730';
+      this.hitNum.style.color = pct >= 70 ? '#55603a' : pct >= 40 ? '#8a6a24' : '#8d3730';
       if (this.hitArcPath) {
         const len = parseFloat(this.hitArcPath.getAttribute('stroke-dasharray')) || 1;
         this.hitArcPath.setAttribute('stroke-dashoffset', (len * (1 - this.hitShown)).toFixed(2));
+        // Earth pigments only: a leaf green on the dial was the one saturated
+        // hue left in the sight picture.
         this.hitArcPath.setAttribute('stroke',
-          pct >= 70 ? '#6b7d3f' : pct >= 40 ? '#b3873f' : '#a32f34');
+          pct >= 70 ? '#6d7448' : pct >= 40 ? '#b3873f' : '#a32f34');
       }
     }
     const t = this.target;
@@ -1718,6 +1803,8 @@ export class HUD {
     if (to !== 'action') this.aiming = false;
     this.endTurnBtn.classList.toggle('vc-hidden', to !== 'command');
     this.ordersEl.classList.toggle('vc-hidden', to !== 'command');
+    this.ordersTab.classList.toggle('vc-hidden', to !== 'command');
+    if (to !== 'command') this._toggleOrders(false);
     this.setControls(to === 'action' ? 'action' : to === 'enemy' ? 'enemy' : to === 'result' ? 'result' : 'command');
     if (cmd && !initial) {
       this._rosterKey = '';       // re-deal the roster with its slide-in
@@ -1728,7 +1815,32 @@ export class HUD {
       this._syncSelection();
       this.apShown = this.selected?.ap || 0;
     }
+    this.labels.setSelf(to === 'action' ? this.selected : null);
+    this._applyLabelPolicy();
     if (to === 'enemy') this.alert('Imperial Advance', 'enemy turn');
+  }
+
+  /**
+   * How the page annotates soldiers, per phase.
+   *
+   * Command mode is a SURVEY, read from above: line of sight through a poplar
+   * canopy is not the question there, and a slip on every man in the section
+   * turns the map into a list — so exactly one soldier, the selected one, is
+   * named, and his slip is lifted clear in SCREEN space with a leader dropped
+   * back to him. A 2 m world offset projects to about four pixels under the
+   * command pitch, which is why the plate used to land on top of its own man.
+   *
+   * Action mode is an EYE: everything is culled by real line of sight.
+   */
+  _applyLabelPolicy() {
+    const cmd = this.phase === 'command' || this.phase === 'enemy';
+    if (cmd) {
+      this.labels.setPolicy({
+        filter: (u) => u === this.selected, occlusion: false, lift: 30,
+      });
+    } else {
+      this.labels.setPolicy({ filter: null, occlusion: true, lift: 0 });
+    }
   }
 
   /** Show/hide the pause page without announcing it (used by the ui:pause listener). */

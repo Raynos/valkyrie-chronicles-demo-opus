@@ -16,7 +16,7 @@ import { CFG } from '../core/config.js';
 import { makeRng, rngRange, fbm2, valueNoise2 } from '../core/rng.js';
 import { clamp01, smoothstep, lerp, TAU } from '../core/math.js';
 import { makeFoliageMaterial, makeSurfaceMaterial, PALETTE } from './worldMaterials.js';
-import { leafClusterTexture, bladeTexture, barkTexture } from './textures.js';
+import { leafClusterTexture, bladeTexture, barkTexture, blossomTexture } from './textures.js';
 import { loft, mergeGeoms, setGeomColor, quadCard, ensureAttrs } from './geoutil.js';
 import { makeBox } from './collider.js';
 import { WATER_Y } from './layout.js';
@@ -44,17 +44,23 @@ const TILE = 30;
  * baking a green here as well would multiply three greens together and the
  * sward would come out almost black.
  */
-function bladeGeometry(levels, width, curl) {
+function bladeGeometry(levels, width, curl, lean = 0) {
   const ys = [], ws = [], zs = [];
   for (let i = 0; i <= levels; i++) {
     const t = i / levels;
-    ys.push(t);
+    // The blade does not rise linearly: it arches over, so the tip is lower
+    // than its arclength would put it. Without this every blade is a straight
+    // spike, which is exactly what the closeup critique measured.
+    ys.push(t - curl * curl * t * t * 0.55);
     // Nearly parallel-sided for most of its length, then a fast taper to the
     // point. A blade that tapers linearly from the root is a spearhead, and a
     // meadow made of spearheads reads as foliage, not as grass.
     ws.push(width * Math.pow(1 - t, 0.34));
+    // quadratic arch forward, plus a lateral sweep so the blade is not planar
     zs.push(curl * t * t);
+    // (the lateral sweep is folded into x below via `lean`)
   }
+  const bend = (t) => lean * t * t;
   const pos = [], col = [], uv = [], nrm = [];
   const push = (x, y, z, t) => {
     pos.push(x, y, z);
@@ -66,18 +72,19 @@ function bladeGeometry(levels, width, curl) {
   for (let i = 0; i < levels; i++) {
     const t0 = i / levels, t1 = (i + 1) / levels;
     const w0 = ws[i], w1 = ws[i + 1];
+    const b0 = bend(t0), b1 = bend(t1);
     // last segment tapers to a point
     if (i === levels - 1) {
-      push(-w0, ys[i], zs[i], t0);
-      push(w0, ys[i], zs[i], t0);
-      push(0, ys[i + 1], zs[i + 1], t1);
+      push(b0 - w0, ys[i], zs[i], t0);
+      push(b0 + w0, ys[i], zs[i], t0);
+      push(b1, ys[i + 1], zs[i + 1], t1);
     } else {
-      push(-w0, ys[i], zs[i], t0);
-      push(w0, ys[i], zs[i], t0);
-      push(w1, ys[i + 1], zs[i + 1], t1);
-      push(-w0, ys[i], zs[i], t0);
-      push(w1, ys[i + 1], zs[i + 1], t1);
-      push(-w1, ys[i + 1], zs[i + 1], t1);
+      push(b0 - w0, ys[i], zs[i], t0);
+      push(b0 + w0, ys[i], zs[i], t0);
+      push(b1 + w1, ys[i + 1], zs[i + 1], t1);
+      push(b0 - w0, ys[i], zs[i], t0);
+      push(b1 + w1, ys[i + 1], zs[i + 1], t1);
+      push(b1 - w1, ys[i + 1], zs[i + 1], t1);
     }
   }
   const g = new THREE.BufferGeometry();
@@ -381,8 +388,12 @@ export class Vegetation {
       // white ramp: the flower's own colour arrives per instance
       color: 0xffffff, vertexColors: true, instanced: true,
       rootColor: 0xdedede, tipColor: 0xffffff, variation: 0.12,
-      windStrength: 0.10, windSpeed: 2.0, windHeight: 0.4, stiffness: 1.2,
-      fadeStart: 34, fadeEnd: 52, alphaTest: 0.05, rim: 1.1, hatch: 0.1,
+      // A cut-out map, and an alphaTest that can actually reject something.
+      // Without a map, alphaTest 0.05 rejected nothing and every wildflower was
+      // an opaque coloured RECTANGLE standing in the grass.
+      map: blossomTexture('a', 5),
+      windStrength: 0.14, windSpeed: 2.0, windHeight: 0.9, stiffness: 1.3,
+      fadeStart: 22, fadeEnd: 40, alphaTest: 0.42, rim: 1.1, hatch: 0.1,
     });
 
     this.matWheat = makeFoliageMaterial({
@@ -465,11 +476,29 @@ export class Vegetation {
 
   _buildGrass() {
     const q = this.quality;
-    const clumpsPerM2 = q >= 2 ? 1.25 : q === 1 ? 0.6 : 0.2;
-    const perClump = q >= 2 ? 8 : q === 1 ? 6 : 4;
+    // Density is authored for the FOREGROUND — a soldier standing in this
+    // meadow has to be standing in something. Distant tiles are thinned at
+    // runtime by dropping instances off the end of the buffer (see update()),
+    // which is why the count here can be this high without costing anything at
+    // 80 m: the blades in a tile are shuffled, so any prefix of the buffer is
+    // an unbiased random subset of the whole tile.
+    const clumpsPerM2 = q >= 2 ? 1.55 : q === 1 ? 1.0 : 0.28;
+    const perClump = q >= 2 ? 9 : q === 1 ? 6 : 4;
 
-    const geo = bladeGeometry(4, 0.019, 0.13);
-    this.grassGeo = geo;
+    // THREE blade cuts, not one. A meadow made from a single 3.8 cm straight
+    // spike is exactly what the closeup critique measured — "sparse flat
+    // spikes". Real sward is a mixture of fine bents, broad-leaved rye and the
+    // odd big arching seed-stalk, and the variation in WIDTH and CURVATURE is
+    // what gives the foreground body. Each variant gets its own InstancedMesh
+    // per tile, so this costs draw calls (three per near tile) and nothing else.
+    const geos = [
+      bladeGeometry(4, 0.0175, 0.14, 0.02),  // fine bent
+      bladeGeometry(5, 0.0250, 0.28, 0.06),  // broad leaf, arched
+      bladeGeometry(5, 0.0340, 0.46, -0.10), // big flag leaf, well over
+    ];
+    this.grassGeos = geos;
+    this.grassGeo = geos[0];
+    const V = geos.length;
 
     const nT = Math.ceil(this.terrain.size / TILE);
     const half = this.terrain.size * 0.5;
@@ -480,65 +509,92 @@ export class Vegetation {
       for (let ti = 0; ti < nT; ti++) {
         const x0 = -half + ti * TILE, z0 = -half + tj * TILE;
         const budget = Math.ceil(TILE * TILE * clumpsPerM2) * perClump;
-        const mat = new Float32Array(budget * 16);
-        const colArr = new Float32Array(budget * 3);
-        let count = 0;
+        const blades = [];
+        const counts = [];
+        for (let v = 0; v < V; v++) { blades.push([]); counts.push(0); }
+        let total = 0;
 
         const nClump = Math.ceil(TILE * TILE * clumpsPerM2);
-        for (let c = 0; c < nClump && count + perClump <= budget; c++) {
+        for (let c = 0; c < nClump && total + perClump <= budget; c++) {
           const cx = x0 + rng() * TILE;
           const cz = z0 + rng() * TILE;
           const dens = this.grassDensity(cx, cz);
           if (rng() > dens) continue;
           const tall = this._tallness(cx, cz);
-          const nBlades = 3 + Math.floor(rng() * (perClump - 2));
+          const nBlades = 4 + Math.floor(rng() * (perClump - 3));
           for (let b = 0; b < nBlades; b++) {
+            // Mostly fine blades with a scatter of the broad cuts — a tuft that
+            // is all flag leaves reads as a succulent, not as grass.
+            const r0 = rng();
+            const v = r0 < 0.56 ? 0 : r0 < 0.87 ? 1 : 2;
+            if (counts[v] >= budget) continue;
             const a = rng() * TAU;
-            const rr = Math.sqrt(rng()) * 0.34;
+            const rr = Math.sqrt(rng()) * 0.30;
             const bx = cx + Math.cos(a) * rr;
             const bz = cz + Math.sin(a) * rr;
             const by = this.terrain.heightAt(bx, bz);
-            const hgt = lerp(0.30, 0.76, tall) * rngRange(rng, 0.72, 1.3);
-            _e.set(rngRange(rng, -0.24, 0.24), rng() * TAU, rngRange(rng, -0.24, 0.24), 'YXZ');
+            const hgt = lerp(0.30, 0.80, tall) * rngRange(rng, 0.68, 1.35)
+              * (v === 2 ? 1.22 : v === 1 ? 1.05 : 1);
+            _e.set(rngRange(rng, -0.30, 0.30), rng() * TAU, rngRange(rng, -0.30, 0.30), 'YXZ');
             _q.setFromEuler(_e);
-            _p.set(bx, by - 0.03, bz);
-            _s.set(rngRange(rng, 0.8, 1.45), hgt, 1);
+            _p.set(bx, by - 0.035, bz);
+            // width varies almost 3:1 within a variant, so no two blades in a
+            // tuft are the same shape
+            _s.set(rngRange(rng, 0.58, 1.40), hgt, 1);
             _m4.compose(_p, _q, _s);
-            _m4.toArray(mat, count * 16);
             // Per-blade TINT — a modulation of the material's root/tip ramp,
             // never a second pigment. Sun-bleached and warmer on the rises,
             // cooler and deeper in the hollows the light does not reach.
             const ao = this.terrain.aoAt(bx, bz);
-            const v = 0.86 + valueNoise2(bx * 3.1, bz * 3.1, this.seed + 3) * 0.34;
+            const vn = 0.84 + valueNoise2(bx * 3.1, bz * 3.1, this.seed + 3) * 0.38;
             const bleach = clamp01(tall * 0.5 + rng() * 0.5);
             _c.setRGB(
-              v * (1.0 + bleach * 0.16),
-              v * (1.0 + bleach * 0.07),
-              v * (1.0 - bleach * 0.16)
+              vn * (1.0 + bleach * 0.18),
+              vn * (1.0 + bleach * 0.08),
+              vn * (1.0 - bleach * 0.18)
             );
-            _c.multiplyScalar(0.84 + ao * 0.28);
-            colArr[count * 3] = _c.r;
-            colArr[count * 3 + 1] = _c.g;
-            colArr[count * 3 + 2] = _c.b;
-            count++;
-            if (count >= budget) break;
+            _c.multiplyScalar(0.82 + ao * 0.30);
+            blades[v].push({ m: _m4.toArray([]), r: _c.r, g: _c.g, b: _c.b });
+            counts[v]++;
+            total++;
           }
         }
-        if (count === 0) continue;
+        if (total === 0) continue;
 
-        const im = new THREE.InstancedMesh(geo, this.matGrass, count);
-        im.instanceMatrix.array.set(mat.subarray(0, count * 16));
-        im.instanceMatrix.needsUpdate = true;
-        im.instanceColor = new THREE.InstancedBufferAttribute(colArr.subarray(0, count * 3), 3);
-        im.instanceColor.needsUpdate = true;
-        im.castShadow = false;
-        im.receiveShadow = false;
-        im.userData.outline = false;
-        im.frustumCulled = true;
-        im.computeBoundingSphere();
-        im.matrixAutoUpdate = false;
-        this.group.add(im);
-        this.grassTiles.push({ mesh: im, cx: x0 + TILE * 0.5, cz: z0 + TILE * 0.5 });
+        const meshes = [];
+        for (let v = 0; v < V; v++) {
+          const list = blades[v];
+          const n = list.length;
+          if (!n) continue;
+          // Fisher-Yates. This is what makes the runtime count-LOD legal: the
+          // first k instances must be a spatially unbiased sample of the tile,
+          // or thinning a distant tile would erase one corner of it.
+          for (let i = n - 1; i > 0; i--) {
+            const j = (rng() * (i + 1)) | 0;
+            const t = list[i]; list[i] = list[j]; list[j] = t;
+          }
+          const marr = new Float32Array(n * 16);
+          const carr = new Float32Array(n * 3);
+          for (let i = 0; i < n; i++) {
+            marr.set(list[i].m, i * 16);
+            carr[i * 3] = list[i].r; carr[i * 3 + 1] = list[i].g; carr[i * 3 + 2] = list[i].b;
+          }
+          const im = new THREE.InstancedMesh(geos[v], this.matGrass, n);
+          im.instanceMatrix.array.set(marr);
+          im.instanceMatrix.needsUpdate = true;
+          im.instanceColor = new THREE.InstancedBufferAttribute(carr, 3);
+          im.instanceColor.needsUpdate = true;
+          im.castShadow = false;
+          im.receiveShadow = false;
+          im.userData.outline = false;
+          im.frustumCulled = true;
+          im.computeBoundingSphere();
+          im.matrixAutoUpdate = false;
+          im.userData.fullCount = n;
+          this.group.add(im);
+          meshes.push(im);
+        }
+        this.grassTiles.push({ meshes, cx: x0 + TILE * 0.5, cz: z0 + TILE * 0.5 });
       }
     }
   }
@@ -576,6 +632,12 @@ export class Vegetation {
         if (this.terrain.heightAt(x, z) < WATER_Y + 0.4) continue;
         const road = this.layout.roadSDF(x, z);
         if (road.d < this.layout.roadHalfWidth(road.t) + 1.4) continue;
+        // Nobody grows barley in the village street. One of the wheat field
+        // ellipses overlaps the pad, which put standing crop across the yards
+        // between the barn and the farmhouses.
+        if (this.layout.villageMask(x, z) > 0.12) continue;
+        // Standing crop stops at a footpath, too.
+        if (this.layout.pathSDF(x, z).d < 1.2) continue;
         rows.push({ x, z, edge: rr });
       }
     }
@@ -677,7 +739,11 @@ export class Vegetation {
   _buildFlowers() {
     const rng = makeRng(this.seed ^ 0x77c3);
     const n = this.quality >= 2 ? 4400 : this.quality === 1 ? 2000 : 700;
-    const geo = quadCard(0.085, 0.105);
+    // The card carries a drawn STEM as well as the head, and quadCard pivots on
+    // its bottom edge, so the instance can be planted at exactly terrain height.
+    // Round 1 lifted the card 7-26 cm clear of the ground with nothing under it
+    // — a literal floating object, an automatic rejection.
+    const geo = quadCard(0.115, 0.26);
     ensureAttrs(geo);
     setGeomColor(geo, 0xffffff);
     // Mostly buttercup and poppy; the pale ox-eye is the rare one, because a
@@ -695,18 +761,26 @@ export class Vegetation {
       items.push({ x, z, c: cols[((drift * 7.3) | 0) % cols.length] });
     }
     if (!items.length) return;
-    const im = new THREE.InstancedMesh(geo, this.matFlower, items.length);
+    // Two crossed cards per plant: a single quad flattens to a line as the
+    // camera swings past it, which is the other half of why these read as
+    // cardboard.
+    const im = new THREE.InstancedMesh(geo, this.matFlower, items.length * 2);
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       const y = this.terrain.heightAt(it.x, it.z);
-      _e.set(0, rng() * TAU, 0, 'YXZ');
-      _q.setFromEuler(_e);
-      _p.set(it.x, y + rngRange(rng, 0.07, 0.26), it.z);
-      _s.set(1, rngRange(rng, 0.75, 1.2), 1);
-      _m4.compose(_p, _q, _s);
-      im.setMatrixAt(i, _m4);
+      const yaw = rng() * TAU;
+      const sc = rngRange(rng, 0.78, 1.25);
       _c.set(it.c).multiplyScalar(rngRange(rng, 0.85, 1.12));
-      im.setColorAt(i, _c);
+      for (let k = 0; k < 2; k++) {
+        _e.set(0, yaw + k * Math.PI * 0.5, 0, 'YXZ');
+        _q.setFromEuler(_e);
+        // planted, with the root a hair under the sward so no gap can show
+        _p.set(it.x, y - 0.02, it.z);
+        _s.set(sc, sc, sc);
+        _m4.compose(_p, _q, _s);
+        im.setMatrixAt(i * 2 + k, _m4);
+        im.setColorAt(i * 2 + k, _c);
+      }
     }
     im.instanceMatrix.needsUpdate = true;
     if (im.instanceColor) im.instanceColor.needsUpdate = true;
@@ -1053,10 +1127,28 @@ export class Vegetation {
     // shader handles the taper, so nothing pops.
     const cut = this.grassFade[1] + TILE * 0.75;
     const cx = camera.position.x, cz = camera.position.z;
+    // Instance-count LOD. A blade 60 m away is under a pixel wide and its only
+    // contribution is a faint value shift in the sward, so nine tenths of them
+    // can go without anything visibly changing — while the tile the camera is
+    // standing in keeps every single one. This is what pays for the near-field
+    // density the closeup critique asked for.
+    const near = this.grassFade[0] * 0.42;
+    const far = this.grassFade[1];
     for (let i = 0; i < this.grassTiles.length; i++) {
       const t = this.grassTiles[i];
       const dx = t.cx - cx, dz = t.cz - cz;
-      t.mesh.visible = dx * dx + dz * dz < cut * cut;
+      const d2 = dx * dx + dz * dz;
+      const on = d2 < cut * cut;
+      let f = 1;
+      if (on) {
+        const d = Math.sqrt(d2) - TILE * 0.7;      // nearest corner, roughly
+        f = 1 - smoothstep(near, far, d) * 0.80;
+      }
+      for (let m = 0; m < t.meshes.length; m++) {
+        const im = t.meshes[m];
+        im.visible = on;
+        if (on) im.count = Math.max(1, Math.round(im.userData.fullCount * f));
+      }
     }
   }
 

@@ -32,10 +32,14 @@ uniform vec3  uGold;
 uniform vec3  uCloudLit;
 uniform vec3  uCloudMid;
 uniform vec3  uCloudShade;
+uniform vec3  uCirrus;
 uniform vec3  uSunDir;
 uniform float uTime;
 uniform float uCoverage;
 uniform float uBands;
+uniform float uGradPow;
+uniform float uGradSpan;
+uniform float uExposure;
 uniform sampler2D uPaperTex;
 
 varying vec3 vDir;
@@ -77,27 +81,35 @@ void main() {
 
   // --- base gradient.
   // A battlefield camera almost never looks up: the visible sky is the bottom
-  // 20-30 degrees. So the gradient is compressed into that band — pale warm
-  // haze sitting ON the horizon, muted teal-grey by ~25 degrees, a deeper
-  // slate-teal overhead that only the command camera ever sees.
-  float g = pow(clamp(up, 0.0, 1.0), 0.42);
+  // 15-25 degrees, so the ENTIRE zenith-to-horizon move has to happen inside
+  // that band or the sky measures as one flat grey.
+  //
+  // pow() is the wrong shape for this. Round 1 used pow(up, 0.42), which is
+  // already 44% of the way to the zenith at FIVE degrees and 58% at fifteen —
+  // i.e. it spends its whole range in the first two degrees above the horizon
+  // and then goes flat, which is why the measured rise across the entire upper
+  // third of the frame was 14 levels. A smoothstep across 0..27 degrees puts
+  // the move where the camera can actually see it: 10% at 5 degrees, 51% at 13,
+  // 100% by 27.
+  float g = pow(smoothstep(0.0, uGradSpan, up), uGradPow);
   vec3 sky = mix(uHorizon, uZenith, g);
 
   // Haze layer: the band of dusty air the distant landscape dissolves into.
   // Without this the sky meets the ground on a hard line and the frame has no
-  // depth at all.
-  float hazeBand = pow(1.0 - clamp(up * 7.5, 0.0, 1.0), 2.1);
-  sky = mix(sky, uHaze, hazeBand * 0.72);
+  // depth at all. Kept to the bottom ~6 degrees so it cannot flatten the
+  // gradient it sits under.
+  float hazeBand = pow(1.0 - clamp(up * 11.0, 0.0, 1.0), 2.3);
+  sky = mix(sky, uHaze, hazeBand * 0.60);
 
   float sunAz = clamp(dot(normalize(vec3(d.x, 0.0, d.z)), normalize(vec3(uSunDir.x, 0.0, uSunDir.z))), 0.0, 1.0);
   float lowGold = pow(1.0 - clamp(up * 2.6, 0.0, 1.0), 2.0) * pow(sunAz, 1.5);
-  sky = mix(sky, uGold, lowGold * 0.55);
+  sky = mix(sky, uGold, lowGold * 0.45);
 
   // Soft glow around the sun. Deliberately restrained: the terrain's cream
   // highlights are the brightest thing in frame and the sky must sit under
   // them, or the whole upper half clips to white through the bloom pass.
   float sd = clamp(dot(d, normalize(uSunDir)), 0.0, 1.0);
-  sky += uGold * pow(sd, 40.0) * 0.30 + uGold * pow(sd, 6.0) * 0.055;
+  sky += uGold * pow(sd, 40.0) * 0.26 + uGold * pow(sd, 6.0) * 0.045;
 
   // --- cloud deck.
   // A true 1/y projection onto an infinite plane stretches the noise into
@@ -105,41 +117,63 @@ void main() {
   // almost always — and smears are what make a sky read as a flat band. The
   // softened denominator caps the stretch at about 4:1, so cumulus stay ROUND
   // masses that merely crowd toward the horizon.
+  //
+  // The frequencies matter more than anything else here. At the elevations a
+  // gameplay camera actually sees, cp only travels ~0.5 units across ten
+  // degrees of sky; round 1 ran its cloud fbm at 0.62 and its mass field at
+  // 0.21 cycles per unit, so BOTH fields were effectively constant over the
+  // whole visible sky and the result was a featureless wash (measured patch
+  // stdev 4.5). These frequencies put a cumulus mass at roughly 8-14 degrees.
   float yy = max(d.y, 0.0) + 0.235;
-  vec2 cp = d.xz / yy * 1.05;
-  vec2 drift = vec2(uTime * 0.0042, uTime * 0.0026);
-  cp += drift * 4.0;
+  vec2 cp = d.xz / yy;
+  cp += vec2(uTime * 0.0125, uTime * 0.0078);
 
-  float base = fbm(cp * 0.62, 5);
-  // Domed tops: a second, larger-scale field pushes whole cloud masses up.
-  float mass = fbm(cp * 0.21 + vec2(4.7, -2.1), 4);
-  float dens = base * 0.62 + mass * 0.60;
+  // Domed tops: the large-scale field decides WHERE the masses are.
+  float mass = fbm(cp * 0.78 + vec2(4.7, -2.1), 4);
+  // Billows inside each mass.
+  float base = fbm(cp * 2.05, 5);
+  float dens = mass * 0.74 + base * 0.44;
   dens = dens - (1.0 - uCoverage);
   // Erode the undersides so the bases are flat, like real fair-weather cumulus.
-  float erode = fbm(cp * 1.9 + vec2(-9.3, 5.5), 4);
-  dens -= erode * 0.16;
+  float erode = fbm(cp * 4.6 + vec2(-9.3, 5.5), 4);
+  dens -= erode * 0.14;
+  // Cumulus have flat bottoms: bias the field against the underside of a mass.
+  dens -= smoothstep(0.55, 0.05, d.y * 3.4) * 0.05;
 
-  float cover = clamp(dens * 4.6, 0.0, 1.0);
+  float cover = clamp(dens * 5.4, 0.0, 1.0);
   // Wet-edge bleed: warp the quantiser boundary with fine noise so the wash
-  // edge is ragged and fibrous instead of a clean contour. Two scales, so the
-  // edge is torn at the centimetre AND at the metre.
-  float bleedN = (fbm(cp * 4.6, 3) - 0.5) * 0.15 + (fbm(cp * 13.0, 2) - 0.5) * 0.06;
-  float q = band(clamp(cover + bleedN, 0.0, 1.0), uBands, 0.24);
+  // edge is ragged and fibrous instead of a clean contour. Three scales, so the
+  // edge is torn at every size a brush would tear it.
+  float bleedN = (fbm(cp * 6.2, 3) - 0.5) * 0.20
+               + (fbm(cp * 17.0, 2) - 0.5) * 0.09
+               + (fbm(cp * 44.0, 2) - 0.5) * 0.035;
+  float q = band(clamp(cover + bleedN, 0.0, 1.0), uBands, 0.13);
 
   // Shading inside the cloud: sunward side and tops go cream, the rest drops
-  // to a violet-grey. The mass field stands in for height within the body.
-  float lit = clamp(mass * 2.1 - 0.42 + sunAz * 0.30, 0.0, 1.0);
-  float litQ = band(lit, 3.0, 0.20);
-  vec3 cloud = mix(uCloudShade, uCloudMid, smoothstep(0.12, 0.55, litQ));
-  cloud = mix(cloud, uCloudLit, smoothstep(0.5, 0.95, litQ));
+  // to a violet-grey. Quantised HARD — three flat washes, no ramp — because a
+  // soft-alpha cumulus is the single most obvious "3D volumetric" tell.
+  float shape = fbm(cp * 1.35 + vec2(-3.1, 8.8), 3);
+  float lit = clamp((mass - 0.42) * 2.6 + (shape - 0.5) * 1.1
+                    + sunAz * 0.55 + d.y * 0.9, 0.0, 1.0);
+  float litQ = band(lit + (fbm(cp * 9.0, 2) - 0.5) * 0.16, 3.0, 0.09);
+  vec3 cloud = mix(uCloudShade, uCloudMid, smoothstep(0.10, 0.50, litQ));
+  cloud = mix(cloud, uCloudLit, smoothstep(0.46, 0.86, litQ));
   // rim: the sun burning through a thin edge
-  cloud += uGold * smoothstep(0.55, 0.97, 1.0 - q) * q * pow(sunAz, 2.0) * 0.45;
+  cloud += uGold * smoothstep(0.45, 0.95, 1.0 - q) * q * pow(sunAz, 2.0) * 0.50;
 
   // The deck reaches all the way down — cumulus stacked along the horizon is
   // most of what a low camera sees — but it dissolves INTO the haze there
   // rather than stopping at a line.
-  float horizonFade = smoothstep(-0.005, 0.075, d.y);
+  float horizonFade = smoothstep(-0.010, 0.048, d.y);
   vec3 col = mix(sky, cloud, q * horizonFade);
+
+  // --- a thin cirrus wash well above the cumulus, so the empty top of the
+  // frame has something drawn in it too. Streaked, not lumpy.
+  float ci = fbm(vec2(cp.x * 0.30, cp.y * 1.15) + vec2(11.0, -4.0), 4);
+  float cirrus = smoothstep(0.56, 0.80, ci) * smoothstep(0.02, 0.22, d.y);
+  cirrus = band(cirrus, 2.0, 0.22) * (1.0 - q * 0.85);
+  col = mix(col, uCirrus, cirrus * 0.40);
+
   col = mix(col, uHaze, hazeBand * 0.42 * q);
 
   // --- paper. Weak in the bright sky, strongest through the cloud midtones.
@@ -150,11 +184,34 @@ void main() {
   // Hold the sky below the terrain's cream highlights. Soft-knee, so the
   // brightest cloud tops still separate from the mid values.
   float l = max(max(col.r, col.g), col.b);
-  col *= 1.0 - 0.42 * smoothstep(0.72, 1.15, l);
+  col *= 1.0 - 0.34 * smoothstep(0.80, 1.20, l);
+
+  // The post grade has a hard shoulder: anything the dome sends up past ~0.55
+  // linear comes back compressed into a 10-level band at the top of the ramp,
+  // which is precisely how a 65-level authored gradient measured as a 14-level
+  // rise in round 1. Sitting the whole dome below the knee is what buys the
+  // gradient back.
+  col *= uExposure;
 
   gl_FragColor = vec4(col, 1.0);
 }
 `;
+
+// The sky's own palette. PALETTE.skyZenith / skyHorizon in worldMaterials.js
+// are the ambient-light reference colours the whole world calibrates against
+// and are owned elsewhere; the DOME needs a much wider spread than those (round
+// 1 measured a 14-level rise from frame top to horizon with 4% chroma), so it
+// authors its own and hands the ambient rig the same two values it always did.
+const SKY = {
+  // muted teal-grey overhead: 22% chroma, B > G > R
+  zenith: 0x4a7285,
+  // warm cream on the horizon — the light the whole valley is lit by
+  horizon: 0xe6d6b2,
+  cloudLit: 0xf2e8cd,
+  cloudMid: 0xc8c3b2,
+  cloudShade: 0x8b8698,
+  cirrus: 0xe8e0cd,
+};
 
 export class Sky {
   constructor(opts = {}) {
@@ -164,17 +221,21 @@ export class Sky {
     const geo = new THREE.SphereGeometry(this.radius, 32, 20);
     this.material = new THREE.ShaderMaterial({
       uniforms: {
-        uZenith: { value: new THREE.Color(opts.zenith ?? PALETTE.skyZenith) },
-        uHorizon: { value: new THREE.Color(opts.horizon ?? PALETTE.skyHorizon) },
+        uZenith: { value: new THREE.Color(opts.zenith ?? SKY.zenith) },
+        uHorizon: { value: new THREE.Color(opts.horizon ?? SKY.horizon) },
         uHaze: { value: new THREE.Color(opts.haze ?? PALETTE.haze) },
         uGold: { value: new THREE.Color(opts.gold ?? PALETTE.skyGold) },
-        uCloudLit: { value: new THREE.Color(0xe4dac2) },
-        uCloudMid: { value: new THREE.Color(0xb9b5ac) },
-        uCloudShade: { value: new THREE.Color(0x827f92) },
+        uCloudLit: { value: new THREE.Color(SKY.cloudLit) },
+        uCloudMid: { value: new THREE.Color(SKY.cloudMid) },
+        uCloudShade: { value: new THREE.Color(SKY.cloudShade) },
+        uCirrus: { value: new THREE.Color(SKY.cirrus) },
         uSunDir: { value: WorldLighting.sunDir.clone() },
         uTime: { value: 0 },
-        uCoverage: { value: opts.coverage ?? 0.56 },
+        uCoverage: { value: opts.coverage ?? 0.60 },
         uBands: { value: 3.0 },
+        uGradPow: { value: opts.gradPow ?? 0.85 },
+        uGradSpan: { value: opts.gradSpan ?? 0.46 },
+        uExposure: { value: opts.exposure ?? 0.72 },
         uPaperTex: { value: paperTexture(512, 77) },
       },
       vertexShader: VERT,

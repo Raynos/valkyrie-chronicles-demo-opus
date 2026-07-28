@@ -114,6 +114,86 @@ export function wobble(g, amp = 0.02, freq = 0.6, seed = 17) {
   return g;
 }
 
+/**
+ * Re-average vertex normals across shared positions, but ONLY between faces
+ * whose normals are already within `angleDeg` of each other.
+ *
+ * This is what turns a swept arch barrel from a stack of individually-lit
+ * facets (which the outline pass then draws a crease line between, giving the
+ * "laminated slabs" look) into one continuous C1 surface, while keeping the
+ * hard 90-degree arris where the intrados meets the spandrel face.
+ *
+ * Operates on non-indexed geometry (ExtrudeGeometry, mergeGeoms output). An
+ * indexed input is converted and a NEW geometry is returned.
+ */
+export function smoothNormals(g0, angleDeg = 42, quant = 2048) {
+  const g = g0.index ? g0.toNonIndexed() : g0;
+  ensureAttrs(g);
+  const p = g.getAttribute('position');
+  const n = g.getAttribute('normal');
+  const tris = (p.count / 3) | 0;
+  const fn = new Float32Array(tris * 3);
+  for (let t = 0; t < tris; t++) {
+    const i = t * 3;
+    const ax = p.getX(i), ay = p.getY(i), az = p.getZ(i);
+    const bx = p.getX(i + 1), by = p.getY(i + 1), bz = p.getZ(i + 1);
+    const cx = p.getX(i + 2), cy = p.getY(i + 2), cz = p.getZ(i + 2);
+    const ux = bx - ax, uy = by - ay, uz = bz - az;
+    const vx = cx - ax, vy = cy - ay, vz = cz - az;
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    fn[i] = nx / l; fn[i + 1] = ny / l; fn[i + 2] = nz / l;
+  }
+  const buckets = new Map();
+  const keyOf = (i) =>
+    `${Math.round(p.getX(i) * quant)},${Math.round(p.getY(i) * quant)},${Math.round(p.getZ(i) * quant)}`;
+  const keys = new Array(p.count);
+  for (let i = 0; i < p.count; i++) {
+    const k = keyOf(i);
+    keys[i] = k;
+    let b = buckets.get(k);
+    if (!b) { b = []; buckets.set(k, b); }
+    b.push((i / 3) | 0);
+  }
+  const cosT = Math.cos((angleDeg * Math.PI) / 180);
+  for (let i = 0; i < p.count; i++) {
+    const t = (i / 3) | 0;
+    const nx = fn[t * 3], ny = fn[t * 3 + 1], nz = fn[t * 3 + 2];
+    const b = buckets.get(keys[i]);
+    let ax = 0, ay = 0, az = 0;
+    for (let k = 0; k < b.length; k++) {
+      const o = b[k] * 3;
+      const ox = fn[o], oy = fn[o + 1], oz = fn[o + 2];
+      if (nx * ox + ny * oy + nz * oz >= cosT) { ax += ox; ay += oy; az += oz; }
+    }
+    const l = Math.hypot(ax, ay, az);
+    if (l > 1e-6) n.setXYZ(i, ax / l, ay / l, az / l);
+    else n.setXYZ(i, nx, ny, nz);
+  }
+  n.needsUpdate = true;
+  return g;
+}
+
+/**
+ * Extrude a THREE.Shape authored in the (u = world Z, v = world Y) elevation
+ * plane into a solid running along world X, centred on x = 0.
+ *
+ * This is how the bridge is built: ONE profile with the arch openings punched
+ * into it as holes, so the barrel vault is a continuous swept surface instead
+ * of a stack of boxes.
+ */
+export function extrudeElevation(shape, depth, curveSegments = 36) {
+  const g = new THREE.ExtrudeGeometry(shape, {
+    depth, bevelEnabled: false, curveSegments, steps: 1,
+  });
+  // (u, v, w) -> (-w, v, u); then slide back so the solid straddles x = 0.
+  tx(g, { ry: -Math.PI * 0.5 });
+  g.translate(depth * 0.5, 0, 0);
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  return g;
+}
+
 // ---------------------------------------------------------------------------
 // merge
 // ---------------------------------------------------------------------------

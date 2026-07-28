@@ -112,6 +112,24 @@ export class MissionLayout {
     ];
     this.road = sampleSpline(this.roadCtrl, 9);
 
+    // --- desire lines. Where men and horses actually walk between the things
+    //     they have to get to: the crossing, the well, the mill track, the
+    //     ford. These are not carved into the heightfield — they only paint the
+    //     ground, as worn earth showing through the sward, which is exactly
+    //     what a footpath IS. Without them a 3 m patch of pasture in the near
+    //     field has nothing in it to look at.
+    this.pathCtrl = [
+      // south bank: deployment ridge down to the bridgehead
+      [{ x: -14, z: 60 }, { x: -8, z: 44 }, { x: -1, z: 30 }, { x: 2, z: 16 }],
+      // north bank: bridgehead to the village square, cutting the corner
+      [{ x: 6, z: -8 }, { x: 14, z: -18 }, { x: 24, z: -30 }, { x: 30, z: -40 }],
+      // the ford: a shallow crossing the locals use instead of the bridge
+      [{ x: -30, z: 26 }, { x: -25, z: 16 }, { x: -22, z: 8 }, { x: -20, z: -2 }],
+      // mill track spur up the knoll
+      [{ x: -44, z: -58 }, { x: -43, z: -52 }, { x: -42, z: -48 }],
+    ];
+    this.paths = this.pathCtrl.map((c) => sampleSpline(c, 8));
+
     // --- a farm track branching west toward the windmill
     this.trackCtrl = [
       { x: 4, z: -12 }, { x: -10, z: -20 }, { x: -26, z: -30 },
@@ -133,6 +151,7 @@ export class MissionLayout {
     this._sdfB = { d: 0, t: 0, px: 0, pz: 0, tx: 0, tz: 0, seg: 0 };
     this._sdfC = { d: 0, t: 0, px: 0, pz: 0, tx: 0, tz: 0, seg: 0 };
     this._sdfT = { d: 0, t: 0, px: 0, pz: 0, tx: 0, tz: 0, seg: 0 };
+    this._sdfP = { d: 0, t: 0, px: 0, pz: 0, tx: 0, tz: 0, seg: 0 };
 
     // --- where the road meets the river: the stone bridge
     const cross = this._findCrossing();
@@ -226,6 +245,25 @@ export class MissionLayout {
   riverSDF(x, z) { return polySDF(this.river, x, z, this._sdfA); }
   roadSDF(x, z) { return polySDF(this.road, x, z, this._sdfB); }
   trackSDF(x, z) { return polySDF(this.track, x, z, this._sdfC); }
+
+  /**
+   * Nearest footpath: distance in metres and how worn that stretch is.
+   * Purely a painting query — the paths never touch the heightfield.
+   * @returns {{d:number, wear:number}}
+   */
+  pathSDF(x, z) {
+    let best = Infinity, wear = 0;
+    for (let i = 0; i < this.paths.length; i++) {
+      const r = polySDF(this.paths[i], x, z, this._sdfP);
+      if (r.d < best) {
+        best = r.d;
+        // a path is beaten hardest in the middle of its run and frays at both
+        // ends, where the traffic fans out
+        wear = 0.55 + 0.45 * Math.sin(Math.PI * Math.min(1, Math.max(0, r.t)));
+      }
+    }
+    return { d: best, wear };
+  }
 
   /** Channel half-width in metres at normalised arclength t. */
   riverHalfWidth(t) {
