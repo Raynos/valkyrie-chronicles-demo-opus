@@ -1,0 +1,86 @@
+#!/usr/bin/env node
+// Screenshot harness for the visual-critic loop.
+//
+//   node tools/shoot.mjs <shotName> [outPath] [--wait ms] [--w 1920] [--h 1080]
+//
+// Loads the game with ?capture&shot=<name>, which puts the game into a
+// deterministic scripted pose (see src/game/captureShots.js), waits for
+// window.__READY__, then writes a PNG.
+//
+// Shot names are declared in src/game/captureShots.js. `node tools/shoot.mjs --list`
+// prints them.
+
+import { chromium } from 'playwright';
+import { mkdirSync, existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import net from 'node:net';
+
+const args = process.argv.slice(2);
+const flag = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : d; };
+const has = (n) => args.includes(`--${n}`);
+
+const shot = args.find((a) => !a.startsWith('--') && !/^\d+$/.test(a)) || 'overview';
+const outPath = resolve(args.filter((a) => !a.startsWith('--'))[1] || `shots/${shot}.png`);
+const W = parseInt(flag('w', '1920'), 10);
+const H = parseInt(flag('h', '1080'), 10);
+const WAIT = parseInt(flag('wait', '2500'), 10);
+const PORT = parseInt(flag('port', '5173'), 10);
+
+async function portOpen(port) {
+  return new Promise((res) => {
+    const s = net.createConnection({ port, host: '127.0.0.1' }, () => { s.end(); res(true); });
+    s.on('error', () => res(false));
+    s.setTimeout(600, () => { s.destroy(); res(false); });
+  });
+}
+
+let server = null;
+async function ensureServer() {
+  if (await portOpen(PORT)) return;
+  server = spawn('npx', ['vite', '--port', String(PORT), '--strictPort'], {
+    cwd: process.cwd(), stdio: 'ignore', detached: false,
+  });
+  for (let i = 0; i < 80; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (await portOpen(PORT)) return;
+  }
+  throw new Error('vite failed to start');
+}
+
+const main = async () => {
+  await ensureServer();
+  const browser = await chromium.launch({
+    args: [
+      '--use-gl=angle', '--use-angle=metal',
+      '--enable-gpu', '--ignore-gpu-blocklist',
+      '--enable-unsafe-webgpu', '--disable-frame-rate-limit',
+    ],
+  });
+  const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('pageerror', (e) => errors.push(String(e)));
+
+  const url = `http://127.0.0.1:${PORT}/?capture&shot=${encodeURIComponent(shot)}`;
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+  try {
+    await page.waitForFunction('window.__READY__ === true', { timeout: 45000 });
+  } catch {
+    errors.push('TIMEOUT waiting for window.__READY__');
+  }
+  await page.waitForTimeout(WAIT);
+
+  if (!existsSync(dirname(outPath))) mkdirSync(dirname(outPath), { recursive: true });
+  await page.screenshot({ path: outPath });
+
+  const stats = await page.evaluate(() => window.__STATS__ || null).catch(() => null);
+  await browser.close();
+  if (server) server.kill();
+
+  console.log(JSON.stringify({ shot, out: outPath, errors, stats }, null, 2));
+  if (errors.length) process.exitCode = 2;
+};
+
+main().catch((e) => { console.error(e); if (server) server.kill(); process.exit(1); });
