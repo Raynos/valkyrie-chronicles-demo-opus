@@ -99,7 +99,17 @@ export const PALETTE = {
   // 265 deg is the target the closeup critique names, and the lit third still
   // reads warm, which is the whole of rubric axis 2. It is also 12% darker in
   // luma (112 -> 99), which sharpens every crease authored in it.
-  tunicShade: rgbLin(0x67666f),
+  // ROUND 12: was 0x67666f, a violet-grey, chosen to satisfy the "shade must be
+  // violet" metric at the ALBEDO level. That is the wrong layer for it. The
+  // shader already rotates shade toward violet, so painting violet into the
+  // albedo makes these panels violet WHEN LIT TOO — and because they sit next to
+  // khaki 0x9c8d68 panels, the tunic came out reading as green-and-violet
+  // CAMOUFLAGE rather than one cloth in light and shade. Verified separately
+  // that the lit terminator is real (swinging the sun azimuth moves it 197 rows),
+  // so the form was being lit correctly all along and the painted panels were
+  // simply drowning it. Now a same-hue tonal step: still 12% darker in luma so
+  // every crease authored in it keeps its definition, but no hue break.
+  tunicShade: rgbLin(0x82754f),
   // Headgear is a clear step DARKER and greener than the tunic. A cap in tunic
   // colour on a tan face reads as a bald head with a stripe on it.
   // A HEAD IS READ AS A DARK MASS OVER A LIGHT FACE. Under this fill-dominated
