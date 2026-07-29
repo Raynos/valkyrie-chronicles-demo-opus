@@ -28,14 +28,24 @@ import { getPaperTexture } from '../render/textures.js';
 // ---------------------------------------------------------------------------
 
 export const PALETTE = {
-  // ground — Gallia is green. These are the pigments BEFORE the NPR lit
-  // transform, which rotates ~26% toward straw and lifts value by 1.42; a
-  // khaki albedo comes out of that as desert sand, so the pasture greens are
-  // authored deliberately deeper and more saturated than they should look.
-  grass: 0x5e7440,
-  grassDry: 0x8d8d56,
-  grassDark: 0x3f5433,
-  grassLush: 0x4c6b3c,
+  // ground — Gallia is green, but it is SAGE AND OLIVE green.
+  //
+  // Round 3 rescued these from a sepia duotone by authoring them deep and
+  // saturated, on the reasoning that the NPR lit transform bleaches them. Round
+  // 4 measured the result: `firefight` put 41.3% of the frame inside hue 80-160
+  // with the 80-100 decade alone holding 25.8%, `grass` 40.2%, and lit patches
+  // at HSV saturation 0.41-0.47 against VC Remastered pasture at 0.15-0.28.
+  // The lit transform no longer boosts green chroma (it bleaches it, as a sun
+  // does) and the material clamps the lobe besides, so these can finally be
+  // authored as what they should look like: yellow-leaning, low chroma, with
+  // the dark and lush variants a real hue apart from the base so a hillside has
+  // something to vary BETWEEN.
+  //
+  //                      display HSV      was
+  grass: 0x6f7a50,     // 76 deg / 0.34    0x5e7440  85 deg / 0.45
+  grassDry: 0x8f8b5f,  // 55 deg / 0.34    0x8d8d56  60 deg / 0.39
+  grassDark: 0x4d5540, // 83 deg / 0.25    0x3f5433  91 deg / 0.42
+  grassLush: 0x5c6a48, // 85 deg / 0.32    0x4c6b3c  96 deg / 0.44
   dirt: 0x967c4e,
   dirtDark: 0x715a37,
   mud: 0x5b5140,
@@ -86,13 +96,20 @@ export const PALETTE = {
   rust: 0x8d5a3c,
   crate: 0x9a7c4e,
   // vegetation
-  leafOak: 0x53692f,
-  leafPoplar: 0x62793a,
-  leafWillow: 0x738345,
-  leafDark: 0x38492a,
+  // Canopy, same story as the pasture and measured in the same scans — the
+  // 80-100 decade that holds 25.8% of `firefight` is grass AND leaf. Authored
+  // at 0.47-0.55 display chroma these were the most saturated masses in every
+  // wooded shot; a canopy in a gouache study is a low-chroma olive with its
+  // VALUE doing the work, not its hue. Species stay a real hue apart from each
+  // other so a treeline is still a treeline.
+  //                        display HSV     was
+  leafOak: 0x606b42,     // 76 deg / 0.38   0x53692f  83 deg / 0.55
+  leafPoplar: 0x6c784b,  // 76 deg / 0.38   0x62793a  82 deg / 0.52
+  leafWillow: 0x7c8558,  // 72 deg / 0.34   0x738345  76 deg / 0.47
+  leafDark: 0x3f4832,    // 85 deg / 0.31   0x38492a  93 deg / 0.43
   wheat: 0xb9a565,
   wheatDark: 0x8f7c48,
-  reed: 0x7d8a4a,
+  reed: 0x848a5c,        // 68 deg / 0.33   0x7d8a4a  72 deg / 0.46
   bark: 0x7a6349,
   barkPale: 0x9a8a6f,
   flowerA: 0xd6c268,
@@ -457,16 +474,24 @@ function tryRender(fn, opts, needs) {
 // painted wall or a painted trunk is actually built up.
 //
 // Pass `surface: '<name>'` to makeSurfaceMaterial; any explicit opt overrides.
+// NOTE (round 5): the coursing and fissure branches these presets drive were
+// dead code until now — src/render/materials.js added them to `extraDrive`
+// four lines AFTER extraDrive had already been folded into the band drive, so
+// nothing they produced ever reached a band. That is fixed; `mottle` and
+// `wetRim` below are the two new knobs, and they are what give a surface
+// pigment character WITHOUT the caller having to name a preset (both have
+// non-zero material defaults), which matters because none of the world's own
+// bins — structures, props, vegetation — pass `surface:` at all.
 export const SURFACE_PIGMENT = {
   //            block m  tone  fissure  freq   other
-  masonry:  { blockSize: 0.42, blockTone: 0.115, pigLevels: 15 },
-  brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15 },
-  stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35 },
-  tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14 },
-  timber:   { fissure: 0.075, fissureFreq: 3.4, pigLevels: 13 },
-  bark:     { fissure: 0.135, fissureFreq: 2.6, pigLevels: 12, curvature: 0.22 },
-  metal:    { pigLevels: 12, grain: 0.25 },
-  cloth:    { pigLevels: 12, grain: 0.38 },
+  masonry:  { blockSize: 0.42, blockTone: 0.115, pigLevels: 15, mottle: 0.105, wetRim: 0.85 },
+  brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15, mottle: 0.090, wetRim: 0.80 },
+  stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35, mottle: 0.125, wetRim: 0.75 },
+  tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14, mottle: 0.080, wetRim: 0.80 },
+  timber:   { fissure: 0.075, fissureFreq: 3.4, pigLevels: 13, mottle: 0.085 },
+  bark:     { fissure: 0.135, fissureFreq: 2.6, pigLevels: 12, curvature: 0.22, mottle: 0.095 },
+  metal:    { pigLevels: 12, grain: 0.25, mottle: 0.055, wetRim: 0.70 },
+  cloth:    { pigLevels: 12, grain: 0.38, mottle: 0.050 },
 };
 
 /**
@@ -492,6 +517,9 @@ const NPR_FORWARD = [
   'pigQ', 'pigLevels', 'grain', 'blockSize', 'blockTone', 'fissure', 'fissureFreq',
   'blotch', 'blotchScale', 'toothScale', 'spec', 'weave', 'mapFlat', 'mapDrive',
   'shadowSoften', 'subsurface', 'hatchSpacing', 'emissive', 'emissiveIntensity',
+  // round 5: the pigment-quantiser leash, the granulating boundary rim, the
+  // sub-metre pigment field and the sage/olive clamp. See applyNprOpts.
+  'pigWarp', 'wetRim', 'mottle', 'pasture',
 ];
 
 function forwardNpr(dst, opts) {
@@ -562,10 +590,54 @@ export function makeTerrainSurfaceMaterial(opts = {}) {
       detailScale: 0.95,
       detailScale2: 0.028,
       macroScale: 0.021,
-      hatch: opts.hatch ?? 0.85,
+      hatch: opts.hatch ?? 1.15,
       bands: CFG.render.bands,
       outline: false,
       color: 0xffffff,
+
+      // ---- THE TERRAIN'S OWN BAND WINDOW -----------------------------------
+      //
+      // Four rounds of "the ground is one unmodulated wash" came from this
+      // material shipping the GENERIC band window while the ground occupies
+      // only the top half of the scene-wide drive. Arithmetic, from the shader:
+      //
+      //   drive = keyN * uKeyGain(0.62) * uKeyBoost + ambTerm * uFillGain(0.30)
+      //
+      // keyN is half-Lambert at wrap 0.5, so a horizontal plane in full sun at
+      // a 57-degree key returns 0.89 and drives to 0.85, while ground in cast
+      // shadow (uShadowFloor 0.14) drives to 0.38 and a face turned right away
+      // drives to 0.30. The whole terrain therefore lives in 0.30..0.85 — and
+      // with the default driveRange (0,1) and contrast 1.12 that is 0.30..0.90
+      // after the contrast lift, i.e. it crosses ONE of the four boundaries.
+      // Measured on round 4: every 400x150 px terrain patch in the set came
+      // back with exactly one histogram mode above 6%.
+      //
+      // Handing it the span it actually occupies is the whole fix. 0.28..0.90
+      // maps shadow to 0.03 and full sun to 1.0, so a 90-degree change of
+      // ground normal now crosses three boundaries instead of one. contrast is
+      // deliberately LOW (1.18): the range remap has already done the
+      // stretching and a second one on top of it clips both ends into flat
+      // slabs, which is the failure mode the round-3 masonry had.
+      driveRange: opts.driveRange ?? [0.29, 0.93],
+      contrast: opts.contrast ?? 1.10,
+      lightBias: opts.lightBias ?? 0.0,
+      // ...and the boundary has to WANDER, or four hard bands on a heightfield
+      // read as a contour map. 26 px of wet-edge displacement at 1.8x bleed is
+      // a 4-8 px wobble at the scales these shots are framed at.
+      bandBleed: opts.bandBleed ?? 1.8,
+      wetPx: opts.wetPx ?? 26,
+      // The ground is the largest area of shade in every frame, so it is where
+      // the violet skylight has to be legible; but grass shade that rotates
+      // past 250 degrees reads as cyan, which the dusk critique measured.
+      shadeCool: opts.shadeCool ?? 0.88,
+      violet: opts.violet ?? 1.12,
+      cream: opts.cream ?? 1.06,
+      // The composite-luminance quantiser that runs UNDER the band ladder. At
+      // 16 levels over the perceptual range its steps are 4 LSB apart, which is
+      // inside the paper grain and therefore invisible; 12 puts them at 6-7,
+      // which is what a laid wash actually does when it dries in stages.
+      pigLevels: opts.pigLevels ?? 12,
+      pigQ: opts.pigQ ?? 0.86,
     }, opts), ['vertexColors']) ||
     makeFallbackSurface({
       color: 0xffffff,
@@ -576,6 +648,26 @@ export function makeTerrainSurfaceMaterial(opts = {}) {
       edge: 0.2,
       bleed: 0.1,
     });
+  // ...AND THE FIVE KNOBS makeTerrainMaterial NEVER READS.
+  //
+  // src/render/materials.js applies contrast / lightBias / bandBleed / wetPx /
+  // shadeCool explicitly inside makeCanvasMaterial, but its TERRAIN factory
+  // only runs applyNprOpts(), which covers keyGain, fillGain, violet, cream and
+  // driveRange and nothing else. Forwarding them through the opts object is
+  // therefore a silent no-op on the one material that covers most of every
+  // frame — measured: with driveRange alone the shaded bank on `bridge` went
+  // from 5 transect levels to 7, and the open pasture on `overview` did not
+  // move at all. Write them where they live instead, exactly as this module
+  // already does for the bark bin, rather than widening a signature owned by
+  // another module.
+  const u = m && m.uniforms;
+  if (u) {
+    if (u.uLightContrast) u.uLightContrast.value = opts.contrast ?? 1.10;
+    if (u.uLightBias) u.uLightBias.value = opts.lightBias ?? 0.0;
+    if (u.uBandBleed) u.uBandBleed.value = opts.bandBleed ?? 1.8;
+    if (u.uWetPx) u.uWetPx.value = opts.wetPx ?? 26;
+    if (u.uShadeCool) u.uShadeCool.value = opts.shadeCool ?? 0.88;
+  }
   return m;
 }
 

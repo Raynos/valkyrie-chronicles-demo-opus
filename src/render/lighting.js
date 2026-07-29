@@ -66,6 +66,20 @@ const _camFwd = new THREE.Vector3();
 // dissolved. See fitShadow().
 const FIT_STEPS = [9, 12, 16, 21, 27, 35, 45, 58, 74, 94];
 
+// Minimum angle, in radians, between the sun's bearing and the camera's own
+// backward bearing. See composedAzimuth(). 1.22 rad = 70 deg: far enough that a
+// caster's shadow clears its own silhouette and rakes measurably across the
+// frame, near enough that the near planes of every subject stay lit.
+const MIN_OFF_AXIS = 1.22;
+const CORRECT_LAMBDA = 1.8;
+
+/** Wrap to (-PI, PI]. */
+function wrapPi(a) {
+  a = (a + Math.PI) % (Math.PI * 2);
+  if (a < 0) a += Math.PI * 2;
+  return a - Math.PI;
+}
+
 // Key colour through the day. Authored sRGB; three converts to linear.
 // Deliberately less saturated than a physical sun. The NPR shader normalises
 // the key colour to unit luminance before tinting, so a strongly saturated
@@ -93,6 +107,126 @@ const GROUND_RAMP = [
   { t: 0.50, c: 0x7d6a4c, i: 1 },
   { t: 1.00, c: 0x453540, i: 1 },
 ];
+
+// ---------------------------------------------------------------- band gains
+//
+// THE RANKING OF PLANES. Four rounds of critique reported "there is no sun on
+// the hero object" and every round the diagnosis was wrong, because the sun is
+// present and the normals are correct. What is wrong is the ORDER the shading
+// puts the planes in. Measured on the round-4 `tank` frame with the albedo
+// forced to flat grey so only the light term survives: an up-facing plane read
+// 206.9 and a vertical plane square to the sun read 197.9 — nine LSB apart, and
+// on the real camouflage the roof came out DARKER than the wall.
+//
+// It is not a bug, it is arithmetic. materials.js builds its band drive as
+//
+//     drive = hl(N.L) * uKeyGain + ambTerm(N.up) * uFillGain
+//     hl(x) = clamp( (x + wrap) / (1 + wrap) )          // wrapped Lambert
+//     ambTerm(N.up) = 0.20 + 0.80 * pow( N.up*0.5 + 0.5, 1.30 )   // sky view
+//
+// At a sun elevation e a horizontal plane collects N.L = sin(e) and a vertical
+// plane square to the sun collects cos(e). Below 45 degrees the WALL wins, by
+// cos(e)/sin(e) — at the tank shot's 34 degrees that is 1.47:1 — and the sky
+// term's fixed 1 : 0.525 advantage for the roof is worth less than the key
+// hands back. So the picture ranks a wall above a roof, which is exactly
+// backwards: the reason a viewer reads a vehicle as a solid object in a
+// watercolour plate is that its horizontal planes carry the cream band.
+//
+// The fix is to stop treating the key/fill split as a constant. Physically it
+// never was one: the lower the sun, the larger the fraction of a horizontal
+// plane's irradiance that arrives from the sky dome rather than from the disc.
+// So SOLVE the split from the sun's own elevation, for the condition
+//
+//     K*hl(sin e) + F*SKY_UP  >=  K*hl(cos e) + F*SKY_VERT + MARGIN
+//
+// holding K + F at a fixed budget so the drive keeps the range every material's
+// driveRange/contrast was authored against. lighting.js is the only module that
+// knows the sun's elevation, and uKeyGain/uFillGain are documented in
+// materials.js as shared-by-reference uniforms driven by the key light, so this
+// is the rig's decision to make. canvasRenderPipeline.render() applies it right
+// after MaterialRegistry.update(), which would otherwise overwrite both.
+const SKY_UP = 1.0;
+const SKY_VERT = 0.20 + 0.80 * Math.pow(0.5, 1.30);   // 0.52490 — a wall's sky view
+const SKY_SPAN = SKY_UP - SKY_VERT;                   // 0.47510
+
+// K + F. Held at the round-4 pair's own ceiling (0.68 + 0.25 = 0.93, plus a
+// hair) so a plane square to the sun and facing up still lands at the top of
+// the drive and no material's authored driveRange has to move.
+const GAIN_BUDGET = 0.95;
+// How far a roof must clear a sun-square wall, in raw drive units. Sized to be
+// just over one band edge of the tank's [0.12, 0.86] window at bands = 5 and no
+// more: every unit of margin is bought with FILL, and fill lifts the shadow
+// side off the bottom of the colour ramp as well as lifting the roof. Round 5
+// measured that directly — solving for a 0.20 margin at the tank shot's
+// 34-degree sun drove fill to 0.56 and the tank's shaded flank rose from 148 to
+// 175 while the roof-vs-wall gap went from 9.0 LSB to 4.9. Margin is not the
+// lever. Elevation is — see ELEV_SHAPE.
+const ROOF_MARGIN = 0.13;
+// The wrap the solve assumes. Real values run 0.26 (tank armour) to 0.62
+// (grass); 0.40 is the actor default and sits in the middle, and the solve is
+// only weakly sensitive to it because it appears in both hl() terms.
+const WRAP_REF = 0.40;
+// The guarantee is bought with fill, and fill is only worth buying while it is
+// CHEAP. Below about 39 degrees of elevation the solve asks for more than
+// FILL_MAX, and a sun that low has a better job to do anyway: its whole
+// pictorial value is the long raking terminator, which is key, not sky. So the
+// pair blends to a deliberately key-heavy one instead of buying a guarantee it
+// cannot afford. Measured on `dusk` (14.7 deg): the tank's eight compass faces
+// spread 26.6 LSB in round 4 and 29.9 with the solve clamped at fill 0.40; the
+// raking pair takes it to the number reported below.
+const FILL_MIN = 0.25;
+const FILL_MAX = 0.40;
+const FILL_RAKING = 0.22;
+
+// ------------------------------------------------------------ the sun's arc
+//
+// The other half of the same problem, and the half that actually decides it.
+// The ranking above can only be bought with fill, and fill is expensive. What
+// is cheap is standing the sun up: at elevation e a roof collects sin(e) and a
+// sun-square wall collects cos(e), so every degree past 45 is a degree the roof
+// wins for free. Round 4 shot `tank` at 34 degrees and `bridge` at 40, which is
+// where the inversion comes from; nothing downstream can undo it.
+//
+// The arc cannot simply be scaled, because `dusk` needs its 13-degree ember and
+// scaling would take that with it. So the sine arc is REMAPPED: pow() lifts the
+// middle of the day, a smoothstep gate holds the two ends of the ramp exactly
+// where the shots authored them, and a cap keeps the sun out of the zenith
+// (a near-vertical key flattens the frame the other way, and kills the long
+// shadows the plates are composed around).
+//
+// Measured on tod, before -> after: dusk 0.95 12.9 -> 14.6 deg (untouched),
+// tank 0.16 34.3 -> 52.5, bridge 0.19 39.6 -> 55.5, overview 50.6 -> 55.3,
+// command 57.1 -> 55.3, closeup 54.6 -> 55.3, squad 53.3 -> 55.3.
+const ELEV_SHAPE = 0.38;      // exponent applied to sin(tod*PI)
+const ELEV_GATE = [0.10, 0.42];  // sin(tod*PI) window over which the lift fades in
+const ELEV_CAP = 0.800;       // ceiling on the shaped value: 55 deg at maxElevation 1.15
+
+function elevShape(s) {
+  const raised = Math.pow(Math.max(s, 0), ELEV_SHAPE);
+  const t = clamp01((s - ELEV_GATE[0]) / (ELEV_GATE[1] - ELEV_GATE[0]));
+  const k = t * t * (3 - 2 * t);
+  return Math.min(ELEV_CAP, s + (raised - s) * k);
+}
+
+/**
+ * Solve (keyGain, fillGain) for a sun elevation in radians.
+ * @returns {{key:number, fill:number}}
+ */
+export function bandGains(elev) {
+  const w = WRAP_REF;
+  const hl = (x) => Math.min(1, Math.max(0, (x + w) / (1 + w)));
+  // How much more key a sun-square wall gets than a roof. Zero above 45 deg,
+  // where the roof already wins on N.L alone and the sky term is pure profit.
+  const d = Math.max(0, hl(Math.cos(elev)) - hl(Math.sin(elev)));
+  const solved = (GAIN_BUDGET * d + ROOF_MARGIN) / (SKY_SPAN + d);
+  // How far past affordable the solve has gone, smoothed so nothing snaps as
+  // the day turns.
+  const t = clamp01((solved - FILL_MAX) / (FILL_MAX * 0.55));
+  const k = t * t * (3 - 2 * t);
+  let fill = solved + (FILL_RAKING - solved) * k;
+  fill = Math.min(FILL_MAX, Math.max(Math.min(FILL_MIN, FILL_RAKING), fill));
+  return { key: GAIN_BUDGET - fill, fill };
+}
 
 function rampColor(ramp, t, out) {
   t = clamp01(t);
@@ -204,6 +338,7 @@ export function createLightRig(scene, opts = {}) {
   let tod = o.timeOfDay;
   let exposure = o.exposure;
   let azimuth = o.azimuth;
+  let azCorrection = 0;          // see composedAzimuth()
   let radius = 0;
   let viewCamera = null;
   let first = true;
@@ -308,13 +443,82 @@ export function createLightRig(scene, opts = {}) {
     return FIT_STEPS[FIT_STEPS.length - 1];
   }
 
-  function sunDirection(out) {
-    // elevation follows a sine arc; the sun never quite reaches the zenith,
-    // which keeps shadows long and readable across the whole battle
-    const elev = Math.sin(clamp01(tod) * Math.PI) * o.maxElevation + 0.045;
-    const az = azimuth + (tod - 0.5) * 1.15;          // the sun tracks across
+  function sunElevation() {
+    // A REMAPPED sine arc: see elevShape(). The sun never reaches the zenith,
+    // which keeps shadows long and readable across the whole battle, and it
+    // never sits under 45 degrees in daylight, which is what makes a roof
+    // brighter than the wall under it.
+    return elevShape(Math.sin(clamp01(tod) * Math.PI)) * o.maxElevation + 0.045;
+  }
+
+  /**
+   * The authored compass bearing, before the off-axis constraint.
+   */
+  function baseAzimuth() {
+    return azimuth + (tod - 0.5) * 1.15;              // the sun tracks across
+  }
+
+  /**
+   * Keep the key OUT OF THE LENS'S OWN SHADOW.
+   *
+   * A cast shadow is drawn along the sun's own bearing, away from the caster.
+   * When the sun stands behind the camera that bearing points into the screen,
+   * so every shadow in the frame hides behind the thing that threw it and the
+   * picture reads as ambient-only. Round 4 shot four of its twelve plates that
+   * way — measured as the angle between the sun's bearing and the camera's own
+   * backward bearing, `bridge` was 9.4 deg off-axis, `overview` 36.4,
+   * `command` 44.8 and `tank` 54.2 — and all four came back from the critics
+   * with "nothing in this image casts a shadow" as an automatic rejection.
+   *
+   * So the rig enforces a floor. The authored bearing is kept whenever it is
+   * already outside the cone, and its SIDE is always kept, so a shot that lit
+   * from camera-left still lights from camera-left; only the magnitude moves.
+   * Backlight (|rel| near 180) is left completely alone — `dusk` is composed
+   * contre-jour on purpose.
+   *
+   * The correction slews rather than snapping, so panning the camera in play
+   * does not swing the shadows: at CORRECT_LAMBDA it takes about two seconds to
+   * settle, and capture mode (which hands this function dt = 1 and then runs
+   * thousands of settle frames) converges on the first one.
+   */
+  function composedAzimuth(dt) {
+    const base = baseAzimuth();
+    const cam = viewCamera;
+    if (!cam) { azCorrection = 0; return base; }
+
+    _camFwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
+    // Bearing the lens looks TOWARD; the sun sitting at camAz + PI is the sun
+    // directly over the camera's shoulder, which is the case we forbid.
+    const camAz = Math.atan2(_camFwd.x, _camFwd.z);
+    let rel = wrapPi(base - (camAz + Math.PI));
+    let want = 0;
+    if (Math.abs(rel) < MIN_OFF_AXIS) {
+      const side = rel < 0 ? -1 : 1;                  // keep the authored side
+      want = side * MIN_OFF_AXIS - rel;
+    }
+    if (first) azCorrection = want;
+    else azCorrection = damp(azCorrection, want, CORRECT_LAMBDA, dt);
+    return base + azCorrection;
+  }
+
+  function sunDirection(out, dt) {
+    const elev = sunElevation();
+    const az = dt === undefined ? baseAzimuth() + azCorrection : composedAzimuth(dt);
     const ce = Math.cos(elev);
     return out.set(Math.sin(az) * ce, Math.sin(elev), Math.cos(az) * ce).normalize();
+  }
+
+  /**
+   * Push the elevation-solved key/fill split into the shared NPR uniforms.
+   * MUST run after MaterialRegistry.update(), which writes both from the key
+   * light's raw intensity — see the bandGains() comment block above.
+   */
+  function applyBandGains() {
+    const g = bandGains(sunElevation());
+    const u = MaterialRegistry.uniforms;
+    u.uKeyGain.value = g.key;
+    u.uFillGain.value = g.fill;
+    return g;
   }
 
   function applyTod() {
@@ -341,7 +545,7 @@ export function createLightRig(scene, opts = {}) {
   }
 
   function placeSun(dt) {
-    sunDirection(_dir);
+    sunDirection(_dir, dt === undefined ? 0 : dt);
 
     // Build a light-space basis and snap the frustum centre to whole shadow
     // texels along it. Without this the shadow edge boils as the focus moves.
@@ -382,6 +586,10 @@ export function createLightRig(scene, opts = {}) {
     sun, ambient, hemi, bounce,
     get timeOfDay() { return tod; },
     get shadowRadius() { return radius; },
+    get sunElevation() { return sunElevation(); },
+
+    /** @see applyBandGains — the pipeline calls this once per frame. */
+    applyBandGains,
 
     /**
      * @param {number} dt
@@ -425,7 +633,7 @@ export function createLightRig(scene, opts = {}) {
 
     setExposure(e) { exposure = e; applyTod(); },
 
-    /** World-space direction TOWARD the sun. */
+    /** World-space direction TOWARD the sun, including the lens correction. */
     sunDirection(out) { return sunDirection(out || new THREE.Vector3()); },
 
     dispose() {

@@ -19,12 +19,12 @@
 //     uneven pigment.
 //
 // Everything is a hand-written THREE.ShaderMaterial with UniformsLib.lights +
-// UniformsLib.fog merged in and `lights = true`, rather than onBeforeCompile —
+// UniformsLib.fog merged in and 'lights = true', rather than onBeforeCompile —
 // three recompiles materials whenever the light count or shadow config changes
 // and onBeforeCompile patching is fragile across those recompiles.
 //
 // Each material also carries a matching depth+normal PREPASS VARIANT in
-// `material.userData.vcPrepass`, generated from the *same* vertex code, so
+// 'material.userData.vcPrepass', generated from the *same* vertex code, so
 // skinning, instancing, wind animation and alpha cutout are all reproduced
 // exactly in the G-buffer that the outline pass reads.
 // -----------------------------------------------------------------------------
@@ -38,7 +38,7 @@ import {
 } from './textures.js';
 
 // ------------------------------------------------------------- shade debug
-// `?shadeDbg=N` replaces every NPR surface colour with one scalar of the
+// '?shadeDbg=N' replaces every NPR surface colour with one scalar of the
 // lighting solve, rendered as grey. It exists because "the tank's up-facing
 // planes are darker than its vertical ones" has four possible causes (wrong
 // normals, a dead key term, a self-shadowing bug, an ambient that overwhelms
@@ -127,6 +127,12 @@ function shared() {
     uBlotchTex:  { value: getBlotchTexture() },
     uNoiseTex:   { value: getNoiseTexture() },
     uFar:        { value: CFG.camera.far },
+    // The grade's exposure * pre-gain. A surface shader needs it to predict
+    // what DISPLAY value its scene-referred pixel will land on, which is what
+    // the paper-midtone window has to be evaluated against — see
+    // vcPaperMidScene. canvasRenderPipeline owns the real pair
+    // (CFG.render.exposure and its uPreGain 1.06); this mirrors them.
+    uGradeExp:   { value: CFG.render.exposure * 1.06 },
     // The pipeline publishes its G-buffer here so soft particles can depth-fade
     // against the scene without a second depth resolve. Null until the pipeline
     // exists; the FX shaders fall back to "no fade" in that case.
@@ -140,7 +146,7 @@ const SHARED_KEYS = [
   'uTime', 'uResolution', 'uPixelRatio', 'uProjScale', 'uCamPos', 'uSunDirW',
   'uSunDirV', 'uSunColor', 'uShadowTexel', 'uKeyGain', 'uFillGain', 'uCream',
   'uViolet', 'uInkFloor', 'uGraphite', 'uWind', 'uPaperTex', 'uHatchTex',
-  'uBlotchTex', 'uNoiseTex', 'uFar',
+  'uBlotchTex', 'uNoiseTex', 'uFar', 'uGradeExp',
 ];
 
 function bindShared(uniforms) {
@@ -151,25 +157,25 @@ function bindShared(uniforms) {
 
 // =========================================================== VERTEX STAGE
 // One generator for every surface kind. The prepass variant is produced from
-// the identical code path with `prepass:true`, which is the only way animated
+// the identical code path with 'prepass:true', which is the only way animated
 // geometry (skinned soldiers, wind-blown grass) can produce a G-buffer that
 // actually lines up with the colour pass.
 
 // ------------------------------------------------- normal-offset shadow bias
 // Replaces three's <shadowmap_vertex>. three offsets the shadow lookup along
-// the surface normal by a CONSTANT `shadowNormalBias`, which is a bad trade on
+// the surface normal by a CONSTANT 'shadowNormalBias', which is a bad trade on
 // terrain: sized for a facet that faces the sun it leaks, and sized for a facet
 // at a grazing angle it peter-pans everything else off the ground.
 //
 // The correct scale is one shadow texel times tan(acos(N·L)) — the depth a
-// surface climbs across one texel of the shadow map. `uShadowTexel` is the
+// surface climbs across one texel of the shadow map. 'uShadowTexel' is the
 // world size of that texel (published by lighting.js whenever the frustum
-// resizes) and `uSunDirW` points at the key light, so both terms are available
+// resizes) and 'uSunDirW' points at the key light, so both terms are available
 // here for free.
 //
 // Only the DIRECTIONAL shadow is handled: the rig guarantees exactly one
 // shadow-casting light and it is the sun. If a point/spot light ever starts
-// casting, restore `#include <shadowmap_vertex>` for those loops.
+// casting, restore '#include <shadowmap_vertex>' for those loops.
 const VC_SHADOW_COORD = /* glsl */`
 #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
   {
@@ -328,7 +334,7 @@ const WIND_BLOCK = /* glsl */`
 
 // ======================================================== NPR FRAGMENT CORE
 // Shared by makeCanvasMaterial / makeGrassMaterial / makeTerrainMaterial. The
-// caller supplies `albedo`, `alpha` and an optional extra normal perturbation
+// caller supplies 'albedo', 'alpha' and an optional extra normal perturbation
 // before including VC_SHADE_BODY.
 
 const NPR_UNIFORMS_GLSL = /* glsl */`
@@ -370,6 +376,11 @@ uniform vec2  uDriveRange;    // remap the raw drive from this span onto 0..1
 uniform float uCurv;          // screen-space curvature darkening (form shading)
 uniform float uPigQ;          // pigment (composite luminance) quantiser amount
 uniform float uPigLevels;     // its level count across the perceptual range
+uniform float uPigWarp;       // how far its boundary may wander, in LEVELS
+uniform float uWetRim;        // granulating boundary rim, independent of bleed
+uniform float uMottle;        // sub-metre pigment structure, in band-drive units
+uniform float uPasture;       // sage/olive clamp + mass spread on the green lobe
+uniform float uGradeExp;      // the grade's exposure, for the paper window
 uniform float uGrain;         // cold-press substrate amplitude on this surface
 // x: masonry course height in metres (0 = off)   y: per-block tonal amount
 // z: fissure/grain amount along the object axis  w: its angular frequency
@@ -572,7 +583,9 @@ const NPR_SHADE_BODY = /* glsl */`
   #if !defined( VC_LOW ) && !defined( VC_CHEAP )
   {
     vec2 bu = vWorldPos.xz * uBlotchScale;
-    vec2 bv = vec2( vWorldPos.x + vWorldPos.z, vWorldPos.y ) * uBlotchScale;
+    // vec2( x + z, y ) collapsed x and z onto one axis, so every vertical
+    // surface got the same diagonal wash regardless of which way it faced.
+    vec2 bv = vcSurfUV( vWorldPos, vWorldNormal ) * uBlotchScale;
     float vert = 1.0 - abs( vWorldNormal.y );
     vec3 blot = mix( texture2D( uBlotchTex, bu ).rgb, texture2D( uBlotchTex, bv ).rgb, vert );
     // a second, ~4x finer octave: the broad one is the wash, this one is the
@@ -589,6 +602,32 @@ const NPR_SHADE_BODY = /* glsl */`
   #endif
   drive += ( wash - 0.5 ) * uBlotch * 0.090;
   drive += ( gran - 0.5 ) * uBlotch * 0.038;
+
+  // ---- sub-metre pigment structure -----------------------------------------
+  // The blotch fetches above run at uBlotchScale — a ~12 m broad tile and a
+  // ~3 m fine one. That is a WASH: at 1920x1080 a stucco gable, a hull plate or
+  // a single ashlar course is one flat patch of it, which is the whole of the
+  // "materials 3-6" note ("untextured primitives", "a flat field with scattered
+  // light rectangles", "the tank is an untextured cream primitive: interior
+  // transects give only 2 levels"). What is missing is the metre-and-under
+  // structure — blotching inside a block, mottling across stucco, tonal
+  // break-up on a plate.
+  //
+  // It goes into the DRIVE, like every other pigment term here, so it shows up
+  // as patches of the neighbouring wash with their own wet edge rather than as
+  // a multiply that smears the plateau. Surface-locked so it sits still, and
+  // faded out the moment its finer lobe would fall under ~3 screen px, so it
+  // can never degenerate into noise on a distant wall.
+  if ( uMottle > 0.0 ) {
+    float mFade = 1.0 - smoothstep( 0.055, 0.16, mPerPx );
+    if ( mFade > 0.002 ) {
+      vec2 mu = vcSurfUV( vWorldPos, vWorldNormal );
+      float m1 = vcFbm3( mu * 2.6 );            // ~0.4 m lobes
+      float m2 = vcNoise2( mu * 9.1 + 4.7 );    // ~0.11 m grain
+      drive += ( ( m1 - 0.5 ) * 0.70 + ( m2 - 0.5 ) * 0.30 ) * uMottle * mFade;
+    }
+  }
+
   // per-material surface pigment (terrain layers, etc), also in the drive
   drive += extraDrive;
 
@@ -604,6 +643,13 @@ const NPR_SHADE_BODY = /* glsl */`
   // Both branches are UNIFORM, so this costs nothing when a material does not
   // ask for it — and it means a caller can switch the structure on by writing
   // mat.uniforms.uPigment.value.set(...) without needing a recompile.
+  //
+  // NOTE: both branches used to add to 'extraDrive', which was folded into
+  // 'drive' FOUR LINES ABOVE THEM. The coursing and the fissure fields have
+  // therefore been dead since they were written, which is why two rounds of
+  // critics reported "masonry also has no coursing — the spandrel is a violet
+  // wash with random ochre speckle" and "flat lavender poles" against source
+  // that plainly contained the fix. They add to 'drive' now.
   {
     if ( uPigment.x > 0.0 ) {
       float bs = uPigment.x;
@@ -614,14 +660,14 @@ const NPR_SHADE_BODY = /* glsl */`
       float bh = vcHash21( vec2( colI, row ) + 0.5 );
       // a course is not one flat tone either: a slow wash across the block
       float bw = vcNoise2( vec2( lat, vWorldPos.y ) * ( 1.4 / bs ) );
-      extraDrive += ( bh - 0.5 ) * uPigment.y + ( bw - 0.5 ) * uPigment.y * 0.45;
+      drive += ( bh - 0.5 ) * uPigment.y + ( bw - 0.5 ) * uPigment.y * 0.45;
     }
     if ( uPigment.z > 0.0 ) {
       // circumferential coordinate: wraps naturally round a trunk or a barrel
       float ang = atan( vWorldNormal.z, vWorldNormal.x );
       float s = vcFbm3( vec2( ang * uPigment.w, vWorldPos.y * uPigment.w * 0.30 ) );
       float s2 = vcNoise2( vec2( ang * uPigment.w * 3.1, vWorldPos.y * uPigment.w * 1.6 ) );
-      extraDrive += ( s - 0.5 ) * uPigment.z + ( s2 - 0.5 ) * uPigment.z * 0.35;
+      drive += ( s - 0.5 ) * uPigment.z + ( s2 - 0.5 ) * uPigment.z * 0.35;
     }
   }
 
@@ -672,13 +718,13 @@ const NPR_SHADE_BODY = /* glsl */`
   // ---- band quantisation with a wandering wet edge -------------------------
   float fibre = texture2D( uPaperTex, sPx * 0.0017 ).g;
   // ~46 px lobes, world-locked phase, screen-locked frequency
-  float warp = vcWetEdge( vWorldPos, mPerPx, fibre );
+  float warp = vcWetEdge( vWorldPos, vWorldNormal, mPerPx, fibre );
   // Convert that into a displacement of at most uWetPx screen pixels along the
   // boundary, capped so a nearly-flat drive cannot be dragged a whole band.
   float wetBands = ( warp - 0.5 ) * 2.0 * min( dPerPx * uWetPx, 0.80 ) * uBandBleed;
   // The boundary WIDTH varies on its own, much broader lobes — some edges are
   // crisp where the paper was dry, some feathered where it was still damp.
-  float wN = vcFbm2( ( vWorldPos.xz + vWorldPos.y * 0.60 ) / max( mPerPx * 210.0, 1e-4 ) );
+  float wN = vcFbm2( vcSurfUV( vWorldPos, vWorldNormal ) / max( mPerPx * 210.0, 1e-4 ) );
 
   vec2 band = vcQuantiseBands( drive, uBands, 1.0, wN, 0.5 + wetBands / 1.15 );
   float g = band.x;
@@ -732,9 +778,20 @@ const NPR_SHADE_BODY = /* glsl */`
   // The rim also GRANULATES: the heavy fraction of the pigment drops out of
   // suspension right at the drying edge, so the dark line is speckled rather
   // than drawn. paper.a is the clump mask.
+  //
+  // The rim strength is NOT uBandBleed. Every masonry, prop and trunk bin in
+  // the world sets bandBleed to 0.13-0.14 — correctly, because those surfaces
+  // want a tight boundary, not a hillside's 40 px creep — and that also took
+  // their granulation down to 13% of nothing, which is why four rounds of
+  // critics have described stone as "a violet wash with random ochre speckle"
+  // and asked for "granulating dark edges where a wash meets its shade
+  // boundary". How far a boundary WANDERS and how much pigment DRIES OUT on it
+  // are unrelated quantities; uWetRim is the second one, and it floors the
+  // first so a tight edge still granulates.
   float grit = texture2D( uPaperTex, sPx * 0.00195 + vec2( 0.13, 0.71 ) ).a;
-  col *= 1.0 - pool * 0.30 * uBandBleed * ( 1.10 - g * 0.45 ) * ( 0.70 + 0.90 * grit );
-  col = mix( col, col * vec3( 0.93, 0.97, 1.08 ), pool * 0.55 * uBandBleed );
+  float rimAmt = max( uBandBleed, uWetRim );
+  col *= 1.0 - pool * 0.34 * rimAmt * ( 1.10 - g * 0.45 ) * ( 0.55 + 1.20 * grit );
+  col = mix( col, col * vec3( 0.93, 0.97, 1.08 ), pool * 0.55 * rimAmt );
 
   // ---- pigment separation --------------------------------------------------
   // Granulating pigments do not dry evenly: the heavy fraction settles into the
@@ -766,7 +823,7 @@ const NPR_SHADE_BODY = /* glsl */`
   // the work its contours would trace the terrain triangulation and turn a soft
   // interpolation artefact into a hard parallelogram lattice. vcWetEdge is
   // screen-scaled and world-locked and does not care how flat the light is.
-  col = vcQuantisePigment( col, uPigLevels, wN, mix( 0.5, warp, 0.85 ), uPigQ );
+  col = vcQuantisePigment( col, uPigLevels, wN, mix( 0.5, warp, 0.85 ), uPigQ, uPigWarp );
 
   // ---- pencil hatching in the two darkest bands ---------------------------
   // Gated on the BAND INDEX rather than on a continuous ramp: a band is a flat
@@ -874,7 +931,7 @@ const NPR_SHADE_BODY = /* glsl */`
   // a display value of 0.73 and ran at 87% strength on the brightest surface in
   // the picture).
   {
-    float pm = vcPaperMidScene( vcLum( col ) );
+    float pm = vcPaperMidScene( vcLum( col ), uGradeExp );
     if ( pm > 0.002 ) {
       float pap = texture2D( uPaperTex, sPx * 0.001953125 ).r;
       col *= 1.0 + ( pap - 0.60 ) * uGrain * pm;
@@ -949,7 +1006,7 @@ ${alphaTest ? `  float a = uOpacity${map ? ' * texture2D( uMap, vUvC * uMapRepea
 // three renders the shadow map with its own MeshDepthMaterial, and that
 // material knows nothing about a ShaderMaterial's uniforms. For alpha-cutout
 // foliage the consequence is catastrophic: our cutout texture lives in
-// `uniforms.uMap`, so `material.map` is undefined, so three's `getDepthMaterial`
+// 'uniforms.uMap', so 'material.map' is undefined, so three's 'getDepthMaterial'
 // never takes its cutout branch and stamps the FULL OPAQUE QUAD of every leaf
 // card into the shadow map. Two crossed 3 m quads per canopy cluster then throw
 // solid parallelogram slabs across the whole terrain — which is exactly the
@@ -958,11 +1015,11 @@ ${alphaTest ? `  float a = uOpacity${map ? ' * texture2D( uMap, vUvC * uMapRepea
 //
 // The fix is a real custom depth material generated from the SAME vertex code,
 // so the cutout, the instancing, the skinning and the wind sway are all
-// reproduced exactly. `canvasRenderPipeline` assigns it to
-// `mesh.customDepthMaterial`, which three honours ahead of its own.
+// reproduced exactly. 'canvasRenderPipeline' assigns it to
+// 'mesh.customDepthMaterial', which three honours ahead of its own.
 //
-// The output must be `packDepthToRGBA` because the shadow map is an RGBA8
-// target written with `depthPacking: RGBADepthPacking`.
+// The output must be 'packDepthToRGBA' because the shadow map is an RGBA8
+// target written with 'depthPacking: RGBADepthPacking'.
 function shadowDepthFragment({ alphaTest = false, map = false } = {}) {
   return /* glsl */`
 #include <common>
@@ -1003,7 +1060,7 @@ function attachShadowDepth(mat, vertOpts, fragOpts, extraUniforms) {
   if (mat.defines) {
     sd.defines = Object.assign({}, mat.defines);
     delete sd.defines.VC_LOW;
-    // The distance fade is a CAMERA effect. In the shadow pass `cameraPosition`
+    // The distance fade is a CAMERA effect. In the shadow pass 'cameraPosition'
     // is the light, so leaving it in would make a blade's shadow depend on how
     // far the sun is rather than how far the player is.
     delete sd.defines.VC_FADE;
@@ -1151,6 +1208,11 @@ function nprExtraUniforms() {
     uCurv:       { value: 0 },
     uPigQ:       { value: 0.75 },
     uPigLevels:  { value: 14 },
+    uPigWarp:    { value: 1.05 },
+    uWetRim:     { value: 0.55 },
+    uMottle:     { value: 0.075 },
+    uPasture:    { value: 0 },
+    uGradeExp:   { value: 1 },     // replaced by reference in bindShared
     uGrain:      { value: 0.45 },
     uPigment:    { value: new THREE.Vector4(0, 0, 0, 0) },
   };
@@ -1173,6 +1235,21 @@ function nprExtraUniforms() {
  *                FORM rather than only on N.L (a smooth cylinder needs this)
  *   pigQ         0..1 pigment (composite luminance) quantiser amount   (0.75)
  *   pigLevels    its level count across the perceptual range           (14)
+ *   pigWarp      how far, in LEVELS, that quantiser's boundary may wander
+ *                under the 46 px wet-edge field. 1.05 is right for a hillside
+ *                and WRONG for anything smaller than the lobe: on a 40 px torso
+ *                a whole level of near-uniform displacement slides every
+ *                boundary off the object, which is why characters measure zero
+ *                plateaus off the same code the terrain bands correctly with.
+ *                Anything under ~1 m on screen wants 0.25-0.40.       (1.05)
+ *   wetRim       granulating boundary rim, INDEPENDENT of bandBleed. Floors the
+ *                bleed, so a surface can have a tight edge and still dry out a
+ *                dark speckled line on it.                            (0.55)
+ *   mottle       sub-metre pigment structure in band-drive units — blotching
+ *                inside a block, mottling on stucco, break-up on a hull plate.
+ *                0 for anything that is already texture-dense.       (0.075)
+ *   pasture      0..1 sage/olive clamp + mass-scale hue/value spread on the
+ *                GREEN LOBE only; everything off it passes through.      (0)
  *   grain        cold-press substrate amplitude on this surface        (0.45)
  *   blockSize    masonry course height in metres, 0 = off
  *   blockTone    per-block tonal spread in band-drive units          (0.10)
@@ -1188,6 +1265,10 @@ function applyNprOpts(uniforms, o) {
   if (o.curvature !== undefined) uniforms.uCurv.value = o.curvature;
   if (o.pigQ !== undefined) uniforms.uPigQ.value = o.pigQ;
   if (o.pigLevels !== undefined) uniforms.uPigLevels.value = o.pigLevels;
+  if (o.pigWarp !== undefined) uniforms.uPigWarp.value = o.pigWarp;
+  if (o.wetRim !== undefined) uniforms.uWetRim.value = o.wetRim;
+  if (o.mottle !== undefined) uniforms.uMottle.value = o.mottle;
+  if (o.pasture !== undefined) uniforms.uPasture.value = o.pasture;
   if (o.grain !== undefined) uniforms.uGrain.value = o.grain;
   uniforms.uPigment.value.set(
     o.blockSize ?? 0, o.blockTone ?? 0.10, o.fissure ?? 0, o.fissureFreq ?? 2.2);
@@ -1278,6 +1359,21 @@ export function makeCanvasMaterial(opts = {}) {
     // head is only ~250 px across in a closeup, so its edge gets a shorter
     // leash than a hillside.
     wetPx: opts.skinning ? 9 : 16,
+    // ---- the composite-luminance (pigment) quantiser -----------------------
+    // This is the pass that is supposed to put steps on everything the LIGHT
+    // quantiser cannot reach — albedo, vertex colour, curvature, rim. It has
+    // been running on characters and vehicles all along and measuring as a
+    // continuous ramp anyway, and 'pigWarp' is why: the warp field has 46 px
+    // lobes, so on a hillside it creeps a boundary and on a 40 px torso it
+    // translates every boundary bodily off the figure. A soldier gets a short
+    // leash and, being a small smooth form, fewer and harder levels.
+    pigLevels: opts.skinning ? 11 : 14,
+    pigQ: opts.skinning ? 0.95 : 0.80,
+    pigWarp: opts.skinning ? 0.28 : 0.55,
+    // Serge, leather and painted steel all have pigment structure at a few
+    // centimetres; a soldier is small on screen, so his runs quieter than a
+    // wall's.
+    mottle: opts.skinning ? 0.050 : 0.075,
     // how much of an albedo map.s TONAL detail is handed to the band quantiser
     // instead of multiplied into the wash
     mapFlat: 0.55,
@@ -1502,7 +1598,7 @@ ${NPR_SHADE_BODY}
 
 /**
  * Instanced grass blades. Expects a THREE.InstancedMesh whose blade geometry
- * grows from y = 0 up to `opts.bladeHeight`.
+ * grows from y = 0 up to 'opts.bladeHeight'.
  *
  * @param {object} opts
  *  rootColor / tipColor   colour ramp along the blade
@@ -1537,7 +1633,7 @@ export function makeGrassMaterial(opts = {}) {
     name: 'vcGrass',
   }, opts);
 
-  // `wind` is the world module's name for the sway amplitude.
+  // 'wind' is the world module's name for the sway amplitude.
   if (opts.wind !== undefined) o.sway = opts.wind;
 
   const defines = { VC_INSTANCED: '' };
@@ -1631,6 +1727,14 @@ export function makeGrassMaterial(opts = {}) {
   // (the sheet is under the whole picture, not printed on each blade).
   uniforms.uPigLevels.value = 9;
   uniforms.uGrain.value = 0.20;
+  uniforms.uPigWarp.value = 0.85;
+  // A blade is 1-3 px across; sub-metre pigment structure on it is noise.
+  uniforms.uMottle.value = 0;
+  // Sward, reeds, leaf cards and bush cards ALL come through here, and the
+  // callers author their ramps as raw hex. The sage/olive clamp therefore lives
+  // in the material rather than in any one caller's colour table, so no future
+  // 'tipColor: 0x7d8a49' (HSV sat 0.47, hue 72) can put the acid back.
+  uniforms.uPasture.value = 1;
   applyNprOpts(uniforms, o);
 
   const frag = /* glsl */`
@@ -1659,6 +1763,15 @@ void main() {
   #if defined( USE_COLOR_ALPHA ) || defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
     albedo *= vColorC.rgb;
   #endif
+
+  // Sage and olive, and a MASS that is not one colour. The per-blade scatter
+  // above is high-frequency — it makes a blade differ from its neighbour, which
+  // is invisible at 1-3 px — so the variation a critic can actually scan has to
+  // come from world-scale fields. ~48 m and ~12 m here, matching the terrain's
+  // so a sward and the ground it stands in drift together instead of separately.
+  albedo = vcPasture( albedo,
+    vcFbm2( vWorldPos.xz * 0.034 ),
+    vcFbm2( vWorldPos.xz * 0.22 + 31.7 ), uPasture );
 
   // blades darken sharply into the sward at the base — that shadowed mat is
   // most of what sells a grass field as painted rather than modelled
@@ -1709,7 +1822,7 @@ ${NPR_SHADE_BODY}
   // triangles in a landscape frame and it is where the single-pixel outline
   // sparkle comes from.
   //
-  // The budget applies only to BLADE GEOMETRY. A material with a cutout `map` is
+  // The budget applies only to BLADE GEOMETRY. A material with a cutout 'map' is
   // building leaf/bush/wheat CARDS, which are metres across, meet the sky on a
   // real silhouette and owe the frame an outline — those keep their depth to the
   // horizon. The default is deliberately expressed as this test rather than left
@@ -1881,6 +1994,13 @@ export function makeTerrainMaterial(opts = {}) {
   // but it must genuinely step.
   uniforms.uPigLevels.value = 16;
   uniforms.uGrain.value = 0.55;
+  // The ground is bigger than the 46 px warp lobe by orders of magnitude, so
+  // its boundaries are exactly what that field was built to make creep.
+  uniforms.uPigWarp.value = 1.05;
+  // ...and it already carries a 1 m detail atlas, so it does not need a second
+  // sub-metre field on top of one.
+  uniforms.uMottle.value = 0.030;
+  uniforms.uPasture.value = 1;
   applyNprOpts(uniforms, o);
 
   const frag = /* glsl */`
@@ -1975,6 +2095,25 @@ void main() {
     #endif
   #endif
 
+  // ---- sage and olive, and a field that is not one colour -------------------
+  // Applied AFTER the layer mix and after the baked vertex albedo, so it reaches
+  // the ground whichever of the three colour paths above is live — and so no
+  // future edit to the terrain generator's palette can put the acid back.
+  //
+  // 'macro' is a ~48 m field and 'mottle' a ~13 m one, which is what turns a
+  // 300 px scan across a hillside from a flat fill into genuine tonal
+  // variation: at 60 m of view depth those are roughly 300 px and 80 px lobes,
+  // i.e. one broad value change and three or four smaller ones across the scan.
+  // ~30 m and ~4.5 m, NOT the layer-weight fields above. 'macro' is a 48 m
+  // field and 'mottle' a 13 m one: at the foreground of a ground-level shot
+  // (8-25 m of terrain visible) both are close to constant across the whole
+  // near hillside, which is why the first build of this fixed the mid-distance
+  // and left the bottom-right third of 'firefight' a flat fill. The near ground
+  // needs a field whose lobe is a few metres.
+  float pMac = vcFbm2( wp.xz * ( uMacroScale * 1.6 ) );
+  float pFin = vcFbm2( wp.xz * 0.22 + 31.7 );
+  albedo = vcPasture( albedo, pMac, pFin, uPasture );
+
   float alpha = uOpacity;
 
   // The tonal half of the ground detail, moved out of the albedo and into the
@@ -1987,7 +2126,14 @@ void main() {
     + ( det.b - 0.5 ) * 0.105 * wRock
     + ( det.a - 0.5 ) * 0.075 * wMud
     + ( det2.r - 0.5 ) * 0.055
-    + ( macro - 0.5 ) * 0.050;
+    + ( macro - 0.5 ) * 0.050
+    // ...and the pasture fields go into the DRIVE as well as into the pigment.
+    // Albedo variation alone gives a hillside tonal VARIETY; only a drive term
+    // gives it a BOUNDARY, and the target is a 300 px transect that steps
+    // rather than one that merely wobbles. These are fbms of value noise, so
+    // (x - 0.5) is a +/-0.10 excursion — the gains look large and are not.
+    + ( pMac - 0.5 ) * 0.34 * uPasture
+    + ( pFin - 0.5 ) * 0.42 * uPasture;
 
   // micro-relief: rock and dirt get real normal break-up, grass stays smooth
   float relief = ( det.b - 0.5 ) * wRock * 1.6 + ( det.g - 0.5 ) * wDirt * 0.7;

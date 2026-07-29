@@ -586,9 +586,21 @@ const _tg = new THREE.Vector3(), _d0 = new THREE.Vector3(), _d1 = new THREE.Vect
 const _pole = new THREE.Vector3(), _poleDir = new THREE.Vector3();
 const _goal = new THREE.Vector3(), _kneeT = new THREE.Vector3();
 const _av = new THREE.Vector3(), _av2 = new THREE.Vector3(), _av3 = new THREE.Vector3();
+// Private to _limitArms — it runs AFTER every other solver, so it may not borrow
+// scratch any of them is still holding.
+const _goalC = new THREE.Vector3(), _poleC = new THREE.Vector3(), _perpC = new THREE.Vector3();
+const _dirC = new THREE.Vector3(), _fwdC = new THREE.Vector3();
+const _axisR = new THREE.Vector3(), _palmR = new THREE.Vector3(), _wantR = new THREE.Vector3();
+const _crossR = new THREE.Vector3();
 const _aq = new THREE.Quaternion();
 const _up = new THREE.Vector3(0, 1, 0);
 const AIM_GAIN = 1.11;   // see _applyAim
+// Elbow joint limits, radians. 26 deg is a hand-at-the-shoulder full flex; 176
+// is straight with the last 4 degrees held back so the two-bone solve never has
+// to divide by a degenerate triangle. 0.060 m is how far forward of the
+// shoulder->hand chord an olecranon may sit before the arm reads as broken.
+const ELBOW_MIN = 26 * Math.PI / 180, ELBOW_MAX = 176 * Math.PI / 180;
+const ELBOW_FWD_MAX = 0.060;
 
 /**
  * Rotate `bone` (in world space) so the vector from `from` to `cur` points at
@@ -682,6 +694,7 @@ export class Animator {
     this.footLockEnabled = true;
     this.maxLockDrift = 0.34;
     this.handTarget = null;          // world-space left-hand IK target
+    this.handRoll = null;            // world direction the support palm faces
     this.handWeight = 0;
     this._handW = 0;
 
@@ -829,6 +842,17 @@ export class Animator {
   setHandTarget(v, w = 1) { this.handTarget = v; this.handWeight = v ? w : 0; return this; }
 
   /**
+   * World direction the support PALM should face — normally straight at the
+   * handguard it is holding.
+   *
+   * Placing the wrist and leaving the wrist's ROLL to the keyframes is why every
+   * shot in round 4 shows a support hand whose fingers curl off into open air
+   * beside the wood instead of round it: the two-bone solve controls two
+   * rotations and the third is whatever the clip happened to author.
+   */
+  setHandRoll(v) { this.handRoll = v || null; return this; }
+
+  /**
    * Register a callback that gets to correct the weapon-bearing hand after the
    * aim layer and before the support-hand IK. `fn(dt, carryWeight)` where
    * carryWeight is 1 when the pose is a two-handed carry and 0 when the rifle
@@ -960,6 +984,13 @@ export class Animator {
     }
     if (lod < 2 && this.handTarget) {
       this._handIK(dt);
+      this.charRoot.updateMatrixWorld(true);
+    }
+    // LAST. Every writer above — keyframes, aim, weapon hold, support IK — can
+    // put the arm chain somewhere an arm cannot go, and only their composite is
+    // visible. This is the one place that sees it.
+    if (lod < 2) {
+      this._limitArms();
       this.charRoot.updateMatrixWorld(true);
     }
     return this;
@@ -1255,8 +1286,109 @@ export class Animator {
     if (w < 0.02) return;
 
     this.charRoot.getWorldQuaternion(_wq3);
-    _tmp.set(0.35, -0.5, 0.6).applyQuaternion(_wq3).normalize();   // elbow pole: down/out
+    // Support elbow: DOWN, barely outboard, barely forward. The old (0.35,-0.5,
+    // 0.6) was forward-dominant, which lifted the support elbow out in front of
+    // the chest and left the forearm crossing the body — half of the squad
+    // plate's "both arms thrown out to his left".
+    _tmp.set(0.22, -0.95, 0.15).applyQuaternion(_wq3).normalize();
     this._solve2Bone(bm.upperArmL, bm.foreArmL, bm.handL, this.handTarget, _tmp, w);
+
+    // WRIST ROLL onto the handguard. The palm normal is the hand bone's local
+    // +X (the palm box is thin in X and the fingers close along -X), so this
+    // twists about the forearm axis until that normal looks at the wood. One
+    // axis, clamped to 80 degrees, so it can never fight the pose it was handed.
+    if (this.handRoll) {
+      const hand = bm.handL;
+      hand.updateMatrixWorld(true);
+      boneWorld(bm.foreArmL, _p0); boneWorld(hand, _p1);
+      _axisR.copy(_p1).sub(_p0);
+      if (_axisR.lengthSq() > 1e-8) {
+        _axisR.normalize();
+        const e = hand.matrixWorld.elements;
+        _palmR.set(e[0], e[1], e[2]).normalize();                  // local +X in world
+        _wantR.copy(this.handRoll).addScaledVector(_axisR, -_axisR.dot(this.handRoll));
+        _palmR.addScaledVector(_axisR, -_axisR.dot(_palmR));
+        if (_wantR.lengthSq() > 1e-6 && _palmR.lengthSq() > 1e-6) {
+          _wantR.normalize(); _palmR.normalize();
+          let a = Math.acos(clamp(_palmR.dot(_wantR), -1, 1));
+          if (_crossR.crossVectors(_palmR, _wantR).dot(_axisR) < 0) a = -a;
+          a = clamp(a, -1.40, 1.40) * w;
+          hand.parent.getWorldQuaternion(_wq2);
+          rotateBoneWorld(hand, _wq2, _axisR, a);
+          hand.updateMatrixWorld(true);
+        }
+      }
+    }
+  }
+
+  /**
+   * JOINT LIMITS ON THE ARM CHAIN, applied after every solver has had its say.
+   *
+   * Round 4 shipped a pose in which one humerus left the shoulder, ran 0.24 m
+   * forward and outboard, and the ulna folded back across the chest to a hand
+   * that was 0.29 m from its own shoulder — a shape no elbow can make. The
+   * clips, the aim layer, the weapon-hold solver and the support-hand IK all
+   * write to this chain independently, so no single one of them can be held
+   * responsible for the composite; the guarantee has to be enforced once, here,
+   * on the result.
+   *
+   * Two limits, both anatomical rather than stylistic:
+   *
+   *   1. FLEXION. A human elbow works between about 25 degrees (hand at the
+   *      shoulder) and 180 (locked). Outside 26..176 the goal is pulled onto the
+   *      nearest reachable shell along the shoulder->hand direction, which
+   *      changes where the hand is by centimetres and what the arm LOOKS like
+   *      completely.
+   *   2. NO FORWARD CHICKEN WING. When the hand is at or below shoulder height
+   *      the olecranon may not lead the wrist: an elbow more than 60 mm forward
+   *      of the shoulder->hand chord (in character space) is reflected to the
+   *      same distance behind it. That is the exact failure the plate measured,
+   *      and it cannot fire on a raised arm (cheer, reload, the shouldered gun
+   *      elbow) because those all have the hand above the shoulder or the elbow
+   *      already behind the chord.
+   */
+  _limitArms() {
+    const bm = this.rig.boneMap;
+    this.charRoot.getWorldQuaternion(_wq3);
+    _fwdC.set(0, 0, 1).applyQuaternion(_wq3);
+    for (let s = 0; s < 2; s++) {
+      const up = s === 0 ? bm.upperArmL : bm.upperArmR;
+      const lo = s === 0 ? bm.foreArmL : bm.foreArmR;
+      const hd = s === 0 ? bm.handL : bm.handR;
+      boneWorld(up, _p0); boneWorld(lo, _p1); boneWorld(hd, _p2);
+      const l1 = _p0.distanceTo(_p1), l2 = _p1.distanceTo(_p2);
+      if (l1 < 1e-5 || l2 < 1e-5) continue;
+
+      // --- 1. flexion ------------------------------------------------------
+      // d is a monotone function of the elbow angle, so clamping the angle is
+      // clamping d: d^2 = l1^2 + l2^2 - 2 l1 l2 cos(theta).
+      const dMin = Math.sqrt(l1 * l1 + l2 * l2 - 2 * l1 * l2 * Math.cos(ELBOW_MIN));
+      const dMax = Math.sqrt(l1 * l1 + l2 * l2 - 2 * l1 * l2 * Math.cos(ELBOW_MAX));
+      _goalC.copy(_p2).sub(_p0);
+      const d = _goalC.length();
+      if (d < 1e-5) continue;
+      let need = d < dMin ? dMin : d > dMax ? dMax : 0;
+
+      // --- 2. forward chicken wing -----------------------------------------
+      // Perpendicular offset of the elbow from the shoulder->hand chord.
+      _dirC.copy(_goalC).multiplyScalar(1 / d);
+      _perpC.copy(_p1).sub(_p0).addScaledVector(_dirC, -_dirC.dot(_p1) + _dirC.dot(_p0));
+      const fwdOff = _perpC.dot(_fwdC);
+      const raised = _p2.y > _p0.y - 0.02 * (this.charRoot.scale.y || 1);
+      const wing = !raised && fwdOff > ELBOW_FWD_MAX * (this.charRoot.scale.y || 1);
+      if (!need && !wing) continue;
+
+      if (!need) need = d;
+      _goalC.copy(_p0).addScaledVector(_dirC, need);
+      if (wing) {
+        // Keep the sideways half of the artist's elbow, flip the forward half.
+        _poleC.copy(_perpC).addScaledVector(_fwdC, -2 * fwdOff);
+      } else {
+        _poleC.copy(_perpC);
+      }
+      if (_poleC.lengthSq() < 1e-8) _poleC.copy(_fwdC).multiplyScalar(-1);
+      this._solve2Bone(up, lo, hd, _goalC, _poleC, 1);
+    }
   }
 
   dispose() {

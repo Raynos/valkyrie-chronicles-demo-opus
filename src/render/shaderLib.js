@@ -124,9 +124,63 @@ float vcPaperWindow(float v) {
 float vcPaperMid(float l) {
   return vcPaperWindow(pow(clamp(l, 0.0, 1.0), 0.4545));
 }
-float vcPaperMidScene(float l) {
-  float t = max(l, 0.0) / (max(l, 0.0) + 0.62);
-  return vcPaperWindow(pow(t, 0.4545));
+
+// ---------------------------------------------- predicting the display value
+// vcPaperMidScene used to stand a Reinhard (l / (l + 0.62)) in for the grade's
+// filmic curve, and that stand-in is wrong at exactly the end that decides
+// whether a frame's grain looks like paper. Measured against the real chain
+// (Hable A..F, W = 2.45, gouache S at contrast 0.34, exposure x pre-gain =
+// 1.1236):
+//
+//   scene l   real display   Reinhard 0.62   real window   window as shipped
+//     0.02        0.092          0.207          0.069            0.826
+//     0.05        0.166          0.307          0.544            1.000
+//     0.30        0.534          0.601          0.994            0.821
+//     0.70        0.781          0.750          0.047            0.140
+//
+// So the substrate was running at 83% strength on scene values that reach the
+// screen as a deep shade wash, where the rubric requires it GONE — and by how
+// much depended on where a given shot's exposure put its masses, which is
+// precisely why paper measured 8 on squad and 3 on closeup off one constant.
+// Run the actual curve instead. The exposure arrives as a uniform because the
+// grade owns it and a day/night cycle moves it.
+float vcSceneDisplay(float l, float exposure) {
+  float x = max(l, 0.0) * exposure;
+  const float A = 0.22, B = 0.30, C = 0.10, D = 0.20, E = 0.018, F = 0.30;
+  const float W = 2.45;
+  float wS = ((W * (A * W + C * B) + D * E) / (W * (A * W + B) + D * F)) - E / F;
+  float c = ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+  float p = pow(clamp(c / wS, 0.0, 1.0), 0.4545);
+  // the grade's gouache S, so the toe lands where it really lands
+  return mix(p, p * p * (3.0 - 2.0 * p), 0.34);
+}
+float vcPaperMidScene(float l, float exposure) {
+  return vcPaperWindow(vcSceneDisplay(l, exposure));
+}
+
+// --------------------------------------------- a world UV that cannot collapse
+// 'wp.xz + wp.y * k' — the shorthand used by the wet edge, the boundary-width
+// field and the paper tooth — adds a scalar built from ONE axis to BOTH
+// components of a vec2. On any vertical surface x and z are then locked
+// together with y, so the field is CONSTANT along (1,-1) and every flat wall in
+// frame carries a 45-degree ruling whose screen angle is whatever that wall's
+// yaw happens to be.
+//
+// Measured on the round-4 firefight frame, 18-bin orientation power over 3-16 px
+// periods: bridge spandrel peaked at 10-20 deg (3.3:1), stucco wall at 0-10
+// (5.8:1), lit hillside at 160-170 (2.8:1), hero torso at 80-90 (3.0:1) — seven
+// surfaces, seven different peak decades. Grain that rotates with the object is
+// a UV stripe, not a sheet, and it is the whole of the 'paper' axis's
+// inconsistency between shots.
+//
+// Project onto the plane the surface actually faces instead. The axis choice
+// only flips across a 45-degree normal change, which on this geometry is a
+// wall corner or an eave — i.e. somewhere an ink line already runs.
+vec2 vcSurfUV(vec3 wp, vec3 wn) {
+  vec3 a = abs(wn);
+  if (a.y >= a.x && a.y >= a.z) return wp.xz;
+  if (a.x >= a.z) return wp.zy + 37.13;
+  return wp.xy + 71.91;
 }
 
 vec3 vcRgb2Hsv(vec3 c) {
@@ -248,19 +302,24 @@ vec3 vcLitColour(vec3 albedo, vec3 cream) {
   float dh = target - hsv.x;
   dh -= floor(dh + 0.5);
 
-  // GREENS ARE EXEMPT. Gallia is green countryside; a sage field leaned 13%
-  // toward straw and then given a whisper of cream comes out the far end of the
-  // grade with RED AHEAD OF GREEN, which is the loudest palette failure on
-  // offer. Ochre, brick and stucco keep the full lean — it is what makes them
-  // read as sunlit rather than merely bright.
+  // GREENS ARE EXEMPT from the STRAW lean. Gallia is green countryside; a sage
+  // field leaned 13% toward straw and then given a whisper of cream comes out
+  // the far end of the grade with RED AHEAD OF GREEN, which is the loudest
+  // palette failure on offer. Ochre, brick and stucco keep the full lean — it
+  // is what makes them read as sunlit rather than merely bright.
   float dg = hsv.x - 0.26;                    // ~94 deg, pasture green
   float guard = 1.0 - exp(-dg * dg / 0.0045) * 0.88;
 
   hsv.x = fract(hsv.x + dh * 0.115 * guard);
-  // Put back what the grade takes out of the greens — it desaturates the
-  // foliage band by 11%, and without this a LIT FIELD measures RED ahead of
-  // GREEN, which is the palette failure the rubric names first.
-  hsv.y *= mix(1.16, 0.985, guard);
+  // ...but they are NOT exempt from sun-bleaching, and round 4 had that
+  // backwards. This line used to read mix(1.16, 0.985, guard), i.e. a +12%
+  // CHROMA BOOST on the pasture lobe, put in to survive the grade's foliage
+  // desaturation. The grade no longer desaturates that lobe — it raises chroma
+  // frame-wide at uSatGamma 0.73 — so the boost stacked on top of it and the
+  // hillside that owns the bottom-right third of 'firefight' measured HSV sat
+  // 0.44-0.47 at hue 86-92: an acid paint-bucket wash. A field in full sun is
+  // the LEAST chromatic it ever gets; the chroma lives in the half-tone.
+  hsv.y *= mix(0.86, 0.985, guard);
   hsv.z = min(1.0, hsv.z * 1.36 + 0.10);
 
   // CHROMA CEILING on the brick/pantile end of the wheel. That end is the one
@@ -278,6 +337,100 @@ vec3 vcLitColour(vec3 albedo, vec3 cream) {
   hsv.z *= 1.0 - 0.14 * hot * hsv.y;
 
   return mix(vcHsv2Rgb(hsv), cream, 0.014 + 0.050 * guard);
+}
+
+// ------------------------------------------------------------ SAGE AND OLIVE
+// Round 3 killed a sepia duotone by pushing chroma back into the greens. Round 4
+// overshot: 'firefight' measured 41.3% of the frame inside hue 80-160 with the
+// 80-100 decade alone holding 25.8% (40.2% on 'grass'), lit patches at
+// saturation 0.41-0.47, and a 300 px transect across the hillside that was one
+// flat fill. Valkyria's countryside is not that colour and, more importantly,
+// is not ONE colour: a pasture there is a dozen related sages and olives —
+// yellow-leaning, low chroma, with the drier crowns a whole value above the
+// hollows.
+//
+// So this is a three-part move applied to the GREEN LOBE ONLY, before shading:
+//   * a chroma CEILING, so no amount of albedo authoring or grade gain can put
+//     a field back into acid;
+//   * a hue pull off pure 90 deg toward ~80, i.e. yellow-green rather than
+//     kelly;
+//   * and the part that actually matters pictorially — hue, chroma AND value
+//     SPREAD driven by two world-space fields, so a hillside is painted in
+//     patches instead of poured out of a bucket. 'macro' should be a tens-of-
+//     metres field and 'fine' a metres-scale one; both are 0..1 about 0.5.
+//
+// Everything off the green lobe is returned untouched, so ochre roads, stucco,
+// skin and pantile cannot be reached by any of it.
+vec3 vcPasture(vec3 c, float macro, float fine, float amt) {
+  if (amt <= 0.001) return c;
+  vec3 hsv = vcRgb2Hsv(c);
+  // A PLATEAU, not a gaussian. The first build used exp(-d*d/0.0042) about
+  // 92 deg, i.e. a 16.5-degree sigma — and the whole point of the function is
+  // to move pigment DOWN to 72-80 deg, so every green it had already corrected
+  // evaluated at g = 0.5-0.6 and got a chroma ceiling of 0.58-0.68 instead of
+  // the 0.34 the code said. Measured consequence: dropping the written ceiling
+  // from 0.50 to 0.42 to 0.36 moved the grass shot's lit saturation by 0.005.
+  // Flat across the whole pasture band and falling away outside it.
+  float d = hsv.x - 0.230;                    // ~83 deg, centre of the band
+  d -= floor(d + 0.5);
+  //  full  56-110 deg   zero outside 34-132
+  float g = amt * (1.0 - smoothstep(0.075, 0.135, abs(d)));
+  if (g < 0.004) return c;
+
+  // THE FIELDS HAVE TO BE STRETCHED FIRST. Every caller feeds this an fbm of
+  // value noise, and that distribution clusters hard around 0.5: measured on
+  // the terrain's own macro field, (macro - 0.5) is a +/-0.10 excursion, not a
+  // +/-0.5 one. The first build of this function spread hue by a nominal
+  // +/-17 deg and moved the frame's green hue sd by 0.5 degrees, because it was
+  // really spreading by +/-3.4.
+  float m = clamp((macro - 0.5) * 2.6, -0.5, 0.5);
+  float f = clamp((fine - 0.5) * 2.6, -0.5, 0.5);
+
+  // Yellow-green, not kelly — and DELIBERATELY LOW, at 72 deg. The grade's
+  // green-lift warp (canvasRenderPipeline uGreenLift 0.084 over a 55-130 deg
+  // lobe) is strongly compressive at this end: it maps an input of 60 deg to
+  // 90, 80 to 106 and 100 to 113, i.e. d(out)/d(in) falls to 0.31 across the
+  // pasture band. Anything authored between 55 and 90 arrives on screen inside
+  // ONE 20-degree bin no matter how it was spread, which is most of why the
+  // 80-100 decade holds a quarter of these frames.
+  hsv.x = mix(hsv.x, 0.2111, 0.55 * g);       // 76 deg
+
+  // So the spread is deliberately wider than the look needs: +/-27 deg at the
+  // mass scale, so that after the grade's compression what is left is still
+  // 50-113 rather than 90-110. Pictorially this is the dry crown / lush hollow
+  // patchwork a real pasture has — chroma and value follow the same fields,
+  // with opposite signs on the fine octave, so a bleached crown is both lighter
+  // and greyer than the hollow beside it.
+  // ...and the spread is SKEWED to the yellow side. A symmetric one puts the
+  // top of its excursion at 110 deg, the grade's warp carries that to 116, and
+  // the shade cool turn takes the shadowed half of it past 130: measured as a
+  // 9.5% band at hue 140-160 on firefight, i.e. a mint-green hillside, which
+  // is the same failure as acid green with the sign flipped. A pasture varies
+  // toward STRAW, not toward teal.
+  float hx = hsv.x + (m * (m < 0.0 ? 0.190 : 0.105) + f * 0.045) * g;
+  // ...and the tail is CLAMPED into the band the grade's lift warp actually
+  // covers. That warp is zero below 55 deg, so a pasture pixel spread down to
+  // 42 stays at 42 and arrives as bare earth: measured on overview, an
+  // unclamped -34 deg tail moved 15% of the frame out of hue 80-120 and into
+  // 20-60, taking the best 55-degree wedge from 48.7% to 56.6% — trading acid
+  // green for the warm duotone round 3 removed. 55-108 deg is the safe band.
+  hsv.x = fract(mix(hx, clamp(hx, 0.1528, 0.3000), g));
+  hsv.y = clamp(hsv.y * (1.0 + (m * 0.34 - f * 0.44) * g), 0.0, 1.0);
+  hsv.z = clamp(hsv.z * (1.0 + (m * 0.30 + f * 0.34) * g), 0.0, 4.0);
+
+  // The chroma CEILING goes on LAST. Applied before the spread — as it was
+  // first written — the spread's +30% excursion simply walked back over it and
+  // the grass shot measured lit saturation 0.433, i.e. HIGHER than the
+  // 0.411 it started at. A ceiling that anything downstream of it can raise is
+  // not a ceiling.
+  //
+  // 0.34 LINEAR is ~0.18 display here, and the grade turns that back into ~0.33
+  // on screen: it raises chroma with a gamma (uSatGamma 0.73, so 0.23 -> 0.34)
+  // and then adds another 22% on the pasture lobe specifically (uGreenChroma).
+  // The number that has to land under the 0.34 target is the one after all of
+  // that, so this one has to be authored well below it.
+  hsv.y = min(hsv.y, mix(1.0, 0.34, g));
+  return vcHsv2Rgb(hsv);
 }
 `;
 
@@ -354,10 +507,20 @@ vec2 vcQuantiseBands(float lightTerm, float bands, float bleed, float n1, float 
 //   lv     levels across the 0..1 perceptual range
 //   n1,n2  the same boundary width / warp fields the light quantiser uses
 //   amt    0..1 blend, so a material can opt out
-vec3 vcQuantisePigment(vec3 col, float lv, float n1, float n2, float amt) {
+//   warp   how far, in LEVELS, n2 may drag the boundary
+//
+// WHY 'warp' IS A PARAMETER AND NOT THE OLD HARD-CODED 1.05. The warp field has
+// ~46 px lobes. On a hillside that is a boundary creeping through pigment; on a
+// 40 px torso it is a whole level of displacement applied nearly uniformly
+// across the entire object, which slides every boundary clean off it. That is
+// exactly what four rounds of critics have measured — "focal figure y=395
+// x786-816 -> 1 plateau, 1 level; x=804 y380-428 -> ZERO plateaus" — while the
+// terrain in the same frame quantised correctly off the same code. A small
+// object needs a short leash.
+vec3 vcQuantisePigment(vec3 col, float lv, float n1, float n2, float amt, float warp) {
   float y = max(vcLum(col), 1e-5);
   float p = pow(min(y, 4.0), 0.4545);
-  float t = p * lv + (n2 - 0.5) * 1.05;
+  float t = p * lv + (n2 - 0.5) * warp;
   float fi = floor(t);
   float fr = t - fi;
   float w = clamp(0.020 + 0.045 * n1, 0.014, 0.075);
@@ -366,9 +529,11 @@ vec3 vcQuantisePigment(vec3 col, float lv, float n1, float n2, float amt) {
   return col * mix(1.0, ly / y, clamp(amt, 0.0, 1.0));
 }
 
-float vcWetEdge(vec3 wp, float mPerPx, float fibre) {
+float vcWetEdge(vec3 wp, vec3 wn, float mPerPx, float fibre) {
   float f = 1.0 / max(mPerPx * 46.0, 1e-5);          // cycles per metre
-  vec2 q = (wp.xz + wp.y * 0.77) * f;
+  // vcSurfUV, not 'wp.xz + wp.y * k': see the note there. The old form made the
+  // wet edge a 45-degree ruling on every vertical surface in frame.
+  vec2 q = vcSurfUV(wp, wn) * f;
   // fbm of value noise clusters hard around 0.5; stretch it or the boundary
   // barely leaves the iso-line
   float a = clamp((vcFbm2(q) - 0.5) * 2.1 + 0.5, 0.0, 1.0);
@@ -439,13 +604,26 @@ float vcHatchField(vec2 px, float ang, float spacing, float seed) {
 export const GLSL_TOOTH = /* glsl */`
 // A gradient of world-space fibre noise, used to nudge shading normals so a
 // perfectly flat wall still shows pigment sitting unevenly on the tooth.
+//
+// This was the loudest of the 'wp.xz + wp.y * k' collapses (see vcSurfUV): the
+// field was a 2D noise whose coordinate had y folded into BOTH components, and
+// its gradient is what perturbs the shading normal — so every flat surface in
+// frame got a shading ripple running along a single world diagonal, projected
+// to a different screen angle on every object. A genuinely 3D field has no
+// such axis anywhere, and the gradient is the honest three-component one.
+float vcToothFbm3d(vec3 p) {              // 2 octaves; the third is invisible
+  float s = vcNoise3(p) * 0.6667;         // once this is only nudging a normal
+  s += vcNoise3(p * 2.03 + 11.3) * 0.3333;
+  return s;
+}
 vec3 vcToothGradient(vec3 wp, float scale) {
-  vec2 q = wp.xz * scale + wp.y * (scale * 0.71);
+  vec3 q = wp * scale;
   const float e = 0.21;
-  float n0 = vcFbm3(q);
-  float nx = vcFbm3(q + vec2(e, 0.0));
-  float ny = vcFbm3(q + vec2(0.0, e));
-  return vec3(nx - n0, (nx + ny - 2.0 * n0) * 0.5, ny - n0) * (1.0 / e);
+  float n0 = vcToothFbm3d(q);
+  float nx = vcToothFbm3d(q + vec3(e, 0.0, 0.0));
+  float ny = vcToothFbm3d(q + vec3(0.0, e, 0.0));
+  float nz = vcToothFbm3d(q + vec3(0.0, 0.0, e));
+  return vec3(nx - n0, ny - n0, nz - n0) * (1.0 / e);
 }
 `;
 

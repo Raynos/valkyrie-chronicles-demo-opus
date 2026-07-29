@@ -592,12 +592,43 @@ export class Vegetation {
           const dens = this.grassDensity(cx, cz);
           if (rng() > dens) continue;
           const tall = this._tallness(cx, cz);
+          // WHICH SPECIES THIS TUFT IS.
+          //
+          // Round 4's note on `village` was that the ground is "a lawn of one
+          // grass type", and it was literally true: every blade in the game came
+          // out of one root/tip ramp with a +/-11% green swing and a bleach term
+          // on top, so a hundred thousand instances carried one pigment at three
+          // values. A meadow does not work like that — a Gallian pasture is fine
+          // fescue over most of it, coarse straw-coloured tussock grass on the
+          // dry crests, and dark rushes in the wet hollows, and those are a real
+          // HUE apart, not a value apart.
+          //
+          // The species is a slow field (~14 m lobes) so it comes in drifts the
+          // way grazing actually varies, biased by the same dryness the terrain
+          // albedo uses, and it drives three things at once: the pigment, which
+          // of the three blade cuts the tuft favours, and its height. It costs
+          // nothing — the per-instance colour attribute already existed and was
+          // only being used for a bleach.
+          const spF = fbm2(cx * 0.072 + 61.4, cz * 0.072 - 23.9,
+            { octaves: 2, seed: this.seed + 1097 });
+          const dryHere = clamp01((this.terrain.aoAt(cx, cz) - 0.90) * 2.4
+            + (this.terrain.heightAt(cx, cz) - 8.0) * 0.05);
+          // Trodden ground inside the settlement is straw and weed, never sward.
+          const vmHere = this.layout.villageMask ? this.layout.villageMask(cx, cz) : 0;
+          const sp = clamp01(spF * 1.35 - 0.28 + dryHere * 0.45 + clamp01(vmHere * 2.0) * 0.42);
+          //   sp -> 0  dark rush / cocksfoot in the hollows
+          //   sp ~ 0.5 ordinary sage fescue
+          //   sp -> 1  bleached tussock straw
+          const straw = clamp01((sp - 0.52) * 2.4);
+          const rush = clamp01((0.42 - sp) * 2.6);
           const nBlades = 4 + Math.floor(rng() * (perClump - 3));
           for (let b = 0; b < nBlades; b++) {
-            // Mostly fine blades with a scatter of the broad cuts — a tuft that
-            // is all flag leaves reads as a succulent, not as grass.
+            // Which cut. Fine bents dominate a fescue sward; a tussock is mostly
+            // broad flag leaf; a rush stand is tall and narrow.
             const r0 = rng();
-            const v = r0 < 0.56 ? 0 : r0 < 0.87 ? 1 : 2;
+            const broad = 0.56 - straw * 0.26 + rush * 0.10;
+            const flag = 0.87 - straw * 0.20;
+            const v = r0 < broad ? 0 : r0 < flag ? 1 : 2;
             if (counts[v] >= budget) continue;
             const a = rng() * TAU;
             const rr = Math.sqrt(rng()) * 0.30;
@@ -605,7 +636,9 @@ export class Vegetation {
             const bz = cz + Math.sin(a) * rr;
             const by = this.terrain.heightAt(bx, bz);
             const hgt = lerp(0.26, 0.66, tall) * rngRange(rng, 0.62, 1.32)
-              * (v === 2 ? 1.22 : v === 1 ? 1.05 : 1);
+              * (v === 2 ? 1.22 : v === 1 ? 1.05 : 1)
+              // straw stands taller and coarser; a trodden yard is cropped short
+              * (1 + straw * 0.30 + rush * 0.14 - clamp01(vmHere * 2.0) * 0.34);
             // Lean harder. A tuft of near-vertical blades is a hairbrush; real
             // sward falls open, and the extra tilt is also what stops the near
             // field being a picket fence across the lens.
@@ -632,6 +665,18 @@ export class Vegetation {
               vn * (1.0 + bleach * 0.07 + grn * 0.45),
               vn * (1.0 - bleach * 0.20 - grn * 0.28)
             );
+            // ...then the species, which is a HUE move and a chroma move, not a
+            // value one: straw pulls the tuft toward ochre and takes half the
+            // green out of it, rush pushes it deeper and cooler. Applied after
+            // the per-blade jitter so two tufts of the same species still differ.
+            if (straw > 0.001) {
+              const k = straw * (0.55 + rng() * 0.45);
+              _c.setRGB(_c.r * (1 + k * 0.34), _c.g * (1 + k * 0.10), _c.b * (1 - k * 0.30));
+            }
+            if (rush > 0.001) {
+              const k = rush * (0.55 + rng() * 0.45);
+              _c.setRGB(_c.r * (1 - k * 0.26), _c.g * (1 - k * 0.06), _c.b * (1 + k * 0.16));
+            }
             _c.multiplyScalar(0.82 + ao * 0.30);
             blades[v].push({ m: _m4.toArray([]), r: _c.r, g: _c.g, b: _c.b });
             counts[v]++;
@@ -1249,8 +1294,18 @@ export class Vegetation {
     // sward's job is a value shift over terrain that is already painted the same
     // green. Modelled over the overview camera's tile distribution it is a 62%
     // cut with no visible change; measured, 3.91 M -> 1.4 M.
-    const nearFull = 12.0;
-    const thinEnd = 52.0;
+    //
+    // ROUND 5 tightened it again, for the picture as much as for the budget.
+    // At 1.9 cm across, a blade at forty metres on a 42-degree lens is a THIRD
+    // of a pixel wide: it cannot be resolved, it can only alias, and the round-4
+    // critique named that aliasing twice ("every foreground grass blade is a
+    // flat straw sliver 1-2 px wide", |L - median3| > 25 at 0.61% frame-wide
+    // against a 0.10% bar). Pulling the ramp in from 52 m to 40 m and deepening
+    // it from 0.90 to 0.93 removes the blades that were only ever contributing
+    // sparkle, and leaves everything inside ten metres — the whole of `grass`,
+    // `closeup`, `squad` and every over-the-shoulder frame — untouched.
+    const nearFull = 10.0;
+    const thinEnd = 40.0;
     for (let i = 0; i < this.grassTiles.length; i++) {
       const t = this.grassTiles[i];
       const dx = t.cx - cx, dz = t.cz - cz;
@@ -1259,7 +1314,7 @@ export class Vegetation {
       let f = 1;
       if (on) {
         const d = Math.sqrt(d2) - TILE * 0.7;      // nearest corner, roughly
-        f = 1 - smoothstep(nearFull, thinEnd, d) * 0.90;
+        f = 1 - smoothstep(nearFull, thinEnd, d) * 0.93;
         // ...and thin AGAIN in the first few metres. A camera at eye height is
         // fine in a full-density sward; a camera at 0.3-1.5 m — which is every
         // over-the-shoulder and prone shot — has the whole tuft between it and
