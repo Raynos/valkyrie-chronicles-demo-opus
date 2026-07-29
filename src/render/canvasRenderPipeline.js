@@ -1553,9 +1553,14 @@ export class CanvasRenderPipeline {
         // SHARPER than the 9 m hero. Air is thicker than that and it starts
         // much closer to the eye.
         uHazeDensity: { value: 0.0175 },
-        uHazeStart: { value: 9 },
+        // Haze must describe DISTANCE, not lift the whole frame. hazeStart is
+        // clamped to a floor of uHazeStart * 0.55, so at 9 the near field began
+        // hazing 4.95 m from the camera — inside the subject on every closeup.
+        // Measured on `bridge` that flattened the plate to sd 30.66 with a
+        // p5-p95 range of only 104 LSB and a p5 of 93, i.e. no dark anywhere.
+        uHazeStart: { value: 20 },
         uHazeRefK: { value: 0.80 },
-        uHazeMax: { value: 0.70 },
+        uHazeMax: { value: 0.60 },
         uHazeHeight: { value: 34 },
         uHazeBase: { value: 0 },
       },
