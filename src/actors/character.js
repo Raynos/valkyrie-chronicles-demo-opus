@@ -18,10 +18,13 @@ import { CFG } from '../core/config.js';
 import { makeRng, rngRange, rngInt, rngPick } from '../core/rng.js';
 import { clamp, clamp01, lerp, smoothstep, TAU } from '../core/math.js';
 import {
-  MeshBuilder, PALETTE, SKIN_TONES, HAIR_TONES, BODY_TYPES, BONE_GROUPS,
+  MeshBuilder, PALETTE, SKIN_TONES, HAIR_TONES, BODY_TYPES, BONE_GROUPS, ZONE,
   makeRig, buildBody, buildHead, createSkinnedBody, actorBodyMaterial,
-  actorGearMaterial, rgbLin, mixCol, seg,
+  actorGearMaterial, rgbLin, mixCol, seg, setDetail, getDetail,
 } from './rig.js';
+
+/** True while a distance-LOD variant is being built; see setDetail in rig.js. */
+const SIMPLE = () => getDetail() < 0.8;
 import { Animator, CLIP_META, CLIP_ALIASES, boneWorld, rotateBoneWorld } from './anim.js';
 import { createWeapon, WEAPON_FOR_CLASS, WEAPONS } from './weapons.js';
 
@@ -114,141 +117,164 @@ export function makeAppearance(seed, cls, team) {
 // ---------------------------------------------------------------------------
 
 /**
- * A displaced spherical cap that follows the skull. `phiMax` shapes the
- * hairline: high at the temples, low at the nape, receding over the brow.
+ * HAIR IS NOT A WIG.
+ *
+ * Round 3 built hair as a scalp cap swept down to phi 0.63 at the nape and 0.345
+ * at the brow, on top of which the headgear was drawn — so on a capped soldier
+ * the visible result was a dark bowl from eyebrow to below the ear with a small
+ * olive patch on the crown. In profile that is a bob haircut, and it is most of
+ * why every critic wrote "egg": the skull's outline was being drawn by a
+ * featureless dark shell instead of by a hat with a brim.
+ *
+ * So hair is now built in two completely different ways:
+ *
+ *   BARE-HEADED  a compact mass that follows the skull, stops ON the ear line at
+ *                the sides and hangs a little at the nape, with a real parting
+ *                and a fringe over the brow. It is a HAIRCUT.
+ *   UNDER A HAT  no scalp shell at all. Only the three things that actually show
+ *                from under a cap: a fringe peeping under the front brim,
+ *                sideburns in front of each ear, and a tuft at the nape. Nothing
+ *                may cross the forehead, because the forehead is what tells a
+ *                viewer where the eyes are.
  */
 function buildHair(b, rig, o, head, style, coveredByHat) {
   const R = head.radius, C = head.center;
   const hc = o.hairColor;
-  // Shell OFFSET, applied on top of the skull's own displacement (head.disp).
-  // A flat 1.035·R shell measured off the undisplaced ellipsoid ends up *inside*
-  // the cranium — the skull bulges by up to 5.8% at the crown — which is why
-  // hair was invisible on every soldier.
-  // 1.016 was a 1.9 mm shell over the skull. That is inside the depth buffer's
-  // resolving power at 30 m (near 0.15 / far 900), so on `overview` the skull
-  // won the depth test across the whole back of the head and every distant
-  // soldier rendered as a bare pale egg with a thin dark ring of hair round the
-  // silhouette — the "balloon" read, caused not by proportion but by z-fighting.
-  // 1.034 is ~4 mm and still well inside the scout cap's 1.085 shell and the
-  // helmet's 1.16, so nothing pokes through.
-  const thick = coveredByHat ? 1.034 : 1.062;
   const D = head.disp || (() => [1, 1, 1]);
-  b.setBones(BONE_GROUPS.HEAD).setColor(hc).setMottle(0.09);
+  // Hair goes through the KIT window: it wants a hard silhouette and a
+  // specular band (VC draws a bright sheen across the top of every head), not
+  // the soft matte of serge.
+  b.setZone(ZONE.KIT).setBones(BONE_GROUPS.HEAD).setColor(hc).setMottle(0.09);
 
-  // u = 0 at +Z (face), 0.25 at +X (character's left), 0.5 at -Z (nape).
-  const front = style === 'crop' ? 0.40 : style === 'sidePart' ? 0.44 : 0.47;
-  // phiMax is measured from the CROWN in half-turns, so it is how far DOWN the
-  // scalp cap reaches: 0.5 is the equator (ear-top height), and dy = cos(phi*PI).
-  //
-  // Round 2 evaluated to 0.82 at the sides — dy = cos(148 deg) = -0.85, which is
-  // BELOW THE JAW. That is the entire explanation for the closeup critique's
-  // "dark irregular paint-splat plastered across the MIDDLE of the near cheek
-  // with a second detached blob on the jaw": the scalp cap was being swept down
-  // over the cheekbone and the mandible, on both sides, on every soldier. The
-  // hairline is now clamped so it can never pass the ear line on the sides
-  // (0.545, dy = -0.14) and never reaches the cheek plane at all; only the nape,
-  // where hair genuinely does hang below the ear, is allowed past it.
-  const phiMax = (u) => {
-    const a = u * TAU;
-    const cz = Math.cos(a);                 // +1 facing forward
-    const cx = Math.sin(a);
-    const backness = clamp01(-cz);          // 0 at the face, 1 at the nape
-    // Forward hairline sits high, sides come down to the ear line, nape lowest.
-    let m = 0.455 + 0.075 * (1 - clamp01(cz)) + 0.155 * backness;
-    m -= front * 0.30 * clamp01(cz) * clamp01(cz);
-    if (style === 'sidePart') m += 0.05 * clamp01(cx) * clamp01(cz);
-    if (style === 'bob' || style === 'swept') m += 0.20 * backness + 0.055 * Math.abs(cx);
-    if (style === 'bun' || style === 'ponytail') m -= 0.04 * backness;
-    // HARD CEILING, independent of style: everything forward of the ear axis is
-    // capped at the ear line (phi 0.50 = the equator = dy 0). Only the rear
-    // third may hang lower. At 0.545 the cap still reached dy -0.14, i.e. 17 mm
-    // below the eye line onto the cheek, which is what made every soldier read
-    // as wearing a dark helmet of hair.
-    let ceiling = 0.500 + 0.345 * smoothstep(0.15, 0.85, backness);
-    // UNDER HEADGEAR the ceiling is far tighter, and this is the one that was
-    // doing real damage. The shocktrooper helmet's front edge sits at phi 0.300
-    // (dy +0.59, high on the forehead) while the hairline ran to 0.425 and the
-    // wisp band under it to 0.425 as well, so 22 degrees of arc — the entire
-    // forehead from the helmet brim down to the eyebrow — rendered as bare hair.
-    // On `squad` that measured (114,72,74), hue 357, sat 0.37: a saturated brick
-    // -red block sitting exactly where the soldier's face should be, and by far
-    // the loudest thing on him. Capping the front at 0.345 leaves an 8-degree
-    // fringe under the tightest brim and nothing at all under a garrison cap,
-    // which is correct: a cap sits ON the crown and what shows is nape and
-    // sideburn, not a full band across the brow.
-    if (coveredByHat) ceiling = Math.min(ceiling, 0.345 + 0.285 * backness);
-    return clamp(Math.min(m, ceiling), 0.26, 0.86);
-  };
-  b.addEllipsoid({
-    center: [C[0], C[1] + 0.004, C[2] - 0.004],
-    radius: [R[0], R[1], R[2]],
-    seg: seg(20), rings: seg(11), phiMax,
-    displace: (dx, dy, dz, u, v) => {
-      // Tufted silhouette: low-frequency lumps plus a wispy edge.
-      const t = 1 + 0.030 * Math.sin(u * TAU * 5 + dy * 6) * (0.4 + v)
-        + 0.018 * Math.sin(u * TAU * 11 + 1.7) * v;
-      const edge = 1 - 0.06 * smoothstep(0.82, 1.0, v);
-      const k = D(dx, dy, dz);
-      const s = thick * t * edge;
-      return [k[0] * s, k[1] * s, k[2] * s];
-    },
-  });
-
-  if (coveredByHat) {
-    // A cap or a helmet still leaves the nape and the sideburns showing — that
-    // band of hair under the brim is most of what tells one soldier's head from
-    // the next, and without it every capped soldier reads as a bare egg.
-    //
-    // The band must tuck UNDER the cap at the front (or it draws across the
-    // brow) and swing low at the sides and the nape.
+  /** Nape tuft + sideburns — the parts that show under any headgear. */
+  const underHat = () => {
+    // Nape: a short wedge at the back of the skull, below the cap band and
+    // above the collar. Stops well clear of the jaw line at the sides.
     b.addEllipsoid({
-      center: [C[0], C[1] - 0.002, C[2] - 0.006],
-      radius: [R[0], R[1], R[2]],
-      seg: seg(20), rings: seg(7),
-      // Tracks the same ceiling as the scalp cap above (0.345 at the brow,
-      // 0.630 at the nape) so the wisp band cannot reintroduce the forehead
-      // block the cap was just clamped out of. phiMin drops to 0.28 so the band
-      // still has a body at the front where phiMax is now tight.
-      phiMin: 0.28,
-      phiMax: (u) => 0.345 + 0.285 * clamp01(-Math.cos(u * TAU)),
-      displace: (dx, dy, dz, u, v) => {
+      center: [C[0], C[1] - R[1] * 0.06, C[2] - R[2] * 0.10],
+      radius: [R[0] * 1.02, R[1] * 1.02, R[2] * 1.02],
+      seg: seg(18), rings: seg(5),
+      phiMin: 0.36,
+      phiMax: (u) => {
+        const back = clamp01(-Math.cos(u * TAU));
+        // 0.38 (just below the cap band) at the sides, 0.60 at the nape.
+        return 0.375 + 0.225 * smoothstep(0.25, 1.0, back);
+      },
+      // Never under 1.05: a hair shell that dips inside the skull loses the
+      // depth test and the back of the head renders as bare scalp — see the
+      // MINK note in gearHead.
+      displace: (dx, dy, dz) => {
         const k = D(dx, dy, dz);
-        const s = 1.038 * (1 + 0.022 * Math.sin(u * TAU * 6 + 0.7) * v)
-          * (1 - 0.05 * smoothstep(0.85, 1.0, v));
+        const s = Math.max(1.05, 1.085 * (1 + 0.030 * Math.sin(dx * 42 + dy * 17))
+          * (1 - 0.055 * smoothstep(0.80, 1.0, clamp01(-dy))));
         return [k[0] * s, k[1] * s, k[2] * s];
       },
     });
-    // Sideburn wisps in front of each ear so the hairline is not a clean arc.
-    for (const side of [1, -1]) {
+    // Sideburns: a short strip in front of each ear, hugging the temple. Thin —
+    // at 11 mm they read as a dark bar stuck to the cheek at portrait distance.
+    for (const side of (SIMPLE() ? [] : [1, -1])) {
       b.addTube([
-        { p: [side * R[0] * 0.88, C[1] + R[1] * 0.26, C[2] + R[2] * 0.32], rx: 0.008, rz: 0.007 },
-        { p: [side * R[0] * 0.95, C[1] + R[1] * 0.04, C[2] + R[2] * 0.27], rx: 0.009, rz: 0.008 },
-        { p: [side * R[0] * 0.93, C[1] - R[1] * 0.14, C[2] + R[2] * 0.20], rx: 0.006, rz: 0.005 },
-      ], { seg: seg(7), capStart: 'flat', capEnd: 'round' });
+        { p: [side * R[0] * 0.90, C[1] + R[1] * 0.24, C[2] + R[2] * 0.16], rx: 0.0065, rz: 0.0060 },
+        { p: [side * R[0] * 0.96, C[1] + R[1] * 0.06, C[2] + R[2] * 0.12], rx: 0.0060, rz: 0.0055 },
+        { p: [side * R[0] * 0.93, C[1] - R[1] * 0.08, C[2] + R[2] * 0.07], rx: 0.0038, rz: 0.0034 },
+      ], { seg: seg(6), capStart: 'flat', capEnd: 'round' });
+    }
+  };
+
+  if (coveredByHat) {
+    underHat();
+    // A short fringe below the front edge of the cap. Three strands, each one a
+    // flattened tube lying against the forehead — a hint of hair, never a band
+    // across the face.
+    //
+    // Quoted through the HEAD'S OWN LANDMARK CANON rather than as raw fractions
+    // of R[1], and that is not tidiness. The skull's landmark heights are set by
+    // buildHead: its hairline sits at face fraction 0.79, which is dy +0.54 on
+    // the displaced ellipsoid. The previous fixed 0.62 -> 0.36 run was solved
+    // against a build whose brow sat at dy +0.30, i.e. two thirds of the way up
+    // the forehead; against the canon it lands the strands in the middle of a
+    // bare forehead and they render as three dark bars painted on the skin.
+    // Anchored to the hairline they tuck under the brim where hair lives.
+    const FY = head.FY || ((t) => t * 1.896 - 0.960);
+    const HL = head.T_HAIRLINE !== undefined ? head.T_HAIRLINE : 0.79;
+    const fy0 = FY(HL + 0.10), fy1 = FY(HL), fy2 = FY(HL - 0.055);
+    b.setMottle(0.06);
+    for (let i = -1; i <= (SIMPLE() ? -2 : 1); i++) {
+      const a = i * 0.42;
+      const sx = Math.sin(a), sz = Math.cos(a);
+      b.addTube([
+        { p: [sx * R[0] * 0.62, C[1] + R[1] * fy0, sz * R[2] * 0.74], rx: 0.015, rz: 0.009 },
+        { p: [sx * R[0] * 0.78, C[1] + R[1] * fy1, sz * R[2] * 0.90], rx: 0.014, rz: 0.008 },
+        { p: [sx * R[0] * 0.82, C[1] + R[1] * fy2, sz * R[2] * 0.93], rx: 0.009, rz: 0.006 },
+      ], { seg: seg(6), capStart: 'flat', capEnd: 'round' });
     }
     return;
   }
 
-  // Fringe: a few short strands over the brow.
+  // --- bare-headed: a real haircut ------------------------------------------
+  // phiMax is measured DOWN from the crown in half-turns: 0.5 is the ear line.
+  // The hard ceiling is what keeps a scalp cap off the cheek, and round 3's
+  // 0.845 at the sides is exactly how a soldier ended up in a bob.
+  const front = style === 'crop' ? 0.40 : style === 'sidePart' ? 0.44 : 0.47;
+  const phiMax = (u) => {
+    const a = u * TAU;
+    const cz = Math.cos(a), cx = Math.sin(a);
+    const backness = clamp01(-cz);
+    let m = 0.430 + 0.070 * (1 - clamp01(cz)) + 0.140 * backness;
+    m -= front * 0.34 * clamp01(cz) * clamp01(cz);
+    if (style === 'sidePart') m += 0.055 * clamp01(cx) * clamp01(cz);
+    if (style === 'bob' || style === 'swept') m += 0.175 * backness + 0.040 * Math.abs(cx);
+    if (style === 'bun' || style === 'ponytail') m -= 0.035 * backness;
+    // Ear line at the sides, a hand's breadth lower at the nape. Nothing
+    // forward of the ear axis may pass 0.50, ever.
+    const ceiling = 0.500 + 0.290 * smoothstep(0.18, 0.88, backness);
+    return clamp(Math.min(m, ceiling), 0.24, 0.80);
+  };
+  b.addEllipsoid({
+    center: [C[0], C[1] + 0.004, C[2] - 0.004],
+    radius: [R[0], R[1], R[2]],
+    seg: seg(20), rings: seg(10), phiMax,
+    displace: (dx, dy, dz, u, v) => {
+      // Tufted: low-frequency lumps plus a wispy edge, and a PARTING — a
+      // shallow groove off-centre that the outline pass will ink.
+      const part = style === 'sidePart' || style === 'swept'
+        ? 0.030 * Math.exp(-Math.pow((dx - 0.34) * 6.0, 2)) * clamp01(dy) : 0;
+      const t = 1 + 0.034 * Math.sin(u * TAU * 5 + dy * 6) * (0.4 + v)
+        + 0.020 * Math.sin(u * TAU * 11 + 1.7) * v - part;
+      const edge = 1 - 0.065 * smoothstep(0.80, 1.0, v);
+      const k = D(dx, dy, dz);
+      const s = Math.max(1.05, 1.095 * t * edge);
+      return [k[0] * s, k[1] * s, k[2] * s];
+    },
+  });
+  // Fringe over the brow — also quoted through the head's landmark canon, so
+  // it starts inside the scalp cap at the hairline and stops well short of the
+  // brow ridge. A fringe that reaches the brow is a curtain, and the brow line
+  // is where the face starts.
+  const FYb = head.FY || ((t) => t * 1.896 - 0.960);
+  const HLb = head.T_HAIRLINE !== undefined ? head.T_HAIRLINE : 0.79;
   const strands = style === 'crop' ? 3 : 5;
+  const fTop = FYb(HLb + 0.09);
+  const fMid = FYb(HLb - 0.035);
+  const fBot = FYb(HLb - (style === 'crop' ? 0.075 : 0.135));
   for (let i = 0; i < strands; i++) {
-    const a = lerp(-0.55, 0.55, strands === 1 ? 0.5 : i / (strands - 1));
+    const a = lerp(-0.58, 0.58, strands === 1 ? 0.5 : i / (strands - 1));
     const sx = Math.sin(a), sz = Math.cos(a);
-    const drop = style === 'crop' ? 0.030 : 0.055;
     b.addTube([
-      { p: [C[0] + sx * R[0] * 0.72, C[1] + R[1] * 0.66, C[2] + sz * R[2] * 0.70], rx: 0.016, rz: 0.011 },
-      { p: [C[0] + sx * R[0] * 0.92, C[1] + R[1] * 0.30, C[2] + sz * R[2] * 0.92], rx: 0.017, rz: 0.012 },
-      { p: [C[0] + sx * R[0] * 0.96, C[1] + R[1] * 0.30 - drop, C[2] + sz * R[2] * 0.95], rx: 0.011, rz: 0.008 },
+      { p: [C[0] + sx * R[0] * 0.66, C[1] + R[1] * fTop, C[2] + sz * R[2] * 0.70], rx: 0.016, rz: 0.010 },
+      { p: [C[0] + sx * R[0] * 0.86, C[1] + R[1] * fMid, C[2] + sz * R[2] * 0.90], rx: 0.016, rz: 0.011 },
+      { p: [C[0] + sx * R[0] * 0.90, C[1] + R[1] * fBot, C[2] + sz * R[2] * 0.92], rx: 0.010, rz: 0.007 },
     ], { seg: seg(7), capEnd: 'round' });
   }
   if (style === 'bun') {
     b.addEllipsoid({
       center: [C[0], C[1] + R[1] * 0.42, C[2] - R[2] * 1.06],
-      radius: [0.044, 0.042, 0.040], seg: seg(11), rings: seg(8),
+      radius: [0.046, 0.044, 0.042], seg: seg(11), rings: seg(8),
       displace: (dx, dy) => 1 + 0.07 * Math.sin(dx * 14 + dy * 9),
     });
   }
 }
+
 
 // ---------------------------------------------------------------------------
 // Uniform kit
@@ -266,278 +292,475 @@ function band(b, y, rx, rz, h, thick, color) {
   b.setTransform(null);
 }
 
-/** Belt, cross-brace webbing, pouches, canteen, shoulder crest — worn by everyone. */
+/**
+ * WEBBING, BELT AND POUCHES — the layer that makes a soldier a soldier.
+ *
+ * This is where the "gear first" bet is placed. A tunic is a smooth mass and a
+ * smooth mass has nothing for a watercolour quantiser to bite on; a belt with
+ * four pouches on it is six hard albedo steps and six surface steps at the exact
+ * height where the eye looks for a waist. Round 3 authored all of it at roughly
+ * half this scale and lost every piece of it beyond about eight metres, which is
+ * why the overview critique reported "no uniform at all".
+ *
+ * Everything here is therefore sized to survive a 20-pixel-tall soldier:
+ *   belt      36 mm tall, standing 17 mm proud of the narrowest part of the body
+ *   pouches   46 x 54 x 30 mm, i.e. genuinely the size of a magazine pouch
+ *   webbing   30 mm wide straps crossing at the sternum in a hard X
+ * and all of it in the KIT window, a band below the cloth it is worn over.
+ */
 function gearWebbing(b, rig, o, cls) {
   const g = o.girth;
   const hy = rig.restWorld.hips.pos.y;
-  // The belt rides the NATURAL WAIST (hy+0.045), which is the narrowest section
-  // of the torso (0.128*g) and just above the tunic skirt. Sitting on the hip
-  // at hy-0.030 it was inside the 0.155*g skirt and invisible.
-  const beltY = hy + 0.045;
-  b.setBones(BONE_GROUPS.TORSO).setMottle(0.05);
+  // The belt rides the NATURAL WAIST, which is the narrowest section of the
+  // torso and just above the tunic skirt's flare. Sitting on the hip it lands
+  // inside the skirt and disappears.
+  const beltY = hy + 0.070;
+  b.setZone(ZONE.KIT).setBones(BONE_GROUPS.TORSO).setMottle(0.05);
 
-  // Belt: wide, and standing ~17 mm proud of the waist so it cuts the figure at
-  // the narrowest point. That single horizontal break is most of what turns a
+  // --- BELT. Wide, dark, standing clear of the waist so it cuts the figure at
+  // its narrowest point. That single horizontal break is most of what turns a
   // sack into a uniform.
-  band(b, beltY, 0.144 * g, 0.107 * g, 0.030, 0.036, o.belt);
+  band(b, beltY, 0.132 * g, 0.098 * g, 0.036, 0.030, o.belt);
   b.setColor(o.brass);
-  b.addRoundedBox({ center: [0, beltY, 0.120 * g], size: [0.030, 0.024, 0.012], bevel: 0.004, div: 2 });
+  b.addRoundedBox({ center: [0, beltY, 0.118 * g], size: [0.044, 0.034, 0.014], bevel: 0.005, div: 2 });
+  b.setColor(mixCol(o.belt, PALETTE.metalDark, 0.4));
+  b.addRoundedBox({ center: [0, beltY, 0.124 * g], size: [0.020, 0.020, 0.008], bevel: 0.004, div: 2 });
 
-  // --- Cross-brace. Two straps that CROSS on the sternum, run over opposite
-  // shoulders and down the back to the belt. The old routing put both straps
-  // near-vertical at x = +/-0.03..0.09 on the front, so they read as two faint
-  // parallel stripes; an X reads as harness at any distance and at any angle,
-  // and it is what Gallian militia webbing actually looks like.
+  // --- CROSS-BRACE. Two 30 mm straps that CROSS on the sternum, run over
+  // opposite shoulders and down the back to the belt. An X reads as harness at
+  // any distance and from any angle; two parallel vertical stripes do not.
   b.setColor(o.leather).setMottle(0.045);
   for (const side of [1, -1]) {
     const s = side > 0 ? 'L' : 'R';
     const ua = rig.restWorld['upperArm' + s].pos, cl = rig.restWorld['clavicle' + s].pos;
     const apexX = Math.abs(lerp(cl.x, ua.x, 0.50));
-    const apexY = ua.y + 0.082 * g;
+    const apexY = ua.y + 0.086 * g;
     const chestY = hy + 0.310;
     b.addTube([
-      // front: opposite hip -> across the sternum -> this shoulder
-      { p: [-side * 0.076 * g, beltY + 0.010, 0.102 * g], rx: 0.024, rz: 0.008 },
-      { p: [-side * 0.030 * g, hy + 0.150, 0.118 * g], rx: 0.024, rz: 0.008 },
-      { p: [side * 0.028 * g, chestY - 0.030, 0.122 * g], rx: 0.025, rz: 0.008 },
-      { p: [side * 0.088 * g, chestY + 0.052, 0.104 * g], rx: 0.025, rz: 0.008 },
-      { p: [side * apexX * 0.94, apexY - 0.020, 0.056 * g], rx: 0.025, rz: 0.008 },
-      { p: [side * apexX, apexY, 0.004 * g], rx: 0.026, rz: 0.009 },        // over the shoulder
-      { p: [side * apexX * 0.94, apexY - 0.026, -0.050 * g], rx: 0.025, rz: 0.008 },
-      { p: [side * 0.092 * g, chestY + 0.055, -0.086 * g], rx: 0.023, rz: 0.008 },
-      { p: [side * 0.056 * g, hy + 0.170, -0.110 * g], rx: 0.022, rz: 0.007 },
-      { p: [side * 0.034 * g, beltY + 0.008, -0.112 * g], rx: 0.021, rz: 0.007 },
+      { p: [-side * 0.072 * g, beltY + 0.014, 0.100 * g], rx: 0.030, rz: 0.010 },
+      { p: [-side * 0.028 * g, hy + 0.170, 0.116 * g], rx: 0.030, rz: 0.010 },
+      { p: [side * 0.030 * g, chestY - 0.026, 0.122 * g], rx: 0.031, rz: 0.010 },
+      { p: [side * 0.092 * g, chestY + 0.056, 0.104 * g], rx: 0.031, rz: 0.010 },
+      // Slimmer over the crest of the shoulder than across the chest: a 32 mm
+      // half-width strap arching over the trapezius reads at portrait distance
+      // as a knot tied round the neck.
+      { p: [side * apexX * 0.94, apexY - 0.024, 0.056 * g], rx: 0.024, rz: 0.010 },
+      { p: [side * apexX, apexY - 0.006, 0.004 * g], rx: 0.023, rz: 0.010 },  // over the shoulder
+      { p: [side * apexX * 0.94, apexY - 0.030, -0.050 * g], rx: 0.024, rz: 0.010 },
+      { p: [side * 0.094 * g, chestY + 0.058, -0.088 * g], rx: 0.029, rz: 0.010 },
+      { p: [side * 0.054 * g, hy + 0.190, -0.112 * g], rx: 0.027, rz: 0.009 },
+      { p: [side * 0.030 * g, beltY + 0.012, -0.112 * g], rx: 0.026, rz: 0.009 },
     ], { seg: seg(8), capStart: 'flat', capEnd: 'flat' });
+    // Brass keeper where each strap meets the belt at the front.
+    b.setColor(o.brass);
+    if (!SIMPLE()) b.addRoundedBox({
+      center: [-side * 0.072 * g, beltY + 0.008, 0.112 * g], size: [0.017, 0.020, 0.008], bevel: 0.003, div: 2,
+    });
+    b.setColor(o.leather);
   }
-  // Brass D-ring where the straps cross.
+  // Brass D-ring where the straps cross on the sternum.
   b.setColor(o.brass);
-  b.addRoundedBox({ center: [0, hy + 0.250, 0.126 * g], size: [0.017, 0.014, 0.007], bevel: 0.003, div: 2 });
+  b.addRoundedBox({ center: [0, hy + 0.262, 0.128 * g], size: [0.024, 0.020, 0.008], bevel: 0.004, div: 2 });
 
-  // Ammo pouches on the belt front — bigger and squarer than before, with a
-  // buckled flap, so they survive as shapes rather than smudges.
-  const pouches = cls === 'shock' ? 3 : cls === 'lancer' ? 1 : 2;
+  // --- AMMUNITION POUCHES. Big, square, buckled. These are the pieces that
+  // read as "soldier" at thumbnail size, so they are authored at genuine size
+  // (46 x 54 mm) rather than at the 36 x 42 mm that vanished last round.
+  const pouches = cls === 'shock' ? 4 : cls === 'lancer' ? 2 : 3;
   for (let i = 0; i < pouches; i++) {
     const t = pouches === 1 ? 0 : (i / (pouches - 1)) * 2 - 1;
-    const a = t * 0.66;
-    const px = Math.sin(a) * 0.132 * g, pz = Math.cos(a) * 0.114 * g + 0.014;
+    const a = t * (pouches > 3 ? 0.82 : 0.62);
+    const px = Math.sin(a) * 0.128 * g, pz = Math.cos(a) * 0.108 * g + 0.020;
     b.setColor(o.leather);
-    b.addRoundedBox({ center: [px, beltY - 0.042, pz], size: [0.036, 0.042, 0.023], bevel: 0.008, div: 2 });
-    b.setColor(o.belt);
-    b.addRoundedBox({ center: [px * 1.02, beltY - 0.010, pz * 1.03], size: [0.037, 0.014, 0.024], bevel: 0.005, div: 2 });
+    b.addRoundedBox({ center: [px, beltY - 0.050, pz], size: [0.046, 0.054, 0.030], bevel: 0.009, div: 2 });
+    // Flap, a value lighter, with a hard bottom edge across the pouch face.
+    b.setColor(mixCol(o.leather, o.canvas, 0.30));
+    b.addRoundedBox({ center: [px * 1.01, beltY - 0.020, pz * 1.02], size: [0.048, 0.024, 0.032], bevel: 0.006, div: 2 });
     b.setColor(o.brass);
-    b.addRoundedBox({ center: [px * 1.04, beltY - 0.026, pz * 1.06], size: [0.006, 0.008, 0.004], bevel: 0.002, div: 1 });
+    if (!SIMPLE()) b.addRoundedBox({ center: [px * 1.03, beltY - 0.040, pz * 1.06], size: [0.008, 0.011, 0.005], bevel: 0.002, div: 1 });
   }
 
-  // Canteen on the right hip, bread bag on the left.
-  b.setColor(mixCol(o.metal, o.canvas, 0.5));
-  b.setTransform(_m4.makeTranslation(-0.140 * g, beltY - 0.088, -0.030));
-  b.addRoundedBox({ size: [0.036, 0.048, 0.020], bevel: 0.014, div: 3 });
+  // Canteen on the left hip, bread bag on the right — two masses hanging BELOW
+  // the belt line that break the straight edge of the tunic skirt.
+  b.setColor(mixCol(o.metal, o.canvas, 0.45));
+  b.setTransform(_m4.makeTranslation(-0.148 * g, beltY - 0.098, -0.026));
+  b.addRoundedBox({ size: [0.044, 0.058, 0.024], bevel: 0.016, div: 3 });
   b.setTransform(null);
+  b.setColor(mixCol(o.leather, o.belt, 0.4));
+  b.addTube([
+    { p: [-0.140 * g, beltY - 0.010, -0.024], rx: 0.010, rz: 0.004 },
+    { p: [-0.150 * g, beltY - 0.062, -0.026], rx: 0.010, rz: 0.004 },
+  ], { seg: seg(5), capStart: 'flat', capEnd: 'flat' });
   b.setColor(o.canvas);
-  b.addRoundedBox({ center: [0.144 * g, beltY - 0.086, -0.044], size: [0.038, 0.046, 0.024], bevel: 0.010, div: 2 });
+  b.addRoundedBox({ center: [0.150 * g, beltY - 0.096, -0.040], size: [0.046, 0.056, 0.028], bevel: 0.011, div: 2 });
 
-  // Squad 7 shoulder crest: a domed shield patch on the left upper arm, with a
-  // cream border so it reads as an insignia and not as a wound.
+  // --- SQUAD 7 SHOULDER CREST on the left upper arm, with a cream border so it
+  // reads as an insignia and not as a wound. It also breaks the sleeve away
+  // from the ribcage behind it, which is half of why an arm reads as separate.
   const sh = rig.restWorld.upperArmL.pos;
-  b.setBones(BONE_GROUPS.ARM_L).setMottle(0.04);
+  b.setZone(ZONE.KIT).setBones(BONE_GROUPS.ARM_L).setMottle(0.04);
   b.setTransform(_m4.compose(
-    new THREE.Vector3(sh.x + 0.050 * g, sh.y - 0.050, sh.z + 0.006),
+    new THREE.Vector3(sh.x + 0.052 * g, sh.y - 0.052, sh.z + 0.006),
     new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI * 0.5, 0.1)),
     new THREE.Vector3(1, 1, 1)));
-  b.setColor(mixCol(o.trim, o.tunicShade, 0.42));
-  b.addEllipsoid({ radius: [0.031, 0.041, 0.015], seg: seg(10), rings: seg(6), phiMax: () => 0.5 });
+  b.setColor(o.trim);
+  b.addEllipsoid({ radius: [0.034, 0.045, 0.014], seg: seg(10), rings: seg(6), phiMax: () => 0.5 });
   b.setColor(o.accent);
-  b.addEllipsoid({ center: [0, 0.002, 0.003], radius: [0.025, 0.034, 0.016], seg: seg(10), rings: seg(6), phiMax: () => 0.48 });
-  b.setColor(mixCol(o.trim, o.accent, 0.30));
-  b.addEllipsoid({ center: [0, 0.004, 0.006], radius: [0.011, 0.016, 0.014], seg: seg(9), rings: seg(5), phiMax: () => 0.44 });
+  b.addEllipsoid({ center: [0, 0.002, 0.004], radius: [0.027, 0.037, 0.016], seg: seg(10), rings: seg(6), phiMax: () => 0.48 });
+  b.setColor(o.trim);
+  b.addEllipsoid({ center: [0, 0.004, 0.007], radius: [0.011, 0.017, 0.015], seg: seg(9), rings: seg(5), phiMax: () => 0.44 });
   b.setTransform(null);
 
   // Rank chevrons on the right sleeve.
   const shR = rig.restWorld.upperArmR.pos;
-  b.setBones(BONE_GROUPS.ARM_R).setColor(o.trim);
-  for (let i = 0; i < 2; i++) {
+  b.setZone(ZONE.KIT).setBones(BONE_GROUPS.ARM_R).setColor(o.trim);
+  for (let i = 0; i < (SIMPLE() ? 0 : 2); i++) {
     b.addTube([
-      { p: [shR.x - 0.030, shR.y - 0.072 - i * 0.017, shR.z + 0.038], rx: 0.005, rz: 0.0026 },
-      { p: [shR.x - 0.050, shR.y - 0.063 - i * 0.017, shR.z + 0.006], rx: 0.005, rz: 0.0026 },
-      { p: [shR.x - 0.034, shR.y - 0.072 - i * 0.017, shR.z - 0.028], rx: 0.005, rz: 0.0026 },
+      { p: [shR.x - 0.030, shR.y - 0.074 - i * 0.019, shR.z + 0.038], rx: 0.006, rz: 0.003 },
+      { p: [shR.x - 0.052, shR.y - 0.064 - i * 0.019, shR.z + 0.006], rx: 0.006, rz: 0.003 },
+      { p: [shR.x - 0.034, shR.y - 0.074 - i * 0.019, shR.z - 0.028], rx: 0.006, rz: 0.003 },
     ], { seg: seg(5), capStart: 'flat', capEnd: 'flat' });
   }
 }
 
-/** Class headgear. Returns true when hair should be suppressed on the crown. */
+
+/**
+ * CLASS HEADGEAR — the single strongest silhouette signal on the figure.
+ *
+ * A soldier is recognised by the shape his head makes against the sky before
+ * anything else is legible, and the five classes are designed here as five
+ * different shapes:
+ *
+ *   scout      a canted fore-and-aft SIDE CAP: a narrow wedge with a crest, so
+ *              the head reads as a sharp triangle
+ *   shock      a domed HELMET with a brim that flares OUTSIDE the skull: a
+ *              mushroom, the widest head in the squad
+ *   lancer     the same helmet plus a neck curtain and a rivetted crest, worn
+ *              with the pauldron — the heaviest outline in the game
+ *   engineer   a peaked SERVICE CAP: a flat disc on a band with a hard visor
+ *              projecting forward, so the head reads as a square with a bar
+ *   sniper     a soft FIELD CAP with a long bill and a scarf: a low, long head
+ *              with cloth trailing off it
+ *
+ * Every shell is measured off the SAME displaced skull the skin uses, and every
+ * edge is a function of azimuth: a lathe's rim is a horizontal circle, so to
+ * clear the ears at the side it has to sit below the brow at the front — which
+ * is precisely how round 2 produced "a blank tan oval with a strip across the
+ * eye line". The brow line is sacred. Nothing crosses it.
+ *
+ * Returns true when the crown is covered.
+ */
 function gearHead(b, rig, o, head, cls) {
   const R = head.radius, C = head.center;
-  // Every shell here is measured off the SAME displaced skull the skin uses
-  // (see buildHead's `disp`), otherwise the cranium bulge swallows it.
   const D = head.disp || (() => [1, 1, 1]);
+  // THE BALD-EGG BUG, and it is worth spelling out because it cost three rounds.
+  //
+  // A hat is built as an offset SHELL of the skull: radius = skullDisplacement *
+  // k * shapeFactor. Every shape a hat needs — the pinch of a side cap's crest,
+  // the flat top of a service cap, the sag of a field cap — is expressed as a
+  // shapeFactor BELOW one, and the moment k * shapeFactor drops under 1.0 that
+  // part of the hat is INSIDE the head and the depth buffer eats it. Round 3's
+  // scout cap pinched to 0.44 at the crown on a 1.075 shell, so everything above
+  // dy = 0.35 was buried and every scout in the game rendered as a bare pale egg
+  // with an olive sliver on top — which is precisely the critique that opened
+  // this round.
+  //
+  // So the shell clamps. Nothing may sit closer than 4 % of a skull radius (about
+  // 4 mm) to the skin, which is also the depth-buffer's resolving power at 30 m.
+  // A hat that wants to look pinched has to get there by EXPANDING the other
+  // axes, not by shrinking one.
+  const MINK = 1.045;
   const shell = (k, extra) => (dx, dy, dz) => {
     const d = D(dx, dy, dz);
     const s = typeof extra === 'function' ? extra(dx, dy, dz) : 1;
     const sx = typeof s === 'number' ? s : s[0];
     const sy = typeof s === 'number' ? s : s[1];
     const sz = typeof s === 'number' ? s : s[2];
-    return [d[0] * k * sx, d[1] * k * sy, d[2] * k * sz];
+    return [
+      d[0] * Math.max(MINK, k * sx),
+      d[1] * Math.max(MINK, k * sy),
+      d[2] * Math.max(MINK, k * sz),
+    ];
   };
-  b.setBones(BONE_GROUPS.HEAD).setMottle(0.05);
+  b.setZone(ZONE.KIT).setBones(BONE_GROUPS.HEAD).setMottle(0.05);
+
+  /**
+   * A brim, built as a swept RING rather than as part of the crown shell.
+   * This is the piece that makes a hat a hat: it projects outside the skull's
+   * own silhouette, so the outline pass draws a line that is demonstrably not
+   * the outline of a head.
+   *   y      height on the skull, in units of R[1] from centre
+   *   out    radial scale, in units of R (1.0 = flush with the skull)
+   *   drop   how far the outer edge hangs below the inner one, metres
+   *   front  extra projection forward, in units of R[2]
+   */
+  // Built as a narrow ellipsoid BAND rather than as a swept tube: a tube swept
+  // round a closed loop accumulates parallel-transport holonomy, so a flat
+  // section arrives back at the seam rotated, and the brim ends up with a kink
+  // in it. A band closes exactly, and pushing its outer ring out in x/z and
+  // down in y turns it into a flaring skirt in three numbers.
+  //   yLo/yHi  phi of the inner and outer edges (0.5 is the equator)
+  //   out      radial scale at the outer edge, in units of R
+  //   hang     vertical exaggeration at the outer edge
+  //   spanFn   azimuth taper, cz = +1 at the face
+  const brim = (yLo, yHi, inR, out, hang, spanFn) => {
+    b.addEllipsoid({
+      center: [C[0], C[1] + 0.004, C[2] - 0.006],
+      radius: R, seg: seg(24), rings: seg(4),
+      phiMin: yLo, phiMax: () => yHi,
+      displace: (dx, dy, dz, u, v) => {
+        const cz = Math.cos(u * TAU);
+        const sp = spanFn ? spanFn(cz) : 1;
+        const f = lerp(inR, out * sp, smoothstep(0, 1, v));
+        return [f, lerp(inR, hang, v * v), f];
+      },
+    });
+  };
 
   if (cls === 'scout') {
-    // Garrison side cap: a deep cap pinched into a fore-and-aft ridge, sitting
-    // on the crown with a clear brim edge above the ear.
-    //
-    // phiMax is measured from the crown, so it decides how far DOWN the cap
-    // reaches. It has to stop above the brow at the front (dy ≈ +0.31) and dip
-    // over the ears and nape — a constant value large enough to look like a cap
-    // from the side reaches past the eyes at the front and renders the face as
-    // a blank shell.
+    // --- GARRISON SIDE CAP. Pinched flat across the top into a fore-and-aft
+    // crest, worn canted to the wearer's left. The cant matters more than any
+    // other 3 mm on this model: a symmetric cap reads as a swimming cap, a
+    // canted one reads as a soldier who put his hat on.
+    const cant = _m4.compose(
+      new THREE.Vector3(C[0], C[1], C[2]),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.10, 0, 0.17)),
+      new THREE.Vector3(1, 1, 1));
+    b.setTransform(cant);
     const capEdge = (u) => {
-      const cz = Math.cos(u * TAU);              // +1 face, -1 nape
-      return 0.455 - 0.075 * clamp01(cz) + 0.085 * clamp01(-cz);
+      const cz = Math.cos(u * TAU);
+      return 0.395 - 0.055 * clamp01(cz) + 0.115 * clamp01(-cz);
     };
     b.setColor(o.cap);
     b.addEllipsoid({
-      center: [C[0], C[1] + 0.010, C[2] - 0.004],
+      center: [0, 0.012, -0.004],
       radius: R, seg: seg(20), rings: seg(9),
       phiMax: capEdge,
-      displace: shell(1.085, (dx, dy) => [1 - 0.34 * clamp01(dy) * clamp01(dy), 1 + 0.06 * clamp01(dy), 1]),
+      // Squeezed to 44 % width at the crown and pushed 12 % taller: that is the
+      // wedge. Also stretched fore-and-aft so the crest overhangs front and back.
+      displace: shell(1.135, (dx, dy) => [
+        1 - 0.22 * clamp01(dy) * clamp01(dy), 1 + 0.20 * clamp01(dy), 1 + 0.16 * clamp01(dy),
+      ]),
     });
-    // Turn-up band around the cap's lower edge.
+    // Turn-up band: a SHALLOW strip, 4 % of the skull tall. Round 3's ran from
+    // phi 0.34 to 0.49 — a third of the head — and rendered as a dark bowl.
     b.setColor(o.capShade);
     b.addEllipsoid({
-      center: [C[0], C[1] + 0.006, C[2] - 0.004],
+      center: [0, 0.006, -0.004],
       radius: R, seg: seg(20), rings: seg(3),
-      phiMin: 0.34, phiMax: (u) => capEdge(u) + 0.038,
-      displace: shell(1.112, (dx, dy) => [1 - 0.20 * clamp01(dy) * clamp01(dy), 1, 1]),
+      phiMin: (u) => capEdge(u) - 0.075, phiMax: (u) => capEdge(u) + 0.030,
+      displace: shell(1.165, (dx, dy) => [1 - 0.05 * clamp01(dy), 1, 1]),
     });
-    // Regimental piping along the crown fold, front to back — not a band across
-    // the brow, which is where it used to sit and read as a headband.
+    // Regimental piping along the crest, front to back. Fat enough to survive
+    // the closeup — at 6 mm it measured as a single stray red pixel.
     b.setColor(o.accent);
     b.addTube([
-      { p: [C[0], C[1] + R[1] * 0.62, C[2] + R[2] * 0.78], rx: 0.0062, rz: 0.0052 },
-      { p: [C[0], C[1] + R[1] * 1.02, C[2] + R[2] * 0.18], rx: 0.0072, rz: 0.0058 },
-      { p: [C[0], C[1] + R[1] * 0.94, C[2] - R[2] * 0.52], rx: 0.0068, rz: 0.0054 },
-      { p: [C[0], C[1] + R[1] * 0.60, C[2] - R[2] * 0.88], rx: 0.0055, rz: 0.0046 },
+      { p: [0, R[1] * 0.66, R[2] * 0.92], rx: 0.0088, rz: 0.0072 },
+      { p: [0, R[1] * 1.16, R[2] * 0.20], rx: 0.0098, rz: 0.0080 },
+      { p: [0, R[1] * 1.10, -R[2] * 0.52], rx: 0.0094, rz: 0.0076 },
+      { p: [0, R[1] * 0.62, -R[2] * 1.00], rx: 0.0074, rz: 0.0060 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
+    // A CREAM WELT along the cap's lower edge. Under a fill-dominated key the
+    // cap's own terminator runs roughly horizontally across it, and without a
+    // line tracing where the cloth actually ENDS the shaded half reads as a
+    // bowl of hair rather than as a hat. One 3 mm bright line fixes that, and
+    // it is the same trim VC pipes its militia caps with.
+    if (!SIMPLE()) {
+      b.setColor(mixCol(o.trim, o.cap, 0.30));
+      const N = seg(20), edge = [];
+      for (let i = 0; i <= N; i++) {
+        const u = i / N, a = u * TAU;
+        const ph = (capEdge(u) + 0.012) * Math.PI;
+        const sp = Math.sin(ph), cp = Math.cos(ph);
+        const d = [sp * Math.sin(a), cp, sp * Math.cos(a)];
+        const k = shell(1.155)(d[0], d[1], d[2]);
+        edge.push({
+          p: [d[0] * R[0] * k[0], 0.008 + d[1] * R[1] * k[1], -0.004 + d[2] * R[2] * k[2]],
+          rx: 0.0034, rz: 0.0034,
+        });
+      }
+      b.addTube(edge, { seg: seg(5) });
+    }
+    // Cap badge on the left front of the band.
+    b.setColor(o.brass);
+    b.addRoundedBox({
+      center: [R[0] * 0.52, R[1] * 0.28, R[2] * 0.76], size: [0.016, 0.019, 0.008], bevel: 0.003, div: 2,
+    });
+    b.setTransform(null);
     return true;
   }
 
   if (cls === 'shock' || cls === 'lancer') {
-    // Stamped steel helmet. Built as an offset SHELL of the skull with an
-    // angle-varying edge, not as a lathe: a lathe's rim is a horizontal circle,
-    // so to clear the ears at the side it had to sit below the brow at the
-    // front — which is exactly why the second soldier in the closeup shot had
-    // "no face, a blank tan oval with a flat crimson strip across the eye
-    // line". The edge now stops at dy >= +0.30 across the front (above the
-    // brow) and swings down over the ears and the nape.
+    // --- STAMPED STEEL HELMET. The crown is a deep dome; the READ is the brim,
+    // which flares to 1.34 R and hangs. At 60 m the soldier is 20 px tall and the
+    // only thing resolving is that his head is wider than his neck by half again
+    // and has a hard shadow under it.
     const helmEdge = (u) => {
-      const cz = Math.cos(u * TAU);              // +1 face, -1 nape
-      return 0.400 - 0.100 * clamp01(cz) + 0.145 * clamp01(-cz);
+      const cz = Math.cos(u * TAU);
+      return 0.385 - 0.085 * clamp01(cz) + 0.150 * clamp01(-cz);
     };
-    b.setColor(mixCol(o.metal, o.tunicShade, 0.45));
+    b.setColor(mixCol(o.metal, o.tunicShade, 0.42));
     b.addEllipsoid({
-      center: [C[0], C[1] + 0.004, C[2] - 0.008],
+      center: [C[0], C[1] + 0.010, C[2] - 0.008],
       radius: R, seg: seg(20), rings: seg(10),
       phiMax: helmEdge,
-      displace: shell(1.16, (dx, dy) => [1 + 0.04 * clamp01(-dy), 1 - 0.10 * clamp01(dy) * clamp01(dy), 1 + 0.03 * clamp01(-dy)]),
+      displace: shell(1.175, (dx, dy, dz) => [
+        1 + 0.06 * clamp01(-dy), 1 - 0.04 * clamp01(dy) * clamp01(dy), 1 + 0.05 * clamp01(-dy),
+      ]),
     });
-    // Rolled brim, flared outboard — this is the silhouette that says
-    // "shocktrooper" from 60 m away.
-    b.setColor(mixCol(o.metal, PALETTE.metalDark, 0.35));
-    b.addEllipsoid({
-      center: [C[0], C[1] + 0.002, C[2] - 0.008],
-      radius: R, seg: seg(20), rings: seg(3),
-      phiMin: 0.30, phiMax: (u) => helmEdge(u) + 0.055,
-      displace: shell(1.235, (dx, dy) => [1, 1 - 0.16 * clamp01(dy), 1]),
-    });
-    // Rivets round the brim line.
-    b.setColor(mixCol(o.metal, o.tunicShade, 0.15));
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * TAU + 0.4;
-      const rr = R[0] * 1.20, rd = R[2] * 1.20;
+    // The flare. It stands ~34 % proud of the skull, so from any angle the head
+    // is wider than the neck by half again and carries a hard shadow under it.
+    //
+    // THE BRIM MAY NOT CROSS THE BROW, and the old numbers crossed everything.
+    // `hang` multiplies the ring's own dy, so brim(0.385, 0.545, 1.155, 1.26,
+    // 1.95) put the outer rim at cos(0.545*pi) * 1.95 = dy -0.275 — 35 mm BELOW
+    // the centre of the head, on a canon whose brow sits at +0.073 and whose
+    // nose tip sits at -0.391. That is not a brim, it is a bucket: measured in
+    // `squad` and `village` it rendered as a flat grey slab covering the whole
+    // face from crown to jaw, which is also why it survived four rounds of
+    // review — no shot had ever put a helmeted soldier close to camera.
+    //
+    // Solved against the head's own landmarks instead. The rim lands at dy
+    // +0.135, i.e. 8 mm clear above the brow ridge, all the way round; the
+    // helmet is then worn AT the brow the way a stamped steel helmet is, and
+    // the eye, nose and mouth underneath it are all still in frame.
+    const spanFn = (cz) => 1 - 0.13 * clamp01(cz) + 0.06 * clamp01(-cz);
+    b.setColor(mixCol(o.metal, PALETTE.metalDark, 0.28));
+    brim(0.365, 0.460, 1.155, 1.34, 1.077, spanFn);
+    // The under-lip: the rolled rim, a thin vertical band at the brim's edge.
+    b.setColor(mixCol(o.metal, PALETTE.metalDark, 0.68));
+    brim(0.455, 0.492, 1.30, 1.30, 1.30, spanFn);
+    // Crown rib, front to back — a stamped reinforcing ridge.
+    b.setColor(mixCol(o.metal, PALETTE.metalDark, 0.20));
+    if (!SIMPLE()) b.addTube([
+      { p: [C[0], C[1] + R[1] * 0.62, C[2] + R[2] * 0.92], rx: 0.006, rz: 0.005 },
+      { p: [C[0], C[1] + R[1] * 1.16, C[2] + R[2] * 0.10], rx: 0.007, rz: 0.006 },
+      { p: [C[0], C[1] + R[1] * 1.02, C[2] - R[2] * 0.78], rx: 0.006, rz: 0.005 },
+    ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
+    if (cls === 'lancer') {
+      // Neck curtain: a stiff leather flap off the back of the brim. Lancers get
+      // the heaviest head in the game because they carry the heaviest weapon.
+      b.setColor(o.leather).setMottle(0.05);
       b.addTube([
-        { p: [C[0] + Math.sin(a) * rr * 0.94, C[1] + 0.012, C[2] - 0.008 + Math.cos(a) * rd * 0.94], rx: 0.0062, rz: 0.0062 },
-        { p: [C[0] + Math.sin(a) * rr * 1.02, C[1] + 0.012, C[2] - 0.008 + Math.cos(a) * rd * 1.02], rx: 0.0052, rz: 0.0052 },
-      ], { seg: seg(6), capEnd: 'round' });
+        { p: [C[0] - R[0] * 0.92, C[1] - R[1] * 0.20, C[2] - R[2] * 0.62], rx: 0.010, rz: 0.026 },
+        { p: [C[0], C[1] - R[1] * 0.28, C[2] - R[2] * 1.30], rx: 0.010, rz: 0.030 },
+        { p: [C[0] + R[0] * 0.92, C[1] - R[1] * 0.20, C[2] - R[2] * 0.62], rx: 0.010, rz: 0.026 },
+      ], { seg: seg(9), capStart: 'round', capEnd: 'round' });
     }
-    // Chin strap, hanging clear of the jaw.
+    // Chin strap, clear of the jaw, with a buckle on the wearer's right.
     b.setColor(o.leather);
     b.addTube([
-      { p: [C[0] + R[0] * 1.14, C[1] - 0.014, C[2] - 0.014], rx: 0.009, rz: 0.0038 },
-      { p: [C[0] + R[0] * 0.92, C[1] - R[1] * 0.74, C[2] + R[2] * 0.26], rx: 0.009, rz: 0.0038 },
-      { p: [C[0], C[1] - R[1] * 1.00, C[2] + R[2] * 0.40], rx: 0.010, rz: 0.0038 },
-      { p: [C[0] - R[0] * 0.92, C[1] - R[1] * 0.74, C[2] + R[2] * 0.26], rx: 0.009, rz: 0.0038 },
-      { p: [C[0] - R[0] * 1.14, C[1] - 0.014, C[2] - 0.014], rx: 0.009, rz: 0.0038 },
+      { p: [C[0] + R[0] * 1.22, C[1] - R[1] * 0.16, C[2] - 0.014], rx: 0.0085, rz: 0.0036 },
+      { p: [C[0] + R[0] * 0.94, C[1] - R[1] * 0.80, C[2] + R[2] * 0.26], rx: 0.0085, rz: 0.0036 },
+      { p: [C[0], C[1] - R[1] * 1.04, C[2] + R[2] * 0.40], rx: 0.0095, rz: 0.0036 },
+      { p: [C[0] - R[0] * 0.94, C[1] - R[1] * 0.80, C[2] + R[2] * 0.26], rx: 0.0085, rz: 0.0036 },
+      { p: [C[0] - R[0] * 1.22, C[1] - R[1] * 0.16, C[2] - 0.014], rx: 0.0085, rz: 0.0036 },
     ], { seg: seg(6), capStart: 'flat', capEnd: 'flat' });
+    b.setColor(o.brass);
+    if (!SIMPLE()) b.addRoundedBox({
+      center: [-R[0] * 0.62, C[1] - R[1] * 0.92, C[2] + R[2] * 0.36],
+      size: [0.013, 0.010, 0.006], bevel: 0.002, div: 1,
+    });
     return true;
   }
 
   if (cls === 'engineer') {
-    // Peaked service cap: a flat-topped crown on a band, with a long visor.
+    // --- PEAKED SERVICE CAP. Flat disc crown, hard band, long visor. The visor
+    // is the whole silhouette: a horizontal bar sticking out of the head.
     const capEdge = (u) => {
       const cz = Math.cos(u * TAU);
-      return 0.410 - 0.070 * clamp01(cz) + 0.115 * clamp01(-cz);
+      return 0.385 - 0.045 * clamp01(cz) + 0.110 * clamp01(-cz);
     };
     b.setColor(o.cap);
     b.addEllipsoid({
-      center: [C[0], C[1] + 0.016, C[2] - 0.004],
+      center: [C[0], C[1] + 0.034, C[2] - 0.004],
       radius: R, seg: seg(18), rings: seg(8),
       phiMax: capEdge,
-      // Flat top, flared out at the front — a service cap, not a beanie.
-      displace: shell(1.10, (dx, dy, dz) => [
-        1 + 0.10 * clamp01(dy) * clamp01(dz), 1 - 0.30 * clamp01(dy) * clamp01(dy), 1 + 0.12 * clamp01(dy) * clamp01(dz),
+      // Flat top: the crown is RAISED 34 mm and then only lightly compressed, so
+      // the disc sits proud of the skull instead of inside it.
+      displace: shell(1.13, (dx, dy, dz) => [
+        1 + 0.22 * clamp01(dy), 1 - 0.14 * clamp01(dy) * clamp01(dy), 1 + 0.26 * clamp01(dy) * clamp01(dz),
       ]),
     });
+    // Hard band under the crown, standing proud of it.
     b.setColor(o.capShade);
     b.addEllipsoid({
-      center: [C[0], C[1] + 0.008, C[2] - 0.004],
+      center: [C[0], C[1] + 0.006, C[2] - 0.004],
       radius: R, seg: seg(18), rings: seg(3),
-      phiMin: 0.30, phiMax: (u) => capEdge(u) + 0.060,
-      displace: shell(1.115),
+      phiMin: (u) => capEdge(u) - 0.085, phiMax: (u) => capEdge(u) + 0.030,
+      displace: shell(1.165),
     });
-    // Visor.
-    b.setColor(mixCol(o.leather, PALETTE.metalDark, 0.4));
+    // Visor: glossy, angled down, hung off the LOWER EDGE OF THE BAND.
+    //
+    // It used to hang at dy 0.14 and run out to 1.75 R[2], and against a face
+    // whose brow sits at dy 0.07 that is a 9 cm plate cantilevered across the
+    // eyes, the nose and most of the cheek: every engineer in the game rendered
+    // as a cap with a black slab where his face should be (measured in `squad`
+    // and `village`). The band's own lower edge is at phi capEdge+0.030, i.e.
+    // dy 0.40 at the front, and a peaked cap's visor is fixed to exactly that
+    // seam — so that is where it goes, and it reaches 1.44 R[2] instead of
+    // 1.75, which is a 4 cm peak proud of the brow rather than a shelf over it.
+    const visorY = Math.cos((capEdge(0) + 0.030) * Math.PI);
+    b.setColor(mixCol(o.leather, PALETTE.metalDark, 0.45));
     b.setTransform(_m4.compose(
-      new THREE.Vector3(C[0], C[1] + 0.026, C[2] + R[2] * 0.60),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.34, 0, 0)),
+      new THREE.Vector3(C[0], C[1] + R[1] * visorY, C[2] + R[2] * 0.66),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.30, 0, 0)),
       new THREE.Vector3(1, 1, 1)));
     b.addEllipsoid({
-      radius: [R[0] * 1.06, 0.008, R[2] * 0.90], seg: seg(14), rings: seg(5),
+      radius: [R[0] * 1.06, 0.0072, R[2] * 0.78], seg: seg(14), rings: seg(5),
       phiMax: (u) => (Math.cos(u * TAU) > 0 ? 1 : 0.5),
+      displace: (dx, dy, dz) => [1 - 0.22 * clamp01(-dz), 1, 1],
     });
     b.setTransform(null);
     b.setColor(o.brass);
-    b.addRoundedBox({ center: [0, C[1] + 0.052, C[2] + R[2] * 1.06], size: [0.012, 0.011, 0.005], bevel: 0.003, div: 2 });
+    b.addRoundedBox({
+      center: [0, C[1] + R[1] * (visorY + 0.17), C[2] + R[2] * 1.02], size: [0.014, 0.013, 0.006], bevel: 0.003, div: 2,
+    });
+    // Goggles pushed up ONTO the band — an engineer's tell, and it only reads
+    // as one if the strap is on the band. Slung across the forehead (which is
+    // where dy 0.30 lands now) it reads as a blindfold.
+    b.setColor(PALETTE.metalDark);
+    b.addTube([
+      { p: [-R[0] * 1.05, C[1] + R[1] * (visorY + 0.10), C[2] + R[2] * 0.30], rx: 0.013, rz: 0.013 },
+      { p: [0, C[1] + R[1] * (visorY + 0.14), C[2] + R[2] * 0.98], rx: 0.015, rz: 0.015 },
+      { p: [R[0] * 1.05, C[1] + R[1] * (visorY + 0.10), C[2] + R[2] * 0.30], rx: 0.013, rz: 0.013 },
+    ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
     return true;
   }
 
-  // sniper: soft field cap with a long bill, worn back off the brow
-  b.setColor(mixCol(o.cap, o.trouser, 0.35));
+  // --- SNIPER: soft field cap with a long bill, worn low, plus a hood band.
+  b.setColor(mixCol(o.cap, o.trouser, 0.30));
   b.addEllipsoid({
-    center: [C[0], C[1] + 0.010, C[2] - 0.012],
+    center: [C[0], C[1] + 0.008, C[2] - 0.014],
     radius: R, seg: seg(16), rings: seg(7),
     phiMax: (u) => {
       const cz = Math.cos(u * TAU);
-      return 0.430 - 0.070 * clamp01(cz) + 0.100 * clamp01(-cz);
+      return 0.410 - 0.055 * clamp01(cz) + 0.130 * clamp01(-cz);
     },
-    displace: shell(1.080, (dx, dy, dz) => 1 + 0.05 * clamp01(-dz) * clamp01(dy)),
+    displace: shell(1.125, (dx, dy, dz) => [
+      1 - 0.08 * clamp01(dy) * clamp01(dy), 1 - 0.05 * clamp01(dy), 1 + 0.14 * clamp01(-dz) * clamp01(dy),
+    ]),
   });
-  b.setColor(mixCol(o.capShade, o.trouser, 0.35));
+  // The bill: long, soft, curved down. This is the sniper's silhouette.
+  b.setColor(mixCol(o.capShade, o.trouser, 0.30));
   b.setTransform(_m4.compose(
-    new THREE.Vector3(C[0], C[1] + 0.030, C[2] + R[2] * 0.62),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.26, 0, 0)),
+    new THREE.Vector3(C[0], C[1] + R[1] * 0.20, C[2] + R[2] * 0.66),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.36, 0, 0)),
     new THREE.Vector3(1, 1, 1)));
   b.addEllipsoid({
-    radius: [R[0] * 0.98, 0.007, R[2] * 0.84], seg: seg(12), rings: seg(4),
+    radius: [R[0] * 1.02, 0.0065, R[2] * 1.14], seg: seg(12), rings: seg(4),
     phiMax: (u) => (Math.cos(u * TAU) > 0 ? 1 : 0.5),
+    displace: (dx, dy, dz) => [1 - 0.30 * clamp01(-dz), 1, 1],
   });
   b.setTransform(null);
   return true;
 }
 
+
 /** Per-class load-out that isn't the weapon itself. */
 function gearClass(b, rig, o, cls) {
   const g = o.girth;
   const hy = rig.restWorld.hips.pos.y, cy = rig.restWorld.spine3.pos.y;
-  b.setBones(BONE_GROUPS.TORSO).setMottle(0.05);
+  b.setZone(ZONE.KIT).setBones(BONE_GROUPS.TORSO).setMottle(0.05);
 
   if (cls === 'shock') {
     // Heavy chest rig + magazine bank + a slung entrenching tool.
@@ -560,7 +783,7 @@ function gearClass(b, rig, o, cls) {
   if (cls === 'lancer') {
     // Big pauldron over the right shoulder where the lance rides.
     const sh = rig.restWorld.upperArmR.pos;
-    b.setBones(BONE_GROUPS.ARM_R).setColor(mixCol(o.metal, o.tunicShade, 0.4));
+    b.setZone(ZONE.KIT).setBones(BONE_GROUPS.ARM_R).setColor(mixCol(o.metal, o.tunicShade, 0.4));
     b.setTransform(_m4.compose(
       new THREE.Vector3(sh.x - 0.010, sh.y + 0.030, sh.z + 0.002),
       new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -0.22)),
@@ -577,7 +800,7 @@ function gearClass(b, rig, o, cls) {
     });
     b.setTransform(null);
     // Spare warhead tube on the back.
-    b.setBones(BONE_GROUPS.TORSO).setColor(mixCol(o.metal, o.tunicShade, 0.3));
+    b.setZone(ZONE.KIT).setBones(BONE_GROUPS.TORSO).setColor(mixCol(o.metal, o.tunicShade, 0.3));
     b.addTube([
       { p: [-0.078, hy + 0.02, -0.120 * g], rx: 0.036, rz: 0.036 },
       { p: [0.070, cy + 0.05, -0.118 * g], rx: 0.036, rz: 0.036 },
@@ -777,8 +1000,16 @@ class ClothStrip {
     return g;
   }
 
-  /** Snap the whole strip onto its rest layout (spawn / teleport). */
-  reset() {
+  /**
+   * Snap the whole strip onto its rest layout (spawn / teleport).
+   *
+   * `invRoot` is optional and, when given, the mesh is rewritten too. That
+   * matters: the particles live in WORLD space and the mesh in character-local
+   * space, so a strip whose particles are reset but whose mesh is not is still
+   * drawing wherever it was last written — and a strip that has never been
+   * simulated at all is drawing a Float32Array of zeros. Both were on screen.
+   */
+  reset(invRoot) {
     this.bone.updateMatrixWorld(true);
     const n = this.rows * this.cols;
     for (let i = 0; i < n; i++) {
@@ -788,6 +1019,7 @@ class ClothStrip {
       this.p[i * 3 + 2] = this.prev[i * 3 + 2] = _cv.z;
     }
     this._init = true;
+    if (invRoot) this._writeMesh(invRoot);
   }
 
   /**
@@ -861,7 +1093,12 @@ class ClothStrip {
       }
     }
 
-    // Write into the mesh (character-local space) and rebuild normals.
+    this._writeMesh(invRoot);
+  }
+
+  /** Push the world-space particles into the mesh and rebuild its normals. */
+  _writeMesh(invRoot) {
+    const n = this.rows * this.cols;
     const posAttr = this.geom.attributes.position, norAttr = this.geom.attributes.normal;
     const pa = posAttr.array, na = norAttr.array;
     const R = this.rows, C = this.cols, half = R * C;
@@ -1023,6 +1260,98 @@ const _invM = new THREE.Matrix4();
 function _rq2Inv(obj) { return _invM.copy(obj.matrixWorld).invert(); }
 
 // ---------------------------------------------------------------------------
+// Distance LOD
+// ---------------------------------------------------------------------------
+
+/**
+ * One shared low-detail body per (class, team), built from the same source as
+ * the hero mesh with the tessellation scale turned down and the sub-pixel
+ * features switched off. Ten geometries for the whole game.
+ */
+const _farCache = new Map();
+const _farIdentity = new THREE.Matrix4();
+
+function makeFarBody(cls, team, rig) {
+  const key = `${cls}|${team}`;
+  let entry = _farCache.get(key);
+  if (entry === undefined) {
+    let geo = null, inverses = null;
+    const prev = getDetail();
+    try {
+      setDetail(0.45);
+      const canonRig = makeRig({ bodyType: 'medium', heightScale: 1 });
+      const app = makeAppearance(0x5eed ^ (cls.length * 977) ^ (team * 7919), cls, team);
+      const b = new MeshBuilder();
+      const opts = {
+        girth: 1, shoulder: cls === 'shock' || cls === 'lancer' ? 1.05 : 1.0,
+        skin: app.skin, gloves: app.gloves,
+        tunic: app.tunic, tunicShade: app.tunicShade, collar: app.collar,
+        trouser: app.trouser, trouserCuff: app.trouserCuff,
+        leather: app.leather, belt: app.belt, boot: app.boot, bootSole: app.bootSole,
+        bootWelt: app.bootWelt, cap: app.cap, capShade: app.capShade,
+        glove: app.glove, brass: app.brass, metal: app.metal,
+        accent: app.accent, trim: app.trim, canvas: app.canvas,
+        hairColor: app.hairColor,
+      };
+      buildBody(b, canonRig, opts);
+      const head = buildHead(b, canonRig, opts, app.face);
+      const covered = gearHead(b, canonRig, opts, head, cls);
+      buildHair(b, canonRig, opts, head, app.hairStyle, covered);
+      gearWebbing(b, canonRig, opts, cls);
+      gearClass(b, canonRig, opts, cls);
+      // Coarser AO grid: at 40 m the bake is a value wash, not a crease map.
+      // Same throat split as the hero mesh — a 55 px head cannot afford a grey
+      // wash any more than a 250 px one can.
+      const farThroatY = canonRig.restWorld.head.pos.y - 0.11;
+      b.bakeAO({ res: 30, strength: 0.58, radius: 0.135, skipAbove: farThroatY });
+      b.bakeAO({ res: 26, strength: 0.40, radius: 0.052, skipBelow: farThroatY });
+      geo = b.finish(canonRig);
+      // THE BIND POSE THE GEOMETRY WAS AUTHORED IN, kept with it.
+      //
+      // Skinning is v' = sum_i w_i * B_i * M_i^-1 * v, and M_i — the bind-pose
+      // world matrix of bone i — has to be the one the VERTICES were authored
+      // against. This geometry is authored against `canonRig`, so M_i is
+      // canonRig's rest, and using the per-character rig's rest instead (which
+      // is what `mesh.bind(rig.skeleton, ...)` does, because a Skeleton built
+      // with no explicit inverses captures them from its own bones) applies
+      // every bone rotation about the WRONG PIVOT. At rest the error is zero,
+      // which is why it survived review; under a pose it is
+      // (I - R) * (charRest_i - canonRest_i) per bone, and on the arm chain
+      // those errors compound down four bones and then get multiplied by the
+      // 0.7 m lever of a rifle held in the hand. Measured consequence: a
+      // straight ~10 px beam a thousand pixels long running out of a soldier's
+      // hands in `overview` — the one shot where LOD >= 2 activates.
+      //
+      // So the canonical inverses are captured here and handed to every far
+      // mesh below. The far body then deforms as the medium-build soldier it
+      // was authored as, driven by this character's bone rotations, which is
+      // exactly what 55 px of screen height can carry.
+      inverses = canonRig.skeleton.boneInverses.map((m) => m.clone());
+    } catch (e) {
+      console.warn('[actors] far LOD build failed', e);
+      geo = null;
+      inverses = null;
+    } finally {
+      setDetail(prev);
+    }
+    entry = { geo, inverses };
+    _farCache.set(key, entry);
+  }
+  if (!entry.geo || !entry.inverses) return null;
+  const mesh = new THREE.SkinnedMesh(entry.geo, actorBodyMaterial());
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.frustumCulled = true;
+  mesh.userData.outline = true;
+  mesh.userData.outlineWidth = 2.15;
+  // Same bones as the hero mesh — so it follows the same animation — but the
+  // canonical bind inverses the geometry was built against.
+  const farSkel = new THREE.Skeleton(rig.skeleton.bones, entry.inverses.map((m) => m.clone()));
+  mesh.bind(farSkel, _farIdentity);
+  return mesh;
+}
+
+// ---------------------------------------------------------------------------
 // Character
 // ---------------------------------------------------------------------------
 
@@ -1065,19 +1394,58 @@ export class Character {
     };
     buildBody(b, this.rig, opts);
     const head = buildHead(b, this.rig, opts, app.face);
+    // Kept because it is the only description of where this soldier's face
+    // actually IS — centre, radii, the skull displacement and the landmark
+    // canon. Headgear and hair already need it at build time; keeping it lets
+    // anything downstream (a portrait camera, a head-shot hit box, the
+    // head-height measurement the art rubric asks for) work off the same
+    // numbers instead of re-deriving them from bone positions.
+    this.headShape = head;
     const covered = gearHead(b, this.rig, opts, head, this.cls);
     buildHair(b, this.rig, opts, head, app.hairStyle, covered);
     gearWebbing(b, this.rig, opts, this.cls);
     gearClass(b, this.rig, opts, this.cls);
 
-    // Radius tightened with the smaller skull: at 0.10 m the AO probe reached
-    // right across a 0.16 m-wide face and pooled soot in the eye sockets and
-    // under the cheekbone, which fought the band terminator that is supposed to
-    // draw that edge.
-    b.bakeAO({ res: CFG.quality >= 2 ? 48 : 36, strength: 0.48, radius: 0.082 });
+    // TWO BAKES, split at the throat. One probe radius cannot serve both ends
+    // of a soldier: 0.14 m is what it takes to find the gap between an upper
+    // arm and the ribcage, and 0.14 m on a 0.155 m-wide head reaches from one
+    // cheekbone to the other — it stops being occlusion and becomes a grey
+    // wash over the whole face. The modelled skull makes it worse, not better,
+    // because the socket, the buccal hollow, the nasolabial and the mental
+    // crease are real cavities now AND the head's own paint map is already
+    // laying a value into every one of them; baking a wide-radius AO on top
+    // renders them as soot blobs. Above the throat: half the strength, a third
+    // of the radius, so the bake only finds what geometry actually encloses —
+    // under the helmet brim, inside the ear, under the jaw.
+    const throatY = this.rig.restWorld.head.pos.y - 0.11;
+    b.bakeAO({ res: CFG.quality >= 2 ? 52 : 38, strength: 0.62, radius: 0.135, skipAbove: throatY });
+    b.bakeAO({ res: CFG.quality >= 2 ? 44 : 32, strength: 0.40, radius: 0.052, skipBelow: throatY });
     this.geometry = b.finish(this.rig);
     this.mesh = createSkinnedBody(this.geometry, this.rig, actorBodyMaterial());
     this.root.add(this.mesh);
+
+    // --- distance LOD --------------------------------------------------------
+    // The far body is built ONCE PER CLASS from this same source at detail 0.45
+    // and shared by every soldier of that class. Skin weights resolved against
+    // the canonical rig still bind correctly to any other rig — bone.matrixWorld
+    // * boneInverse is the identity at rest for BOTH — so the far mesh is simply
+    // a medium-build soldier of the right class, which is exactly what 60 px of
+    // screen height can carry.
+    this.meshFar = makeFarBody(this.cls, this.team, this.rig);
+    if (this.meshFar) { this.meshFar.visible = false; this.root.add(this.meshFar); }
+    this._lodDist = 0;
+    this._clothStale = false;
+    this._camPos = new THREE.Vector3();
+    // three hands the CAMERA to onBeforeRender, and it is the only place a mesh
+    // can learn where it is being viewed from without the game layer telling it.
+    // The shadow pass calls it too, with an orthographic camera; ignore those.
+    const noteCam = (renderer, scene, camera) => {
+      if (!camera || !camera.isPerspectiveCamera) return;
+      this._camPos.setFromMatrixPosition(camera.matrixWorld);
+      this._lodDist = this._camPos.distanceTo(this.root.position);
+    };
+    this.mesh.onBeforeRender = noteCam;
+    if (this.meshFar) this.meshFar.onBeforeRender = noteCam;
 
     // --- weapon -------------------------------------------------------------
     const wname = cfg.weapon || WEAPON_FOR_CLASS[this.cls] || 'gallianRifle';
@@ -1497,8 +1865,56 @@ export class Character {
 
   set lod(n) { this.lodLevel = n; }
 
+  /**
+   * Pick a detail level from the distance the last render reported.
+   *
+   * The game layer never sets `lodLevel` — nothing in ARCHITECTURE.md obliges it
+   * to — so every soldier in round 3 ran full IK, full cloth and full geometry
+   * at 40 m, which is most of the reason the overview shot sat at 36 fps with
+   * 5.2 M triangles. Bands are hysteretic (the switch back up is 3 m nearer than
+   * the switch down) so a soldier walking along a boundary cannot flicker.
+   *
+   * A 1.72 m figure at 42 deg fov on a 1080-line frame is 2421/d pixels tall:
+   *   14 m -> 173 px   full detail, cloth simulated
+   *   26 m ->  93 px   no cloth
+   *   44 m ->  55 px   shared far body
+   *   beyond -> 12 Hz
+   */
+  _pickLod() {
+    const d = this._lodDist;
+    if (d <= 0) return;
+    const cur = this.lodLevel | 0;
+    const up = 3.0;                       // hysteresis, metres
+    let want = cur;
+    if (d > 44) want = 3;
+    else if (d > 26) want = 2;
+    else if (d > 14) want = 1;
+    else want = 0;
+    // Only step back toward detail once clear of the boundary by `up`.
+    if (want < cur) {
+      const edge = [0, 14, 26, 44][cur];
+      if (d > edge - up) want = cur;
+    }
+    if (want === cur) return;
+    this.lodLevel = want;
+    // Coming back inside the cloth band after a spell outside it, the strips
+    // hold world-space particles from wherever the soldier was when they were
+    // last stepped. Snap them onto the rest layout rather than letting the
+    // solver drag them across the intervening ground.
+    if (cur >= 2 && want < 2) this._clothStale = true;
+    if (this.meshFar) {
+      const far = want >= 2;
+      if (this.mesh.visible === far) {
+        this.mesh.visible = !far;
+        this.meshFar.visible = far;
+        for (const c of this.cloth) c.mesh.visible = !far;
+      }
+    }
+  }
+
   update(dt) {
     if (!this.root.visible) return;
+    this._pickLod();
     const lod = this.lodLevel | 0;
     this.animator.lodLevel = lod;
 
@@ -1532,13 +1948,38 @@ export class Character {
 
     this._updateWeapon(dt);
 
-    if (lod < 1 && this.cloth.length) {
+    // --- cloth ---------------------------------------------------------------
+    // The gate is `lod < 2`, which is the SAME band the strips are visible in
+    // (see _pickLod: the meshes are hidden at lod >= 2). It used to be `lod < 1`
+    // while visibility switched at 2, so every soldier between 14 m and 26 m
+    // drew a strip that was never stepped. That is not a subtle error: the
+    // particles live in world space and are seeded at the bind pose, so a
+    // soldier deployed anywhere other than the origin renders his tunic tail as
+    // a straight ribbon stretched from his hips to wherever the rig happened to
+    // be standing when the strip was built. Measured in `overview`: Edy
+    // Nelson's tail spanned 15.0 m, from (-3.5, 8.2, 26.8) to (0.0, 8.2, 41.8)
+    // — the "stretched lance" beam a thousand pixels long. Four particles
+    // times sixteen soldiers is not a budget worth defending.
+    //
+    // A TELEPORT resets rather than stretches. The battle layer places units by
+    // writing root.position, so between two frames a soldier can move the width
+    // of the map; the anchor row snaps with him and the free rows do not, and
+    // the strip spans the gap until the constraint solve reels it in. At 4 m/s
+    // a running soldier covers 0.07 m per frame, so 1.2 m cannot be motion.
+    if (lod < 2 && this.cloth.length) {
       _windT += dt;
       this._invRoot.copy(this.root.matrixWorld).invert();
       boneWorld(this.rig.boneMap.hips, this._bodyA);
       boneWorld(this.rig.boneMap.neck, this._bodyB);
       const r = 0.155 * this.appearance.girth * this.root.scale.y;
-      for (const c of this.cloth) c.update(dt, this._invRoot, this._bodyA, this._bodyB, r);
+      const w = this._wSync, p0 = this.root.position;
+      const jumped = this._clothStale || !(w.px === w.px)   // NaN on the first tick
+        || Math.abs(p0.x - w.px) + Math.abs(p0.y - w.py) + Math.abs(p0.z - w.pz) > 1.2;
+      this._clothStale = false;
+      for (const c of this.cloth) {
+        if (jumped) c.reset(this._invRoot);
+        else c.update(dt, this._invRoot, this._bodyA, this._bodyB, r);
+      }
     }
 
     // The animator already walked the graph — record that so the first
@@ -1591,6 +2032,9 @@ export class Character {
     for (const c of this.cloth) { this.root.remove(c.mesh); c.dispose(); }
     this.cloth.length = 0;
     this.geometry.dispose();
+    // meshFar's geometry is SHARED across every soldier of this class — never
+    // dispose it here.
+    if (this.meshFar) { this.root.remove(this.meshFar); this.meshFar = null; }
     if (this.root.parent) this.root.parent.remove(this.root);
     this.mesh.skeleton.dispose?.();
     this.root.clear();

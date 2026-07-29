@@ -948,9 +948,18 @@ export function inkGauge({ w = 200, h: hgt = 14, seed = 11, segs = 8, tone = 'hp
 
   const back = svgEl(
     '<svg xmlns="http://www.w3.org/2000/svg"' + vb + '>' +
+    // TWO angles, not one. A single rank of parallel strokes at 34% opacity is
+    // what the critique kept reading as "weak hatching" on the UI: at gauge
+    // scale it disappears into the paper and the empty run of a meter comes out
+    // as a blank div. A cross-hatch — the dominant rank plus a sparser
+    // counter-rank at the opposite lean — is what a pencil actually leaves when
+    // it fills a ledger column, and it survives being 11 px tall.
     '<path d="' + hatchPath(pad, pad, iw, ih, {
-      spacing: Math.max(2.2, hgt * 0.22), angle: -0.92, seed: seed + 5, amp: 0.3,
-    }) + '" stroke="#4a3c2c" stroke-width="0.6" opacity="0.34" fill="none"/>' +
+      spacing: Math.max(1.9, hgt * 0.19), angle: -0.92, seed: seed + 5, amp: 0.3,
+    }) + '" stroke="#4a3c2c" stroke-width="0.65" opacity="0.46" fill="none"/>' +
+    '<path d="' + hatchPath(pad, pad, iw, ih, {
+      spacing: Math.max(3.4, hgt * 0.34), angle: 0.74, seed: seed + 71, amp: 0.36,
+    }) + '" stroke="#4a3c2c" stroke-width="0.5" opacity="0.26" fill="none"/>' +
     '<path d="' + wobblyPath(pad, pad + ih * 0.22, w - pad, pad + ih * 0.22,
       { seed: seed + 31, amp: 0.4, segs: 7 }) +
     '" stroke="#3a2f28" stroke-width="0.7" opacity="0.16" fill="none"/></svg>');

@@ -503,6 +503,35 @@ export class Terrain {
         // shaded hollows deepen toward the darkest green rather than to grey
         _col.lerp(cGrassDark, clamp01(0.62 - ao) * 1.35);
 
+        // A VILLAGE YARD IS NOT A LAWN. Inside the settlement the sward is
+        // walked on, carted over, grazed by whatever is tethered to the wall and
+        // dusted with the road metal blown off the street; it is sage-olive with
+        // the chroma trodden out of it, not pasture. Round 3 painted it at full
+        // meadow saturation and the `village` frame duly measured a mean HSV
+        // saturation of 91/255 — the highest of the twelve, against 60-77 — with
+        // the ground reading as an electric green carpet laid between the
+        // frontages. Two moves, both of them things that physically happen to
+        // trodden ground: a lean toward the dry cut and the road's own dust, and
+        // then a straight pull toward the patch's own luminance, which takes the
+        // chroma out without shifting the hue toward sepia (that was round 1's
+        // mistake and it is why this is a desaturation, not a brown wash).
+        if (vm > 0.02) {
+          // vm * 2.1, not vm: villageMask() falls to zero 26 m out from the pad
+          // centre, and the yards, verges and back lanes a street camera
+          // actually stands in are all in that outer ring. Scaling the mask
+          // saturates it across the built-up area and leaves the taper for the
+          // last few metres, where the settlement really does give way to
+          // pasture.
+          const yard = clamp01(vm * 2.1) * (0.58 + 0.42 * clump);
+          _col.lerp(cGrassDry, yard * 0.40);
+          _colB.copy(cDirt);
+          _col.lerp(_colB, yard * 0.17);
+          const yl = _col.r * 0.30 + _col.g * 0.59 + _col.b * 0.11;
+          const yk = yard * 0.50;
+          _col.setRGB(
+            lerp(_col.r, yl, yk), lerp(_col.g, yl, yk), lerp(_col.b, yl, yk));
+        }
+
         // Road metal: dry ochre in the wheel ruts, damp umber at the edges.
         // Kept well off `sand` — this is a cart track worn into pasture, and a
         // bright sand ribbon through a green valley reads as a beach.

@@ -26,6 +26,7 @@ const FRAG = /* glsl */ `
 precision highp float;
 
 uniform vec3  uZenith;
+uniform vec3  uSkyMid;
 uniform vec3  uHorizon;
 uniform vec3  uHaze;
 uniform vec3  uGold;
@@ -40,6 +41,9 @@ uniform float uBands;
 uniform float uGradPow;
 uniform float uGradSpan;
 uniform float uExposure;
+// 0 = full daylight dome, 1 = the sun is on the horizon. Everything this drives
+// is a WIDENING or a WARMING of a term that already exists, never a new one.
+uniform float uDusk;
 uniform sampler2D uPaperTex;
 
 varying vec3 vDir;
@@ -102,22 +106,37 @@ void main() {
   float g = 0.70 * smoothstep(0.0, uGradSpan, up)
           + 0.30 * smoothstep(uGradSpan * 0.64, 0.62, up);
   g = pow(clamp(g, 0.0, 1.0), uGradPow);
-  vec3 sky = mix(uHorizon, uZenith, g);
+  // THREE stops, not two. A two-stop lerp from a warm horizon to a cool zenith
+  // crosses through neutral grey exactly halfway up, and that dead band is what
+  // makes a sunset dome read as sepia mud — the reason the daylight dome was
+  // authored cool at BOTH ends in the first place. The middle stop is a real
+  // colour (a mauve belt at dusk) so the ramp turns a corner in hue instead of
+  // passing through nothing. In daylight the CPU sets uSkyMid to the exact
+  // midpoint of the other two, which makes this piecewise lerp identical to the
+  // single one it replaced.
+  vec3 sky = g < 0.5 ? mix(uHorizon, uSkyMid, g * 2.0)
+                     : mix(uSkyMid, uZenith, g * 2.0 - 1.0);
 
   // Haze layer: the band of dusty air the distant landscape dissolves into.
   // Without this the sky meets the ground on a hard line and the frame has no
   // depth at all. Kept to the bottom ~6 degrees so it cannot flatten the
   // gradient it sits under.
-  float hazeBand = pow(1.0 - clamp(up * 11.0, 0.0, 1.0), 2.3);
-  sky = mix(sky, uHaze, hazeBand * 0.60);
+  float hazeBand = pow(1.0 - clamp(up * mix(11.0, 6.0, uDusk), 0.0, 1.0), 2.3);
+  sky = mix(sky, uHaze, hazeBand * (0.60 + uDusk * 0.18));
 
   float sunAz = clamp(dot(normalize(vec3(d.x, 0.0, d.z)), normalize(vec3(uSunDir.x, 0.0, uSunDir.z))), 0.0, 1.0);
   // Gold near the skyline, in the sun's quadrant only. Round 2 ran this at 0.45
   // over a 22-degree band, which put a warm wash across most of the sky a
   // gameplay camera can see and is a large part of why the dome measured hue 27
   // top to bottom. It is a skyline effect; it must die by 10 degrees.
-  float lowGold = pow(1.0 - clamp(up * 5.2, 0.0, 1.0), 2.0) * pow(sunAz, 1.5);
-  sky = mix(sky, uGold, lowGold * 0.34);
+  //
+  // At dusk it is not a skyline effect any more — it is the picture. The band
+  // widens from 11 degrees to about 28 and roughly triples in weight, and its
+  // azimuthal falloff softens so the ember wraps a third of the compass instead
+  // of sitting in one quadrant.
+  float lowGold = pow(1.0 - clamp(up * mix(5.2, 2.0, uDusk), 0.0, 1.0), 2.0)
+                * pow(sunAz, mix(1.5, 0.85, uDusk));
+  sky = mix(sky, uGold, lowGold * (0.34 + uDusk * 0.46));
 
   // Soft glow around the sun. Deliberately restrained: the terrain's cream
   // highlights are the brightest thing in frame and the sky must sit under
@@ -126,7 +145,8 @@ void main() {
   // The tight lobe is the sun; the wide one used to be a 35-degree warm halo at
   // 0.045, which on a camera pointed anywhere near the key is another sepia
   // wash over a third of the dome. Halved and tightened.
-  sky += uGold * pow(sd, 40.0) * 0.26 + uGold * pow(sd, 11.0) * 0.024;
+  sky += uGold * pow(sd, 40.0) * (0.26 + uDusk * 0.55)
+       + uGold * pow(sd, mix(11.0, 3.6, uDusk)) * (0.024 + uDusk * 0.115);
 
   // --- cloud deck.
   // A true 1/y projection onto an infinite plane stretches the noise into
@@ -182,15 +202,25 @@ void main() {
   // torn by the same two-scale bleed noise the mask uses and antialiased with
   // fwidth so they land as ~1 px pigment edges rather than as stair-steps.
   float shape = fbm(cp * 1.35 + vec2(-3.1, 8.8), 3);
+  // The d.y * 0.9 term is "sun overhead, so the TOPS are lit". With the sun on
+  // the horizon that term is simply wrong: the light arrives from underneath the
+  // deck, the bases burn and the tops go to slate. Fade it out and let the
+  // azimuth term carry the shading instead.
   float lit = clamp((mass - 0.42) * 2.6 + (shape - 0.5) * 1.1
-                    + sunAz * 0.55 + d.y * 0.9, 0.0, 1.0);
+                    + sunAz * mix(0.55, 1.05, uDusk)
+                    + d.y * mix(0.9, -0.55, uDusk), 0.0, 1.0);
   float lb = lit + (fbm(cp * 9.0, 2) - 0.5) * 0.22
                  + (fbm(cp * 26.0, 2) - 0.5) * 0.09;
   float aw = max(fwidth(lb) * 0.8, 0.006);
   vec3 cloud = mix(uCloudShade, uCloudMid, smoothstep(0.3333 - aw, 0.3333 + aw, lb));
   cloud = mix(cloud, uCloudLit, smoothstep(0.6667 - aw, 0.6667 + aw, lb));
+  // The whole deck sits in the horizon's own light near the skyline — this is
+  // the term that stops a dusk cloud bank being a grey lid over an orange strip.
+  cloud = mix(cloud, uHorizon * 1.02,
+              uDusk * 0.55 * pow(sunAz, 0.8) * (1.0 - smoothstep(0.02, 0.34, d.y)));
   // rim: the sun burning through a thin edge
-  cloud += uGold * smoothstep(0.45, 0.95, 1.0 - q) * q * pow(sunAz, 2.0) * 0.50;
+  cloud += uGold * smoothstep(0.45, 0.95, 1.0 - q) * q * pow(sunAz, 2.0)
+         * (0.50 + uDusk * 0.75);
 
   // The deck reaches all the way down — cumulus stacked along the horizon is
   // most of what a low camera sees — but it dissolves INTO the haze there
@@ -265,20 +295,98 @@ const SKY = {
   cloudMid: 0xb9bfbe,
   cloudShade: 0x7d8399,
   cirrus: 0xd9ded6,
+  gold: null,          // null => PALETTE.skyGold
+  haze: null,          // null => PALETTE.haze
+  gradSpan: 0.11,
+  gradPow: 0.92,
+  exposure: 0.72,
 };
+
+// The SAME dome at nine to thirteen degrees of sun elevation.
+//
+// THIS IS THE FIX FOR `dusk`. The constants above are a STATIC daylight dome
+// and update() only ever copied uSunDir into it, so no time of day could
+// produce a sunset: the `dusk` shot asked for a 13-degree sun, got a warm dim
+// key and a full-daylight teal sky over it, and duly read as mid-afternoon.
+// Everything below is a second pole for the same seven colours plus the three
+// scalars, blended by SUN ELEVATION in update().
+//
+// Authored against the grade like the day pole. Simulating the post chain the
+// pair below lands at roughly:
+//   skyline  (~1 deg)  RGB 176,124,84   hue  25  R-B +92
+//   frame top (13 deg) RGB 104, 96,124  hue 253  B-R +20
+// i.e. R leads B by a wide margin under 12 degrees and B leads R above it,
+// which is the measurable definition of a sunset the critique asked for, with
+// the mauve belt between them stopping the ramp passing through neutral.
+const DUSK = {
+  zenith: 0x3f5c8c,
+  skyMid: 0x8a6f8c,
+  horizon: 0xdf9a63,
+  cloudLit: 0xf2c79a,
+  cloudMid: 0xb08ea0,
+  cloudShade: 0x584d6a,
+  cirrus: 0xdca894,
+  gold: 0xffb46c,
+  haze: 0xc79a7c,
+  // The ember band has to reach up into the frame, not hug the skyline: 0.20 is
+  // ~11.5 degrees on the first ramp stage instead of 6.3.
+  gradSpan: 0.20,
+  gradPow: 1.06,
+  // A dusk sky is genuinely dimmer than a noon one. It still has to stay the
+  // brightest thing in the lower third of the frame, so this is a nudge, not a
+  // stop.
+  exposure: 0.655,
+};
+
+/**
+ * How far into dusk we are, from the sun's elevation.
+ *
+ * The gate is deliberately a long way below every daylight shot in the set. The
+ * capture harness's twelve framings run t = 0.16..0.33, whose lowest sun (the
+ * `tank` shot, t = 0.16) sits at 34 degrees — sin 0.564 — while `dusk` at
+ * t = 0.95 sits at 12.8 degrees, sin 0.222. Opening the ramp at sin 0.50 and
+ * closing it at 0.24 therefore returns EXACTLY 0 for all eleven daylight shots
+ * and 1.00 for dusk: warming the sunset cannot warm the rest of the set. It is
+ * still a continuous function of elevation, so a mission that animates the hour
+ * crosses it smoothly.
+ */
+function duskAmount(sinElev) {
+  const t = (0.50 - sinElev) / (0.50 - 0.24);
+  const c = t < 0 ? 0 : t > 1 ? 1 : t;
+  return c * c * (3 - 2 * c);
+}
 
 export class Sky {
   constructor(opts = {}) {
     this.radius = opts.radius ?? 760;
     this.time = 0;
 
+    // The two poles the dome blends between. `opts` overrides the DAY pole only
+    // — a mission that hands us a custom daylight sky still gets the sunset.
+    this.day = Object.assign({}, SKY, {
+      zenith: opts.zenith ?? SKY.zenith,
+      horizon: opts.horizon ?? SKY.horizon,
+      gold: opts.gold ?? PALETTE.skyGold,
+      haze: opts.haze ?? PALETTE.haze,
+      gradSpan: opts.gradSpan ?? SKY.gradSpan,
+      gradPow: opts.gradPow ?? SKY.gradPow,
+      exposure: opts.exposure ?? SKY.exposure,
+    });
+    this.dusk = DUSK;
+    this._duskK = -1;                  // force the first sync
+    this._cA = new THREE.Color();
+    this._cB = new THREE.Color();
+
     const geo = new THREE.SphereGeometry(this.radius, 32, 20);
     this.material = new THREE.ShaderMaterial({
       uniforms: {
-        uZenith: { value: new THREE.Color(opts.zenith ?? SKY.zenith) },
-        uHorizon: { value: new THREE.Color(opts.horizon ?? SKY.horizon) },
-        uHaze: { value: new THREE.Color(opts.haze ?? PALETTE.haze) },
-        uGold: { value: new THREE.Color(opts.gold ?? PALETTE.skyGold) },
+        uZenith: { value: new THREE.Color(this.day.zenith) },
+        // Daylight midpoint — see the three-stop lerp in the fragment shader.
+        uSkyMid: { value: new THREE.Color(this.day.horizon).lerp(
+          new THREE.Color(this.day.zenith), 0.5) },
+        uHorizon: { value: new THREE.Color(this.day.horizon) },
+        uHaze: { value: new THREE.Color(this.day.haze) },
+        uGold: { value: new THREE.Color(this.day.gold) },
         uCloudLit: { value: new THREE.Color(SKY.cloudLit) },
         uCloudMid: { value: new THREE.Color(SKY.cloudMid) },
         uCloudShade: { value: new THREE.Color(SKY.cloudShade) },
@@ -290,10 +398,11 @@ export class Sky {
         // showed. Fair-weather cumulus want gaps.
         uCoverage: { value: opts.coverage ?? 0.46 },
         uBands: { value: 3.0 },
-        uGradPow: { value: opts.gradPow ?? 0.92 },
+        uGradPow: { value: this.day.gradPow },
         // 0.11 == 6.3 degrees; see the two-stage ramp in the fragment shader.
-        uGradSpan: { value: opts.gradSpan ?? 0.11 },
-        uExposure: { value: opts.exposure ?? 0.72 },
+        uGradSpan: { value: this.day.gradSpan },
+        uExposure: { value: this.day.exposure },
+        uDusk: { value: 0 },
         uPaperTex: { value: paperTexture(512, 77) },
       },
       vertexShader: VERT,
@@ -318,10 +427,48 @@ export class Sky {
   horizonColor() { return this.material.uniforms.uHorizon.value; }
   zenithColor() { return this.material.uniforms.uZenith.value; }
 
+  /**
+   * Blend the dome between its day and dusk poles.
+   *
+   * Called from update() on every frame, but it early-outs unless the sun has
+   * actually moved across the ramp — twelve Colors and three floats is nothing,
+   * but a per-frame write to a uniform that never changes is still noise in the
+   * profile and in the diff.
+   */
+  _syncDusk() {
+    const k = duskAmount(WorldLighting.sunDir.y);
+    if (Math.abs(k - this._duskK) < 1e-4) return;
+    this._duskK = k;
+    const u = this.material.uniforms;
+    const D = this.day, N = this.dusk;
+    const mix = (target, a, b) => target.set(a).lerp(this._cB.set(b), k);
+    mix(u.uZenith.value, D.zenith, N.zenith);
+    mix(u.uHorizon.value, D.horizon, N.horizon);
+    mix(u.uHaze.value, D.haze, N.haze);
+    mix(u.uGold.value, D.gold, N.gold);
+    mix(u.uCloudLit.value, D.cloudLit, N.cloudLit);
+    mix(u.uCloudMid.value, D.cloudMid, N.cloudMid);
+    mix(u.uCloudShade.value, D.cloudShade, N.cloudShade);
+    mix(u.uCirrus.value, D.cirrus, N.cirrus);
+    // Daylight's middle stop is the exact midpoint of the other two, so the
+    // three-stop ramp degenerates to the two-stop one it replaced; at dusk it
+    // is an authored mauve that keeps the ramp off neutral.
+    this._cA.set(D.horizon).lerp(this._cB.set(D.zenith), 0.5);
+    u.uSkyMid.value.copy(this._cA).lerp(this._cB.set(N.skyMid), k);
+    u.uGradSpan.value = D.gradSpan + (N.gradSpan - D.gradSpan) * k;
+    u.uGradPow.value = D.gradPow + (N.gradPow - D.gradPow) * k;
+    u.uExposure.value = D.exposure + (N.exposure - D.exposure) * k;
+    u.uDusk.value = k;
+  }
+
+  /** 0 in daylight, 1 with the sun on the horizon. Read by World for the fog. */
+  get duskAmount() { return Math.max(0, this._duskK); }
+
   update(dt, camera) {
     this.time += dt;
     this.material.uniforms.uTime.value = this.time;
     this.material.uniforms.uSunDir.value.copy(WorldLighting.sunDir);
+    this._syncDusk();
     if (camera) {
       this.mesh.position.copy(camera.position);
       this.mesh.updateMatrix();

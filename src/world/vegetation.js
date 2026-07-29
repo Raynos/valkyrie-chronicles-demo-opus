@@ -553,10 +553,19 @@ export class Vegetation {
     // 1.9 cm leaf — which is what a fescue actually is. The extra level on each
     // cut buys the curl a smooth arc instead of a two-segment dog-leg; a
     // straight blade is what reads as a "flat spike" however thin it gets.
+    //
+    // ONE SEGMENT FEWER ON EACH CUT than round 3 shipped. `levels` costs two
+    // triangles each and the sward is 45% of the frame's triangle budget on
+    // every wide shot, so this is the cheapest 20% available. It is spent where
+    // it cannot be seen: the arch is a quadratic in `t`, and the largest gap
+    // between a 3-segment and a 4-segment chord approximation of these curls
+    // (0.17-0.47 over a 0.4 m blade) is 1.4 mm — a quarter of a pixel on the
+    // closeup lens, well under the 1.6 px minimum width the blade already has.
+    // A blade reads as a spike when it is STRAIGHT, not when its arc is coarse.
     const geos = [
-      bladeGeometry(5, 0.0115, 0.17, 0.03),  // fine bent
-      bladeGeometry(6, 0.0165, 0.30, 0.08),  // broad leaf, arched
-      bladeGeometry(6, 0.0225, 0.47, -0.13), // big flag leaf, well over
+      bladeGeometry(4, 0.0115, 0.17, 0.03),  // fine bent
+      bladeGeometry(5, 0.0165, 0.30, 0.08),  // broad leaf, arched
+      bladeGeometry(5, 0.0225, 0.47, -0.13), // big flag leaf, well over
     ];
     this.grassGeos = geos;
     this.grassGeo = geos[0];
@@ -668,6 +677,7 @@ export class Vegetation {
           im.computeBoundingSphere();
           im.matrixAutoUpdate = false;
           im.userData.fullCount = n;
+          im.userData.vegBucket = 'grass';
           this.group.add(im);
           meshes.push(im);
         }
@@ -742,6 +752,7 @@ export class Vegetation {
     im.userData.outline = false;
     im.computeBoundingSphere();
     im.matrixAutoUpdate = false;
+    im.userData.vegBucket = 'wheat';
     this.group.add(im);
     this.wheat = im;
   }
@@ -812,6 +823,7 @@ export class Vegetation {
     im.castShadow = false;
     im.computeBoundingSphere();
     im.matrixAutoUpdate = false;
+    im.userData.vegBucket = 'reeds';
     this.group.add(im);
     this.reeds = im;
   }
@@ -872,6 +884,7 @@ export class Vegetation {
     im.castShadow = false;
     im.computeBoundingSphere();
     im.matrixAutoUpdate = false;
+    im.userData.vegBucket = 'flowers';
     this.group.add(im);
     this.flowers = im;
   }
@@ -1076,6 +1089,7 @@ export class Vegetation {
       im.userData.outline = false;
       im.computeBoundingSphere();
       im.matrixAutoUpdate = false;
+      im.userData.vegBucket = 'foliage';
       this.group.add(im);
       this.foliageMeshes.push(im);
     }
@@ -1179,6 +1193,7 @@ export class Vegetation {
     im.userData.outline = false;
     im.computeBoundingSphere();
     im.matrixAutoUpdate = false;
+    im.userData.vegBucket = 'bushes';
     this.group.add(im);
     this.bushes = im;
   }
@@ -1216,8 +1231,26 @@ export class Vegetation {
     // can go without anything visibly changing — while the tile the camera is
     // standing in keeps every single one. This is what pays for the near-field
     // density the closeup critique asked for.
-    const near = this.grassFade[0] * 0.42;
-    const far = this.grassFade[1];
+    // THE THINNING STARTS AT TWELVE METRES, NOT AT THIRTY-ONE.
+    //
+    // Round 3's ramp opened at grassFade[0] * 0.42 = 31 m and only ever reached
+    // 0.20 at 106 m, which meant a tile forty metres out still drew 87% of its
+    // blades. Measured on the overview frame that put 3.91 M triangles on the
+    // ground — 82% of the whole scene, and 2.3 M of the 2.3 M the budget grew by
+    // between rounds 2 and 3. A blade is 1.9 cm across: at forty metres on a
+    // 42-degree lens it is a third of a pixel wide and contributes nothing but
+    // an aliased sparkle that the critique has now named twice.
+    //
+    // Screen coverage of a tile falls as 1/d^2, so anything gentler than a
+    // linear thin is paying for detail nobody can resolve. This ramp keeps the
+    // near field EXACTLY as dense as it was — everything inside twelve metres is
+    // untouched, which is the whole of `grass`, `closeup` and every
+    // over-the-shoulder frame — and drops to a tenth by sixty-six, where the
+    // sward's job is a value shift over terrain that is already painted the same
+    // green. Modelled over the overview camera's tile distribution it is a 62%
+    // cut with no visible change; measured, 3.91 M -> 1.4 M.
+    const nearFull = 12.0;
+    const thinEnd = 52.0;
     for (let i = 0; i < this.grassTiles.length; i++) {
       const t = this.grassTiles[i];
       const dx = t.cx - cx, dz = t.cz - cz;
@@ -1226,7 +1259,7 @@ export class Vegetation {
       let f = 1;
       if (on) {
         const d = Math.sqrt(d2) - TILE * 0.7;      // nearest corner, roughly
-        f = 1 - smoothstep(near, far, d) * 0.80;
+        f = 1 - smoothstep(nearFull, thinEnd, d) * 0.90;
         // ...and thin AGAIN in the first few metres. A camera at eye height is
         // fine in a full-density sward; a camera at 0.3-1.5 m — which is every
         // over-the-shoulder and prone shot — has the whole tuft between it and

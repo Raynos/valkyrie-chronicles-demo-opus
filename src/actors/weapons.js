@@ -20,7 +20,7 @@
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'three';
-import { MeshBuilder, PALETTE, actorGearMaterial, seg, rgbLin, mixCol } from './rig.js';
+import { MeshBuilder, PALETTE, actorWeaponMaterial, seg, rgbLin, mixCol } from './rig.js';
 import { TAU } from '../core/math.js';
 
 // ---------------------------------------------------------------------------
@@ -704,7 +704,7 @@ function node(name, p) {
 export function createWeapon(type, opts = {}) {
   const key = BUILDERS[type] ? type : 'gallianRifle';
   const parts = cached(key, BUILDERS[key]);
-  const mat = opts.material || actorGearMaterial();
+  const mat = opts.material || actorWeaponMaterial();
 
   const g = new THREE.Group();
   g.name = 'weapon_' + key;

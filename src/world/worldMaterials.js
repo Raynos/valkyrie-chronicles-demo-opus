@@ -67,6 +67,16 @@ export const PALETTE = {
   brick: 0xa15b46,
   timber: 0x7d5c3c,
   timberDark: 0x5b4229,
+  // BARN CLADDING IS NOT FRAMING TIMBER. A structural post is oiled or tarred
+  // and keeps its red-brown; a boarded barn wall has stood in the weather for
+  // forty years and has silvered to a grey-brown with almost no chroma left in
+  // it. Round 3 built both out of PALETTE.timber (HSV sat 0.52) and the result
+  // was a 9x4 m slab of the most saturated pigment on the map filling the left
+  // third of the `village` frame — which is most of why that shot measured a
+  // mean saturation of 91/255, the highest in the set, against 60-77 everywhere
+  // else. Same hue family, a third of the chroma.
+  barnBoard: 0x8b7c68,
+  barnBoardDark: 0x6d6152,
   plaster: 0xcfc4ae,
   // materiel
   burlap: 0xb09a6c,
@@ -334,6 +344,8 @@ function makeFallbackSurface(opts = {}) {
   });
   const u = nprUniforms(opts);
   m.userData.uniforms = u;
+  // The daylight poles this material's washes ramp away from at dusk.
+  m.userData.dayTint = { lit: u.uLitTint.value.clone(), shade: u.uShadeTint.value.clone() };
   m.userData.wind = !!opts.wind;
   m.userData.baseWind = opts.windStrength ?? 0.16;
   m.onBeforeCompile = (shader) => {
@@ -422,7 +434,7 @@ function tryRender(fn, opts, needs) {
   if (opts.transparent !== undefined) m.transparent = opts.transparent;
   if (opts.alphaTest) m.alphaTest = opts.alphaTest;
   if (opts.depthWrite !== undefined) m.depthWrite = opts.depthWrite;
-  return m;
+  return noteWorldMaterial(m);
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +627,140 @@ export function makeFoliageMaterial(opts = {}) {
 // per-frame uniform drive
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// time of day: the whole world follows the sun's elevation
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS. Round 3's `dusk` shot got a correct low warm key, a correct
+// 13-degree sun and — once src/world/sky.js grew its dusk pole — a correct
+// ember dome, and the GROUND under it still read as mid-afternoon: the same
+// electric pasture green at the same value it has at midday, under a sunset.
+// That combination does not occur in nature and it is the single loudest thing
+// wrong with the frame.
+//
+// The reason is arithmetic, not colour. src/render/materials.js builds its band
+// index from
+//     drive = keyN * uKeyGain * uKeyBoost + ambTerm * uFillGain * uFillBoost
+// and MaterialRegistry, seeing a dim key, deliberately RAISES uFillGain to stop
+// the frame collapsing into the darkest value. That is the right call for a
+// gameplay camera in a dim scene, but it means the sky fill alone carries the
+// open field into the middle bands — where the composite is just the albedo —
+// so no amount of re-tinting the lit and shade washes can touch it. Measured:
+// driving uCream to pure red and uViolet to pure blue moved the frame's mean
+// saturation by 0.3/255.
+//
+// So this ramps the term that actually decides which band a fragment lands in.
+// uKeyBoost / uFillBoost / uVioletGain / uCreamGain are PER-MATERIAL knobs —
+// src/render documents them as exactly the escape hatch for a material that
+// needs a different mix from the shared pair — and every material touched here
+// is one this module built for the world. Nothing global is mutated.
+
+/** The dusk poles for the four per-material grade knobs. */
+const DUSK_GRADE = {
+  // The sky fill stops doing the sun's job. This is the load-bearing one: it
+  // is what drops the open field out of the mid bands and into the shade wash,
+  // which is what "the valley goes to violet" actually means in this shader.
+  fillBoost: 0.46,
+  // The key keeps its own bands — a low sun still picks out every west face,
+  // and losing that would flatten the frame rather than darken it.
+  keyBoost: 1.06,
+  // ...and once the field IS in the shade wash, the wash's own colour finally
+  // matters, so lean it further into the skylight violet and pull the cream
+  // lift back toward the ember the key actually is.
+  violetGain: 1.42,
+  creamGain: 0.86,
+};
+
+// The lit / shade poles the SHARED washes ramp toward. These are bound by
+// reference across every material in the frame (SHARED_KEYS in materials.js),
+// so this is a global act — done by swapping the uniform's `.value` reference,
+// never by mutating src/render's own PALETTE colour objects.
+const DUSK_CREAM = new THREE.Color(0xffb478);   // low sun on a lit face
+const DUSK_VIOLET = new THREE.Color(0x453a72);  // the sky's own blue in shade
+const DUSK_INK = new THREE.Color(0x241d2e);
+const _dayWash = { cream: null, violet: null, ink: null };
+const _washCream = new THREE.Color();
+const _washViolet = new THREE.Color();
+const _washInk = new THREE.Color();
+let _duskApplied = -1;
+
+/**
+ * How far into dusk we are, from the sine of the sun's elevation.
+ *
+ * Identical ramp to src/world/sky.js duskAmount() — deliberately duplicated
+ * rather than imported, because sky.js imports THIS module and closing that
+ * cycle for six lines of arithmetic is not worth it. If one changes, change
+ * both: the dome and the ground have to reach dusk on the same frame or the
+ * frame contains two different times of day.
+ *
+ * The eleven daylight shots run 34-59 degrees of elevation (sin 0.56-0.86) and
+ * every one of them returns exactly 0 here, so none of this can warm them.
+ */
+function duskAmount(sinElev) {
+  const t = (0.50 - sinElev) / (0.50 - 0.24);
+  const c = t < 0 ? 0 : t > 1 ? 1 : t;
+  return c * c * (3 - 2 * c);
+}
+
+const lerpN = (a, b, k) => a + (b - a) * k;
+
+/** Every material this module handed back, so the grade can reach all of them. */
+const _worldMats = new Set();
+function noteWorldMaterial(m) {
+  if (m && m.uniforms && m.uniforms.uKeyBoost && !_worldMats.has(m)) {
+    m.userData.dayGrade = {
+      key: m.uniforms.uKeyBoost.value,
+      fill: m.uniforms.uFillBoost.value,
+      violet: m.uniforms.uVioletGain ? m.uniforms.uVioletGain.value : 1,
+      cream: m.uniforms.uCreamGain ? m.uniforms.uCreamGain.value : 1,
+    };
+    _worldMats.add(m);
+  }
+  return m;
+}
+
+/** Blend every world material between its daylight and its dusk grade. */
+function applyDusk(k) {
+  if (Math.abs(k - _duskApplied) < 1e-3) return;
+  _duskApplied = k;
+  const D = DUSK_GRADE;
+  for (const m of _worldMats) {
+    const d = m.userData.dayGrade;
+    const u = m.uniforms;
+    if (!d) continue;
+    u.uKeyBoost.value = d.key * lerpN(1, D.keyBoost, k);
+    u.uFillBoost.value = d.fill * lerpN(1, D.fillBoost, k);
+    if (u.uVioletGain) u.uVioletGain.value = d.violet * lerpN(1, D.violetGain, k);
+    if (u.uCreamGain) u.uCreamGain.value = d.cream * lerpN(1, D.creamGain, k);
+    // The shared block is reachable through any one of them.
+    if (!_dayWash.cream && u.uCream && u.uViolet) {
+      // Snapshot the daylight poles by VALUE, then swap in colours we own. The
+      // uniform's current value IS src/render's palette object; mutating that
+      // would repaint their module, so only the reference is replaced.
+      _dayWash.cream = u.uCream.value.clone();
+      _dayWash.violet = u.uViolet.value.clone();
+      _dayWash.ink = u.uInkFloor ? u.uInkFloor.value.clone() : null;
+      u.uCream.value = _washCream;
+      u.uViolet.value = _washViolet;
+      if (u.uInkFloor) u.uInkFloor.value = _washInk;
+    }
+  }
+  if (_dayWash.cream) {
+    _washCream.copy(_dayWash.cream).lerp(DUSK_CREAM, k);
+    _washViolet.copy(_dayWash.violet).lerp(DUSK_VIOLET, k);
+    if (_dayWash.ink) _washInk.copy(_dayWash.ink).lerp(DUSK_INK, k);
+  }
+  // ...and the same move on the locally-authored fallback path, so a surface
+  // that fell back to the Lambert material does not stay in daylight next to
+  // one that did not.
+  for (const m of _fallbacks) {
+    const fu = m.userData.uniforms;
+    if (!fu || !m.userData.dayTint) continue;
+    fu.uLitTint.value.copy(m.userData.dayTint.lit).lerp(DUSK_CREAM, k * 0.75);
+    fu.uShadeTint.value.copy(m.userData.dayTint.shade).lerp(DUSK_VIOLET, k * 0.75);
+  }
+}
+
 /**
  * Advance the locally-authored materials. `MaterialRegistry.update` from
  * src/render is intentionally NOT called here — the render pipeline owns it,
@@ -630,6 +776,7 @@ export function updateWorldMaterials(dt) {
     u.uWTime.value = t;
     u.uSunLum.value = lum;
   }
+  applyDusk(duskAmount(WorldLighting.sunDir.y));
 }
 
 /** Set the global wind gain (0..2); vegetation reads it through the uniform. */

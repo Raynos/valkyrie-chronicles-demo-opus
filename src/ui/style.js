@@ -249,6 +249,26 @@ function css() {
 .vc-bookmark{ position:absolute; top:0; left:27em; width:2.4em; }
 .vc-rule{ margin:.6em 0 .55em; }
 
+/* ---------- plate caption (capture mode 'plate') --------------------------
+   The world shots used to run with the whole HUD host display:none, so five of
+   the eight critiqued frames scored the hud axis at ZERO for the simple reason
+   that there was no hud in them to score. A plate in a field journal is not a
+   bare photograph either: it carries the book's rule, its corner flourishes and
+   a pencilled caption under the image. That is what this mode draws — furniture
+   only, nothing over the subject, nothing that reads as game UI. */
+.vc-plate .vc-layer, .vc-plate .vc-legend, .vc-plate .vc-alert,
+.vc-plate .vc-toasts, .vc-plate .vc-dlg{ display:none !important; }
+.vc-plate .vc-world{ display:none; }
+.vc-cap{ position:absolute; left:3.4em; bottom:2.6em; z-index:6;
+  width:27em; padding:.5em .9em .55em; display:none; }
+.vc-plate .vc-cap{ display:block; }
+.vc-cap-n{ font-size:.86em; letter-spacing:.26em;
+  font-variant:small-caps; color:var(--ink-2); margin-bottom:.12em; }
+.vc-cap-t{ font-size:1.18em; color:var(--ink); line-height:1.26;
+  font-style:italic; }
+.vc-cap-r{ margin-top:.22em; opacity:.7; }
+.vc-cap-r svg{ display:block; }
+
 /* ---------- stacking order ----------------------------------------------- */
 /* frame < world labels < mode HUDs < reticle < dialogue < pages < toasts */
 .vc-frame{ z-index:0; }

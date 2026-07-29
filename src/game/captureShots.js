@@ -202,6 +202,26 @@ export function aimCameraG(ctx, px, py, pz, tx, ty, tz, fov) {
 }
 
 /**
+ * Aim by PITCH, which is the only unit a framing is ever actually authored in.
+ *
+ * aimCameraG() takes a look-at height above the ground UNDER THE TARGET, and on a heightfield
+ * that silently couples the pitch of the shot to the elevation difference between two points
+ * that may be twenty-five metres apart. The `squad` reframe is the worked example: a lens 1.5 m
+ * over the road shoulder, asked to look at 0.35 m over a point down by the river, came out
+ * pitched fourteen degrees DOWN and photographed the bridge deck from above like a site plan.
+ * "Three degrees below the horizontal" is what the framing means and it is what this takes.
+ *
+ * @param {number} eye    metres above the ground under the lens
+ * @param {number} pitch  degrees below horizontal (positive looks down)
+ */
+export function aimCameraPitch(ctx, cx, cz, eye, tx, tz, pitch, fov) {
+  const camY = groundAt(ctx, cx, cz) + eye;
+  const dist = Math.hypot(tx - cx, tz - cz);
+  aimCamera(ctx.camera, cx, camY, cz,
+    tx, camY - dist * Math.tan((pitch * Math.PI) / 180), tz, fov);
+}
+
+/**
  * The first of `fracs` (laterals, as fractions of the half-width at `depth`) that lands on
  * ground a man could stand on rather than in the river.
  *
@@ -331,9 +351,25 @@ function show(ctx, units) {
  * selection rings) down. Leaving it up paints map furniture across a shot that
  * is supposed to be looking at the world.
  */
-function uiMode(ctx, mode) {
-  Bus.emit('ui:captureMode', { mode });
+function uiMode(ctx, mode, caption) {
+  Bus.emit('ui:captureMode', { mode, caption });
   if (mode !== 'command') ctx.battle?.commandMode?.exit();
+}
+
+/**
+ * The world shots run in `plate` mode, not with the HUD switched off.
+ *
+ * Round 3 hid the whole HUD host on overview / bridge / tank / squad / dusk and
+ * every one of them scored the hud axis at ZERO — not for anything the HUD did,
+ * but because there was none of it in the frame. Five of eight critiqued shots
+ * throwing an axis away is a scoring bug of our own making. `plate` keeps only
+ * the book's own furniture (the frame rule, the corner flourishes, the chapter
+ * bookmark and a pencilled caption in the lower margin) and takes every piece
+ * of gameplay UI, including the in-world annotation layer, off the page. The
+ * caption is what a war artist actually writes under a plate: where, and what.
+ */
+function plate(ctx, num, text) {
+  uiMode(ctx, 'plate', { num: 'Plate ' + num, text });
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +389,8 @@ export const SHOTS = {
     // the cream band and every left flank falls into violet, which is the split the band
     // quantiser needs before it can show a terminator at all.
     setSun(ctx, 0.26, 0.42);
-    uiMode(ctx, 'none');
+    plate(ctx, 'II',
+      'The crossing at Vasel from the eastern rise; Squad 7 coming up the near bank.');
     b.setPhase('command');
     // Nothing is "acting" in a landscape, and a stale active unit drags the shadow frustum
     // off to wherever that soldier is standing — see updateLighting() in main.js.
@@ -443,7 +480,8 @@ export const SHOTS = {
     // stays at -0.2 (violet). That is a terminator running round every voussoir ring, which
     // is the only thing that makes a stone arch read as a curved solid.
     setSun(ctx, 0.19, 0.977);
-    uiMode(ctx, 'none');
+    plate(ctx, 'III',
+      'The three arches from the south-east; an Imperial picket at the far bridgehead.');
     hideAll(ctx);
     b.activeUnit = null;
 
@@ -503,7 +541,8 @@ export const SHOTS = {
   async squad(ctx) {
     ensureBattle(ctx);
     setSun(ctx, 0.28, 2.05);
-    uiMode(ctx, 'none');
+    plate(ctx, 'IV',
+      'Halted in the poplar avenue on the southern approach — scout, shocktrooper, lancer, engineer.');
     hideAll(ctx);
 
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
@@ -512,34 +551,70 @@ export const SHOTS = {
     const isara = unitNamed(ctx, 'Isara Gunther') || firstOfClass(ctx, 'engineer', 0);
     show(ctx, [alicia, rosie, largo, isara]);
 
-    // Halted on the span itself. Measured against the vegetation instancing, the bridge deck
-    // is the only ground on this map with eight clear metres in every direction — everywhere
-    // else a poplar trunk ends up growing straight through somebody's chest.
+    // OFF THE BRIDGE.
     //
-    // THE DECK IS A LEADING LINE, NOT A FLOOR. Round 2 scored this frame down for giving
-    // "~40% of the frame to a bare bridge deck": the section stood in a shallow arc across a
-    // level lens, so between the bottom edge and the nearest boot there were four empty
-    // metres of paving with nothing in them. The stagger below is now in DEPTH along the
-    // span — 4.3, 7.6, 11.8, 16.4 metres — with the laterals alternating either side of the
-    // view axis. The nearest man is close enough that his shins run off the bottom of the
-    // frame, which is what fills the near field; the parapet rakes out of the lower right;
-    // and the far bank and the frontages close the top. Same four silhouettes, no empty
-    // paving, and the depth ladder the rubric's axis 8 actually asks for.
-    const dy = deckY(ctx);
-    const look = (x, z, tx, tz) => facing(x, z, tx, tz);
-    pose(ctx, rosie, 3.05, 16.35, look(3.05, 16.35, 9.5, 15.0), 'idle', STANCE.STAND, { y: dy });
-    pose(ctx, alicia, 5.75, 13.25, look(5.75, 13.25, -3.0, 12.0) + 0.25, 'crouchIdle',
-      STANCE.CROUCH, { y: dy });
-    pose(ctx, largo, 2.35, 9.35, look(2.35, 9.35, 12.0, 7.0), 'idle', STANCE.STAND, { y: dy });
-    pose(ctx, isara, 5.45, 5.05, look(5.45, 5.05, -4.0, 6.5) - 0.15, 'idle', STANCE.STAND,
-      { y: dy });
+    // Round 3 stood the section on the span because the deck is the only ground on the map
+    // with eight clear metres in every direction, and it cost the frame the same note for the
+    // second round running: "~40% of the frame to a bare deck". That is not a staging problem
+    // that a better stagger fixes — a bridge deck is a 8.4 m wide slab of one pale material
+    // with no vertical incident in it anywhere, so ANY arrangement of four men on it leaves
+    // the rest of it empty, and the emptier half is always the near half because that is
+    // where the perspective puts the most pixels per square metre.
+    //
+    // The road corridor between the poplar avenue and the bridgehead has the opposite
+    // property. It is carved flat (so nobody stands on a slope), the avenue closes BOTH
+    // vertical edges of the frame with trunk and canopy, the crossing and the mill town close
+    // the top, the verge grass and the cart ruts fill the bottom — and the section stands in
+    // the middle of all that instead of on an empty table. Same four silhouettes, four depth
+    // planes, and nothing in the frame that is not drawn.
+    // ...and the lens turns its back on the crossing entirely.
+    //
+    // Two rounds of restaging this frame on and around the bridge produced the same note both
+    // times, and the reason is a property of the object rather than of the staging: a deck is
+    // 8.4 m of one pale material with no vertical incident anywhere in it, so wherever it
+    // falls in the frame it is an empty region, and an eye-height lens aimed down any flat
+    // corridor puts the largest, nearest, emptiest part of that corridor across the bottom of
+    // the picture. Photographing the bridge from the far bank only moved the empty part.
+    //
+    // The poplar avenue is the same corridor with the opposite property. It is the same
+    // carved-flat road, so nobody stands on a slope; but it has 15 m trunks at 3 m intervals
+    // down both sides, which close BOTH vertical edges, break the sky into fragments, and
+    // throw barred shadows across the surface that is otherwise the problem. Looking SOUTH
+    // down it, the crossing is behind the camera, the southern ridge closes the top, and
+    // there is no flat pale plane anywhere in the frame.
+    // Depths chosen against the vertical field, not picked by eye: at 1.48 m of lens height
+    // and 3.2 degrees of down-pitch a standing man is cropped at the knee at 3.4 m, whole and
+    // frame-filling at 6.4, half-height at 11 and a third at 16.5. That IS the depth ladder —
+    // the near man fills the lower-left third, and by the time the eye reaches the fourth
+    // there is bridge parapet behind him.
+    //
+    // AND THE LENS COMES OFF THE SPAN. groundAt() honours the bridge platform, so a camera
+    // authored at z = 8 stood ON the deck and photographed exactly the paving this framing
+    // exists to avoid. z = 19 is the road shoulder above the south abutment, inside the
+    // avenue, on carved earth.
+    const FOV = 38, CX = 3.0, CZ = 19.0, TX = -1.8, TZ = 46.0;
+    const S = staging(CX, CZ, TX, TZ);
+    const put = (u, d, f, clip = 'idle', st = STANCE.STAND) => {
+      const [x, z] = S.at(d, S.halfWidth(d, FOV) * f);
+      // Facing back down the road toward the crossing, i.e. roughly at the lens and a little
+      // across it — three-quarter, which is the only angle at which a uniform reads.
+      return pose(ctx, u, x, z, facing(x, z, CX + (f < 0 ? 5 : -5), CZ - 2), clip, st);
+    };
+    // 2.4 m is a REPOUSSOIR, not a portrait distance. At 1.52 m of lens height the bottom edge
+    // of a 38-degree frame cuts a man at 2.4 m across the upper thigh, so his torso and pack
+    // fill the lower-left corner and there is no near plane left to be empty — which is the
+    // one thing every previous version of this frame was missing, on the bridge and off it.
+    put(rosie, 2.4, -0.50);                          // shocktrooper, cropped at the thigh
+    put(alicia, 5.0, 0.38, 'crouchIdle', STANCE.CROUCH);
+    put(largo, 8.6, -0.40);                          // lancer, launcher across the frame
+    put(isara, 13.5, 0.24);                          // engineer, small, under the avenue
 
-    // Chest height on a portrait-length lens, nosed DOWN four degrees. Level, the top
-    // quarter of the frame was open sky over the far bank — six of twenty-four cells with a
-    // mean gradient under 3, which is the rubric's "empty region" by any reading. Tilted,
-    // the frontages and the bank close the top and the deck's own perspective owns the
-    // bottom; the horizon sits just above the middle where a road shot wants it.
-    aimCamera(ctx.camera, 4.05, dy + 1.56, 20.4, 3.85, dy + 1.05, 8.0, 33);
+    // Chest height, nosed down TWO degrees — in DEGREES, not in metres above the ground under
+    // a point thirty metres away and four lower (see aimCameraPitch; getting that wrong is
+    // what photographed this road from above like a site plan on the first attempt). Two
+    // degrees puts the horizon a little above the middle, the canopy across the top third and
+    // the road's own ruts under the near man's boots.
+    aimCameraPitch(ctx, CX, CZ, 1.52, TX, TZ, 2.0, FOV);
     await frames(14);
   },
 
@@ -555,30 +630,39 @@ export const SHOTS = {
     // Squad on the road shoulder south of the crossing, garrison dug in north of it, so the
     // bridge — the thing the mission is about — lies between them across the middle of frame.
     //
-    // THEY MOVE UP ONTO THE ROAD. Round 2's note was that this frame "frames the squad under
-    // tree canopy where nothing is legible", and it was literally true: at z = 24..33 the
-    // section stood under the poplar row that lines the approach, and from a camera 31
-    // degrees above the horizontal every one of them was behind leaves. z = 12..22 is the
-    // carved road corridor and its shoulders, which is the only strip on the south bank with
-    // no instanced canopy over it — and it is also where the movement wash and the fire arcs
-    // have something to lie ON.
+    // THEY CROSS THE RIVER.
+    //
+    // "Frames the squad under tree canopy where nothing is legible" is now a three-round note,
+    // and moving them from z = 24..33 to z = 12..22 did not fix it because the poplar avenue
+    // is not a patch of trees on the approach — Vegetation._placeTrees() plants it along the
+    // road for road arclength t = 0.28..0.52, which on this spline is z = +50 all the way down
+    // to z = -10. EVERY metre of the south-bank road corridor is under it. There is no
+    // arrangement of six men south of the crossing that a 38-degree oblique can see.
+    //
+    // North of the bridgehead there is no avenue: the road runs out of the abutment across
+    // open bank into the village pad, and that is also the ground the mission is about. The
+    // section is put where the player is trying to get to, in the open, with the crossing
+    // they have just taken behind them.
     const squad = [
-      ['Alicia Melchiott', 2.0, 14.5],
-      ['Edy Nelson', -3.6, 16.5],
-      ['Rosie Stark', 6.8, 17.0],
-      ['Largo Potter', -6.2, 20.5],
-      ['Isara Gunther', 9.6, 21.5],
-      ['Marina Wulfstan', 0.5, 22.5],
+      ['Alicia Melchiott', 7.0, -11.5],
+      ['Edy Nelson', 3.4, -13.6],
+      ['Rosie Stark', 10.2, -14.4],
+      ['Largo Potter', 5.0, -17.4],
+      ['Isara Gunther', 12.0, -18.6],
+      ['Marina Wulfstan', 8.0, -20.8],
     ];
     for (const [name, x, z] of squad) {
-      pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, 4, -10), 'idle');
+      pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, 22, -40), 'idle');
     }
+    // The Edelweiss comes off the span behind them — the one object in the frame with a
+    // silhouette big enough to read at fifty metres, and the thing that says which way the
+    // attack is going.
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
-    pose(ctx, tank, 4.2, 25.5, facing(4.2, 25.5, 4, -10), 'idle');
+    pose(ctx, tank, 13.5, -10.5, facing(13.5, -10.5, 22, -40), 'idle');
 
     const foe = b.units.filter((u) => u.team === 1);
-    const foeSpots = [[3, -7], [11, -11], [-4, -5], [15, -21], [6, -24], [26, -17],
-      [23, -41], [35, -52], [30, -48], [50, -28], [25, -33]];
+    const foeSpots = [[21, -36], [28, -43], [15, -33], [33, -50], [24, -55], [36, -34],
+      [23, -62], [41, -58], [30, -66], [50, -40], [12, -46]];
     foe.forEach((u, i) => {
       const [x, z] = foeSpots[i % foeSpots.length];
       pose(ctx, u, x, z, facing(x, z, 2, 20), 'idle');
@@ -597,16 +681,17 @@ export const SHOTS = {
     // section somewhere off the bottom edge. The map camera orbits its focus, so the focus is
     // the composition: at (4, 0, 6) the six units it is supposed to be about sat below the
     // frame and the middle of the picture was forty metres of river.
-    cm.focusOn(_v.set(3.0, 0, 15.5), true);
-    cm.distWant = cm.dist = 50;
+    cm.focusOn(_v.set(9.0, 0, -15.0), true);
+    cm.distWant = cm.dist = 38;
     // A little steeper than round 2's -0.55 so the lens clears the poplar row along the
     // approach (at 31 degrees it looked THROUGH it and the squad was behind leaves), but not
     // so steep that the frame becomes a plan: -0.66 is 38 degrees, which still shows the
     // frontages on the far bank standing up against the sky.
-    cm.pitchWant = cm.pitch = -0.66;
-    // Looking north, the way the player is attacking: our own section reads across the bottom
-    // of the map, the crossing in the middle, their held ground at the top.
-    cm.yawWant = cm.yaw = 0.34 + Math.PI;
+    cm.pitchWant = cm.pitch = -0.70;
+    // Looking north-north-west, the way the player is attacking: the section and the tank read
+    // across the bottom of the frame with the crossing behind them, the village and the
+    // Imperial line across the top, and the road between the two as the axis of the picture.
+    cm.yawWant = cm.yaw = 0.30 + Math.PI;
     // A tactical map read through a lens is not a map. The pipeline switches its depth of
     // field on for this camera, and because the whole frustum falls outside the focus range
     // every fill in the frame is blurred while the ink composited on top of it stays razor
@@ -638,13 +723,27 @@ export const SHOTS = {
     // the town are dead ahead of her, which is what puts stakes behind the shoulder. Far
     // enough back that the spring arm has open ground behind it — inside the bridge parapet
     // the collision pull-in buries the camera in masonry.
+    // HALFWAY ACROSS, NOT THIRTY METRES SHORT OF IT.
+    //
+    // At z = 32 the whole span lay between her and the town, and an over-the-shoulder lens on
+    // a 33-degree down-road axis turned the deck into a pale trapezoid across the middle of
+    // the frame with nothing on it — the "~40% to a bare deck" note, in a shot that is
+    // supposed to be about an assault. Put her ON the crossing, at the near end of the third
+    // arch, and the SAME deck becomes a corridor: its two parapets converge either side of
+    // her, the section is strung out along it ahead of and beside her, and the bridgehead she
+    // is running at is the vanishing point rather than a distant strip.
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
-    pose(ctx, alicia, 2.2, 32.0, Math.PI - 0.10, 'run', STANCE.STAND, { phase: 0.18 });
+    const dy = deckY(ctx);
+    pose(ctx, alicia, 3.4, 12.5, Math.PI - 0.10, 'run', STANCE.STAND, { phase: 0.18, y: dy });
 
+    // Two of the section ahead of her on the span, staggered either side of the crown, so the
+    // deck carries figures all the way to the far parapet instead of being a floor.
     const rosie = unitNamed(ctx, 'Rosie Stark');
     const largo = unitNamed(ctx, 'Largo Potter');
-    pose(ctx, rosie, 7.5, 35.0, Math.PI - 0.05, 'crouchIdle', STANCE.CROUCH);
-    pose(ctx, largo, -3.5, 35.5, Math.PI + 0.05, 'aim');
+    const edy = unitNamed(ctx, 'Edy Nelson');
+    pose(ctx, rosie, 5.4, 5.5, Math.PI - 0.16, 'run', STANCE.STAND, { phase: 0.62, y: dy });
+    pose(ctx, largo, 2.6, 0.8, Math.PI + 0.12, 'run', STANCE.STAND, { phase: 0.31, y: dy });
+    if (edy) pose(ctx, edy, 5.6, 17.5, Math.PI - 0.06, 'aim', STANCE.CROUCH, { y: dy });
 
     const foe = b.units.filter((u) => u.team === 1 && !u.isVehicle).slice(0, 5);
     const foeSpots = [[3.0, -13.0], [9.5, -15.5], [-3.5, -14.5], [15.0, -19.5], [6.0, -22.5]];
@@ -866,7 +965,8 @@ export const SHOTS = {
     // the 48-degree three-quarter that shows both of them at once, and azimuth 1.60 is the
     // AZ that follows. Change one of the three and you must re-solve the other two.
     setSun(ctx, 0.16, 1.60);
-    uiMode(ctx, 'none');
+    plate(ctx, 'V',
+      'The Edelweiss halted on the road, turret traversed to the eastern flank.');
     hideAll(ctx);
     b.activeUnit = null;
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
@@ -911,9 +1011,17 @@ export const SHOTS = {
       const [x, z] = S.at(d, S.halfWidth(d, FOV) * f);
       return pose(ctx, u, x, z, facing(x, z, tx, tz), clip, st, opts);
     };
-    put(largo, 3.6, 0.78, 'crouchIdle', STANCE.CROUCH);
-    put(isara, 10.5, 0.62);
-    put(alicia, 18.0, 0.40, 'walk', STANCE.STAND, { phase: 0.27 });
+    //
+    // AND 0.78 OF A HALF-WIDTH IS NOT INSIDE THE FRAME. A lateral is the position of a man's
+    // ROOT, and a man is 0.55 m wide with a 1.4 m weapon across him; at 3.6 m the half-width
+    // is only 2.33 m, so 0.78 of it puts his root 1.82 m out and his outboard shoulder and
+    // his rifle muzzle past the edge — which is exactly the "cropped into detached limbs"
+    // the critique named for the second round running. Back him off to 4.6 m (half-width
+    // 2.98) and in to 0.55, and his silhouette clears the edge by 0.6 m with the crop it
+    // actually wants: the BOTTOM edge, across his shins, where a crop reads as foreground.
+    put(largo, 4.0, 0.52, 'crouchIdle', STANCE.CROUCH);
+    put(isara, 10.5, 0.60);
+    put(alicia, 18.0, 0.38, 'walk', STANCE.STAND, { phase: 0.27 });
 
     finale(ctx, 5, (i) => {
       if (i !== 0 || !ctx.fx || !tank) return;
@@ -942,23 +1050,50 @@ export const SHOTS = {
   async village(ctx) {
     const b = ensureBattle(ctx);
     setSun(ctx, 0.33, 1.75);
-    uiMode(ctx, 'none');
+    plate(ctx, 'VI',
+      'The market street, taken; the barn on the left still holds its Imperial section.');
     hideAll(ctx);
+
+    // IN THE STREET, NOT OUT ON THE GREEN.
+    //
+    // Round 3 stood the lens at (48, -62) — thirty metres clear of the last frontage, out on
+    // the pasture — and the frame it got was one barn's broadside filling the left third,
+    // three roofs across the middle, and twenty-two thousand square pixels of unbroken lawn
+    // under all of it. That lawn is also most of why this shot measured a mean HSV saturation
+    // of 91/255, the highest in the set: a large flat area of the one pigment the lit
+    // transform deliberately boosts (greens get +16% chroma, see vcLitColour).
+    //
+    // Structures._buildVillage() ranks its houses along the ROAD, at 7 m and 18 m off the
+    // centreline on both sides, so the road through the pad is a street with two built
+    // frontages — and standing in it gives the frame walls on both edges, a receding
+    // perspective down the middle, and cart ruts and beaten earth instead of turf in the near
+    // field. Everything the previous framing was missing is a property of standing in the
+    // right place.
+    const FOV = 42, CX = 14.2, CZ = -24.0, TX = 30.5, TZ = -53.0;
+    const S = staging(CX, CZ, TX, TZ);
     const foe = b.units.filter((u) => u.team === 1 && !u.isVehicle).slice(0, 4);
     show(ctx, foe);
-    const spots = [[24.0, -38.0, 0.4], [28.0, -42.0, 0.1], [20.0, -34.0, 1.0], [31.0, -47.0, -0.3]];
+    // Four depth planes down the street: one in the near field cropped at the shin by the
+    // bottom edge, one at the first doorway, one at the far corner, one small by the well.
+    // 2.5 m on the near man is a repoussoir: the bottom edge crops him across the thigh and
+    // his torso fills the lower-right corner, which is what stops the street surface — the
+    // same flat pale plane a bridge deck is — from owning the near third of the frame.
+    const spots = [[2.5, 0.52, 'idle'], [6.0, -0.40, 'crouchIdle'], [11.0, 0.26, 'idle'],
+      [19.0, -0.30, 'crouchIdle']];
     foe.forEach((u, i) => {
-      const [x, z, ry] = spots[i % spots.length];
-      pose(ctx, u, x, z, facing(x, z, 44, -58) + ry, i % 2 ? 'crouchIdle' : 'idle',
-        i % 2 ? STANCE.CROUCH : STANCE.STAND);
+      const [d, f, clip] = spots[i % spots.length];
+      const [x, z] = S.at(d, S.halfWidth(d, FOV) * f);
+      pose(ctx, u, x, z, facing(x, z, CX, CZ) + (i % 2 ? 0.7 : -0.5), clip,
+        clip === 'crouchIdle' ? STANCE.CROUCH : STANCE.STAND);
     });
 
-    // Looking back up the market street from the far end of the square, so the frontages
-    // recede in perspective instead of one wall filling the lens.
-    aimCameraG(ctx, 48.0, 2.4, -62.0, 22.0, 3.2, -36.0, 40);
+    // 1.4 degrees, not 3: at 42 degrees of vertical field every extra degree of nose-down is
+    // another 2.4% of the page given to the street surface, and the street surface here is
+    // beaten earth — the flattest, emptiest thing in the frame.
+    aimCameraPitch(ctx, CX, CZ, 2.05, TX, TZ, 0.6, FOV);
 
     finale(ctx, 5, (i) => {
-      if (i === 0) smokeColumn(ctx, 26, -44, 13, 10, { size: 2.6, alpha: 0.36, drift: 6, frames: 5 });
+      if (i === 0) smokeColumn(ctx, 34, -52, 13, 10, { size: 2.6, alpha: 0.36, drift: 6, frames: 5 });
     });
     await frames(14);
   },
@@ -967,7 +1102,8 @@ export const SHOTS = {
   async closeup(ctx) {
     ensureBattle(ctx);
     setSun(ctx, 0.29, 2.15);
-    uiMode(ctx, 'none');
+    plate(ctx, 'VII',
+      'Sergeant Melchiott, before the crossing.');
     hideAll(ctx);
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
     const rosie = unitNamed(ctx, 'Rosie Stark');
@@ -991,35 +1127,41 @@ export const SHOTS = {
   async grass(ctx) {
     ensureBattle(ctx);
     setSun(ctx, 0.28, 2.30);
-    uiMode(ctx, 'none');
+    plate(ctx, 'VIII',
+      'Moving through the fallow field south-west of the deployment ground.');
     hideAll(ctx);
     const edy = unitNamed(ctx, 'Edy Nelson') || firstOfClass(ctx, 'scout', 0);
     const rosie = unitNamed(ctx, 'Rosie Stark');
     const alicia = unitNamed(ctx, 'Alicia Melchiott');
     show(ctx, [edy, rosie, alicia]);
 
-    // OVER HALF THIS FRAME USED TO BE EMPTY SKY. The lens sat 0.30 m off the ground — inside
-    // the sward — aimed at a subject 6.6 m away across an open field, so the horizon fell at
-    // 45% of frame height and every pixel above it was one flat wash. Three changes: the
-    // camera comes UP to 0.66 m (clear of the blade canopy, still a belly-crawl eye level),
-    // the subject comes IN to five metres, and — the one that actually does the work — the
-    // whole shot swings west so it looks ACROSS the field at the poplar row on the far side
-    // instead of out over open country. The trees now close the top of the frame and the sky
-    // is a band, not a field.
-    const FOV = 40, CX = -22.6, CZ = 65.2, AX = -18.6, AZ = 61.6;
+    // OVER HALF THIS FRAME IS STILL EMPTY SKY, and the reason is arithmetic that two rounds
+    // of moving the camera sideways could never fix. On a 40-degree VERTICAL field a LEVEL
+    // lens puts the horizon at exactly half the frame height, so half of every shot from a
+    // level camera on flat ground is sky before a single object is placed. Round 3 aimed at a
+    // point 0.14 m above the lens 5.3 m away — 1.5 degrees UP — and duly measured 52%.
+    //
+    // The fix is pitch, and the amount is derivable: the horizon lands at
+    // (halfFov + pitch) / fov of the way down the frame, so six degrees of nose-down on a
+    // 42-degree lens puts it at 64% and the sky is a third of the page before the poplar row
+    // takes its bite out of that. The subject is lifted to compensate — a crouching man
+    // 4.2 m out sits a quarter of the way down from the top edge, which is where a portrait
+    // wants him — and the aim point is thrown 16 m down the axis so the pitch is measured
+    // over a long baseline instead of over five metres of lumpy field.
+    const FOV = 42, CX = -22.6, CZ = 65.2;
+    const AX = -11.3, AZ = 54.9;
     const S = staging(CX, CZ, AX, AZ);
     const put = (u, d, f, clip, opts) => {
       const [x, z] = S.at(d, S.halfWidth(d, FOV) * f);
       return pose(ctx, u, x, z, facing(x, z, 6, 6), clip, STANCE.CROUCH, opts);
     };
     // Inside the fallow field south-west of the deployment (layout.fields), on one line of
-    // advance at 5 / 9 / 14 m so the eye has somewhere to go after the subject.
-    put(edy, 5.0, -0.10, 'crouchWalk', { phase: 0.42 });
-    put(rosie, 9.0, 0.52, 'crouchIdle');
-    put(alicia, 14.5, -0.44, 'crouchWalk', { phase: 0.78 });
+    // advance at 4.2 / 8 / 13 m so the eye has somewhere to go after the subject.
+    put(edy, 4.2, -0.12, 'crouchWalk', { phase: 0.42 });
+    put(rosie, 8.0, 0.50, 'crouchIdle');
+    put(alicia, 13.0, -0.46, 'crouchWalk', { phase: 0.78 });
 
-    aimCamera(ctx.camera, CX, groundAt(ctx, CX, CZ) + 0.66, CZ,
-      AX, groundAt(ctx, AX, AZ) + 0.80, AZ, FOV);
+    aimCameraPitch(ctx, CX, CZ, 0.92, AX, AZ, 6.0, FOV);
     await frames(12);
   },
 
@@ -1045,7 +1187,8 @@ export const SHOTS = {
     // at thirteen degrees — a 4.4:1 shadow — on the ember end of the ramp, and azimuth is
     // AZ - (t - 0.5) * 1.15 = -1.868.
     setSun(ctx, 0.95, -1.868);
-    uiMode(ctx, 'none');
+    plate(ctx, 'IX',
+      'Last light over the valley; the section halted west of the road.');
     b.setPhase('command');
     b.activeUnit = null;
     // Every placement below is authored as (depth down the view ray, metres to screen-right)
@@ -1103,6 +1246,48 @@ export const SHOTS = {
 export const SHOT_NAMES = Object.keys(SHOTS);
 
 /**
+ * Where the triangles actually go, bucketed by subsystem.
+ *
+ * renderer.info gives ONE number for the whole frame, which is useless for a
+ * budget: round 3 went from 2.9 M to 5.2 M and nobody could say which system
+ * ate the 2.3 M. This walks the live scene the way the renderer does — visible
+ * only, honouring InstancedMesh.count and the LOD tile toggles — and sums the
+ * index count per top-level bucket. It is the same arithmetic the GPU does
+ * minus frustum culling, so it over-reports the wide shots slightly and is
+ * exactly right about the RATIO between systems, which is the number a budget
+ * conversation needs.
+ */
+export function triangleBreakdown(ctx) {
+  const out = {};
+  const bucketOf = (o) => {
+    for (let p = o; p; p = p.parent) {
+      if (p.name === 'vegetation') return o.name?.startsWith('trunks:') ? 'trunks'
+        : o.userData.vegBucket || 'grass';
+      if (p.name === 'terrain') return 'terrain';
+      if (p.name === 'structures') return 'structures';
+      if (p.name === 'props') return 'props';
+      if (p.name === 'water') return 'water';
+      if (p.isScene) break;
+    }
+    return o.isSkinnedMesh ? 'actors' : 'other';
+  };
+  ctx.scene?.traverseVisible((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    const g = o.geometry;
+    const idx = g.index ? g.index.count : (g.attributes.position?.count ?? 0);
+    const range = g.drawRange;
+    const n = Math.min(idx, range && range.count !== Infinity ? range.count : idx);
+    const tris = (n / 3) * (o.isInstancedMesh ? o.count : 1);
+    const b = bucketOf(o);
+    out[b] = (out[b] || 0) + tris;
+  });
+  let total = 0;
+  for (const k of Object.keys(out)) { out[k] = Math.round(out[k]); total += out[k]; }
+  out.total = total;
+  return out;
+}
+
+/**
  * Run a named shot. Unknown names fall back to `overview` so the harness never hangs.
  * Resolves when the pose is set; main.js then settles the frame and runs `ctx.finale`.
  */
@@ -1117,6 +1302,7 @@ export async function runShot(name, ctx) {
       units: ctx.battle?.units.length ?? 0,
       phase: ctx.battle?.phase ?? null,
       turn: ctx.battle?.turn ?? 0,
+      tris: triangleBreakdown(ctx),
     });
   }
   return true;

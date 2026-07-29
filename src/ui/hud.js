@@ -251,6 +251,48 @@ export class HUD {
     f.appendChild(this.bookmarkEl);
     f.appendChild(h('div', { class: 'vc-vignette' }));
     this.root.appendChild(f);
+
+    // The plate caption. Hidden unless the root carries `.vc-plate`; see
+    // setCaptureMode(). A page of a war artist's journal is not a bare
+    // photograph — it carries a plate number, a hand-written line under the
+    // image and a ruled flourish, and those three things are the whole of what
+    // the world shots need from the HUD.
+    // ON A SLIP OF PAPER, not set naked over the picture. Bare ink over the
+    // frame is legible on a pale plate and invisible on a dark one — the dusk
+    // page swallowed the whole caption into the field — and a gummed-in slip is
+    // what a journal actually carries under a plate anyway.
+    const cp = panel({ seed: 617, cls: 'vc-cap', tilt: -0.35, soft: true });
+    this.capEl = cp.root;
+    this.capNum = h('div', { class: 'vc-cap-n', text: 'Plate I' });
+    this.capText = h('div', { class: 'vc-cap-t', text: '' });
+    this.capRule = h('div', { class: 'vc-cap-r' });
+    this.capRule.appendChild(inkRule({ w: 170, seed: 617, weight: 1.1, flourish: true }));
+    cp.content.appendChild(this.capNum);
+    cp.content.appendChild(this.capText);
+    cp.content.appendChild(this.capRule);
+    this.root.appendChild(this.capEl);
+  }
+
+  /**
+   * What the HUD shows while the screenshot harness is driving.
+   *
+   * `plate` is the mode the world shots use: everything that reads as game UI
+   * goes away and the book's own furniture — the rule, the corner flourishes,
+   * the bookmark and a pencilled caption — stays. Round 3 ran those shots with
+   * the entire HUD host set to display:none, and five of the eight critiqued
+   * frames consequently scored the hud axis at ZERO, not because the HUD was
+   * bad but because there was none of it in the frame to judge. An empty axis
+   * is a thrown-away axis.
+   *
+   * @param {string} mode  'plate' | 'command' | 'action' | 'aim' | 'none'
+   * @param {{num?:string, text?:string}} [caption]
+   */
+  setCaptureMode(mode, caption) {
+    this.root.classList.toggle('vc-plate', mode === 'plate');
+    if (caption) {
+      if (caption.num) this.capNum.textContent = caption.num;
+      if (caption.text) this.capText.textContent = caption.text;
+    }
   }
 
   _setBookmark(chapter) {
@@ -729,6 +771,7 @@ export class HUD {
   _on(evt, fn) { this._unsubs.push(Bus.on(evt, fn)); }
 
   _wire() {
+    this._on('ui:captureMode', (p) => this.setCaptureMode(p && p.mode, p && p.caption));
     this._on('phase:change', (p) => this._setPhase(p?.to || 'command'));
     this._on('turn:changed', (p) => {
       if (p?.turn != null) this.turn = p.turn;

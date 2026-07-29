@@ -35,6 +35,8 @@ import { WorldLighting, updateWorldMaterials, setWindGain, PALETTE } from './wor
 const _dir = new THREE.Vector3();
 const _pt = new THREE.Vector3();
 const _sunDir = new THREE.Vector3();
+// The ember the aerial perspective is pushed toward at last light.
+const _fogWarm = new THREE.Color(0xc98f63);
 
 // The two ray filters. They are NOT the same question — see world/collider.js.
 // Sight is what a soldier can see over; projectile is what a round is stopped
@@ -82,6 +84,7 @@ export class World {
       scene.fog = new THREE.FogExp2(PALETTE.haze, 0.0026);
       this._ownsFog = true;
     }
+    this._fogK = -1;
     this._makeLights(scene);
 
     // --- built environment
@@ -533,6 +536,19 @@ export class World {
     this._syncSunToMaterials();
     updateWorldMaterials(dt);
     this.sky?.update(dt, camera);
+    // Aerial perspective is the colour of the sky the far bank is seen THROUGH.
+    // Leaving it on the daylight putty while the dome went to ember was the
+    // second half of why `dusk` did not read as dusk: the town on the far side
+    // of the valley dissolved into a cool grey haze under an orange sky, which
+    // is a combination no evening has ever produced. Only touched if we own the
+    // fog — the render pipeline's own haze pass takes priority when it exists.
+    if (this._ownsFog && this.sky) {
+      const k = this.sky.duskAmount;
+      if (Math.abs(k - this._fogK) > 1e-3) {
+        this._fogK = k;
+        this.scene.fog.color.copy(this.sky.horizonColor()).lerp(_fogWarm, 0.25 * k);
+      }
+    }
     this.terrain.update(dt, camera);
     this.water.update(dt, camera);
     this.vegetation.update(dt, camera);

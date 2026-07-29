@@ -344,7 +344,10 @@ export function buildBarn(rng, opts = {}) {
   const h = rngRange(rng, 3.4, 4.4);
   const thick = 0.28;
 
-  // timber-boarded walls on a low stone base, big cart doors on the long side
+  // Weathered board-and-batten on a low stone base, big cart doors on the long
+  // side. The cladding uses PALETTE.barnBoard, NOT PALETTE.timber: see the note
+  // beside those two entries — a forty-year-old barn wall is silvered grey-brown
+  // and this one is 35% of the `village` frame.
   bins.stone.push(box(w + 0.2, 0.5, d + 0.2, PALETTE.stone, { y: 0.1, variation: 0.1 }));
   const boards = Math.max(6, Math.round(w / 0.42));
   for (const s of [-1, 1]) {
@@ -352,8 +355,8 @@ export function buildBarn(rng, opts = {}) {
       const x = -w * 0.5 + ((i + 0.5) / boards) * w;
       if (s === 1 && Math.abs(x) < w * 0.17) continue;      // door gap
       bins.timber.push(box(w / boards - 0.03, h, thick,
-        i % 3 === 0 ? PALETTE.timberDark : PALETTE.timber,
-        { x, y: h * 0.5 + 0.3, z: s * (d * 0.5), variation: 0.13 }));
+        i % 3 === 0 ? PALETTE.barnBoardDark : PALETTE.barnBoard,
+        { x, y: h * 0.5 + 0.3, z: s * (d * 0.5), variation: 0.16 }));
     }
   }
   const dBoards = Math.max(4, Math.round(d / 0.42));
@@ -361,8 +364,8 @@ export function buildBarn(rng, opts = {}) {
     for (let i = 0; i < dBoards; i++) {
       const z = -d * 0.5 + ((i + 0.5) / dBoards) * d;
       bins.timber.push(box(thick, h, d / dBoards - 0.03,
-        i % 4 === 0 ? PALETTE.timberDark : PALETTE.timber,
-        { x: s * (w * 0.5), y: h * 0.5 + 0.3, z, variation: 0.13 }));
+        i % 4 === 0 ? PALETTE.barnBoardDark : PALETTE.barnBoard,
+        { x: s * (w * 0.5), y: h * 0.5 + 0.3, z, variation: 0.16 }));
     }
   }
   // cart doors

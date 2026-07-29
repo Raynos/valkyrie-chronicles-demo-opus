@@ -37,6 +37,29 @@ import {
   getNoiseTexture, getGroundDetailTexture,
 } from './textures.js';
 
+// ------------------------------------------------------------- shade debug
+// `?shadeDbg=N` replaces every NPR surface colour with one scalar of the
+// lighting solve, rendered as grey. It exists because "the tank's up-facing
+// planes are darker than its vertical ones" has four possible causes (wrong
+// normals, a dead key term, a self-shadowing bug, an ambient that overwhelms
+// the key) and guessing between them costs more than a switch does.
+//   1 shadowMask   2 keyN (post-shadow half-Lambert)   3 raw drive
+//   4 quantised band g   5 world normal (as RGB)       6 N.L before wrap
+const SHADE_DBG = (() => {
+  const q = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+  return q.has('shadeDbg') ? (parseInt(q.get('shadeDbg'), 10) || 0) : 0;
+})();
+
+// ------------------------------------------------------------ key/fill split
+// The two numbers that set the frame's tonal RANGE. The band drive is
+// keyN * KEY_GAIN + skyView * FILL_GAIN, so these two numbers alone decide how
+// many band boundaries a 90-degree normal change can cross. Round 3's 0.62/0.30
+// put two perpendicular faces of the same sunlit house 1.8 LSB apart; leaning
+// the split toward the key widens every object's span through the quantiser
+// without touching the light rig, which the tint still reads from.
+const KEY_GAIN = 0.68;
+const FILL_GAIN = 0.25;
+
 // ---------------------------------------------------------------- palette
 // Authored as sRGB hex; three's ColorManagement converts to the linear working
 // space on construction, which is what the shaders expect.
@@ -44,12 +67,18 @@ export const PALETTE = {
   cream:      new THREE.Color(0xfff2d6),
   warmLight:  new THREE.Color(0xffdfae),
   violet:     new THREE.Color(0x5d5080),
-  // The darkest value allowed in frame. Blue leads red: a CANVAS-engine frame
-  // bottoms out on a deep violet, never on the warm brown round 1 measured
-  // (85,80,64 in the terrain shade, with blue the LOWEST channel). This colour
-  // is also what the grade pass uses as its ink black, so moving it moves the
-  // toe of the whole image, not just the surface shaders.
-  inkFloor:   new THREE.Color(0x3a3043),
+  // The darkest value allowed in frame, and also the grade pass's ink black, so
+  // moving it moves the toe of the whole image rather than just the surface
+  // shaders. Near-neutral, cool, and only just violet.
+  //
+  // This colour is a FLOOR: every dark in the picture is lifted toward it, so
+  // its hue is applied to the bottom of every surface in frame. 0x3a3043
+  // normalises to (1.15, 0.88, 1.72) — it subtracts green from every shadow in
+  // the picture and lands them all on the same magenta-violet whatever pigment
+  // they started from. The Edelweiss's track-guard underside measured hue 294
+  // with GREEN as its lowest channel against sage-green paint.
+  // A shadow floor is allowed to be cool. It is not allowed to be a colour.
+  inkFloor:   new THREE.Color(0x3d3a43),
   graphite:   new THREE.Color(0x40332e),
   sage:       new THREE.Color(0x8d9670),
   olive:      new THREE.Color(0x6f7a4e),
@@ -320,6 +349,7 @@ uniform vec3  uEmissive;
 uniform float uEmissiveIntensity;
 uniform float uAlphaTest;
 uniform float uShadowSoften;
+uniform float uShadowFloor;
 uniform float uLightContrast;
 uniform float uShadeCool;
 uniform float uWetPx;
@@ -391,15 +421,47 @@ const NPR_SHADE_BODY = /* glsl */`
 
   // ---- paper tooth: nudge the shading normal with world-locked fibre noise so
   // a perfectly flat wall still shows pigment sitting unevenly on the sheet.
-  vec3 tooth = vcToothGradient( vWorldPos, uToothScale );
-  vec3 toothV = ( viewMatrix * vec4( tooth, 0.0 ) ).xyz;
-  N = normalize( N + toothV * uPaper * 0.075 + extraN );
+  //
+  // VC_CHEAP surfaces skip it. This is nine calls to vcNoise2 (three fbm3
+  // evaluations for the gradient) per fragment, and it exists to make a FLAT
+  // WALL uneven. A grass blade is one to three screen pixels across; there is no
+  // flat area on it for the tooth to sit in, and the sward is 1.6 M of the 2.4 M
+  // triangles in a landscape frame, so it is where the fragment budget actually
+  // goes. The sheet still reaches the blades — the grade pass lays it over the
+  // whole picture.
+  #ifdef VC_CHEAP
+    N = normalize( N + extraN );
+  #else
+    vec3 tooth = vcToothGradient( vWorldPos, uToothScale );
+    vec3 toothV = ( viewMatrix * vec4( tooth, 0.0 ) ).xyz;
+    N = normalize( N + toothV * uPaper * 0.075 + extraN );
+  #endif
 
   vec3 V = normalize( -vViewPos );
 
   float shadowMask = getShadowMask();
   // Soften the shadow terminator: a hard shadow map edge fights the band bleed.
   shadowMask = mix( 1.0, shadowMask, clamp( uShadowSoften, 0.0, 1.0 ) );
+
+  // ---- a cast shadow is a WASH, not a switch --------------------------------
+  // The key used to be multiplied by the raw mask, so inside a cast shadow every
+  // plane of an object collapsed onto the same value: only the sky-fill term
+  // still varied, and that is a 0.2-0.8 spread against a key spread of 0-0.6.
+  // Measured on the Edelweiss, which stands in dappled tree shade in its own
+  // shot: turret roof 108, track-guard top 88, vertical hull side 118, glacis
+  // 115 — the vehicle had no directional read at all and its shadow-map dapple
+  // rendered as camouflage. (Diagnosed by rendering the mask itself: the tank's
+  // flat plates measured a standard deviation of 50 LSB in shadowMask alone.
+  // It is not acne — more normal-offset bias, a hard PCF and a finer frustum all
+  // leave it unchanged — it is real occlusion from real canopy.)
+  //
+  // In gouache a shadowed plane keeps its modelling: it is painted in the shade
+  // wash, and the wash is still lighter where the plane turns to the sky. So the
+  // key is attenuated to a FLOOR rather than to zero. A cast shadow still costs
+  // most of the key — the ground under this tank drops 0.34 of drive, well over
+  // one band boundary, so it stays a readable shape — but a roof inside it stays
+  // brighter than the wall below it.
+  float keyLit = mix( uShadowFloor, 1.0, shadowMask );
 
   // ---- gather light ---------------------------------------------------------
   // The band drive is deliberately NORMALISED rather than physical: a painting
@@ -418,7 +480,7 @@ const NPR_SHADE_BODY = /* glsl */`
     float raw = dot( N, L );
     float hl = clamp( ( raw + uWrap ) / ( 1.0 + uWrap ), 0.0, 1.0 );
     float w = vcLum( directionalLights[ i ].color ) + 1e-4;
-    key += hl * w * shadowMask;
+    key += hl * w * keyLit;
     keyW += w;
     keyCol += directionalLights[ i ].color * hl;
     if ( w > primaryW ) { primaryW = w; primaryL = L; }
@@ -464,8 +526,25 @@ const NPR_SHADE_BODY = /* glsl */`
 
   // How much sky this facet can see — the fill gradient that keeps shaded
   // surfaces from flattening into one dead violet slab.
+  //
+  // The round-3 shape (0.30 + 0.70 * (N.up*0.5+0.5)) gives up 1.00, horizontal
+  // 0.65, down 0.30 — a 1.54:1 sky advantage for an up-facing plane, worth
+  // 0.105 of drive at the shipped fill gain. A LOW sun spends more than that on
+  // the other side: at the tank shot's 34 degrees of elevation a vertical plane
+  // square to the key sees cos(34) = 0.83 against the roof's sin(34) = 0.56, so
+  // the key hands the vertical plane 0.125 and the roof loses. Measured on the
+  // Edelweiss: turret roof 108, track-guard top 88, vertical hull side 118.
+  // That is physically defensible and pictorially wrong — the whole reason the
+  // eye reads a vehicle as solid is that its horizontal planes are the bright
+  // ones, and a VC frame paints them as the cream band.
+  //
+  // A cosine-weighted sky (the physical answer, (1 + N.up)/2) is 2:1, and the
+  // exponent takes it to about 2.6:1 — enough that a horizontal plate stays a
+  // wash above a vertical one under any sun the day cycle produces, without
+  // touching the key/fill balance that sets overall contrast.
   vec3 upV = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
-  float ambTerm = 0.30 + 0.70 * ( dot( N, upV ) * 0.5 + 0.5 );
+  float skyView = clamp( dot( N, upV ) * 0.5 + 0.5, 0.0, 1.0 );
+  float ambTerm = 0.20 + 0.80 * pow( skyView, 1.30 );
 
   float punctN = clamp( vcLum( punct ) * 0.9, 0.0, 1.4 );
 
@@ -490,7 +569,7 @@ const NPR_SHADE_BODY = /* glsl */`
   // near-vertical camera the geometric term is constant, so without this the
   // whole map lands inside one band.
   float wash = 0.5, gran = 0.5;
-  #ifndef VC_LOW
+  #if !defined( VC_LOW ) && !defined( VC_CHEAP )
   {
     vec2 bu = vWorldPos.xz * uBlotchScale;
     vec2 bv = vec2( vWorldPos.x + vWorldPos.z, vWorldPos.y ) * uBlotchScale;
@@ -503,6 +582,10 @@ const NPR_SHADE_BODY = /* glsl */`
     wash = blot.r * 0.64 + fine.r * 0.36;
     gran = blot.b * 0.50 + fine.b * 0.50;
   }
+  #elif defined( VC_CHEAP )
+  // One fetch instead of four. A blade needs a per-blade tonal offset, not a
+  // triplanar granulation field it is too narrow to show.
+  wash = texture2D( uBlotchTex, vWorldPos.xz * uBlotchScale ).r;
   #endif
   drive += ( wash - 0.5 ) * uBlotch * 0.090;
   drive += ( gran - 0.5 ) * uBlotch * 0.038;
@@ -693,21 +776,27 @@ const NPR_SHADE_BODY = /* glsl */`
   // stucco and the lit uniform at a fraction of an amplitude, which is what made
   // it read as a printed screen.
   {
-    float dark = 1.0 - smoothstep( 0.85, 1.75, bi );   // the two darkest bands
+    // The two darkest bands, plus the near half of the third. Round 3 cut off at
+    // 1.75 of uBands, which on a four-band surface is the bottom 44% of the
+    // drive — and once the shade wash stopped being a near-black violet slab
+    // there was very little frame left down there for a pencil to work on, which
+    // is what took this axis to 1-3. Graphite in a gouache study reaches well up
+    // into the half-tones; it is the LIT wash it must stay off.
+    float dark = 1.0 - smoothstep( 1.30, 2.35, bi );
     // The crossing direction used to be confined to the darkest band alone,
     // which meant a critic scanning any shadow in the frame found ONE ruling at
     // ONE angle and an autocorrelation that decayed monotonically — a printed
     // screen. Graphite crosses wherever it is laid in twice.
-    float deep = 1.0 - smoothstep( 0.55, 1.95, bi );
+    float deep = 1.0 - smoothstep( 0.80, 2.10, bi );
     float h = vcHatchField( sPx, 0.6109, uHatchSpacing, 1.7 ) * dark;
-    #ifndef VC_LOW
+    #if !defined( VC_LOW ) && !defined( VC_CHEAP )
       // independently seeded and offset so the two directions cannot phase-lock
       float hx = vcHatchField( sPx + vec2( 129.0, 57.0 ), -0.2618, uHatchSpacing * 1.21, 5.3 ) * deep;
       h = max( h, hx );
       // a third, lighter pass in the darkest wash only — three directions is
       // what stops the darks reading as a ruled tint
       float hz = vcHatchField( sPx + vec2( 41.0, 213.0 ), 1.4835, uHatchSpacing * 0.87, 11.9 )
-               * ( 1.0 - smoothstep( 0.05, 0.85, bi ) ) * 0.75;
+               * ( 1.0 - smoothstep( 0.10, 1.15, bi ) ) * 0.75;
       h = max( h, hz );
     #endif
     // real graphite tooth from the drawn stroke bank, so the procedural lines
@@ -722,12 +811,16 @@ const NPR_SHADE_BODY = /* glsl */`
   // Runs LAST of the wash stages, on the composited result, so nothing
   // downstream can warm it back up — the graphite in the hatching included.
   //
-  // The two darkest washes in full, nothing above them. Reaching further up the
-  // ramp is how an earlier build turned every ochre field and straw roof
-  // lavender; stopping short of band 1 is how round 1 measured its terrain
-  // shadow at (85,80,64), a warm brown with blue as the LOWEST channel. It is a
-  // luminance-preserving hue move, so widening it cannot flatten the values.
-  col = vcCoolShade( col, uShadeCool * ( 1.0 - smoothstep( 1.10, 2.05, bi ) ) );
+  // The two darkest washes, nothing above them. It is a luminance-preserving
+  // hue move, so widening it cannot flatten the values.
+  //
+  // 0.55, not 1.0: vcShadowColour has already spent 0.85 of the 21 deg budget
+  // on the shade wash this colour was mixed from, and stacking a second full
+  // turn on top puts the darkest band 40 deg off its own pigment — which is
+  // precisely the "shade is a different material" failure. What this second
+  // pass is for is the MID band, where the shade colour is only a 6% ingredient
+  // and the cool would otherwise be invisible.
+  col = vcCoolShade( col, uShadeCool * 0.55 * ( 1.0 - smoothstep( 1.10, 2.05, bi ) ) );
 
   // ---- hard specular band (metal, glass, wet paint) ------------------------
   // A painted highlight is a SHAPE with an edge, not a Phong lobe. Thresholding
@@ -789,6 +882,22 @@ const NPR_SHADE_BODY = /* glsl */`
   }
 
   col += uEmissive * uEmissiveIntensity;
+
+#ifdef VC_SHADE_DBG
+  #if VC_SHADE_DBG == 1
+    col = vec3( shadowMask );
+  #elif VC_SHADE_DBG == 2
+    col = vec3( keyN );
+  #elif VC_SHADE_DBG == 3
+    col = vec3( clamp( drive, 0.0, 1.0 ) );
+  #elif VC_SHADE_DBG == 4
+    col = vec3( g );
+  #elif VC_SHADE_DBG == 5
+    col = normalize( vWorldNormal ) * 0.5 + 0.5;
+  #elif VC_SHADE_DBG == 6
+    col = vec3( clamp( dot( N, primaryL ), 0.0, 1.0 ) );
+  #endif
+#endif
 `;
 
 // The chunk preamble every NPR fragment shader needs, in three's required order.
@@ -982,8 +1091,8 @@ export const MaterialRegistry = {
       // top band on its own; below that the fill has to take over or the whole
       // frame collapses into the darkest value.
       const dim = Math.min(1, key.intensity / 1.2);
-      u.uKeyGain.value = 0.62 * (0.45 + 0.55 * dim);
-      u.uFillGain.value = 0.30 + 0.16 * (1 - dim);
+      u.uKeyGain.value = KEY_GAIN * (0.45 + 0.55 * dim);
+      u.uFillGain.value = FILL_GAIN + 0.16 * (1 - dim);
     }
   },
 
@@ -1181,6 +1290,10 @@ export function makeCanvasMaterial(opts = {}) {
     toothScale: 1.7,
     hatchSpacing: opts.skinning ? 6.8 : 5.8,
     shadowSoften: 1,
+    // How much of the key a surface keeps inside a cast shadow. See
+    // NPR_SHADE_BODY: 0 is the old behaviour and flattens every plane of a
+    // shadowed object onto one value. Undefined leaves the factory default.
+    shadowFloor: undefined,
     side: THREE.FrontSide,
     transparent: false,
     opacity: 1,
@@ -1201,6 +1314,7 @@ export function makeCanvasMaterial(opts = {}) {
   if (o.instanced) defines.VC_INSTANCED = '';
   if (weave) defines.VC_WEAVE = '';
   if (CFG.quality <= 0) defines.VC_LOW = '';
+  if (SHADE_DBG) defines.VC_SHADE_DBG = String(SHADE_DBG);
 
   const uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.lights,
@@ -1223,6 +1337,7 @@ export function makeCanvasMaterial(opts = {}) {
       uEmissiveIntensity: { value: 1 },
       uAlphaTest: { value: 0 },
       uShadowSoften: { value: 1 },
+      uShadowFloor: { value: 0.22 },
       uLightContrast: { value: 1 },
       uShadeCool: { value: 1 },
       uWetPx: { value: 16 },
@@ -1278,6 +1393,7 @@ export function makeCanvasMaterial(opts = {}) {
   uniforms.uEmissiveIntensity.value = o.emissiveIntensity;
   uniforms.uAlphaTest.value = o.alphaTest;
   uniforms.uShadowSoften.value = o.shadowSoften;
+  if (o.shadowFloor !== undefined) uniforms.uShadowFloor.value = o.shadowFloor;
   uniforms.uMap.value = o.map;
   uniforms.uMapRepeat.value.set(o.mapRepeat[0], o.mapRepeat[1]);
   applyNprOpts(uniforms, o);
@@ -1394,6 +1510,9 @@ ${NPR_SHADE_BODY}
  *  sway                   metres of lateral travel at full gust (0.28)
  *  subsurface             backlit glow (0.85 — grass is very translucent)
  *  variation              per-blade hue/value scatter (0.22)
+ *  prepassMaxDist         metres past which the blades are left out of the
+ *                         G-buffer entirely. 0 = unlimited. Defaults to 22 for
+ *                         blade geometry and unlimited for cutout cards.
  */
 export function makeGrassMaterial(opts = {}) {
   const o = Object.assign({
@@ -1413,6 +1532,7 @@ export function makeGrassMaterial(opts = {}) {
     windSpeed: 1,
     fadeStart: 1e5,
     fadeEnd: 1e6,
+    prepassMaxDist: undefined,   // 0 = no limit; see mat.userData below
     side: THREE.DoubleSide,
     name: 'vcGrass',
   }, opts);
@@ -1425,6 +1545,13 @@ export function makeGrassMaterial(opts = {}) {
   if (o.map) defines.VC_MAP = '';
   if (o.fadeEnd < 1e5) defines.VC_FADE = '';
   if (CFG.quality <= 0) defines.VC_LOW = '';
+  // Sward is where the fragment budget goes and the one surface that can spare
+  // the pigment machinery: at one to three screen pixels across, a blade has no
+  // area to show cold-press tooth, a triplanar granulation field or a
+  // three-direction crosshatch. It keeps ONE hatch direction and one blotch
+  // fetch. Cards (leaf, bush, wheat) are metres across and keep everything.
+  if (!o.map) defines.VC_CHEAP = '';
+  if (SHADE_DBG) defines.VC_SHADE_DBG = String(SHADE_DBG);
 
   const uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.lights,
@@ -1452,6 +1579,7 @@ export function makeGrassMaterial(opts = {}) {
       uEmissiveIntensity: { value: 0 },
       uAlphaTest: { value: 0 },
       uShadowSoften: { value: 0.75 },
+      uShadowFloor: { value: 0.22 },
       uLightContrast: { value: 1.1 },
       uShadeCool: { value: 1 },
       uWetPx: { value: 13 },
@@ -1575,6 +1703,19 @@ ${NPR_SHADE_BODY}
   mat.userData.vcOutline = false;      // blades must never get graphite outlines
   mat.userData.vcOutlineWidth = 0;
   mat.userData.vcKind = 'grass';
+  // Metres past which this material stops being drawn into the G-buffer. See
+  // CanvasRenderPipeline._prepassBegin: sward beyond this contributes nothing to
+  // the ink, the contact wash, the CoC or the haze, but it is two thirds of the
+  // triangles in a landscape frame and it is where the single-pixel outline
+  // sparkle comes from.
+  //
+  // The budget applies only to BLADE GEOMETRY. A material with a cutout `map` is
+  // building leaf/bush/wheat CARDS, which are metres across, meet the sky on a
+  // real silhouette and owe the frame an outline — those keep their depth to the
+  // horizon. The default is deliberately expressed as this test rather than left
+  // to the caller: the world module reaches this factory through an adapter and
+  // does not know the knob exists.
+  mat.userData.vcPrepassMaxDist = o.prepassMaxDist ?? (o.map ? 0 : 22);
 
   const windUniforms = {
     uWind: uniforms.uWind,
@@ -1658,6 +1799,7 @@ export function makeTerrainMaterial(opts = {}) {
   if (splat) defines.VC_SPLAT_VCOL = '';
   if (vcolAlbedo) defines.VC_VCOL_ALBEDO = '';
   if (CFG.quality <= 0) defines.VC_LOW = '';
+  if (SHADE_DBG) defines.VC_SHADE_DBG = String(SHADE_DBG);
 
   const uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.lights,
@@ -1691,6 +1833,9 @@ export function makeTerrainMaterial(opts = {}) {
       uEmissiveIntensity: { value: 0 },
       uAlphaTest: { value: 0 },
       uShadowSoften: { value: 1 },
+      // The ground is where a cast shadow has to read as a SHAPE, so it gives
+      // the key less of a floor than a modelled object does.
+      uShadowFloor: { value: 0.14 },
       uLightContrast: { value: 1.12 },
       uShadeCool: { value: 1 },
       uWetPx: { value: 18 },

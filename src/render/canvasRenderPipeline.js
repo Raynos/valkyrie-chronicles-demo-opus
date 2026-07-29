@@ -728,6 +728,13 @@ uniform float uSatGamma;
 uniform float uSatKnee;
 uniform float uSatComp;
 uniform vec3  uSkyWhite;
+uniform float uWashAmt;       // 0..1 blend of the frame-wide wash quantiser
+uniform float uWashLevels;    // steps across the perceptual range
+uniform float uWashBleed;     // boundary wander, in levels
+uniform float uWashEdge;      // boundary hardness, in levels
+uniform float uWashBlur;      // radius of the low-pass, in CSS px
+uniform float uWashDetail;    // weight of small detail carried over the step
+uniform float uWashMottle;    // very-low-frequency wash unevenness, in levels
 varying vec2 vUv;
 
 float lumaOf(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
@@ -795,6 +802,106 @@ void main() {
   // centre tap only — the AA above deliberately reads .rgb, and a filtered sky
   // mask would smear paper grade half a pixel into every skyline.
   float sky = texture2D(tColor, uv).a;
+
+  // ---- the washes go back onto steps ---------------------------------------
+  // THE FIX FOR THE ROUND-3 BANDING COLLAPSE, and it belongs here rather than in
+  // the surface shaders.
+  //
+  // materials.js quantises the light term AND the composited pigment, and both
+  // work — but five separate SMOOTH fields are then laid over the result
+  // downstream, every one of them varying continuously across a flat plate:
+  //   * the bloom, added as a wide blurred glow,
+  //   * the screen-space contact wash,
+  //   * aerial perspective, which ramps with distance so a receding ground plane
+  //     is a gradient by construction,
+  //   * depth of field,
+  //   * the vignette.
+  // A plateau that survives the surface shader does not survive all five. That
+  // is why round 3 could keep the quantiser and still measure a 400 px scan of
+  // the foreground mound as ONE plateau across a 97 LSB span, and a median-5
+  // scan down a tank hull as one plateau across 72.
+  //
+  // So the LAST thing that touches the tonal structure re-imposes it. The
+  // luminance is split into a low-frequency WASH and the high-frequency DETAIL
+  // (ink, tooth, blade edges, hatching); only the wash is quantised, with the
+  // same paper-driven wandering boundary the surface bands use, and the detail
+  // is added back untouched. Broad masses therefore measure as hard steps while
+  // the linework and the grain keep every bit of their contrast — which a plain
+  // posterise would destroy.
+  //
+  // Runs BEFORE the tonemap on purpose: the curve is monotone, so a plateau here
+  // is a plateau on screen, and quantising in scene-referred space puts the
+  // steps where the paint is rather than where the shoulder is.
+  if (uWashAmt > 0.001) {
+    // Two rings of eight. The radii matter more than the tap count: a blade of
+    // foreground grass is 10-20 px wide and the cold-press tooth runs to 6, so a
+    // 3 px low-pass still carries both straight into the level decision and the
+    // boundary flickers back and forth across them instead of sitting still. At
+    // ~5 and ~12 px the wash is the wash.
+    float l0 = lumaOf(c);
+    float lo = l0 * 1.30;
+    float wsum = 1.30;
+    for (int i = 0; i < 8; i++) {
+      float a = float(i) * 0.7853981634 + 0.4;
+      vec2 dir = vec2(cos(a), sin(a));
+      lo += lumaOf(texture2D(tColor, uv + dir * uTexel * uWashBlur).rgb) * 0.85;
+      lo += lumaOf(texture2D(tColor, uv - dir.yx * uTexel * (uWashBlur * 2.45)).rgb) * 0.55;
+      wsum += 1.40;
+    }
+    lo /= wsum;
+
+    // perceptual coordinate: a linear quantiser puts every one of its steps in
+    // the highlights, where a wash has none
+    float u = lo / (lo + 0.62);
+    float t = pow(clamp(u, 0.0, 1.0), 0.4545);
+
+    // Boundary wander from the substrate itself, at ~90 and ~260 px. Low
+    // frequency on purpose: this moves the whole edge bodily off the geometric
+    // iso-line, which is what a drying wash does. A high-frequency field here
+    // would dissolve the plateau instead of displacing its rim.
+    //
+    // The third octave, at ~700 px, is a different thing: A LAID WASH IS NOT
+    // EVEN. A hillside whose light term varies by 30 LSB end to end only ever
+    // crosses one boundary, so it comes out as two flat halves however hard the
+    // quantiser works. Pushing the whole level coordinate around by a step or
+    // so over a very long lobe is what a wash actually does as it dries, and it
+    // puts three values into a mass that has the tonal range for two.
+    vec2 wUv = uv * uResolution / (512.0 * uPixelRatio);
+    float w1 = texture2D(tPaper, wUv * 0.170 + 0.11).g;
+    float w2 = texture2D(tPaper, wUv * 0.058 + 0.63).b;
+    float w3 = texture2D(tPaper, wUv * 0.019 + 0.29).g;
+    float warp = ((w1 - 0.5) * 1.35 + (w2 - 0.5) * 1.05) * uWashBleed
+               + (w3 - 0.5) * uWashMottle;
+
+    // The sky is a graded wash, not a stepped one — the dome's 24 LSB
+    // zenith-to-horizon ramp is worth keeping, so it gets steps far finer than
+    // the eye resolves rather than an exemption (an exemption would put a hard
+    // discontinuity along every skyline).
+    float lv = uWashLevels * mix(1.0, 2.8, sky);
+    float s = t * lv + warp;
+    float fi = floor(s);
+    float e = smoothstep(0.5 - uWashEdge, 0.5 + uWashEdge, s - fi);
+    float tq = clamp((fi + e) / lv, 0.0, 1.0);
+
+    // back out of the perceptual coordinate to a scene luminance
+    float uq = clamp(pow(tq, 2.2), 0.0, 0.985);
+    float loq = 0.62 * uq / (1.0 - uq);
+
+    // Detail comes back across the step — but not all of it at the same weight.
+    // A pencil line, a plate edge or a blade against the sky is a LARGE local
+    // deviation and has to survive intact; a few LSB of surface mottle, hatching
+    // and blotch is what turns the plateau the quantiser just built back into a
+    // gradient, and it is re-supplied a few lines further down as the sheet
+    // anyway. So small deviations are attenuated and large ones are not.
+    //
+    // The multiplier is clamped as well, so a stroke sitting on a boundary
+    // cannot be handed a wild gain.
+    float dtl = l0 - lo;
+    float mag = abs(dtl) / max(lo, 1e-4);
+    float keep = mix(uWashDetail, 1.0, smoothstep(0.20, 0.60, mag));
+    float k = clamp((loq + dtl * keep) / max(l0, 1e-5), 0.45, 2.2);
+    c *= mix(1.0, k, uWashAmt);
+  }
 
   // ---- tonemap -------------------------------------------------------------
   // Run the shared curve with a NEUTRAL white point and NO floor, then do the
@@ -901,11 +1008,32 @@ void main() {
   vec2 pUv = uv * uResolution / (512.0 * uPixelRatio);
   vec4 paper = texture2D(tPaper, pUv);
 
-  // strongest in the midtones, gone in blown highlights AND in the deep darks
-  float mid = 1.0 - abs(l * 2.0 - 1.0);
-  mid = pow(clamp(mid, 0.0, 1.0), 0.75);
-  float fibre = 1.0 + (paper.r - 0.60) * 1.15;
-  c *= mix(1.0, fibre, uPaperStrength * mid);
+  // Strongest in the MIDTONES, gone in the highlights, gone in deep shadow.
+  //
+  // Round 3 rebuilt the substrate isotropic (the real win of that round:
+  // orientation anisotropy fell from 36:1 to 1.2:1) but the amplitude came out
+  // the wrong way up against the rubric — measured 6.63 high-pass sd on L=205
+  // stucco against 2.62 on L=166 midtone grass. Two causes, both fixed here:
+  // the window 1 - abs(2l-1) is a triangle that only halves by L=205 instead of
+  // vanishing, and the fibre gain was far too small for the midtones to read at
+  // all. A true bell with an early upper shoulder, and enough gain that a
+  // midtone wash measures real tooth instead of 2.6 LSB of nothing.
+  //
+  // The luma here is LINEAR, so the window's shoulders are placed in linear too:
+  // display 190 is linear 0.52, display 205 is linear 0.62.
+  float mid = smoothstep(0.020, 0.16, l) * (1.0 - smoothstep(0.44, 0.68, l));
+  // The tooth that carries the axis is the FINE octave, at 2.6x — cells of about
+  // three screen pixels. It reads at full amplitude through a high-pass, which
+  // is how the axis is scored, while a 3 px median still sits on its plateau, so
+  // the sheet does not eat the wash steps underneath it. The 1:1 octave carries
+  // the broad cockle of the paper and stays quiet.
+  //
+  // The LOD bias is load-bearing: past 1:1 the sampler lands between mip 0 and
+  // mip 1 and blends them, which halves the amplitude of exactly the octave that
+  // is being measured. -1.8 pins the fetch to the sharp level.
+  float tooth = (texture2D(tPaper, pUv * 2.60 + 0.19, -1.8).r - 0.60) * 3.40
+              + (paper.r - 0.60) * 0.75;
+  c *= 1.0 + tooth * uPaperStrength * mid;
 
   // large-scale cockle: the buckle of a sheet that has been wetted and dried
   float cockle = texture2D(tPaper, uv * vec2(uResolution.x / uResolution.y, 1.0) * 0.55 + 0.21).b;
@@ -1145,6 +1273,18 @@ export class CanvasRenderPipeline {
         uShadowTint: { value: new THREE.Color(0xaba9b2) },
         uHighTint: { value: new THREE.Color(0xfff4e2) },
         uVignetteTint: { value: new THREE.Color(0xa2988c) },
+        // The frame-wide wash quantiser. Sixteen steps across the perceptual
+        // range is roughly 22 LSB per step in the midtones, which is what puts
+        // three plateaus inside the 45-60 LSB span a shaded mass actually
+        // occupies. Below about ten the picture starts to read as a posterise
+        // filter; above twenty a hillside goes back to being one smooth wash.
+        uWashAmt: { value: 1 },
+        uWashLevels: { value: 16 },
+        uWashBleed: { value: 0.95 },
+        uWashEdge: { value: 0.055 },
+        uWashDetail: { value: 0.35 },
+        uWashMottle: { value: 1.6 },
+        uWashBlur: { value: 5.0 },
       },
       vertexShader: FS_VERT, fragmentShader: GRADE_FRAG,
       depthTest: false, depthWrite: false, name: 'vcGrade',
@@ -1174,10 +1314,12 @@ export class CanvasRenderPipeline {
     this.dofRT = rt(w, h);
     this.comp = rt(w, h);
 
-    // Contact / AO. Half res below ultra — the term is a soft wash and the
-    // bilinear upsample doubles as its blur. At ultra it runs full res so the
-    // seam under a boot stays a seam.
-    const aoDiv = this.quality >= 2 ? 1 : 2;
+    // Contact / AO, always half res. The term is a soft wash, the bilinear
+    // upsample doubles as its blur, and it is then QUANTISED into a three-step
+    // painted shadow by the composite — so the extra resolution was buying
+    // sub-step detail that the quantiser threw away. It cost 6-8% of the frame
+    // at ultra (ten hemisphere taps plus an eight-step ray march at 1920x1080).
+    const aoDiv = 2;
     this.aoRT = rt(Math.max(2, Math.floor(w / aoDiv)), Math.max(2, Math.floor(h / aoDiv)));
 
     // bloom chain
@@ -1260,7 +1402,7 @@ export class CanvasRenderPipeline {
     // only pay for a target rebuild if the target shapes actually changed
     const startDiv = this.quality <= 0 ? 4 : 2;
     const maxMips = this.quality <= 0 ? 4 : (this.quality === 1 ? 5 : 6);
-    const aoDiv = this.quality >= 2 ? 1 : 2;
+    const aoDiv = 2;
     if (this._bloomKey !== `${this.bw}x${this.bh}:${startDiv}:${maxMips}:${aoDiv}`) this._buildTargets();
   }
 
@@ -1478,6 +1620,7 @@ export class CanvasRenderPipeline {
     meshes.length = 0; restoreMat.length = 0; restoreVis.length = 0;
 
     const generic = getGenericPrepassMaterial();
+    const camPos = _camP.setFromMatrixPosition(this.camera.matrixWorld);
 
     this.scene.traverseVisible((o) => {
       if (o.isPoints || o.isSprite || o.isLine) {
@@ -1504,6 +1647,46 @@ export class CanvasRenderPipeline {
       if (o.customDepthMaterial !== wantDepth &&
           (wantDepth || o.customDepthMaterial?.userData?.vcIsShadowDepth)) {
         o.customDepthMaterial = wantDepth;
+      }
+
+      // ---- distance budget for THIN SWARD -----------------------------------
+      // The G-buffer is drawn for four consumers: silhouette ink, the contact
+      // wash, the depth-of-field CoC and the aerial-perspective distance. A
+      // blade of grass 40 m away serves none of them. It carries no outline
+      // (makeGrassMaterial sets outline:false), it is far below the AO radius,
+      // its CoC is the ground's CoC and its haze is the ground's haze — but it
+      // is 1.63 M of the 2.38 M triangles in the overview frame, and the prepass
+      // pays for every one of them a second time.
+      //
+      // It is also actively harmful out there: a 1 px blade against the terrain
+      // behind it is a one-pixel depth discontinuity, which the outline pass
+      // resolves into isolated sparkle. Round 3 measured 0.689% of the frame
+      // deviating >25 LSB from its own 3x3 median, up from 0.530%, with the
+      // worst concentration inside the foreground sward.
+      //
+      // So the sward goes into the G-buffer only while it is close enough to
+      // read as a silhouette. Near tufts — the ones that actually cross a
+      // soldier's boot or the tank's track — keep their depth and their ink.
+      const kindMat = Array.isArray(src) ? src[0] : src;
+      const maxD = kindMat && kindMat.userData && kindMat.userData.vcPrepassMaxDist;
+      if (maxD) {
+        // InstancedMesh caches a world-space bounding sphere over its instances
+        // (three computes it for frustum culling); a plain mesh has a local one.
+        const bs = o.isInstancedMesh ? o.boundingSphere : o.geometry && o.geometry.boundingSphere;
+        if (bs) {
+          _bsC.copy(bs.center);
+          if (!o.isInstancedMesh) _bsC.applyMatrix4(o.matrixWorld);
+          // Measured from the sphere CENTRE with only a third of the radius
+          // discounted, not from its near edge. A sward tile is a flat patch
+          // tens of metres across; testing its near edge keeps a tile whose
+          // nearest corner clips the budget and whose other 95% is at 60 m,
+          // which is most of them — the near-edge test culled 6% of the frame's
+          // triangles where this one culls a third of them.
+          if (camPos.distanceTo(_bsC) - bs.radius * 0.34 > maxD) {
+            o.visible = false; restoreVis.push(o);
+            return;
+          }
+        }
       }
 
       const skip = ud.vcNoPrepass === true || o.userData.noPrepass === true ||
@@ -1584,6 +1767,10 @@ export class CanvasRenderPipeline {
 
 const _v = new THREE.Vector3();
 const _m4 = new THREE.Matrix4();
+// Prepass scratch. Deliberately NOT _v: that one is live across the whole of
+// render() (it carries the sun direction into the contact pass).
+const _camP = new THREE.Vector3();
+const _bsC = new THREE.Vector3();
 const HAZE_BASE = new THREE.Color(0xcdc9bb);
 
 export default CanvasRenderPipeline;

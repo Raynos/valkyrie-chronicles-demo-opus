@@ -753,29 +753,61 @@ export class Tank {
     // band along one wandering pigment boundary.
     const armourBands = Math.max(4, (CFG.render.bands | 0) + 1);
 
+    // ---- how a vehicle takes the light --------------------------------------
+    // Shared by every armour bucket, because the whole point is that the hull,
+    // the turret, the fenders and the gun agree about which way the sun is.
+    //
+    // shadowFloor: a tank stands in whatever the world casts over it — canopy
+    // dapple, a wall, its own gun barrel. Round 3 let a cast shadow take the key
+    // to zero, so a shadowed plate lost its modelling entirely and the vehicle
+    // measured turret roof 108 / track-guard top 88 / vertical hull side 118,
+    // i.e. its horizontal planes were DARKER than its vertical ones, with the
+    // shadow-map dapple reading as painted camouflage. Keeping a third of the
+    // key inside a shadow keeps the roof above the wall wherever the vehicle
+    // stands, which is the thing that makes it read as a solid object.
+    //
+    // shadowSoften: and the dapple itself is halved. Foliage shade on a hard
+    // surface belongs in a painting as a soft mottle over the form, not as a
+    // stencil that replaces it.
+    //
+    // wrap/keyGain/driveRange: a tank is a small number of big flat facets, so
+    // its N.L histogram is a few spikes rather than a spread. Narrowing the wrap
+    // and handing the material the drive span it actually occupies is what puts
+    // a band boundary BETWEEN two plates instead of leaving the whole vehicle
+    // inside one wash.
+    const armour = {
+      bands: armourBands, shadowFloor: 0.34, shadowSoften: 0.55,
+      keyGain: 1.16, driveRange: [0.12, 0.86],
+    };
+
     this.mat = {
       paint: mk('paint', {
+        ...armour,
         color: PAL.paint, roughness: 0.78, hatch: 1.25, rim: 0.55, paper: 1.0,
         outlineWidth: 1.25, map: paintTex, mapRepeat: [3, 2.5],
-        bands: armourBands, bandBleed: 1.7, hatchSpacing: 4.2, wrap: 0.30,
+        bandBleed: 1.7, hatchSpacing: 4.2, wrap: 0.26,
       }),
       metal: mk('metal', {
+        ...armour,
         color: PAL.darkMetal, roughness: 0.62, hatch: 1.1, rim: 0.85, paper: 0.85,
         outlineWidth: 1.1, map: metalTex, mapRepeat: [2, 2],
-        bands: armourBands, bandBleed: 1.5, hatchSpacing: 4.2, wrap: 0.32,
+        bandBleed: 1.5, hatchSpacing: 4.2, wrap: 0.28,
       }),
       track: mk('track', {
+        ...armour,
         color: PAL.track, roughness: 0.7, hatch: 0.9, rim: 0.7, paper: 0.8,
-        outlineWidth: 0.85, instanced: true, bands: armourBands, bandBleed: 1.4,
+        outlineWidth: 0.85, instanced: true, bandBleed: 1.4,
         wrap: 0.34,
       }),
       rubber: mk('rubber', {
+        ...armour,
         color: PAL.rubber, roughness: 0.95, hatch: 0.8, rim: 0.35, paper: 0.7,
         outlineWidth: 1.0, instanced: true, wrap: 0.34,
       }),
       ochre: mk('ochre', {
+        ...armour,
         color: PAL.ochre, roughness: 0.92, hatch: 1.0, rim: 0.4, paper: 1.0,
-        outlineWidth: 1.15, subsurface: 0.25, bands: armourBands, bandBleed: 1.5,
+        outlineWidth: 1.15, subsurface: 0.25, bandBleed: 1.5,
       }),
       wood: mk('wood', { color: PAL.wood, roughness: 0.88, hatch: 0.9, rim: 0.4, paper: 1.0 }),
       glass: mk('glass', {
@@ -783,17 +815,20 @@ export class Tank {
         emissive: 0x2a2418, outlineWidth: 0.9,
       }),
       grille: mk('grille', {
+        ...armour,
         color: PAL.grille, roughness: 0.55, hatch: 1.0, rim: 0.9, paper: 0.7,
         outlineWidth: 1.4,
       }),
       rivet: mk('rivet', {
+        ...armour,
         color: PAL.paintAlt, roughness: 0.7, hatch: 0.8, rim: 0.9, paper: 0.9,
         instanced: true, outlineWidth: 0.6,
       }),
       insignia: mk('insignia', {
+        ...armour,
         color: 0xffffff, roughness: 0.85, hatch: 0.5, rim: 0.3, paper: 1.0,
         map: makeInsigniaTexture(this.seed ^ 0x71c3), alphaTest: 0.35,
-        outline: false, bands: armourBands, bandBleed: 1.5, wrap: 0.30,
+        outline: false, bandBleed: 1.5, wrap: 0.26,
         side: THREE.DoubleSide, name: 'vcTankInsignia',
       }),
     };
