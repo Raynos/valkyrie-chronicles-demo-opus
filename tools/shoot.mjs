@@ -24,7 +24,13 @@ const shot = args.find((a) => !a.startsWith('--') && !/^\d+$/.test(a)) || 'overv
 const outPath = resolve(args.filter((a) => !a.startsWith('--'))[1] || `shots/${shot}.png`);
 const W = parseInt(flag('w', '1920'), 10);
 const H = parseInt(flag('h', '1080'), 10);
-const WAIT = parseInt(flag('wait', '2500'), 10);
+// Default 0. A settling wait after __READY__ was measured to buy NOTHING:
+// `--wait 0` and `--wait 3500` produce byte-identical frames (0.00% of pixels
+// differing, max delta 0). main.js already holds frames until every render
+// counter, the DOM label layer and the pipeline's temporal DoF have converged,
+// so __READY__ is the settled frame by construction. The old 2500-3500 ms
+// default was pure cost — 3.5 s on every one of several hundred renders per round.
+const WAIT = parseInt(flag('wait', '0'), 10);
 const PORT = parseInt(flag('port', '5173'), 10);
 /** The port we actually ended up talking to — see ensureServer(). */
 let port = PORT;
@@ -91,7 +97,20 @@ const main = async () => {
   } catch {
     errors.push('TIMEOUT waiting for window.__READY__');
   }
-  await page.waitForTimeout(WAIT);
+  // Freeze the simulation before the shutter. The game keeps animating after
+  // __READY__ — wind, cloud drift, water flow, particles — so the frame you get
+  // depends on when the screenshot lands. Pausing the engine makes the capture
+  // reproducible: two frozen runs measured 0.00% of pixels differing (max delta
+  // 0), against 8.44% for two unfrozen runs of this same harness. Engine.paused
+  // stops system updates but keeps rendering, which is exactly what we want.
+  // `--no-freeze` opts out if you are specifically capturing motion.
+  if (!has('no-freeze')) {
+    await page.evaluate(() => {
+      const v = window.__VC__;
+      if (v?.engine) v.engine.paused = true;
+    }).catch(() => {});
+  }
+  if (WAIT) await page.waitForTimeout(WAIT);
 
   if (!existsSync(dirname(outPath))) mkdirSync(dirname(outPath), { recursive: true });
   await page.screenshot({ path: outPath });

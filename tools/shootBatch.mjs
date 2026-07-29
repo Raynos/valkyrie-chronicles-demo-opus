@@ -99,6 +99,10 @@ const IN_PAGE_RUN = async (name) => {
     audio: null, fx: v.fx, rig: v.rig, finale: null,
   };
 
+  // Un-freeze to re-pose: Engine.paused skips system updates, so animation
+  // mixers, wind and LOD would not advance and the new pose would never settle.
+  v.engine.paused = false;
+
   const t0 = performance.now();
   await m.runShot(name, ctx);
 
@@ -130,6 +134,8 @@ const IN_PAGE_RUN = async (name) => {
     if (n >= 14 && stable >= 5) { converged = n; break; }
   }
   while (n < 120) { await raf(); n++; }   // fixed total, as main.js does
+
+  v.engine.paused = true;   // freeze for a reproducible shutter — see shoot.mjs
 
   window.__STATS__ = Object.assign({}, window.__STATS__, {
     shot: name, batch: true, settleFrames: n, convergedAt: converged,
@@ -167,8 +173,13 @@ const main = async () => {
     const t = Date.now();
     let stats = null;
     // Shot 0 is already posed by the cold boot; re-posing it would be wasted work.
-    if (i === 0) stats = await page.evaluate(() => window.__STATS__ || null);
-    else stats = await page.evaluate(IN_PAGE_RUN, name);
+    if (i === 0) {
+      stats = await page.evaluate(() => {
+        const v = window.__VC__;
+        if (v?.engine) v.engine.paused = true;
+        return window.__STATS__ || null;
+      });
+    } else stats = await page.evaluate(IN_PAGE_RUN, name);
     if (WAIT) await page.waitForTimeout(WAIT);
     await page.screenshot({ path: `${OUT}/${name}.png` });
     results.push({
