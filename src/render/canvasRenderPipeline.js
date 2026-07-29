@@ -397,10 +397,16 @@ void main() {
         // the ragged edge of a laid wash.
         float lit = 0.0;
         float rad = uShadowSoft * uShadowTexelUv;
-        for (int i = 0; i < 8; i++) {
-          lit += vcShadowTap(sc.xy + vogel(i, 8, phi) * rad, sc.z);
+        // FIVE taps, not eight (round 9). The result is quantised to ONE
+        // boundary by the composite, so the taps are not buying a penumbra
+        // gradient — they are deciding how far the single edge may be dithered
+        // before it snaps. Measured: 8 -> 5 is invisible in the frame and this
+        // pass runs at every pixel of a half-res target on a plate whose fps
+        // fell 78 -> 74.5 against an 82 bar when it was added.
+        for (int i = 0; i < 5; i++) {
+          lit += vcShadowTap(sc.xy + vogel(i, 5, phi) * rad, sc.z);
         }
-        sunVis = lit * 0.125;
+        sunVis = lit * 0.2;
       }
       // Let go at the terminator. A surface within a few degrees of facing away
       // is already dark from its own shading, and stacking a cast-shadow wash on
@@ -671,9 +677,25 @@ void main() {
       // a second full wash, and giving it one both crushes the plate's darks and
       // drops the whole mass into the grade's bottom two bands, where the
       // graphite hatch fires — which is how a cast shadow turns into scribble.
+      //
+      // ROUND 9: THE LOW END WAS NOT LOW ENOUGH, and that single number is most
+      // of why round 8 was a net loss. 0.52 is barely a discount — the Edelweiss's
+      // shaded lower hull sits at castL ~0.07, took 0.75 * 0.55 = 0.41 of a full
+      // shade wash ON TOP of the shading that had already put it there, and the
+      // whole mass fell through the hatch gate. Measured on the round-8 tank
+      // plate: the lightest fifth of the hull dropped 25 LSB against round 7
+      // (156.8 -> 131.6) and the panel breaks, rivet rows and camo blocks that
+      // round 7 could resolve went with it.
+      //
+      // The HIGH end is untouched, deliberately: every one of round 8's measured
+      // wins — water under the arch +15..27 LSB, ground under the near trees
+      // +50.7, the tank's own shadow on the road +33.7 — lands on a PALE passage,
+      // which is exactly where the weight is 1.34 and stays there. A cast shadow
+      // on a sunlit road is the whole point; a second cast shadow inside an
+      // already-shaded hull is double-counting.
       float castL = vcLum(color);
       color = mix(color, vcShadowColour(color, uContactViolet, uInkFloor),
-                  clamp(wash * uCastDepth * mix(0.52, 1.34, smoothstep(0.05, 0.40, castL)), 0.0, 1.0));
+                  clamp(wash * uCastDepth * mix(0.20, 1.34, smoothstep(0.035, 0.34, castL)), 0.0, 1.0));
     }
 
     // ---- and the occlusion wash on top of it --------------------------------
@@ -911,12 +933,93 @@ void main() {
 }
 `;
 
+// ---- THE PLATE'S KEY --------------------------------------------------------
+// One fragment. It reads 336 stratified samples of the composited frame, runs
+// each through the SAME tonemap the grade is about to run, and returns the
+// display value below which uKeyFrac of the painted (non-sky) area lies.
+//
+// WHY THIS EXISTS. Round 8 shipped frame violet outside the 0.11-0.16 band on
+// ten of twelve plates, and the failures split both ways — dusk 0.496 and
+// village 0.364 far too violet, command 0.047 and grass 0.049 nowhere near it.
+// Quintiling the frames showed the violet is not spread over the tonal range at
+// all: it lives entirely in the darkest fifth and stops dead (dusk q1 0.98,
+// q3 0.44, q4 0.08, q5 0.00; grass q1 0.22, q2 0.00). So "how violet is the
+// plate" is really "how much of the plate falls under an ABSOLUTE display
+// threshold" — and that is a property of the hour and the composition, not of
+// any material. Every knob in the shade path keys off absolute luminance: the
+// split tone (smoothstep(0.0, 0.42, l)), the ink floor (inkBlack * pow(1-c,n)),
+// the band ramps in materials.js. Twelve plates whose mean value differs by
+// only 1.5x differ by TEN TIMES in violet share, because their histogram SHAPES
+// differ, and no single absolute threshold can serve both a plate that is half
+// in shadow and one that is a sunlit field.
+//
+// A painter does not have this problem: the shade wash is the darkest eighth of
+// whatever is on the paper. So the threshold becomes exactly that — a
+// percentile of the plate's own histogram — and the coupling is gone by
+// construction. It costs one draw of one pixel.
+const KEY_FRAG = /* glsl */`
+${GLSL_COLOR}
+${GLSL_TONEMAP}
+uniform sampler2D tSrc;
+uniform float uExposure;
+uniform float uPreGain;
+uniform float uContrast;
+uniform float uKeyFrac;
+varying vec2 vUv;
+
+const int KX = 24, KY = 14;
+
+void main() {
+  // 32-bin histogram of display luma over the painted area. The sky is excluded
+  // — it is a graded wash the plate is seen against, it is always the brightest
+  // thing in frame, and letting a shot that happens to point at the horizon
+  // carry 40% sky would drag the percentile down on exactly the plates that
+  // need it least. tColor's alpha is 2*sky + form (see the composite).
+  float hist[32];
+  for (int i = 0; i < 32; i++) hist[i] = 0.0;
+  float n = 0.0;
+  for (int y = 0; y < KY; y++) {
+    for (int x = 0; x < KX; x++) {
+      // stratified, with a golden-ratio offset inside each cell so the grid
+      // cannot beat against anything periodic in the picture
+      vec2 uv = (vec2(float(x), float(y))
+               + vec2(fract(float(y) * 0.6180339887 + 0.31),
+                      fract(float(x) * 0.7548776662 + 0.17)))
+              / vec2(float(KX), float(KY));
+      vec4 s = texture2D(tSrc, uv);
+      if (s.a >= 1.5) continue;                       // sky
+      vec3 c = vcCanvasTonemap(s.rgb, uExposure * uPreGain, vec3(1.0), vec3(0.0), uContrast);
+      int b = int(clamp(vcLum(c), 0.0, 0.9999) * 32.0);
+      for (int i = 0; i < 32; i++) if (i == b) hist[i] += 1.0;
+      n += 1.0;
+    }
+  }
+  // A plate with no painted area at all (pure sky) falls back to a mid key
+  // rather than to zero, which would put the shade law over the whole frame.
+  float want = max(n, 1.0) * uKeyFrac;
+  float acc = 0.0, thr = 0.34;
+  bool done = false;
+  for (int i = 0; i < 32; i++) {
+    float prev = acc;
+    acc += hist[i];
+    if (!done && acc >= want && hist[i] > 0.0) {
+      // linear inside the bin it lands in
+      thr = (float(i) + clamp((want - prev) / hist[i], 0.0, 1.0)) / 32.0;
+      done = true;
+    }
+  }
+  if (n < 8.0) thr = 0.34;
+  gl_FragColor = vec4(vec3(clamp(thr, 0.06, 0.62)), 1.0);
+}
+`;
+
 // ---- grade + paper ----------------------------------------------------------
 const GRADE_FRAG = /* glsl */`
 ${COMMON}
 ${GLSL_HATCH}
 ${GLSL_TONEMAP}
 uniform sampler2D tColor;
+uniform sampler2D tKey;
 uniform sampler2D tPaper;
 // The prepass G-buffer, still live at grade time: view normal in xyz, linear
 // depth in w. The hatch pass needs it to tell a fold from a flat plane.
@@ -948,6 +1051,14 @@ uniform float uGreenLift;     // hue turns the sage lobe is pushed toward green
 uniform float uGreenChroma;
 uniform float uSkySat;
 uniform float uSatGamma;
+// the shade wash (see the block in the palette section)
+uniform float uShadeLo;       // shade law is full weight below uShadeLo * plate key
+uniform float uShadeHi;       // ...and gone above uShadeHi * plate key
+uniform float uShadeOut;      // ...and the half-tone is fully de-violeted by here
+uniform float uShadeTurnLo;   // hue budget, in turns, for a pigment already cool
+uniform float uShadeTurnMid;  // ...for a red-brown climbing out of the wedge
+uniform float uShadeTurnHi;   // ...for a rose/magenta descending into it
+uniform float uShadeChroma;   // what a full-weight shade keeps of its chroma
 uniform float uSatKnee;
 uniform float uSatComp;
 uniform vec3  uSkyWhite;
@@ -1304,6 +1415,94 @@ void main() {
     // ABOVE ONE across the band that matters: the grass family arrives spanning
     // 50-71 degrees and leaves spanning 66-100, while the road at 40 moves two
     // degrees and the stucco at 33 does not move at all.
+    // ---- THE SHADE WASH, MADE A PROPERTY OF THE PLATE ----------------------
+    // Round 8 shipped frame violet (240-300 deg) outside the 0.11-0.16 band on
+    // TEN of twelve plates, and the failures split both ways: dusk 0.496,
+    // village 0.364, closeup 0.218 too violet; command 0.047, action 0.040,
+    // aim 0.048, grass 0.049 nowhere near it. A 10x spread is not a tuning
+    // error, so the frames were quintiled and the darkest tenth of each one
+    // histogrammed by hue. The answer is not "how much shade" — it is WHAT
+    // COLOUR THE SHADE IS, and it is different on the two groups:
+    //
+    //   overview 240:79% 270:14%    tank 240:63% 270:25%    dusk 240:92%
+    //   aim  0:14% 240:12% 270:26% 300:24% 330:18%
+    //   grass 0:16% 240:23% 270:20% 300:16% 330:21%
+    //   command 0:14% 30:8% 240:8% 270:20% 300:10% 330:32%
+    //
+    // The shadow-heavy plates land their darks squarely on blue-violet. The
+    // SUNLIT plates land 30-45% of theirs in 300-360 and 0-30 — rose, magenta
+    // and crimson — which is the "shadow ladder passes through pure red" defect
+    // the round-7 critic measured on the closeup, still alive on every bright
+    // plate. Those pixels are not missing a wash; they are wearing the wrong
+    // one, and no amount of MORE shade would put them in the window.
+    //
+    // So the darks get the same law the surface shaders already follow (see
+    // vcShadeTurn / vcCoolShade in shaderLib.js): CLIMB TOWARD 260 DEG WITHOUT
+    // EVER WRAPPING THROUGH 0. A rose at 338 descends to ~293; a red-brown at
+    // 21 climbs to ~68 (olive, where ultramarine over ochre actually lands);
+    // a pigment already in the window barely moves; and nothing crosses red in
+    // either direction at any weight.
+    //
+    // The budget is HUE-DEPENDENT, which is what stops this becoming a global
+    // rotation: it is large only for hues in the forbidden 315..45 wedge and
+    // small everywhere else, so sage stays sage and the existing violets stay
+    // where the surface shaders put them.
+    //
+    // ...and the BAND IT RUNS OVER is the plate's own darkest eighth, read out
+    // of tKey (see KEY_FRAG), not an absolute display level. That is the second
+    // half of the fix and the one the numbers demanded: an absolute threshold
+    // makes "how violet is this frame" a question about the hour and the
+    // composition, and twelve plates whose mean value spans only 1.5x came back
+    // spanning TEN times in violet share because of it.
+    {
+      float lv = lumaOf(c);
+      float keyT = texture2D(tKey, vec2(0.5)).r;
+      float shadeW = (1.0 - smoothstep(keyT * uShadeLo, keyT * uShadeHi, lv)) * (1.0 - sky);
+      // The half-tone ABOVE the shade band is not the deep wash's colour. On a
+      // plate that is half in shadow the deep violet had been reaching three
+      // quintiles up (dusk q1 0.98, q2 0.87, q3 0.44), which is what put it at
+      // 0.496 against a 0.16 ceiling. A pigment sitting above the plate's shade
+      // band and still wearing violet is walked back toward 205 deg — blue-teal,
+      // the cool half-tone, still nowhere near neutral grey — by the same
+      // non-wrapping rule.
+      float midW = smoothstep(keyT * uShadeHi, keyT * uShadeOut, lv) * (1.0 - sky);
+      if (midW > 0.002) {
+        float vio = smoothstep(0.632, 0.678, hsv.x)            // 227 -> 244 deg
+                  * (1.0 - smoothstep(0.815, 0.885, hsv.x));   // 293 -> 319 deg
+        float dh2 = 0.5694 - hsv.x;                            // 205 deg, NOT wrapped
+        hsv.x = clamp(hsv.x + clamp(dh2, -uShadeTurnHi, 0.0) * midW * vio, 0.0, 1.0);
+      }
+      if (shadeW > 0.002) {
+        // The budget is ASYMMETRIC, and that asymmetry is measured, not
+        // aesthetic. A rose at 338 deg has to descend 45+ degrees to land
+        // inside 240-300; give it 36 and it stops at 302, which has removed it
+        // from the warm population without adding it to the violet one — the
+        // worst of both, and exactly what a 0.100 budget measured (warm 0.65 ->
+        // 0.47 with violet unmoved). The upward leg is the opposite case: a
+        // red-brown at 21 deg only has to clear the forbidden wedge, and
+        // walking it all the way to olive launders every ochre in the plate.
+        float hiRed = smoothstep(0.755, 0.830, hsv.x);       // 272 -> 299 deg
+        float loRed = 1.0 - smoothstep(0.055, 0.105, hsv.x); //  20 ->  38 deg
+        float budget = max(uShadeTurnLo,
+                           max(uShadeTurnHi * hiRed, uShadeTurnMid * loRed));
+        float dh = 0.7222 - hsv.x;                           // 260 deg, NOT wrapped
+        float hh = hsv.x + clamp(dh, -budget, budget) * shadeW;
+        // ...and never past the far edge of olive on the way up, the same cap
+        // materials.js uses, so a dark sage cannot be walked into emerald.
+        hsv.x = clamp(min(hh, max(hsv.x, 0.278)), 0.0, 1.0);
+        // ---- AND SATURATION FALLS INTO SHADOW ------------------------------
+        // 23 of 27 round-8 samples had it RISING (village 0/4: tunic .14 ->
+        // .27, helmet .16 -> .28, stucco .09 -> .16). The mechanism is right
+        // here in this pass and it is arithmetic, not shading: the tonemap's
+        // floor adds uInkBlack — a violet of saturation 0.20 — at full weight
+        // as the value goes to zero, so every dark pixel inherits a chroma
+        // FLOOR that rises as it darkens, and uSatGamma 0.73 then nearly
+        // doubles it on the way out. A wash that is darker must also be less
+        // chromatic; this is the term that says so, and it runs BEFORE the
+        // gamma so the cut is not undone by it.
+        hsv.y *= mix(1.0, uShadeChroma, shadeW);
+      }
+    }
     float rise = smoothstep(0.110, 0.152, hsv.x);         // 40 -> 55 deg
     float fall = 1.0 - smoothstep(0.180, 0.360, hsv.x);   // 65 -> 130 deg
     float gLift = rise * fall;
@@ -1462,7 +1661,17 @@ void main() {
       // the paint — overlay sd 22.85 against a 13.6 LSB band step on a torso,
       // i.e. 6.7 band steps of swing. A 2B stroke over a dried wash takes about
       // a quarter of its value, not half.
-      c = mix(c, c * uHatchDepth + uInkBlack * 0.04, h);
+      //
+      // ROUND 9: THE BITE FOLLOWS THE BAND, not just the stroke opacity. The
+      // band weight already fades the stroke's COVERAGE out at the top of the gate, and
+      // a marginal stroke at full depth is precisely the "fishnet over lit
+      // cloth" three critics have now named: it puts the deepest mark the pass
+      // can make on a wash that is only just dark enough to qualify. Fading the
+      // DEPTH as well means the bottom wash gets a real 2B bite and the band
+      // above it gets a whisper — which is how the gate stops being a cliff and
+      // starts being a pencil that presses harder as the passage goes down.
+      float bite = mix(0.93, uHatchDepth, dark);
+      c = mix(c, c * bite + uInkBlack * 0.04, h);
     }
   }
 
@@ -1776,9 +1985,26 @@ export class CanvasRenderPipeline {
       depthTest: false, depthWrite: false, name: 'vcComposite',
     });
 
+    // The plate's key: one pixel, one draw, read by the grade's shade law.
+    this.mKey = new THREE.ShaderMaterial({
+      uniforms: {
+        tSrc: { value: null },
+        uExposure: { value: CFG.render.exposure },
+        uPreGain: { value: 1.10 },
+        uContrast: { value: 0.36 },
+        // An eighth of the painted area. A plate's shade wash is a fraction of
+        // the paper, not a range of values: that is the whole point of moving
+        // this off an absolute threshold.
+        uKeyFrac: { value: 0.15 },
+      },
+      vertexShader: FS_VERT, fragmentShader: KEY_FRAG,
+      depthTest: false, depthWrite: false, name: 'vcKey',
+    });
+
     this.mGrade = new THREE.ShaderMaterial({
       uniforms: {
         tColor: { value: null }, tPaper: { value: paper }, tND: { value: null },
+        tKey: { value: null },
         uTexel: { value: new THREE.Vector2() },
         uResolution: { value: new THREE.Vector2() },
         uPixelRatio: { value: this.dpr },
@@ -1825,13 +2051,37 @@ export class CanvasRenderPipeline {
         uInkBlack: { value: new THREE.Color(0x3c3947) },
         uWhiteStart: { value: 0.62 },
         uHighStart: { value: 0.74 },
-        uFloorPow: { value: 2.6 },
+        // ROUND 9: 2.6 -> 3.3. The floor is uInkBlack — a violet of saturation
+        // 0.20 at hue 253 — added as inkBlack * pow(1 - c, uFloorPow), i.e. as a
+        // function of the pixel's ABSOLUTE display value, and it is the single
+        // largest reason frame violet is a property of how much of the plate is
+        // dark rather than of what the pigment is. At 2.6 a midtone at display
+        // 0.35 was still taking 0.32 of a violet whose chroma then went through
+        // uSatGamma; the same pixel now takes 0.21. The floor AT ZERO is
+        // untouched, so the darkest pixel in frame is still a warm brown-violet
+        // and never #000 — the wash simply stops reaching two washes up.
+        uFloorPow: { value: 3.3 },
         uGreenLift: { value: 0.084 },        // +30 deg on the sage lobe
         uGreenChroma: { value: 0.22 },
         uSkySat: { value: 1.02 },
         // COOL shade, warm light: the actual split. Slate-violet, blue ahead of
         // red, and gentle — the surface shaders and the contact wash already
         // put violet in the darks, this only has to keep the axis honest.
+        // The shade wash. uShadeLo/Hi are DISPLAY luma: full weight at and below
+        // L 66, gone by L 122 — the two darkest washes of the picture, the same
+        // population the hatch gate serves. uShadeTurnHi is 47 deg, which is
+        // exactly what it takes to walk the measured 330-360 population of the
+        // sunlit plates into 265-300; uShadeTurnLo is 9 deg, a nudge, so a sage
+        // canopy or an already-violet bank is left where the shaders put it.
+        // MULTIPLES OF THE PLATE KEY (the display value below which an eighth
+        // of the painted area lies — see KEY_FRAG), not absolute levels.
+        uShadeLo: { value: 0.78 },
+        uShadeHi: { value: 1.20 },
+        uShadeOut: { value: 1.75 },
+        uShadeTurnLo: { value: 0.010 },
+        uShadeTurnMid: { value: 0.045 },
+        uShadeTurnHi: { value: 0.180 },
+        uShadeChroma: { value: 0.58 },
         uShadowTint: { value: new THREE.Color(0xaba9b2) },
         uHighTint: { value: new THREE.Color(0xfff4e2) },
         uVignetteTint: { value: new THREE.Color(0xa2988c) },
@@ -1884,10 +2134,20 @@ export class CanvasRenderPipeline {
         // riding a wash whose whole step is twenty. The deep masses — running
         // gear, canopy interiors, the underside of a jaw — are all below L 92
         // and keep the full weight, which is where the rubric puts pencil.
+        //
+        // ROUND 9 narrows it once more, to 0.405/0.515 — display L 69 to L 105.
+        // Measured on the round-8 plates: the gate as authored put HALF weight
+        // at L 100 and a quarter at L 110, and L 100-110 is where the shaded
+        // side of a soldier's tunic, the near bank and the whole lower half of
+        // the Edelweiss live. The dark:lit high-pass ratio on all six named
+        // subjects came back 0.39-0.72 — i.e. backwards — because the strokes
+        // were landing on the object's MIDTONE, which in LSB terms is where a
+        // multiplicative mark buys the most contrast. Full weight now stops at
+        // the top of the second wash and the stroke is gone by the third.
         uHatch: { value: 0 },
         uHatchSpacing: { value: 7.0 },
-        uHatchLo: { value: 0.43 },
-        uHatchHi: { value: 0.57 },
+        uHatchLo: { value: 0.405 },
+        uHatchHi: { value: 0.515 },
         uHatchSmall: { value: 0.03 },
         // On an unbroken plane — a cheek, a sunlit road, the flat of a wall —
         // a stroke has nothing to describe, so it drops to a third. See the
@@ -1901,7 +2161,14 @@ export class CanvasRenderPipeline {
         // less of it. A 2B stroke over a dried wash takes about a third of its
         // value. (Round 5 took half and three critics called the pencil louder
         // than the paint; that was at a gate four times as wide.)
-        uHatchDepth: { value: 0.62 },
+        //
+        // ROUND 9 takes it to 0.56 — but this is now the depth in the DEEPEST
+        // wash only, because the bite ramps with the band weight (see `bite` in
+        // the hatch block). At the top of the gate the multiply is 0.93, i.e.
+        // a whisper of graphite, so the total pencil laid over the midtones is
+        // far below round 8's while the bottom wash gets a harder mark than it
+        // has ever had. Energy moves DOWN the ladder rather than being added.
+        uHatchDepth: { value: 0.56 },
       },
       vertexShader: FS_VERT, fragmentShader: GRADE_FRAG,
       depthTest: false, depthWrite: false, name: 'vcGrade',
@@ -1938,6 +2205,10 @@ export class CanvasRenderPipeline {
     // at ultra (ten hemisphere taps plus an eight-step ray march at 1920x1080).
     const aoDiv = 2;
     this.aoRT = rt(Math.max(2, Math.floor(w / aoDiv)), Math.max(2, Math.floor(h / aoDiv)));
+
+    // The plate key: one texel, nearest-filtered, rebuilt with the rest so the
+    // dispose path has nothing special to remember.
+    this.keyRT = rt(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
 
     // bloom chain
     const startDiv = this.quality <= 0 ? 4 : 2;
@@ -1984,6 +2255,7 @@ export class CanvasRenderPipeline {
     this.dofRT?.dispose();
     this.comp?.dispose();
     this.aoRT?.dispose();
+    this.keyRT?.dispose();
     if (this.bloomMips) for (const m of this.bloomMips) m.dispose();
     this.bloomMips = null;
   }
@@ -2162,6 +2434,22 @@ export class CanvasRenderPipeline {
     // ---------------------------------------------------- 7. grade + paper
     const gu = this.mGrade.uniforms;
     gu.tColor.value = gradeTex;
+
+    // ------------------------------------------------- 6b. the plate's key
+    // One pixel. Reads the composited frame, returns the display value below
+    // which an eighth of the painted area lies, and the grade's shade law is
+    // written in multiples of it. See KEY_FRAG for why an absolute threshold
+    // could not be made to work across twelve plates.
+    {
+      const ku2 = this.mKey.uniforms;
+      ku2.tSrc.value = gradeTex;
+      ku2.uExposure.value = gu.uExposure.value;
+      ku2.uPreGain.value = gu.uPreGain.value;
+      ku2.uContrast.value = gu.uContrast.value;
+      this._quad.draw(r, this.mKey, this.keyRT, true);
+      gu.tKey.value = this.keyRT.texture;
+    }
+
     // The G-buffer written in step 1 is never rebound as a scratch target, so
     // the hatch pass can still ask it whether this fragment sits on a fold or
     // on an unbroken plane.
@@ -2176,14 +2464,15 @@ export class CanvasRenderPipeline {
     // 11.06:1). It also cost `overview` its paper score, 7 -> 5, and that WAS a
     // change made in this file.
     //
-    // ROUND 8 gives a third of it back rather than all of it: 0.47, i.e. 0.20
-    // sigmas, 4.1 LSB on a 20.7 LSB step. Still under a quarter of the interval
-    // the plateau has to survive, and still well under round 6's 0.24. The
-    // reason it is worth giving back at all is that the cast-shadow wash added
-    // above moves a good deal of every frame DOWN, and the tooth is windowed to
-    // the midtones by vcPaperMidScene — so at an unchanged setting a frame with
-    // real shadows in it shows less sheet than one without.
-    gu.uGrainSteps.value = THREE.MathUtils.clamp(CFG.render.paperStrength * 0.47, 0.02, 0.45);
+    // ROUND 8 gave a third of it back — 0.47 — on the argument that the new
+    // cast-shadow wash moves the frame down and the tooth is windowed to the
+    // midtones, so the same setting shows less sheet. The argument is sound and
+    // the price was not: `closeup` step-to-noise went 11.06 -> 4.46 in the same
+    // commit, and the sheet is one of the three things sharing the interval a
+    // plateau has to survive inside. ROUND 9 puts it back to round 7's 0.40 and
+    // pays for the sheet out of the SHADOW WASH instead (uCastDepth's low-end
+    // weight), which is where the value actually went.
+    gu.uGrainSteps.value = THREE.MathUtils.clamp(CFG.render.paperStrength * 0.40, 0.02, 0.45);
     // CFG.render.hatchStrength is authored for the SURFACE hatch in
     // materials.js, whose strokes are diluted by everything that runs after
     // them; this pass is the last thing before the paper, so the same number
@@ -2581,7 +2870,7 @@ export class CanvasRenderPipeline {
     this._quad.dispose();
     this.mDown.dispose(); this.mPrefilter.dispose(); this.mUp.dispose();
     this.mContact.dispose();
-    this.mDof.dispose(); this.mComposite.dispose(); this.mGrade.dispose();
+    this.mDof.dispose(); this.mComposite.dispose(); this.mGrade.dispose(); this.mKey.dispose();
   }
 }
 

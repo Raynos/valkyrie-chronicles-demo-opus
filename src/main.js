@@ -36,6 +36,7 @@ import { SHOT_NAMES, runShot } from './game/captureShots.js';
 
 import { Character } from './actors/character.js';
 import { Tank } from './actors/tank.js';
+import { ContactShadowField } from './actors/contactShadow.js';
 
 import { HUD } from './ui/hud.js';
 import { injectStyles } from './ui/style.js';
@@ -452,6 +453,15 @@ function installSystems(S, updateTracers) {
   engine.add({ update: updateTracers });
   // 5. FX pools flush after everything that could have written to them.
   engine.add(fx);
+  // 5b. Contact pools, AFTER the animator has moved the feet and BEFORE the
+  //     shadow frustum is fitted — a pool is a decal on the terrain, so it has
+  //     to describe the pose this frame ends on, not the one it started with.
+  //     Measured before it existed: 76 of 154 footprints across the twelve
+  //     plates were darker than their own surround, and 24 were BRIGHTER.
+  S.contact = new ContactShadowField(S.scene, {
+    groundAt: (x, z) => world.groundHeightAt(x, z),
+  });
+  engine.add({ update: (dt) => S.contact.update(dt, battle.units) });
   // 6. shadow frustum follows the action.
   engine.add({ update: (dt) => updateLighting(S, dt) });
   // 7. audio listener rides the camera.
@@ -755,6 +765,10 @@ async function captureFlow(S) {
   if (typeof window !== 'undefined') {
     window.__VC__ = Object.assign(window.__VC__ || {}, {
       engine, scene, camera, renderer, pipeline, world, battle, fx, rig, hud, Bus, CFG,
+      // THREE itself, so a probe can raycast. Without it "is this soldier's sole
+      // actually VISIBLE?" is unanswerable from inside the page, and every
+      // contact-shadow measurement silently includes feet behind a sandbag.
+      THREE, contact: S.contact,
     });
   }
 

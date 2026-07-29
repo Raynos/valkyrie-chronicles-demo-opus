@@ -1550,24 +1550,45 @@ function buildTorso(b, rig, o) {
     const chest = smoothstep(0.30, 0.52, t) * (1 - smoothstep(0.74, 0.92, t));
     const ribs = smoothstep(0.26, 0.44, t) * (1 - smoothstep(0.58, 0.76, t));
     let k = 1;
-    k -= 0.052 * chest * front * Math.exp(-((ct / 0.20) * (ct / 0.20)));   // sternal furrow
-    k += 0.082 * back * clamp01(lat - 0.24) * smoothstep(0.34, 0.72, t)
+    // ROUND 9. Every term below was 3.4-8.2% of the radius, i.e. 6-16 mm on a
+    // 0.19 m chest — 3 to 5 degrees of normal turn. A band boundary needs a turn
+    // comparable to a band WIDTH (a four-band Lambert ramp puts its steps about
+    // 25-30 degrees of surface normal apart), so a 4-degree feature cannot move
+    // a terminator and the trunk kept quantising as one cylinder: "a rectangular
+    // slab between collar and belt with visible construction seams", five
+    // critiques running. The amplitudes here are 1.7-2.2x, the sternal and
+    // pectoral features are NARROWER (a plane break is a corner, not a swell),
+    // and the pec now has a HARD lower edge instead of a gaussian shoulder —
+    // that edge is the diagonal a terminator lands on.
+    k -= 0.092 * chest * front * Math.exp(-((ct / 0.145) * (ct / 0.145)));  // sternal furrow
+    k += 0.118 * back * clamp01(lat - 0.24) * smoothstep(0.34, 0.72, t)
       * (1 - smoothstep(0.80, 0.95, t));                                   // latissimus
-    k -= 0.040 * back * Math.exp(-((ct / 0.17) * (ct / 0.17)))
+    k -= 0.062 * back * Math.exp(-((ct / 0.135) * (ct / 0.135)))
       * smoothstep(0.30, 0.62, t);                                         // spinal furrow
-    k += 0.044 * ribs * clamp01(lat - 0.45) * Math.cos(t * 26.0);          // serratus ripple
-    k += 0.038 * smoothstep(0.24, 0.10, t) * clamp01(lat - 0.35);          // iliac flare
+    // SERRATUS: three digitations, not a continuous ripple. A cosine at 26 rad
+    // over the rib window is a corrugation with no beginning and no end; real
+    // serratus is a short run of finger-shaped slips that die into the oblique,
+    // and it is their ENDS that read.
+    const serr = Math.exp(-Math.pow((t - 0.50) / 0.155, 2));
+    k += 0.070 * ribs * serr * clamp01(lat - 0.42) * Math.cos(t * 34.0);
+    k += 0.052 * smoothstep(0.24, 0.10, t) * clamp01(lat - 0.35);          // iliac flare
     // PECTORAL SHELF and its armpit crease. The single biggest plane break on
     // the front of a clothed torso: the pec stands proud, then falls away into
     // the axilla on a diagonal, and that diagonal is where a terminator wants
     // to sit. Without it the chest is a barrel and the wash runs straight down.
     const pec = smoothstep(0.56, 0.72, t) * (1 - smoothstep(0.86, 0.97, t));
-    k += 0.060 * pec * front * clamp01(0.80 - lat) * clamp01(lat * 3.4 - 0.35);
-    k -= 0.048 * pec * clamp01(lat - 0.62) * (0.35 + 0.65 * front);        // axilla
+    k += 0.105 * pec * front * clamp01(0.80 - lat) * clamp01(lat * 3.4 - 0.35);
+    // The pec's LOWER border, as a step. 0.56->0.62 is 18 mm of height on a
+    // 0.30 m chest, so the surface turns through ~35 degrees across it — enough
+    // for the quantiser to put a band edge there and keep it, which is the
+    // horizontal the chest has never had.
+    k -= 0.055 * smoothstep(0.62, 0.555, t) * smoothstep(0.50, 0.60, t)
+      * front * clamp01(0.86 - lat);
+    k -= 0.076 * pec * clamp01(lat - 0.62) * (0.35 + 0.65 * front);        // axilla
     // FLANK PLANE. The external oblique turns the side of the trunk into a flat
     // face between the front and back planes; on a tube of revolution there is
     // no such face and the light rolls round it without a break.
-    k -= 0.034 * Math.exp(-((Math.abs(lat - 0.93) / 0.16) * (Math.abs(lat - 0.93) / 0.16)))
+    k -= 0.058 * Math.exp(-((Math.abs(lat - 0.93) / 0.135) * (Math.abs(lat - 0.93) / 0.135)))
       * smoothstep(0.20, 0.42, t) * (1 - smoothstep(0.72, 0.90, t));
     // TRAPEZIUS SLOPE. The last three stations take the section from a 0.36 m
     // shoulder to a 0.17 m neck in 30 mm of height, and on a tube of revolution
@@ -3073,6 +3094,78 @@ export function buildHead(b, rig, o, f) {
     b.setColor(o.skin).setMottle(0.028);
   }
   const vEye1 = b.vertexCount;
+
+  // --- EARS ------------------------------------------------------------------
+  // THE SIDE OF THIS HEAD HAS BEEN EMPTY FOR NINE ROUNDS. Between the helmet rim
+  // and the jaw there is a 60 x 70 mm plane of flat skin with nothing on it, and
+  // it is the largest unbroken area anywhere on the figure at portrait scale —
+  // measured on `closeup`, 4,900 px of one value. In profile, which is the view
+  // every plate gives this head, the ear IS the head: it is what fixes the skull
+  // fore-and-aft, it is where the jaw hinge reads from, and its absence is why
+  // the earlier plates read as a mask on a stick.
+  //
+  // Canon: the helix crown sits level with the BROW and the lobe with the base
+  // of the nose (T_BROW 0.545 -> T_SUBNAS 0.263), the whole thing tipped back
+  // about 15 degrees so it follows the mandible ramus, and the canal at 62% of
+  // the way back through the skull. Built as a shallow bowl (the concha) with a
+  // rolled rim (the helix) standing 4 mm proud of it — the rim is the ink line,
+  // the bowl is the dark it encloses, and that pair is what reads at 2 m. Past
+  // about eight metres the whole thing is sub-pixel and it costs 220 triangles.
+  if (!simple()) {
+    // The helmet shell comes down to about dy = +0.10 on the side of the head,
+    // so an ear whose crown sits at the brow (FY(0.545) = +0.073) is three
+    // quarters covered — measured on the first build of this, which showed a
+    // 14 px squiggle under the rim and nothing else. Field helmets sit ON the
+    // ear, so the canon is right and the FRAMING is what has to give: the ear
+    // runs from just under the rim down to the nose base, and it sits well
+    // FORWARD of where an ideal ellipsoid would put it (dz -0.13, not -0.30)
+    // because the face mask pushes the whole front of this skull out and the
+    // canal is only a little behind the true mid-depth.
+    const earTop = FY(T_BROW - 0.075), earBot = FY(T_SUBNAS - 0.030);
+    const earMid = (earTop + earBot) * 0.5;
+    const earH = (earTop - earBot) * 0.5;                 // half-height, normalised
+    for (const side of [1, -1]) {
+      // Ear plane: on the temple/cheek boundary, addressed as a point on the
+      // skull surface so it follows the cranial box and the temple hollow rather
+      // than floating off an ideal ellipsoid.
+      const anchor = (t, back, lift) => {
+        const dy = earMid + earH * t;
+        const dz = -0.13 - back;                          // just behind the canal
+        const dxs = Math.sqrt(Math.max(0.05, 1 - dy * dy - dz * dz));
+        return surf(side * dxs, dy, dz, lift);
+      };
+      // Concha — the bowl. Flat in the lateral axis so it is a dish, not a bud.
+      b.setColor(mixCol(o.skin, [0.10, 0.055, 0.045], 0.30)).setMottle(0.030);
+      b.addTube([
+        { p: anchor(0.86, 0.055, 0.0026), rx: 0.0092, rz: 0.0062 },
+        { p: anchor(0.30, 0.010, 0.0050), rx: 0.0158, rz: 0.0092 },
+        { p: anchor(-0.34, 0.014, 0.0048), rx: 0.0148, rz: 0.0086 },
+        { p: anchor(-0.86, 0.052, 0.0030), rx: 0.0100, rz: 0.0060 },
+      ], { seg: seg(9), capStart: 'round', capEnd: 'round' });
+      // Helix — the rolled rim, standing proud of the bowl and sweeping round
+      // from the top of the tragus to the lobe. This is the ink line.
+      b.setColor(o.skin).setMottle(0.024);
+      // A real helix stands 15-20 mm off the skull; at 5.6 mm of lift and 4 mm of
+      // section the first build measured as a 14 px crease that the outline pass
+      // never committed ink to. 10.5 mm of lift and a 5.5 mm section is a rim
+      // that BREAKS the head silhouette in three-quarter view and throws its own
+      // shadow into the concha, which is the whole point of the feature.
+      b.addTube([
+        { p: anchor(0.72, -0.030, 0.0092), rx: 0.0054, rz: 0.0046 },
+        { p: anchor(0.92, 0.030, 0.0106), rx: 0.0062, rz: 0.0051 },
+        { p: anchor(0.62, 0.098, 0.0110), rx: 0.0065, rz: 0.0053 },
+        { p: anchor(0.00, 0.122, 0.0104), rx: 0.0062, rz: 0.0050 },
+        { p: anchor(-0.58, 0.100, 0.0094), rx: 0.0057, rz: 0.0046 },
+        { p: anchor(-0.92, 0.040, 0.0088), rx: 0.0068, rz: 0.0057 },   // lobe
+      ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
+      // Tragus — the little flap over the canal. 3 mm, and it is the mark that
+      // stops the ear reading as a comma.
+      b.addTube([
+        { p: anchor(0.10, -0.062, 0.0030), rx: 0.0034, rz: 0.0028 },
+        { p: anchor(-0.16, -0.058, 0.0034), rx: 0.0030, rz: 0.0025 },
+      ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
+    }
+  }
 
   // --- BROWS -----------------------------------------------------------------
   // A brow is a soft MASS lying on the orbital ridge: heavy at the head, arching

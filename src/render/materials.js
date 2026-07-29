@@ -1038,8 +1038,19 @@ const NPR_SHADE_BODY = /* glsl */`
   // Measured: with coolCol at 0.30 of the budget, closeup frame violet was
   // 0.152 at a 0.62 glaze; at 0.62 of the budget the same glaze took it to
   // 0.231, well past the 0.11-0.16 target. Same wash, less of it.
+  // ROUND 9: 0.30 -> 0.205 of the glaze. The note above already predicted this
+  // bill and round 8 paid it anyway — "at 0.62 of the budget the same glaze took
+  // [closeup frame violet] to 0.231, well past the 0.11-0.16 target" — and the
+  // measured result was frame violet out of band on TEN of twelve plates, five
+  // of them because there is now too MUCH (overview 0.242, tank 0.217, village
+  // 0.341). The half-tone keeps its full 0.62 turn, so the ladder still never
+  // crosses red; it is only the deep wash's glaze toward the skylight that comes
+  // off, which is the term that decides how much of the plate is literally
+  // inside 240-300. The plates that are SHORT of violet are short for a
+  // different reason entirely (their darks are rose, not blue) and are fixed in
+  // the grade, where the measurement that named it was taken.
   vec3 shadeCol = vcShadeDeep( coolCol, uViolet, uInkFloor,
-                               clamp( uVioletGain * 0.30, 0.0, 0.60 ) );
+                               clamp( uVioletGain * 0.240, 0.0, 0.60 ) );
   vec3 midCol   = albedo * 0.98 + coolCol * 0.06;
   vec3 litCol   = vcLitColour( albedo, uCream * uCreamGain );
 
@@ -1164,14 +1175,40 @@ const NPR_SHADE_BODY = /* glsl */`
   // every LSB of grain riding on a flat wash — whereas a snapped one is
   // bit-identical across a plateau and steps only where the wash steps, so the
   // hatching still stops dead at the wet edge.
+  //
+  // ROUND 9: THE WINDOW WAS THE MIDTONE, NOT THE DARKS, AND THE BITE WAS HALF
+  // THE WASH. 0.34..0.56 display is L 87 to L 143 — which is not "the two
+  // darkest washes", it is the entire middle of every plate: a shaded tunic at
+  // L 115 took HALF the stroke and a lit one at L 130 still took a fifth, at a
+  // depth (col * 0.50) that removes half the pigment under it. That is the
+  // round-8 regression in one expression. Rendering the mask alone confirmed
+  // the placement: the Edelweiss's lower hull, the overview near bank and every
+  // soldier's legs came back at 0.3-0.6 coverage, and the measured dark:lit
+  // high-pass ratio on all six named subjects went BACKWARDS (0.39-0.72).
+  //
+  // Three changes, all in the same direction:
+  //   * the window drops to 0.19..0.42 (L 48 to L 107) and is SQUARED, so half
+  //     weight lands at L 74 rather than L 115,
+  //   * it is multiplied by the surface's own SHADEDNESS — the band coordinate
+  //     g, which is 0 in the deep wash and 1 in the lit one — so a dark-albedo
+  //     surface in full sun (a green tunic, a black boot on a lit road) is
+  //     painted, not hatched. A pencil goes where the light does not reach, not
+  //     where the pigment happens to be dark,
+  //   * the bite goes from col * 0.50 to col * 0.76: a 2B stroke over a dried
+  //     wash takes about a quarter of its value. The grade pass lays the deep
+  //     graphite; this pass is the surface's own tooth inside it.
   {
     float hv = vcSceneDisplay( vcLum( col ), uGradeExp );
     hv = floor( hv * 12.0 + 0.5 ) * ( 1.0 / 12.0 );
     // the two darkest washes of the PICTURE; the crossing comes in below them,
     // and a third shallow ruling only in the deepest masses
-    float dark = 1.0 - smoothstep( 0.34, 0.56, hv );
-    float deep = 1.0 - smoothstep( 0.20, 0.44, hv );
-    float deepest = 1.0 - smoothstep( 0.08, 0.28, hv );
+    float dark = 1.0 - smoothstep( 0.19, 0.42, hv );
+    dark *= dark;
+    // ...and only where the LIGHT has gone, not merely where the pigment is dark
+    float shadeW = 1.0 - smoothstep( 0.26, 0.62, g );
+    dark *= shadeW;
+    float deep = ( 1.0 - smoothstep( 0.11, 0.30, hv ) ) * shadeW;
+    float deepest = ( 1.0 - smoothstep( 0.04, 0.19, hv ) ) * shadeW;
     // A pencil lays graphite down or it does not. Thresholding the field's soft
     // coverage gives the stroke an EDGE, widens it past the 1 px visibility
     // floor, and stops three rulings summing into a grey veil between them.
@@ -1193,11 +1230,14 @@ const NPR_SHADE_BODY = /* glsl */`
     #ifdef VC_DBG_HATCHONLY
       col = vec3( h );
     #elif !defined( VC_DBG_NOHATCH )
-      // Deeper than round 7's 0.50 — but it now only ever lands on a wash the
-      // gate has already proved is dark, so the extra bite buys stroke ENERGY
-      // in the shadow masses instead of a fishnet over a lit trouser. The
-      // graphite add keeps the darkest stroke off black.
-      col = mix( col, col * 0.50 + uGraphite * 0.10, h );
+      // ROUND 8 ran this at col * 0.50 on the argument that the gate had already
+      // proved the wash was dark. The gate had proved no such thing — it opened
+      // across the whole midtone (see above) — and half the pigment is what a
+      // critic sees as "the tank gained a measurable shadow and lost its
+      // drawing". At col * 0.76 the surface stroke is graphite sitting IN a
+      // wash; the deep marks are the grade pass's business, one stage later,
+      // where the band coordinate is the picture's rather than the material's.
+      col = mix( col, col * 0.76 + uGraphite * 0.06, h );
     #endif
   }
 

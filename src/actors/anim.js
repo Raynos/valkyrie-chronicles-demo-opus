@@ -626,7 +626,29 @@ const AIM_GAIN = 1.11;   // see _applyAim
 // 3.7% of his height: 18 px at the `tank` lancer's 486 px, 82 px at closeup.
 // That is a corner the outline pass can bite, in every clip and every solve,
 // without the pose reading as "bent".
-const ELBOW_MIN = 34 * Math.PI / 180, ELBOW_MAX = 152 * Math.PI / 180;
+//
+// ROUND 9. 152 was still not a limit where it counts, and the measurement that
+// proves it is the PROJECTED angle, not the anatomical one. On `closeup` the
+// hero's support arm sat at exactly 152.0 deg in 3-space — pinned to the clamp,
+// as it is on eleven of the sixteen figures in `aim` and thirteen of sixteen in
+// `action` — and projected to **172.6 deg on screen**: a dead-straight 442 px
+// tube from shoulder to grip, elbow at (918,712), hand at (921,911), three
+// pixels of lateral travel over two hundred. The 64 mm of olecranon the comment
+// above banks on is real, but it is spent along the VIEW axis, where it buys
+// nothing. 137 deg raises the offset to 102 mm (l1 = l2 = 0.28 m: chord 0.521,
+// offset sqrt(0.28^2 - 0.2605^2)), so even a 45-degree-unfavourable camera still
+// gets 72 mm — 59 px at closeup, 20 px on the `tank` lancer. The cost is 24 mm
+// of reach out of 545, which no carry, aim or reload pose in CLIP_DEFS needs.
+//
+// 137 was still not enough, and the reason is that the DIRECTION of the 102 mm
+// is not ours to choose: an elbow whose olecranon happens to point along the
+// view axis projects to a straight line however bent it is in 3-space. The only
+// camera-independent lever is more flexion. 124 deg puts 145 mm off the chord
+// (0.28 cos 62), which survives a 70%-unfavourable projection with 43 mm still
+// in the picture plane. Reach falls to 2 x 0.28 x sin 62 = 0.494 m, and every
+// carry in CARRY_BY_KIND is now authored inside that: rifle foregrip 0.428 m
+// from the support shoulder (a 100-degree elbow), lance 0.483 (119 degrees).
+const ELBOW_MIN = 34 * Math.PI / 180, ELBOW_MAX = 124 * Math.PI / 180;
 // The knee gets the same treatment for the same reason: `idle` and `walk`
 // measured 176.6-177.6 degrees on the stance leg, i.e. locked, and a locked leg
 // is a cylinder. 171 keeps 34 mm of patella off the chord, which is what a
@@ -1391,11 +1413,26 @@ export class Animator {
     if (d > usable) _handG.copy(_p0).addScaledVector(_tmp.copy(this.handTarget).sub(_p0).multiplyScalar(1 / d), usable);
 
     this.charRoot.getWorldQuaternion(_wq3);
-    // Support elbow: DOWN, barely outboard, barely forward. The old (0.35,-0.5,
-    // 0.6) was forward-dominant, which lifted the support elbow out in front of
-    // the chest and left the forearm crossing the body — half of the squad
-    // plate's "both arms thrown out to his left".
-    _tmp.set(0.22, -0.95, 0.15).applyQuaternion(_wq3).normalize();
+    // Support elbow: DOWN, outboard, and BEHIND the shoulder->hand chord.
+    //
+    // ROUND 9, AND THIS IS THE WHOLE OF "THE STRETCHED, ELBOW-LESS ARM". The old
+    // pole was (0.22, -0.95, +0.15): down, a little out, a little FORWARD. Strip
+    // the component along the chord (which is nearly vertical at a carry) and
+    // what is left is (+0.15 fwd, +0.22 lat) — 56% forward, 83% outboard. But
+    // _limitArms then clamps the olecranon into a 44-degree cone about a
+    // reference that points BACKWARD and outboard (-0.42 fwd, +0.30 lat), and
+    // the shortest rotation from one to the other lands the elbow at 98% pure
+    // LATERAL. Lateral is the one direction that is worthless: on `closeup` the
+    // camera sits 53 degrees off the subject's facing, so an elbow flung
+    // straight out sideways travels almost entirely along the view axis. The
+    // arm measured 135.4 degrees in 3-space and **172.9 degrees on screen** — a
+    // 550 px straight line with three pixels of bow in it.
+    //
+    // (0.20, -0.90, -0.40) puts the pole inside the cone instead of fighting it:
+    // 89% posterior, 45% outboard, no clamp, and the 102 mm of olecranon lands
+    // where a support elbow actually goes — tucked down and back under the
+    // handguard, not winged out to the side.
+    _tmp.set(0.24, -0.92, -0.30).applyQuaternion(_wq3).normalize();
     this._solve2Bone(bm.upperArmL, bm.foreArmL, bm.handL, _handG, _tmp, w, ELBOW_MIN, ELBOW_MAX);
 
     // WRIST ROLL onto the handguard. The palm normal is the hand bone's local

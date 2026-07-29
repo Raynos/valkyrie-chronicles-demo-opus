@@ -1514,11 +1514,22 @@ export const SHOTS = {
     // headPoint() is the CROWN (0.091 m above the head bone the numbers above are quoted
     // against), so both offsets carry that correction; they are written out rather than
     // folded in so the arithmetic can be re-checked against a probe.
+    // ROUND 9 — A BUST, NOT A HALF-LENGTH. Round 8 bought the hands by walking
+    // the lens out to 1.70 m, and paid for them with the face: measured on the
+    // shipped plate the skull spanned 246 px, 23% of the page, against the
+    // 28-33% a VC character shot gives it, and the critique read it exactly as
+    // built ("the face got smaller and flatter"). Both halves are available at
+    // once now that the rifle rides 45 mm higher and 42 mm closer (CARRY_BY_KIND
+    // .rifle, this round): the subject a bust has to hold runs from the crown at
+    // +0.15 m to the support hand at -0.42, i.e. 0.57 m, and a 36-degree lens at
+    // 1.32 m shows 0.858 m of it. That is the whole rifle-across-the-chest, both
+    // hands, the collar and a head at 317 px — a third of the page — with 15% of
+    // margin top and bottom instead of 40%.
     const HP = 0.091;                      // headPoint - head bone, metres
     const a = 0.55 - 0.92;
     aimCamera(ctx.camera,
-      alicia.pos.x + Math.sin(a) * 1.70, head.y + 0.02 - HP, alicia.pos.z + Math.cos(a) * 1.70,
-      head.x + 0.16, head.y - 0.21 - HP, head.z + 0.06, 36);
+      alicia.pos.x + Math.sin(a) * 1.44, head.y + 0.02 - HP, alicia.pos.z + Math.cos(a) * 1.44,
+      head.x + 0.15, head.y - 0.20 - HP, head.z + 0.06, 36);
     await frames(14);
   },
 

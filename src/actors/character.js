@@ -980,7 +980,17 @@ const CARRY_BY_KIND = {
   // the support shoulder against a 0.526 m elbow-limited reach — no headroom at
   // all, so the moment the torso-clearance push moved the gun the support hand
   // came off it. 0.250/-0.370 brings that to 0.478 m and leaves 48 mm of slack.
-  rifle: { yaw: CARRY_YAW, pitch: CARRY_PITCH, fwd: 0.250, down: -0.370, lat: CARRY_LAT },
+  // ROUND 9: 0.250/-0.370 puts the foregrip 0.478 m from the support shoulder,
+  // and the elbow-limited reach is 0.490 m — so the support arm is at 0.98 of
+  // its own shell and every rifleman in the set measured a 137-152 degree elbow,
+  // i.e. a straight tube. The slide in _supportTarget cannot rescue it: at a
+  // 0.90 rad carry the bore runs 52 degrees across the body, so walking the hand
+  // BACK toward the trigger walks it AWAY from the left shoulder and the search
+  // correctly returns zero. The grip itself has to come in. 0.208/-0.325 lands
+  // the foregrip at 0.428 m — 0.87 of the shell, a 110-degree elbow — and, since
+  // it also lifts the whole weapon 45 mm, the muzzle rides HIGHER across the
+  // background rather than lower, which is the round-8 silhouette property.
+  rifle: { yaw: CARRY_YAW, pitch: CARRY_PITCH, fwd: 0.208, down: -0.325, lat: CARRY_LAT },
   // The SMG is 0.368 m of bore against the rifle's 0.625, so yaw alone cannot
   // buy it the same rear-view clearance — measured 0.0274 rad against a 0.0633
   // body edge even at yaw 0.94. Moving the whole weapon 50 mm out to the support
@@ -1835,9 +1845,21 @@ export class Character {
     // 0.94 rather than "just reachable": the support arm has to still have a
     // creasing elbow at the end of it, and a goal parked exactly on the reach
     // shell puts the joint at the limit with nothing left over.
+    //
+    // ROUND 9: 0.94 IS NOT "SOMETHING LEFT OVER", IT IS THE LIMIT AGAIN.
+    // `reach` is already the ELBOW_MAX-limited shell, so 0.94 of it asks for an
+    // elbow of about 128 degrees and the solve then clamps to the ceiling
+    // anyway: measured across `closeup`, `squad`, `tank`, `aim` and `action`,
+    // twenty-nine of the forty-four support arms in the set sat at EXACTLY
+    // 152.0 deg, the old ELBOW_MAX, to one decimal place. An arm pinned to its
+    // own limit is the definition of the "stretched, elbow-less arm" four
+    // critiques have now named. 0.88 of the shell is 0.459 m on a 0.56 m arm,
+    // which is a 110-degree elbow — a carry, not a reach — and the cost is that
+    // the support hand chokes 30-60 mm further up the handguard, which is what
+    // a man holding a rifle he is not firing actually does.
     const near = ud.holdNear !== undefined ? ud.holdNear : 0.10;
     const far = ud.holdFar !== undefined ? ud.holdFar : 0.25;
-    const good = reach * 0.94;
+    const good = reach * 0.88;
     let best = _cA.distanceTo(this._handTarget), bestSlide = 0;
     if (best > good && far > near) {
       const N = 10;
