@@ -166,9 +166,8 @@ void main() {
 }
 `;
 
-// ---- contact shadow + ambient occlusion -------------------------------------
-// Two screen-space terms, both read straight out of the G-buffer, both about
-// ONE thing: making a figure sit ON the ground instead of in front of it.
+// ---- contact shadow + ambient occlusion + THE CAST SHADOW -------------------
+// Three screen-space terms, all read straight out of the G-buffer.
 //
 //   .r  hemisphere occlusion (Alchemy estimator) — the general darkening in a
 //       crease, at the root of a grass sward, where a wall meets a road.
@@ -177,9 +176,37 @@ void main() {
 //       shadow-map resolution: a 0.28 m boot sole is below the filter width of
 //       any single-cascade shadow map that also has to cover a valley, and that
 //       is exactly why round 1's hero "cast no shadow whatsoever".
+//   .b  SUN VISIBILITY, resampled from the key light's own shadow map at the
+//       G-buffer position. See below — this is round 8's headline fix.
 //
-// Output is a visibility pair (1 = open sky). The composite turns it into a
-// painted wash, not a grey multiply — see COMPOSITE_FRAG.
+// Output is a visibility triple (1 = open / lit). The composite turns each into
+// a painted wash, not a grey multiply — see COMPOSITE_FRAG.
+//
+// ------------------------------------------------- why the cast shadow is HERE
+// Round 7 was rejected on twelve plates for the same defect: "every occluder in
+// this frame LIGHTENS what it covers — water under the bridge arch is +2.14 LSB
+// BRIGHTER than open water on the same scan row". Rendering the shadow mask on
+// its own proved the shadow map itself was never the problem: it is built, it
+// is sampled, and 16.5% of the overview frame comes back masked, with the
+// bridge, the poplars, the fence posts and the hero all throwing correct,
+// crisply-shaped shadows. What fails is DELIVERY — the mask reaches the picture
+// through each material's own private path, and three of those paths lose it:
+//
+//   * the river is a bespoke ShaderMaterial with no shadow code at all and
+//     receiveShadow = false, so the arch of a stone bridge lands on the water
+//     as nothing whatsoever. That single fact is the critic's headline number.
+//   * every NPR surface attenuates the key to a FLOOR (uShadowFloor 0.14-0.22)
+//     rather than to zero, and then the sky-fill term — which a cast shadow
+//     does not touch — floods a third of the value straight back in.
+//   * anything that never reaches the colour pass's lighting solve (billboards,
+//     decals, foreign meshes) is simply lit.
+//
+// So the cast shadow stops being each material's private business and becomes
+// what it is in a painted plate: A WASH THE PICTURE LAYS DOWN. One term, one
+// place, one quantiser, applied to every fragment in frame from the G-buffer —
+// which is why it reaches the water (the river writes no depth, so the fragment
+// under it carries the RIVERBED's position and the arch shadow lands there),
+// and why it cannot be undone by a fill light.
 const CONTACT_FRAG = /* glsl */`
 ${COMMON}
 uniform sampler2D tND;
@@ -192,7 +219,44 @@ uniform vec3  uSunV;           // view-space unit vector TOWARD the sun
 uniform float uAoRadius;       // metres
 uniform float uRayLength;      // metres
 uniform float uThickness;      // metres — how deep a hit still counts as a hit
+// cast shadow
+uniform mat4  uShadowMat;      // world -> shadow map, [0,1]^3
+uniform mat4  uViewToWorld;
+uniform vec3  uSunW;           // WORLD unit vector toward the sun
+uniform float uShadowBias;     // in shadow-depth units, three's own convention
+uniform float uShadowTexelW;   // world size of one shadow texel, metres
+uniform float uShadowTexelUv;  // 1 / shadowMapSize
+uniform float uShadowSoft;     // PCF radius, in shadow texels
+uniform float uSunOn;          // 0 when there is no usable shadow map
 varying vec2 vUv;
+
+// The key's depth map, in whichever of the two forms three has built it.
+//
+// r185 DEPRECATED PCFSoftShadowMap and silently rewrites it to PCFShadowMap
+// (WebGLShadowMap.js:99-102), which attaches a native DepthTexture with
+// compareFunction = LessEqualCompare — i.e. a sampler2DShadow with hardware 2x2
+// PCF, not a sampler2D of raw depth. Binding one to the other is undefined
+// behaviour, and reading engine.js's "type = PCFSoftShadowMap" at face value is
+// exactly how this pass silently did nothing on its first build. The define is
+// set from the texture three actually made, never from what was asked for.
+//
+// three unconditionally emits '#version 300 es' plus '#define texture2D texture'
+// on WebGL2 (WebGLProgram.js:805-819), so texture2D() reaches the right overload
+// for both sampler types.
+#ifdef VC_SHADOW_CMP
+uniform highp sampler2DShadow tShadow;
+float vcShadowTap(vec2 uv, float z) { return texture2D(tShadow, vec3(uv, z)); }
+#else
+uniform sampler2D tShadow;
+float vcShadowTap(vec2 uv, float z) { return step(z, texture2D(tShadow, uv).x); }
+#endif
+
+// Vogel disk — the same spiral the AO uses, so the two terms dither alike.
+vec2 vogel(int i, int n, float phi) {
+  float r = sqrt((float(i) + 0.5) / float(n));
+  float a = float(i) * 2.39996323 + phi;
+  return vec2(cos(a), sin(a)) * r;
+}
 
 const int   AO_TAPS = 10;
 const float GA = 2.39996323;
@@ -209,8 +273,11 @@ vec2 uvOf(vec3 p) {
 void main() {
   vec4 nd = texture2D(tND, vUv);
   float lz = nd.a;
-  // sky: fully open, and never let the ray-march use it as an occluder
-  if (lz <= 0.0001 || length(nd.xyz) < 0.4) { gl_FragColor = vec4(1.0, 1.0, 0.0, 1.0); return; }
+  // sky: fully open, and never let the ray-march use it as an occluder. All
+  // three channels must read "unoccluded" — this target is bilinearly upsampled
+  // by the composite, so a 0 parked in the sky bleeds a dark fringe down every
+  // skyline.
+  if (lz <= 0.0001 || length(nd.xyz) < 0.4) { gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); return; }
 
   vec3 P = rayAt(vUv) * (lz * uFar);
   vec3 N = normalize(nd.xyz);
@@ -299,7 +366,50 @@ void main() {
   // AERIAL PERSPECTIVE below is what is supposed to be doing the work out there.
   vis = mix(1.0, vis, 1.0 - smoothstep(45.0, 95.0, z));
 
-  gl_FragColor = vec4(vis, 1.0 - occ, 0.0, 1.0);
+  // ---- THE CAST SHADOW -----------------------------------------------------
+  // Resample the key's shadow map at this fragment's WORLD position. Everything
+  // here follows three's own conventions exactly (r185 renders a native depth
+  // texture and, under PCFSoftShadowMap, samples it with a single
+  // step(coord.z + bias, depth) — so uShadowBias means what light.shadow.bias
+  // means and nothing has to be re-derived).
+  //
+  // The offset is the same NORMAL-OFFSET law materials.js uses in its vertex
+  // stage — one shadow texel times tan(acos(N.L)), i.e. the depth a surface
+  // climbs across one texel — rather than a cranked constant. Round 2 learnt
+  // that the hard way: a constant big enough to stop acne on a grazing hillside
+  // peter-pans a boot 30 cm off its own shadow.
+  float sunVis = 1.0;
+  if (uSunOn > 0.5) {
+    vec3 wp = (uViewToWorld * vec4(P, 1.0)).xyz;
+    vec3 wn = normalize(mat3(uViewToWorld) * N);
+    float ndl = dot(wn, uSunW);
+    if (ndl > 0.02) {
+      float slope = min(sqrt(max(1.0 - ndl * ndl, 0.0)) / max(ndl, 0.15), 3.2);
+      vec3 sp = wp + wn * (uShadowTexelW * (1.35 + slope * 1.55));
+      vec4 sc = uShadowMat * vec4(sp, 1.0);
+      sc.xyz /= max(sc.w, 1e-6);
+      sc.z += uShadowBias;
+      if (sc.x > 0.0 && sc.x < 1.0 && sc.y > 0.0 && sc.y < 1.0 && sc.z < 1.0) {
+        // Eight taps on a Vogel disk, rotated by the SAME low-frequency field
+        // the AO uses. Per-pixel rotation would quantise to salt-and-pepper
+        // downstream; correlated over ~40 px it quantises into blotches, and
+        // the composite's one-boundary quantiser then turns the blotches into
+        // the ragged edge of a laid wash.
+        float lit = 0.0;
+        float rad = uShadowSoft * uShadowTexelUv;
+        for (int i = 0; i < 8; i++) {
+          lit += vcShadowTap(sc.xy + vogel(i, 8, phi) * rad, sc.z);
+        }
+        sunVis = lit * 0.125;
+      }
+      // Let go at the terminator. A surface within a few degrees of facing away
+      // is already dark from its own shading, and stacking a cast-shadow wash on
+      // top of a shading terminator is what makes a hard black rim.
+      sunVis = mix(1.0, sunVis, smoothstep(0.02, 0.26, ndl));
+    }
+  }
+
+  gl_FragColor = vec4(vis, 1.0 - occ, sunVis, 1.0);
 }
 `;
 
@@ -386,6 +496,12 @@ uniform float uAoStrength;
 uniform float uContactStrength;
 uniform vec3  uContactViolet;
 uniform vec3  uInkFloor;
+
+// cast shadow wash
+uniform float uCastDepth;      // how much pigment a full cast shadow lays down
+uniform float uCastBleed;      // boundary wander, in fractions of the whole term
+uniform float uCastNear;       // metres — the wash is at full weight nearer than this
+uniform float uCastFar;        // ...and at its faintest past this
 
 // aerial perspective
 uniform mat4  uViewToWorld;
@@ -516,7 +632,51 @@ void main() {
   // shading uses, with the step boundary dragged around by paper fibre, and it
   // is applied as a SHADE COLOUR (violet-cooled pigment) rather than a grey.
   {
-    vec2 cs = texture2D(tContact, uv).rg;
+    vec3 cs = texture2D(tContact, uv).rgb;
+
+    // ---- the CAST SHADOW, laid first ---------------------------------------
+    // ONE BOUNDARY, not a ramp. bands = 1 means the quantiser has exactly one
+    // edge to place, at half visibility, and uCastBleed is then free to drag
+    // that single edge bodily off the geometric iso-line — which is the round-1
+    // acceptance condition restated ("shadows must land on ONE irregular
+    // bleeding band boundary rather than ramping smoothly across two").
+    //
+    // It is laid BEFORE the occlusion wash and with the SAME pigment, so a cast
+    // shadow and the seam under a boot agree in hue and stack into one mass
+    // instead of two differently-coloured greys.
+    //
+    // The wash recedes with distance for the same reason the ink does: a plate
+    // draws the shadow that explains the subject and lets the middle distance
+    // go to a flat tint. Without this the far hillsides pick up a hard-edged
+    // second shadow that the shading has already paid for once.
+    float castV = clamp(1.0 - cs.b, 0.0, 1.0) * (1.0 - isSkyC);
+    if (castV > 0.004) {
+      float f1 = vcFbm3(sPx / 21.0 + 11.7);
+      float f2 = vcFbm3(sPx / 58.0 + 4.3);
+      vec2 q = vcQuantiseBands(1.0 - castV, 1.0, uCastBleed, f1, f2);
+      float wash = clamp(1.0 - q.x, 0.0, 1.0);
+      wash = clamp(wash * (1.0 + q.y * 0.24), 0.0, 1.0);
+      wash *= mix(1.0, 0.34, smoothstep(uCastNear, uCastFar, distC));
+      // WEIGHTED FOR THE SHOULDER. Everything downstream of here — the filmic
+      // tonemap, the cream white point, the aerial perspective the shadow is
+      // then seen THROUGH — compresses the top of the range, so one fixed
+      // multiply buys far fewer display levels on a pale passage than on a dark
+      // one. Measured on the bridge plate: at a flat 0.55 the same wash moved shaded
+      // ground by 55 LSB and the river under the arch by 13. The criteria are
+      // written in display LSB and a glaze over a pale wash is exactly where a
+      // painter's shadow reads hardest, so the weight follows the value.
+      //
+      // The low end of that weight is doing the opposite and equally important
+      // job: a passage the surface shading has ALREADY taken down does not need
+      // a second full wash, and giving it one both crushes the plate's darks and
+      // drops the whole mass into the grade's bottom two bands, where the
+      // graphite hatch fires — which is how a cast shadow turns into scribble.
+      float castL = vcLum(color);
+      color = mix(color, vcShadowColour(color, uContactViolet, uInkFloor),
+                  clamp(wash * uCastDepth * mix(0.52, 1.34, smoothstep(0.05, 0.40, castL)), 0.0, 1.0));
+    }
+
+    // ---- and the occlusion wash on top of it --------------------------------
     float occ = clamp((1.0 - cs.r) * uAoStrength + (1.0 - cs.g) * uContactStrength, 0.0, 1.0);
     occ *= 1.0 - isSkyC;
     if (occ > 0.004) {
@@ -551,7 +711,26 @@ void main() {
   // Depth is read in METRES, not in normalised depth — with uFar at 900 m the
   // old smoothstep(0.0, 0.14, lz) did not finish until 126 m, so a house at
   // 60 m still got a near-field stroke.
-  float depthScale = mix(2.45, 0.55, smoothstep(3.5, 52.0, distM));
+  //
+  // ROUND 8: the ramp is RELATIVE TO THE SUBJECT, like every other recession in
+  // this pass. It used to run on absolute metres over a fixed 3.5..52 m window,
+  // which is the whole of BUG 4: the command plate is a MAP, its ground is 45 m
+  // out and its subject is 45 m out too, so every object in the frame — including
+  // the Edelweiss, the one thing the plate exists to track — sat at the FAR end
+  // of a window authored for an over-the-shoulder camera and was handed the
+  // thinnest stroke the pass can draw. Measured: depthScale 0.657, i.e. a
+  // 0.89 px sample radius, so all eight silhouette taps landed inside one
+  // NearestFilter G-buffer texel and reported no edge at all. A 221x249 px tank
+  // came back with 0 of 5 transects crossing a single 25-LSB ink minimum.
+  //
+  // Ink OPACITY was already measured from subjZ eleven lines above (inkStart /
+  // inkEnd, and the round-2 note explaining exactly this mistake for the closeup
+  // plate); ink WIDTH was simply never converted. A painter draws whatever the
+  // picture is about with a full stroke and thins what is BEHIND it, at whatever
+  // distance the picture happens to be composed from.
+  float wNear = clamp(subjZ * 0.55, 2.0, 30.0);
+  float wFar = wNear + clamp(subjZ * 2.4, 14.0, 120.0);
+  float depthScale = mix(2.45, 0.55, smoothstep(wNear, wFar, distM));
   float fat = uOutlineWidth * depthScale;
   // A crease offset below ~1 texel samples the same G-buffer texel twice and
   // reports no normal difference at all, so the hairline is made thin in INK
@@ -644,7 +823,14 @@ void main() {
   line = max(line, skyEdge * uHorizonLine);
   line *= 1.0 - isSky;                     // never draw inside the sky itself
 
-  line *= mix(0.42, 1.32, grain * 0.62 + grainFine * 0.38);
+  // The tooth breaks a line by making the pencil skip the pits of the paper —
+  // but that is a function of PRESSURE. A hard silhouette press flattens the
+  // graphite into the tooth and comes out continuous; only a light crease line
+  // skips. Applying one floor to both is why a hull silhouette at map scale,
+  // where a 200 px form spans several tooth cycles, could be cut to 42% opacity
+  // over half its length and stop reading as a drawn edge at all.
+  float toothFloor = mix(0.42, 0.80, clamp(sil * silMag, 0.0, 1.0));
+  line *= mix(toothFloor, 1.32, grain * 0.62 + grainFine * 0.38);
 
 #ifdef VC_DOUBLE_STROKE
   // The sketch double-stroke: real VC linework has a fainter ghost line a
@@ -1498,6 +1684,22 @@ export class CanvasRenderPipeline {
         uAoRadius: { value: 0.50 },
         uRayLength: { value: 0.42 },
         uThickness: { value: 0.30 },
+        // cast shadow — see CONTACT_FRAG
+        tShadow: { value: null },
+        uShadowMat: { value: new THREE.Matrix4() },
+        uViewToWorld: { value: new THREE.Matrix4() },
+        uSunW: { value: new THREE.Vector3(0.35, 0.62, 0.70) },
+        uShadowBias: { value: -0.0005 },
+        uShadowTexelW: { value: 0.028 },
+        uShadowTexelUv: { value: 1 / 4096 },
+        // In shadow TEXELS. The map is resampled at half the frame's resolution
+        // and then quantised to a single boundary, so this is not buying a
+        // gradient — it is deciding how far the boundary is allowed to be
+        // dithered before the quantiser snaps it, i.e. how ragged the edge of
+        // the wash is. Past ~2.5 the eight taps stop overlapping and the
+        // dithering turns into a visible ring.
+        uShadowSoft: { value: 1.7 },
+        uSunOn: { value: 0 },
       },
       vertexShader: FS_VERT, fragmentShader: CONTACT_FRAG,
       depthTest: false, depthWrite: false, name: 'vcContact',
@@ -1539,6 +1741,17 @@ export class CanvasRenderPipeline {
         uInkFadeEnd: { value: 78 },
         uAoStrength: { value: 0.62 },
         uContactStrength: { value: 0.70 },
+        // How much pigment a full cast shadow lays down, as a mix toward
+        // vcShadowColour. Sized by measurement, not by taste: round 7 measured
+        // open water at 173.8 and water under the bridge arch at 175.9, and the
+        // bar is 25 LSB the other way. vcShadowColour lands a mid wash at ~0.40
+        // of its input, so a 0.30 mix is a ~18% value drop — 31 LSB on that
+        // water, and about a fifth of a band's worth on ground the surface
+        // shading has already darkened once.
+        uCastDepth: { value: 0.75 },
+        uCastBleed: { value: 0.30 },
+        uCastNear: { value: 62 },
+        uCastFar: { value: 150 },
         // The contact wash is skylight-only pigment, same violet the surface
         // shaders use for shade, so a boot seam and a cast shadow agree.
         uContactViolet: { value: new THREE.Color(0x6c6a86) },
@@ -1898,19 +2111,24 @@ export class CanvasRenderPipeline {
     this._prepassEnd();
     this.scene.background = prevBg;
 
-    // ------------------------------------------- 2. contact shadow / occlusion
-    // Reads only the G-buffer, so it runs before the colour pass and its result
-    // is ready for the composite. This is what grounds a figure regardless of
-    // what the shadow map can resolve.
-    this._quad.draw(r, this.mContact, this.aoRT, true);
-
-    // ---------------------------------------------------- 3. main colour pass
+    // ---------------------------------------------------- 2. main colour pass
     sm.needsUpdate = true;                  // shadow maps refresh exactly once
     r.setClearColor(this.clearColor, 1);
     r.setRenderTarget(this.hdr);
     r.clear(true, true, false);
     r.render(this.scene, cam);
     sm.needsUpdate = false;
+
+    // ------------------------------------------- 3. contact / occlusion / sun
+    // Reads only the G-buffer and the key's shadow map, so it could run at any
+    // point before the composite — but it must run AFTER the colour pass, which
+    // is where three rebuilds the shadow map and republishes
+    // `sun.shadow.matrix`. Sampling the map here means the depth texture and the
+    // matrix that addresses it are from the SAME frame; running before, as this
+    // pass used to, pairs this frame's matrix with last frame's map and the cast
+    // shadow swims by exactly one frame of camera motion.
+    this._castShadowUniforms();
+    this._quad.draw(r, this.mContact, this.aoRT, true);
 
     // ---------------------------------------------------- 4. bloom
     this._bloom(this.hdr.texture);
@@ -1951,14 +2169,21 @@ export class CanvasRenderPipeline {
     gu.uExposure.value = CFG.render.exposure;
     gu.uVignette.value = CFG.render.vignette;
     gu.uChroma.value = CFG.render.chroma;
-    // ROUND 7: 0.57 -> 0.40 of the config knob, i.e. 0.24 sigmas of tooth per
-    // wash step down to 0.17. The tooth is only one of the things sharing the
-    // interval between two washes — the surface mottle underneath it now has a
-    // 0.12-step budget of its own (uWashTexCap) and the hatch takes a bite in
-    // the dark bands — and the three of them together have to leave a plateau
-    // standing. 0.17 sigmas is 3.5 LSB on a 20.7 LSB step: still plainly
-    // cold-press at 1:1, and a fifth of the interval it sits in.
-    gu.uGrainSteps.value = THREE.MathUtils.clamp(CFG.render.paperStrength * 0.40, 0.02, 0.45);
+    // ROUND 7 took this from 0.57 to 0.40 of the config knob — 0.24 sigmas of
+    // tooth per wash step down to 0.17 — to leave room for the surface mottle
+    // (uWashTexCap) and the dark-band hatch inside one interval, and the banding
+    // win it bought is not negotiable (closeup torso step-to-noise 4.10 ->
+    // 11.06:1). It also cost `overview` its paper score, 7 -> 5, and that WAS a
+    // change made in this file.
+    //
+    // ROUND 8 gives a third of it back rather than all of it: 0.47, i.e. 0.20
+    // sigmas, 4.1 LSB on a 20.7 LSB step. Still under a quarter of the interval
+    // the plateau has to survive, and still well under round 6's 0.24. The
+    // reason it is worth giving back at all is that the cast-shadow wash added
+    // above moves a good deal of every frame DOWN, and the tooth is windowed to
+    // the midtones by vcPaperMidScene — so at an unchanged setting a frame with
+    // real shadows in it shows less sheet than one without.
+    gu.uGrainSteps.value = THREE.MathUtils.clamp(CFG.render.paperStrength * 0.47, 0.02, 0.45);
     // CFG.render.hatchStrength is authored for the SURFACE hatch in
     // materials.js, whose strokes are diluted by everything that runs after
     // them; this pass is the last thing before the paper, so the same number
@@ -1984,6 +2209,51 @@ export class CanvasRenderPipeline {
     r.setClearColor(this._prevClear, prevClearAlpha);
     r.toneMapping = prevToneMapping;
     sm.autoUpdate = prevAutoShadow;
+  }
+
+  /**
+   * Hand the contact pass everything it needs to resample the key's shadow map.
+   *
+   * Called between the colour pass and the contact pass, because that is the
+   * only window in which `sun.shadow.map` and `sun.shadow.matrix` describe the
+   * same frame. Everything is read straight off the light so there is no second
+   * copy of the frustum to go stale — that split is exactly how the depth bias
+   * silently rotted in round 2.
+   *
+   * The sampler TYPE is read off the texture three actually built rather than
+   * assumed from `renderer.shadowMap.type` — see the VC_SHADOW_CMP block in
+   * CONTACT_FRAG. The pass stands down entirely (uSunOn = 0) for the two cases
+   * it cannot serve: a VSM colour map, and a reversed depth buffer, whose
+   * comparison runs the other way.
+   */
+  _castShadowUniforms() {
+    const u = this.mContact.uniforms;
+    const rig = this.lightRig;
+    const sun = rig?.sun || (rig?.isDirectionalLight ? rig : null);
+    const map = sun && sun.castShadow && sun.visible ? sun.shadow.map : null;
+    const tex = map ? map.depthTexture : null;
+    if (!tex || this.renderer.reversedDepthBuffer) { u.uSunOn.value = 0; u.tShadow.value = null; return; }
+
+    // A shadow SAMPLER and a shadow TEXTURE are different GLSL types; picking
+    // the wrong one silently returns 1.0 everywhere, which is a frame with no
+    // cast shadow in it and no error to show for it.
+    const wantCmp = tex.compareFunction != null;
+    const haveCmp = !!(this.mContact.defines && this.mContact.defines.VC_SHADOW_CMP !== undefined);
+    if (wantCmp !== haveCmp) {
+      this.mContact.defines = wantCmp ? { VC_SHADOW_CMP: '' } : {};
+      this.mContact.needsUpdate = true;
+    }
+
+    u.uSunOn.value = 1;
+    u.tShadow.value = tex;
+    u.uShadowMat.value.copy(sun.shadow.matrix);
+    u.uViewToWorld.value.copy(this.camera.matrixWorld);
+    u.uSunW.value.copy(sun.position).sub(sun.target.position).normalize();
+    u.uShadowBias.value = sun.shadow.bias;
+    // Published by lighting.js whenever the ortho box resizes — the ONE place
+    // that knows how big a shadow texel is in metres.
+    u.uShadowTexelW.value = MaterialRegistry.uniforms.uShadowTexel.value;
+    u.uShadowTexelUv.value = 1 / Math.max(1, map.width);
   }
 
   /**

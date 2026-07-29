@@ -50,6 +50,31 @@ const SHADE_DBG = (() => {
   return q.has('shadeDbg') ? (parseInt(q.get('shadeDbg'), 10) || 0) : 0;
 })();
 
+// ------------------------------------------------------------- term isolation
+// '?matDbg=a,b' switches individual pigment terms OFF so a measurement can name
+// which one owns an artefact instead of guessing. Round 7 spent three rounds
+// tuning the paper substrate for a directional ruling that turned out to belong
+// to the terrain detail field; the cost of that mistake was far higher than the
+// cost of this switch.
+//   noHatch    the surface pencil hatch
+//   hatchOnly  render the hatch MASK as grey, nothing else
+//   noScuff    the terrain near-field sward/scuff incident
+//   noDet      the ground detail atlas (albedo + drive contribution)
+//   noGrain    the cold-press substrate multiply
+const MAT_DBG = (() => {
+  const q = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+  const s = new Set((q.get('matDbg') || '').split(',').map((v) => v.trim()).filter(Boolean));
+  return s;
+})();
+function dbgDefines(d) {
+  if (MAT_DBG.has('noHatch')) d.VC_DBG_NOHATCH = '';
+  if (MAT_DBG.has('hatchOnly')) d.VC_DBG_HATCHONLY = '';
+  if (MAT_DBG.has('noScuff')) d.VC_DBG_NOSCUFF = '';
+  if (MAT_DBG.has('noDet')) d.VC_DBG_NODET = '';
+  if (MAT_DBG.has('noGrain')) d.VC_DBG_NOGRAIN = '';
+  return d;
+}
+
 // ------------------------------------------------------------ key/fill split
 // The two numbers that set the frame's tonal RANGE. The band drive is
 // keyN * KEY_GAIN + skyView * FILL_GAIN, so these two numbers alone decide how
@@ -455,10 +480,33 @@ varying vec2 vAux;
 // its own pigment was already past it, in which case it does not move at all.
 #define VC_SHADE_CAP 0.37500      // 135 deg, the far edge of olive
 
+// How much of the turn budget a pigment is allowed to spend, by where it starts.
+//
+// The direction rule is written for a WARM pigment, which has 200 degrees of
+// wheel between it and the skylight and needs every degree of the budget to get
+// its half-tone out of rust. A pigment that is ALREADY green has almost none,
+// and spending the same budget on it walks sage into mint: the round-4 pasture
+// measured shaded terrain cells at hue 144-210, and round 6 called a shaded
+// gable "sage-green ashlar". One budget cannot serve both, so it is weighted.
+// Full below 45 deg, a sixth above 85.
+//
+// The upper number is set by a second failure mode, measured: vcShadeDeep's own
+// hue window snaps anything past 180 deg up to 242, so a GREEN half-tone that
+// has been turned far enough to cross teal on its way into the glaze arrives in
+// the violet window by force rather than by pigment. Sweeping this weight, the
+// closeup's shaded foreground sward went from 13-27% of its saturated pixels in
+// hue 240-265 to 48-85% purely from letting sage climb the same distance ochre
+// does. Ochre has 200 degrees of wheel to spend and needs all of it; sage has
+// forty.
+float vcTurnWeight( float h ) {
+  return mix( 0.16, 1.0, 1.0 - smoothstep( 0.1250, 0.2361, h ) );
+}
+
 // The half-tone: the pigment itself, turned a BOUNDED amount toward the
 // skylight, a little less chromatic, and darkened to valMul of its own value.
 vec3 vcShadeTurn( vec3 c, float turn, float satMul, float valMul ) {
   vec3 hsv = vcRgb2Hsv( c );
+  turn *= vcTurnWeight( hsv.x );
   float d = VC_SHADE_H - hsv.x;                    // NOT wrapped — that is the fix
   hsv.x = clamp( min( hsv.x + clamp( d, -turn, turn ),
                       max( hsv.x, VC_SHADE_CAP ) ), 0.0, 1.0 );
@@ -474,10 +522,11 @@ vec3 vcShadeTurnL( vec3 c, float amt, float turn ) {
   if ( amt <= 0.001 ) return c;
   float l = vcLum( c );
   vec3 hsv = vcRgb2Hsv( c );
+  turn *= vcTurnWeight( hsv.x );
   float d = VC_SHADE_H - hsv.x;
   hsv.x = clamp( min( hsv.x + clamp( d, -turn, turn ) * amt,
                       max( hsv.x, VC_SHADE_CAP ) ), 0.0, 1.0 );
-  hsv.y *= mix( 1.0, 0.80, amt );                  // pigment in shade reads less chromatic
+  hsv.y *= mix( 1.0, 0.72, amt );                  // pigment in shade reads less chromatic
   vec3 t = vcHsv2Rgb( hsv );
   return t * ( l / max( vcLum( t ), 1e-5 ) );
 }
@@ -528,7 +577,15 @@ vec3 vcShadeDeep( vec3 cool, vec3 violet, vec3 floorCol, float amt ) {
   // cast shadow, so the number that decides whether that plate reads as a
   // watercolour or as round 1's rejection is the CHROMA of this wash, not its
   // hue — the hue is what the temperature axis is scored on and it stays.
-  hsv.y *= mix( 1.0, 0.55, amt );
+  //
+  // ROUND 8: 0.44, not 0.55. "Saturation must FALL into shadow" was measured
+  // failing on four of five village materials (stucco 0.161 -> 0.170, ground
+  // 0.243 -> 0.270, wall 0.258 -> 0.287) and the cause is that the grade lifts
+  // chroma with a GAMMA — uSatGamma 0.73 nearly doubles a 0.05 wash and gains a
+  // 0.35 one only 38% — so a shade wash authored at 80% of the lit chroma
+  // arrives on the plate at parity or above. The authored cut has to be bigger
+  // than the visible one by exactly that gamma.
+  hsv.y *= mix( 1.0, 0.44, amt );
   vec3 t = vcHsv2Rgb( hsv );
   return t * ( vcLum( c ) / max( vcLum( t ), 1e-5 ) );
 }
@@ -957,9 +1014,32 @@ const NPR_SHADE_BODY = /* glsl */`
   // deg turn spent at this line, because uSubsurface adds albedo * keyTint *
   // 0.13 on top of it and that add carries the ORIGINAL hue: the turn was still
   // there, it had simply been painted over by a later warm term.
-  vec3 coolCol  = vcShadeTurn( albedo, uShadeTurn * 0.30, 0.66, 0.62 );
+  // ROUND 8: 0.62 of the budget here, not 0.30. Measured, per-band and
+  // ink-rejected, on the round-7 closeup: the fraction of each material's
+  // second-darkest quintile sitting in the forbidden 340..30 window was tunic
+  // 0.37, helmet 0.41, bank 0.35, skin 0.54 — a real crimson population, not a
+  // circular-mean artefact (the 15-degree histogram peaks AT 0-30, it is not
+  // bimodal about it). Sweeping this one number by 2.5x on the plate took those
+  // to 0.09 / 0.20 / 0.26 / 0.10, which is the transfer function measured rather
+  // than argued: the shader owns about half of the plate's shade hue and the
+  // grade's contact wash and bloom own the rest.
+  //
+  // It also fixes the DEEP wash's transition. vcShadeDeep glazes whatever it is
+  // handed toward the skylight, and an RGB glaze from an OCHRE base to a violet
+  // one passes through magenta at half strength — which is the other half of the
+  // red band. Handing it an OLIVE base instead means the glaze runs olive ->
+  // neutral -> violet and never crosses red at any weight.
+  vec3 coolCol  = vcShadeTurn( albedo, uShadeTurn * 0.62, 0.62, 0.62 );
+  // ...and the deep wash's glaze comes DOWN as the half-tone's turn goes up,
+  // because the two are not independent. Glazing an OCHRE base toward the
+  // skylight wastes most of its strength crossing magenta and scatters the
+  // result over 300-340 and 15-30; glazing an OLIVE one runs olive -> neutral ->
+  // violet and lands squarely in 240-300, so the same amt buys far more violet.
+  // Measured: with coolCol at 0.30 of the budget, closeup frame violet was
+  // 0.152 at a 0.62 glaze; at 0.62 of the budget the same glaze took it to
+  // 0.231, well past the 0.11-0.16 target. Same wash, less of it.
   vec3 shadeCol = vcShadeDeep( coolCol, uViolet, uInkFloor,
-                               clamp( uVioletGain * 0.62, 0.0, 0.80 ) );
+                               clamp( uVioletGain * 0.30, 0.0, 0.60 ) );
   vec3 midCol   = albedo * 0.98 + coolCol * 0.06;
   vec3 litCol   = vcLitColour( albedo, uCream * uCreamGain );
 
@@ -970,6 +1050,17 @@ const NPR_SHADE_BODY = /* glsl */`
   // three ramps resolve to 70% deep + 30% half-tone / 76% half-tone / the
   // pigment / mostly lit; at the actors' five bands, 0.1 / 0.3 / 0.5 / 0.7 /
   // 0.9, band 1 lands on the half-tone alone.
+  // ...and band 0 is NOT the deep wash neat. A third of the half-tone is left in
+  // it, and that is a violet-FRACTION control, not a taste knob: once the
+  // half-tone carries 0.62 of the turn budget the deep glaze runs olive ->
+  // neutral -> violet instead of ochre -> magenta -> violet, so it lands far
+  // more of its population squarely inside 240-300 and the frame's violet share
+  // rose with it (tank 0.150 -> 0.281, overview 0.140 -> 0.274 against a
+  // 0.11-0.16 target). Cutting the deep wash with its own half-tone takes that
+  // back as a low-chroma GREY-violet — the thing this file has called for since
+  // round 4 — and, because olive and violet are on the same side of the wheel,
+  // the cut cannot cross red at any weight the way the old ochre-to-violet
+  // glaze did.
   vec3 col = mix( shadeCol, coolCol, smoothstep( 0.06, 0.24, g ) );
   col = mix( col, midCol, smoothstep( 0.30, 0.52, g ) );
   col = mix( col, litCol, smoothstep( 0.56, 0.99, g ) );
@@ -1046,43 +1137,68 @@ const NPR_SHADE_BODY = /* glsl */`
   // screen-scaled and world-locked and does not care how flat the light is.
   col = vcQuantisePigment( col, uPigLevels, wN, mix( 0.5, warp, 0.85 ), uPigQ, uPigWarp );
 
-  // ---- pencil hatching in the two darkest bands ---------------------------
-  // Gated on the BAND INDEX rather than on a continuous ramp: a band is a flat
-  // wash, so its hatching is laid in at one weight across the whole wash and
-  // stops dead at the wet edge, which is how a pencil actually behaves over a
-  // painted ground. The old smoothstep gate let the same stripe ride the lit
-  // stucco and the lit uniform at a fraction of an amplitude, which is what made
-  // it read as a printed screen.
+  // ---- pencil hatching in the two darkest VALUES --------------------------
+  // THE GATE IS THE PIXEL'S OWN DISPLAY VALUE, NOT ITS BAND INDEX, and that is
+  // this round's fix. Measured, on the round-7 squad plate:
+  //
+  //   * rendering the surface hatch MASK alone (?matDbg=hatchOnly) shows it is
+  //     essentially ZERO over an entire soldier and non-zero on the ground
+  //     around him. A skinned material runs at uBands 3 with contrast 1.30, so
+  //     a figure's SHADED side lands in band 2 of 3 (bi = 2, gate 0.26) and its
+  //     lit side in band 3 (gate 0.00) — the gate below never opened on a
+  //     character at all. The visible cross-hatch on the round-7 soldiers is
+  //     the GRADE pass's hatch, not this one.
+  //   * a band index is not comparable between materials. Terrain's shade lives
+  //     in band 0 of 4 and gets the full stroke; a soldier's identical-value
+  //     shade lives in band 2 of 3 and gets none. One number, two meanings.
+  //
+  // So the gate is the value the pixel will actually reach the SHEET at, which
+  // is the only quantity the rubric's "darkest bands" can honestly mean and the
+  // only one that reads the same on a cream helmet and on an olive bank.
+  // vcSceneDisplay runs the real tonemap, so 0.34/0.56 here are display values:
+  // a shaded uniform (0.28) takes the full stroke, a lit uniform (0.58) takes
+  // none, a sunlit road (0.80) is untouchable.
+  //
+  // It is SNAPPED to twelfths first. A continuous function of value re-analogises
+  // the ladder the quantiser just built — the stroke weight would drift with
+  // every LSB of grain riding on a flat wash — whereas a snapped one is
+  // bit-identical across a plateau and steps only where the wash steps, so the
+  // hatching still stops dead at the wet edge.
   {
-    // The two darkest bands, plus the near half of the third. Round 3 cut off at
-    // 1.75 of uBands, which on a four-band surface is the bottom 44% of the
-    // drive — and once the shade wash stopped being a near-black violet slab
-    // there was very little frame left down there for a pencil to work on, which
-    // is what took this axis to 1-3. Graphite in a gouache study reaches well up
-    // into the half-tones; it is the LIT wash it must stay off.
-    float dark = 1.0 - smoothstep( 1.30, 2.35, bi );
-    // The crossing direction used to be confined to the darkest band alone,
-    // which meant a critic scanning any shadow in the frame found ONE ruling at
-    // ONE angle and an autocorrelation that decayed monotonically — a printed
-    // screen. Graphite crosses wherever it is laid in twice.
-    float deep = 1.0 - smoothstep( 0.80, 2.10, bi );
-    float h = vcHatchField( sPx, 0.6109, uHatchSpacing, 1.7 ) * dark;
+    float hv = vcSceneDisplay( vcLum( col ), uGradeExp );
+    hv = floor( hv * 12.0 + 0.5 ) * ( 1.0 / 12.0 );
+    // the two darkest washes of the PICTURE; the crossing comes in below them,
+    // and a third shallow ruling only in the deepest masses
+    float dark = 1.0 - smoothstep( 0.34, 0.56, hv );
+    float deep = 1.0 - smoothstep( 0.20, 0.44, hv );
+    float deepest = 1.0 - smoothstep( 0.08, 0.28, hv );
+    // A pencil lays graphite down or it does not. Thresholding the field's soft
+    // coverage gives the stroke an EDGE, widens it past the 1 px visibility
+    // floor, and stops three rulings summing into a grey veil between them.
+    float h = smoothstep( 0.10, 0.52, vcHatchField( sPx, 0.6109, uHatchSpacing, 1.7 ) ) * dark;
     #if !defined( VC_LOW ) && !defined( VC_CHEAP )
       // independently seeded and offset so the two directions cannot phase-lock
-      float hx = vcHatchField( sPx + vec2( 129.0, 57.0 ), -0.2618, uHatchSpacing * 1.21, 5.3 ) * deep;
-      h = max( h, hx );
+      h = max( h, smoothstep( 0.10, 0.52,
+        vcHatchField( sPx + vec2( 129.0, 57.0 ), -0.2618, uHatchSpacing * 1.21, 5.3 ) ) * deep );
       // a third, lighter pass in the darkest wash only — three directions is
       // what stops the darks reading as a ruled tint
-      float hz = vcHatchField( sPx + vec2( 41.0, 213.0 ), 1.4835, uHatchSpacing * 0.87, 11.9 )
-               * ( 1.0 - smoothstep( 0.10, 1.15, bi ) ) * 0.75;
-      h = max( h, hz );
+      h = max( h, smoothstep( 0.10, 0.52,
+        vcHatchField( sPx + vec2( 41.0, 213.0 ), 1.4835, uHatchSpacing * 0.87, 11.9 ) ) * deepest * 0.85 );
     #endif
     // real graphite tooth from the drawn stroke bank, so the procedural lines
     // pick up pencil texture instead of reading as a printed screen
     vec3 hs = texture2D( uHatchTex, sPx * 0.0047 ).rgb;
     h *= mix( 0.55, 1.22, hs.r * 0.5 + hs.g * 0.5 );
     h = clamp( h * uHatch, 0.0, 1.0 );
-    col = mix( col, col * 0.50 + uGraphite * 0.10, h );
+    #ifdef VC_DBG_HATCHONLY
+      col = vec3( h );
+    #elif !defined( VC_DBG_NOHATCH )
+      // Deeper than round 7's 0.50 — but it now only ever lands on a wash the
+      // gate has already proved is dark, so the extra bite buys stroke ENERGY
+      // in the shadow masses instead of a fishnet over a lit trouser. The
+      // graphite add keeps the darkest stroke off black.
+      col = mix( col, col * 0.50 + uGraphite * 0.10, h );
+    #endif
   }
 
   // ---- shade goes violet-blue ----------------------------------------------
@@ -1175,7 +1291,7 @@ const NPR_SHADE_BODY = /* glsl */`
   {
     float turnAmt = ( 1.0 - smoothstep( 0.30, 0.84, g ) )
                   * mix( 0.80, 1.0, clamp( uShadeCool, 0.0, 1.0 ) );
-    col = vcShadeTurnL( col, turnAmt, uShadeTurn * 0.78 );
+    col = vcShadeTurnL( col, turnAmt, uShadeTurn * 0.95 );
   }
 
   // ---- the sheet -----------------------------------------------------------
@@ -1187,6 +1303,7 @@ const NPR_SHADE_BODY = /* glsl */`
   // backwards (its window was evaluated on a linear luminance, so it peaked at
   // a display value of 0.73 and ran at 87% strength on the brightest surface in
   // the picture).
+  #ifndef VC_DBG_NOGRAIN
   {
     float pm = vcPaperMidScene( vcLum( col ), uGradeExp );
     if ( pm > 0.002 ) {
@@ -1194,6 +1311,7 @@ const NPR_SHADE_BODY = /* glsl */`
       col *= 1.0 + ( pap - 0.60 ) * uGrain * pm;
     }
   }
+  #endif
 
   col += uEmissive * uEmissiveIntensity;
 
@@ -1717,6 +1835,7 @@ export function makeCanvasMaterial(opts = {}) {
   if (weave) defines.VC_WEAVE = '';
   if (CFG.quality <= 0) defines.VC_LOW = '';
   if (SHADE_DBG) defines.VC_SHADE_DBG = String(SHADE_DBG);
+  dbgDefines(defines);
 
   const uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.lights,
@@ -1954,6 +2073,7 @@ export function makeGrassMaterial(opts = {}) {
   // fetch. Cards (leaf, bush, wheat) are metres across and keep everything.
   if (!o.map) defines.VC_CHEAP = '';
   if (SHADE_DBG) defines.VC_SHADE_DBG = String(SHADE_DBG);
+  dbgDefines(defines);
 
   const uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.lights,
@@ -2220,6 +2340,7 @@ export function makeTerrainMaterial(opts = {}) {
   if (vcolAlbedo) defines.VC_VCOL_ALBEDO = '';
   if (CFG.quality <= 0) defines.VC_LOW = '';
   if (SHADE_DBG) defines.VC_SHADE_DBG = String(SHADE_DBG);
+  dbgDefines(defines);
 
   const uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.lights,
@@ -2335,6 +2456,10 @@ void main() {
   // a second, much larger detail octave keeps the ground from tiling visibly
   vec4 det2 = texture2D( uGroundTex, wp.xz * uDetailScale2 + 0.371 );
 
+  #ifdef VC_DBG_NODET
+    det = vec4( 0.5 );
+  #endif
+
   // ---- layer weights -------------------------------------------------------
   float macro  = vcFbm3( wp.xz * uMacroScale );
   float macro2 = vcFbm2( wp.xz * uMacroScale * 0.41 + 13.1 );
@@ -2445,16 +2570,49 @@ void main() {
   // rest of this file gives at length: a multiply at this frequency is a printed
   // ruling over the wash and it smears every plateau it crosses, whereas a drive
   // term shows up as a patch of the neighbouring wash with its own wet edge.
+  // ...and BAND-LIMITED PER AXIS, which round 7 root-caused and rounds 4-6 spent
+  // on the wrong system. The lit-road patch at closeup (250,620,128) measured a
+  // high-pass SD of 5.45 with 16.15:1 orientation anisotropy in a SINGLE bin at
+  // 85 deg — a horizontal ruling on the brightest surface in frame, where the
+  // paper axis requires the sheet to be invisible. Three rounds of paper tuning
+  // moved it from 16.9:1 to 4.3:1 and no further, because the energy was never
+  // the paper: it is THIS field aliasing.
+  //
+  // 'mPerPxT' is view depth times the projection scale, i.e. the world size of
+  // one pixel on a plane FACING THE CAMERA. A road runs away from the camera, so
+  // its real footprint is a long thin sliver: at the closeup's road the depth
+  // term says 6 mm per pixel while the true along-view footprint is 100-200 mm.
+  // The 24 cycles/m scuff octave has a 42 mm period, so it was being sampled at
+  // three to five cycles per pixel and folding back as a coherent beat,
+  // compressed in y by the same perspective that compressed the field —
+  // which is a horizontal stripe by construction.
+  //
+  // fwidth(wp.xz) knows about that directly, including the fact that on a
+  // grazing plane the footprint is enormous along one axis and tiny along the
+  // other. Each field is faded out once its own period falls under about two and
+  // a half pixels on the WORST axis. Everything the camera can actually resolve
+  // is untouched, so the near-ground incident this exists for is unaffected.
   float mPerPxT = max( -vViewPos.z, 0.05 ) * uProjScale;
+  vec2 fwT = fwidth( wp.xz );
+  float wppT = max( max( fwT.x, fwT.y ), mPerPxT );   // world units per pixel
   float nearF = 1.0 - smoothstep( 0.011, 0.042, mPerPxT );
+  #ifdef VC_DBG_NOSCUFF
+    nearF = 0.0;
+  #endif
   float sward = 0.0, scuff = 0.0;
   if ( nearF > 0.003 ) {
-    float lay = vcFbm2( wp.xz * 0.072 ) * 6.2832;
-    vec2 dir = vec2( cos( lay ), sin( lay ) );
-    vec2 tq = vec2( dot( wp.xz, dir ), dot( wp.xz, vec2( -dir.y, dir.x ) ) );
-    sward = vcFbm3( vec2( tq.x * 11.5, tq.y * 3.9 ) ) - 0.5;
-    scuff = ( vcNoise2( wp.xz * 24.0 + 5.1 ) - 0.5 ) * 0.55
-          + ( vcFbm2( wp.xz * 6.3 + 9.3 ) - 0.5 );
+    // per-field Nyquist fades: argument is (world px) x (cycles per metre)
+    float fSward = 1.0 - smoothstep( 0.22, 0.62, wppT * 11.5 );
+    float fFine  = 1.0 - smoothstep( 0.22, 0.62, wppT * 24.0 );
+    float fCoarse = 1.0 - smoothstep( 0.22, 0.62, wppT * 6.3 );
+    if ( fSward > 0.002 ) {
+      float lay = vcFbm2( wp.xz * 0.072 ) * 6.2832;
+      vec2 dir = vec2( cos( lay ), sin( lay ) );
+      vec2 tq = vec2( dot( wp.xz, dir ), dot( wp.xz, vec2( -dir.y, dir.x ) ) );
+      sward = ( vcFbm3( vec2( tq.x * 11.5, tq.y * 3.9 ) ) - 0.5 ) * fSward;
+    }
+    scuff = ( vcNoise2( wp.xz * 24.0 + 5.1 ) - 0.5 ) * 0.55 * fFine
+          + ( vcFbm2( wp.xz * 6.3 + 9.3 ) - 0.5 ) * fCoarse;
   }
 
   float alpha = uOpacity;

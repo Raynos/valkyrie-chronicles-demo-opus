@@ -616,16 +616,28 @@ function tryRender(fn, opts, needs) {
 // flat lavender wash over 70% of the frame". Earth and foliage — which is where
 // the frame's shade family actually has to be legible, and which is broken up
 // by grass, rock and detail — keep the full amount.
+//
+// ROUND 8 — THE VIOLET GAINS COME DOWN ON EVERYTHING THAT IS BUILT. `village`
+// measured 50.1% of its saturated pixels inside hue 240-300 against a 0.11-0.16
+// target, with its busiest 55-degree wedge starting at 250 deg: one shaded
+// facade and one foreground cast shadow own half the plate and both were being
+// glazed the whole way onto the skylight, which is round 1's "a flat lavender
+// wash over 70% of the frame" arriving by a new route. A shaded stucco gable is
+// a warm GREY that leans violet, not a lavender slab — and with the half-tone
+// now turned 0.62 of the way toward the skylight before vcShadeDeep ever sees
+// it (see materials.js coolCol), a smaller glaze no longer risks landing the
+// deep wash in magenta on its way down: it lands on a low-chroma grey-violet,
+// which is what it should have been all along.
 export const SURFACE_PIGMENT = {
   //            block m  tone  fissure  freq   other
-  masonry:  { blockSize: 0.42, blockTone: 0.115, pigLevels: 15, mottle: 0.105, wetRim: 0.85, violet: 0.78 },
-  brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15, mottle: 0.090, wetRim: 0.80, violet: 0.82 },
-  stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35, mottle: 0.125, wetRim: 0.75, violet: 0.72 },
-  tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14, mottle: 0.080, wetRim: 0.80, violet: 0.86 },
-  timber:   { fissure: 0.075, fissureFreq: 3.4, pigLevels: 13, mottle: 0.085, violet: 0.95 },
-  bark:     { fissure: 0.135, fissureFreq: 2.6, pigLevels: 12, curvature: 0.22, mottle: 0.095, violet: 1.05 },
-  metal:    { pigLevels: 12, grain: 0.25, mottle: 0.055, wetRim: 0.70, violet: 0.95 },
-  cloth:    { pigLevels: 12, grain: 0.38, mottle: 0.050, violet: 0.90 },
+  masonry:  { blockSize: 0.42, blockTone: 0.115, pigLevels: 15, mottle: 0.105, wetRim: 0.85, violet: 0.58 },
+  brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15, mottle: 0.090, wetRim: 0.80, violet: 0.62 },
+  stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35, mottle: 0.125, wetRim: 0.75, violet: 0.52 },
+  tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14, mottle: 0.080, wetRim: 0.80, violet: 0.66 },
+  timber:   { fissure: 0.075, fissureFreq: 3.4, pigLevels: 13, mottle: 0.085, violet: 0.72 },
+  bark:     { fissure: 0.135, fissureFreq: 2.6, pigLevels: 12, curvature: 0.22, mottle: 0.095, violet: 0.88 },
+  metal:    { pigLevels: 12, grain: 0.25, mottle: 0.055, wetRim: 0.70, violet: 0.78 },
+  cloth:    { pigLevels: 12, grain: 0.38, mottle: 0.050, violet: 0.74 },
 };
 
 /**
@@ -697,7 +709,7 @@ export function makeSurfaceMaterial(opts = {}) {
       // plate. Terrain (1.12) and foliage (1.12) keep the full amount: they are
       // broken up by grass, rock and leaf and they are where the shade family
       // has to be legible.
-      violet: opts.violet ?? 0.82,
+      violet: opts.violet ?? 0.62,
       outline: opts.outline ?? true,
       outlineWidth: opts.outlineWidth ?? CFG.render.outlineWidth,
     }, opts), needs) || makeFallbackSurface({ ...opts, vertexColors: opts.vertexColors ?? true });
@@ -778,7 +790,12 @@ export function makeTerrainSurfaceMaterial(opts = {}) {
       // the violet skylight has to be legible; but grass shade that rotates
       // past 250 degrees reads as cyan, which the dusk critique measured.
       shadeCool: opts.shadeCool ?? 0.88,
-      violet: opts.violet ?? 1.12,
+      // 0.88, not 1.12. The ground is the largest single area in every frame, so
+      // it sets the frame's violet FRACTION on its own: with the half-tone now
+      // carrying 0.62 of the turn budget the shaded ground reaches a legible
+      // grey-violet at a much smaller glaze, and the old 1.12 took `closeup`
+      // straight past the 0.11-0.16 target to 0.21.
+      violet: opts.violet ?? 0.62,
       cream: opts.cream ?? 1.06,
       // The composite-luminance quantiser that runs UNDER the band ladder. At
       // 16 levels over the perceptual range its steps are 4 LSB apart, which is
@@ -857,6 +874,12 @@ export function makeFoliageMaterial(opts = {}) {
       rim: opts.rim ?? 1.2,
       hatch: opts.hatch ?? 0.35,
       subsurface: opts.subsurface ?? 0.55,
+      // Foliage used to inherit the factory default of 1.0. A GREEN pigment
+      // glazed toward the skylight passes through TEAL at intermediate strengths
+      // (sage 0.10,0.14,0.07 lands at hue 194 at a 0.30 glaze), which is the
+      // round-3 "teal patch" and the round-4 mint hillside. A canopy's shade is
+      // a deep olive that only leans violet.
+      violet: opts.violet ?? 0.58,
     }, opts), needs) ||
     makeFallbackSurface({
       ...opts,

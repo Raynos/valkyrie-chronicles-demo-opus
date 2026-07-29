@@ -1646,6 +1646,19 @@ function buildTorso(b, rig, o) {
     { p: [0, hy - 0.182, zc - 0.008], rx: 0.152 * g, rz: 0.112 * g },
   ], { seg: seg(18), capEnd: 'none' });
   b.tintRange(v0, b.vertexCount, 0.985);
+  // HEM WELT. A 14 mm doubled band of the dark cuff cloth round the bottom edge
+  // of the skirt. At `overview`'s 116 px/m that is a 1.6 px hard horizontal rule
+  // right where the LIGHT tunic mass has to stop and the MID trouser mass has to
+  // start — and without it the two ran together into one 0.42 m column, which is
+  // half of why a torso scan at that distance returns one plateau instead of
+  // three. It is also what a bloused field tunic actually has.
+  b.setColor(mixCol(o.tunicShade, o.belt, 0.35)).setMottle(0.04);
+  b.addTube([
+    { p: [0, hy - 0.158, zc - 0.008], rx: 0.1655 * g, rz: 0.1215 * g },
+    { p: [0, hy - 0.176, zc - 0.008], rx: 0.1690 * g, rz: 0.1240 * g },
+    { p: [0, hy - 0.190, zc - 0.008], rx: 0.1580 * g, rz: 0.1160 * g },
+  ], { seg: seg(18), capEnd: 'none' });
+  b.setColor(o.tunic).setMottle(0.07);
   // Four vertical drape folds in the skirt. Each is 5 mm of geometry and a
   // permanent ink line, and four of them turn a bell into cloth.
   b.setColor(o.tunicShade).setMottle(0.05);
@@ -1833,12 +1846,18 @@ function buildShoulders(b, rig, o) {
     // round the shoulder in every pose and at every light angle. Without it the
     // deltoid and the sleeve are one continuous surface and the arm reads as a
     // tube growing straight out of the ribcage.
-    b.setColor(o.tunicShade).setMottle(0.05);
+    // ROUND 8: darkened from tunicShade toward the collar and widened from a
+    // 3 mm proud welt to a 6 mm one. This ring is the ONLY thing in the build
+    // that separates the sleeve from the ribcage behind it when both are cut
+    // from the same cloth and the light is coming from anywhere but the side —
+    // which is every plate in the set. As a hairline in tunicShade it measured
+    // one band step and vanished under the paper grain past about eight metres.
+    b.setColor(mixCol(o.tunicShade, o.collar, 0.45)).setMottle(0.04);
     const sx0 = lerp(px, p.x, 0.86), sz0 = lerp(pz, p.z, 0.86);
     b.addTube([
-      { p: [sx0, p.y - 0.006, sz0], rx: 0.0625 * g, rz: 0.0645 * g },
-      { p: [lerp(sx0, el.x, 0.055), lerp(p.y - 0.006, el.y, 0.055), lerp(sz0, el.z, 0.055)], rx: 0.0665 * g, rz: 0.0685 * g },
-      { p: [lerp(sx0, el.x, 0.115), lerp(p.y - 0.006, el.y, 0.115), lerp(sz0, el.z, 0.115)], rx: 0.0605 * g, rz: 0.0625 * g },
+      { p: [sx0, p.y - 0.006, sz0], rx: 0.0600 * g, rz: 0.0620 * g },
+      { p: [lerp(sx0, el.x, 0.055), lerp(p.y - 0.006, el.y, 0.055), lerp(sz0, el.z, 0.055)], rx: 0.0700 * g, rz: 0.0720 * g },
+      { p: [lerp(sx0, el.x, 0.125), lerp(p.y - 0.006, el.y, 0.125), lerp(sz0, el.z, 0.125)], rx: 0.0585 * g, rz: 0.0605 * g },
     ], { seg: seg(12) });
     b.setColor(o.tunic);
   }
@@ -2108,8 +2127,20 @@ function buildHands(b, rig, o) {
     // capsule holds 2 px of ink in its valley at twelve metres where a 16.8 mm
     // one at a 6.4 mm pitch holds none, because the valley is what the outline
     // pass bites and the CAPSULE is what carries the skin between the valleys.
+    // ROUND 8. The acceptance test three critiques have now run on this is
+    // "the hand box must contain >= 3 parallel ink runs 2-5 px wide separated by
+    // 6-14 px of skin", and it is checked at `squad`/`action`/`aim` distance,
+    // not at closeup. A 640 px figure is 368 px/m, so a 22.0 mm pitch projects
+    // to 8.1 px TOTAL per finger — an 18 mm capsule and a 4.8 mm valley, i.e.
+    // 6.6 px of skin and 1.8 px of gap, and 1.8 px of gap is below what the
+    // outline pass will commit ink to once the paper grain is composited. The
+    // pitch goes to 24.8 mm and the capsule stays at 18: the valley doubles to
+    // 6.8 mm (2.5 px at `squad`, 12 px at `closeup`) while the skin between
+    // stays 6.6 px, which lands both halves of the criterion at the SAME
+    // distance for the first time. A slightly splayed hand is also what a hand
+    // wrapped round a 40 mm handguard actually does.
     const FRAD = [0.0090, 0.0092, 0.0086, 0.0076];
-    const FPITCH = 0.0220;
+    const FPITCH = 0.0248;
     const vFing = b.vertexCount;
     // JOINT-WISE CURL, and this is the whole fix for "zero finger separation
     // anywhere in the figure — the arm terminates in a rounded fingerless stub
@@ -2183,7 +2214,7 @@ function buildHands(b, rig, o) {
     // ALBEDO at any distance, so the fist stays four digits after the quantiser
     // and the downsample have had it.
     if (!simple()) {
-      const z0 = fg.z - 1.5 * FPITCH * 0.98;
+      const z0 = fg.z - 1.5 * FPITCH * 0.98;   // FPITCH tracks the geometry above
       b.paintRange(vFing, b.vertexCount, (x, y, z) => {
         const u = (z - z0) / (FPITCH * 0.98);
         const frac = Math.abs(u - Math.round(u));          // 0 mid-finger, 0.5 at a seam
@@ -2192,7 +2223,7 @@ function buildHands(b, rig, o) {
         // separated by 6-14 px of skin"; a 34 % dip with a soft ramp lands one
         // band step at best, and one band step across a 2 px valley is invisible
         // once the paper grain is composited on top of it.
-        return 1 - 0.46 * smoothstep(0.20, 0.44, frac);
+        return 1 - 0.58 * smoothstep(0.16, 0.40, frac);
       });
     }
     // KNUCKLE CREASE — the 4-vertex line the round-6 note asked for, sunk
@@ -2246,6 +2277,46 @@ function buildLegs(b, rig, o) {
     const hp = bp(rig, 'thigh' + s), kn = bp(rig, 'shin' + s), an = bp(rig, 'foot' + s);
     const at = (a, b2, t) => [lerp(a[0], b2[0], t), lerp(a[1], b2[1], t), lerp(a[2], b2[2], t)];
     b.setZone(ZONE.CLOTH).setBones(grp).setColor(o.trouser).setMottle(0.07);
+    // THE INSEAM SLOT — the single most valuable thing on the lower half at
+    // overview scale, and it was missing entirely.
+    //
+    // The thigh bones sit at +-0.095 m and the trouser tube was 0.090 m in
+    // radius, so the two inboard surfaces met at +-0.005 m: the legs were
+    // MERGED from crotch to boot, which is verbatim what round 7 measured —
+    // "the mid soldier's two legs merge into a single trouser tube with no
+    // inner-thigh seam". One tube has one silhouette and one wash inside it, so
+    // the whole lower half of a soldier is a single value mass no matter how the
+    // shading is tuned.
+    //
+    // Flattening the INBOARD hemisphere by 30 % over the mid-thigh-to-calf window
+    // opens a genuine 55-60 mm slot between the legs. That is not a crease, it is
+    // a HOLE, so the outline pass draws BOTH inner edges and the background reads
+    // between them: two ink lines and a lit gap where there used to be one flat
+    // tube. At `overview`'s 116 px/m it is 6-7 px wide; at `squad`'s 640 px
+    // figure it is 20 px.
+    //
+    // The window opens below the tunic skirt's hem (y 0.773 -> t ~0.25) so the
+    // slot never exposes the inside of the trunk, and shuts before the blousing
+    // roll at t 0.85 so the boot tops still read as one mass with the calf.
+    //
+    // The two other terms are the planes a band terminator can land on: the
+    // QUADRICEPS standing proud on the front of the thigh and the HAMSTRING mass
+    // behind it, which turn a cylinder (whose iso-N.L contours are straight
+    // vertical lines) into a form with a front, a back and two edges.
+    const legShape = (t, ct, st) => {
+      const inb = clamp01(-ct * side), fwd = clamp01(-st), back = clamp01(st);
+      const slot = smoothstep(0.20, 0.42, t) * (1 - smoothstep(0.70, 0.86, t));
+      let k = 1 - 0.30 * Math.pow(inb, 1.35) * slot;
+      // Quadriceps: a broad shield down the front of the thigh, gone by the knee.
+      k += 0.055 * fwd * smoothstep(0.02, 0.20, t) * (1 - smoothstep(0.44, 0.62, t))
+        * clamp01(1.25 - Math.abs(ct) * 1.5);
+      // Hamstring / gluteal fold: the mass behind the thigh, and the hard
+      // horizontal break at the top of it is the seat of the trouser.
+      k += 0.048 * back * smoothstep(0.00, 0.16, t) * (1 - smoothstep(0.38, 0.58, t));
+      // Gastrocnemius: the calf belly is BEHIND the shin, not around it.
+      k += 0.050 * back * smoothstep(0.62, 0.76, t) * (1 - smoothstep(0.90, 1.0, t));
+      return k;
+    };
     b.addTube([
       { p: [hp[0], hp[1] + 0.055, hp[2]], rx: 0.090 * g, rz: 0.096 * g },
       { p: at(hp, kn, 0.14), rx: 0.088 * g, rz: 0.095 * g },    // thigh mass
@@ -2256,7 +2327,22 @@ function buildLegs(b, rig, o) {
       { p: at(kn, an, 0.11), rx: 0.055 * g, rz: 0.059 * g },    // below the joint
       { p: at(kn, an, 0.26), rx: 0.067 * g, rz: 0.072 * g },    // calf belly
       { p: at(kn, an, 0.40), rx: 0.056 * g, rz: 0.059 * g },
-    ], { seg: seg(13), capStart: 'round' });
+    ], { seg: seg(13), capStart: 'round', shape: legShape });
+
+    // INSEAM WELT. The slot above is a silhouette event; this is the interior
+    // one, and it is what survives when the two legs overlap in projection (a
+    // walk cycle spends half its time there). A 5 mm cord of the dark cuff
+    // colour laid along the inboard face from the crotch to the boot top, so
+    // even fully overlapped there is a hard vertical ink line down the middle of
+    // the trouser column instead of an unbroken wash.
+    b.setColor(o.trouserCuff).setMottle(0.035);
+    b.addTube([
+      { p: [hp[0] - side * 0.058 * g, lerp(hp[1], kn[1], 0.20), hp[2] + 0.004], rx: 0.0055, rz: 0.0040 },
+      { p: [at(hp, kn, 0.52)[0] - side * 0.050 * g, at(hp, kn, 0.52)[1], at(hp, kn, 0.52)[2] + 0.002], rx: 0.0060, rz: 0.0042 },
+      { p: [kn[0] - side * 0.040 * g, kn[1] + 0.006, kn[2]], rx: 0.0055, rz: 0.0040 },
+      { p: [at(kn, an, 0.30)[0] - side * 0.041 * g, at(kn, an, 0.30)[1], at(kn, an, 0.30)[2]], rx: 0.0050, rz: 0.0036 },
+    ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
+    b.setColor(o.trouser).setMottle(0.07);
 
     // Patella, standing proud on the FRONT only, so it never bulges the profile
     // of a straight leg but gives a bent one a corner.
@@ -2647,9 +2733,19 @@ export function buildHead(b, rig, o, f) {
     // --- 6. MANDIBLE -------------------------------------------------------
     // Narrow the lower third, then put a gonial CORNER back into it. An egg
     // tapering to a point is not a jaw; the angle is the whole read.
+    //
+    // THE Z-PULL WAS 0.115 AND IT IS THE MUZZLE. Measured on the built surface,
+    // midline, 0.5 mm buckets (tools-side raster of the same displacement):
+    //   lipUp 85.6 -> lipLow 68.2 -> mental 63.8 -> chin 34.7 mm
+    // i.e. 51 mm of MONOTONIC recession below the upper lip with no outward move
+    // anywhere — verbatim the round-6 finding, still true in round 7 and still
+    // "anatomically a muzzle". A mandible narrows in PLAN (that is what `sx` is
+    // for); it does NOT slope away in profile, it hangs UNDER the maxilla and
+    // its front plane is close to vertical. Pulling 0.115 of radius out of z
+    // across the whole lower third is what buried the chin.
     const low = smoothstep(0.06, 0.90, dn);
     sx -= low * (0.345 - f.jaw * 0.115);
-    sz -= low * 0.115;
+    sz -= low * 0.062;
     // ...and the chin itself is narrower again than the jaw. Bigonial width is
     // about 0.78 of bizygomatic; the chin button is barely a third of it.
     sx -= smoothstep(0.55, 0.98, dn) * 0.044;
@@ -2715,10 +2811,21 @@ export function buildHead(b, rig, o, f) {
     // which is the 4-6 mm of forward travel the round-6 note asked for.
     const plane = smoothstep(FY(T_MENTAL - 0.004), FY(T_CHIN - 0.022), dy) * chinFront;
     sz *= 1 + plane * 0.84;
-    // (b) ...and the button itself, a boss on that plane.
-    const chinY = FY(T_CHIN + 0.034);
-    const chin = blob(dy - chinY, 0.115, dx, 0.245) * chinFront;
-    sz += chin * 0.135 * (0.62 + f.chin * 0.44);
+    // (a2) THE MENTOLABIAL SHELF. The lower lip does not hang off the back of
+    // the upper one — the mandible's alveolar block carries it to within 2-4 mm
+    // of the upper lip, and the 17.4 mm step this build had between them is
+    // most of why the profile read as a snout. A tight gaussian at the lower-lip
+    // height, front hemisphere only, so it moves the lip line and nothing else.
+    const mandFront = smoothstep(-0.06, 0.40, dz) * (1 - smoothstep(0.34, 0.86, ax));
+    sz += gauss(dy - FY(T_LIPLOW - 0.002), 0.050) * mandFront * 0.150;
+    // (b) ...and the button itself, a boss on that plane. The old amplitude was
+    // 0.135 of radius = 5.4 mm at the chin's own dz, against 51 mm of recession
+    // to overcome: an order of magnitude short. The pogonion has to come back
+    // out to within ~6 mm of the lower lip or there is no corner in the
+    // silhouette for the outline pass to draw.
+    const chinY = FY(T_CHIN + 0.016);
+    const chin = blob(dy - chinY, 0.070, dx, 0.245) * chinFront;
+    sz += chin * (0.520 + 0.200 * f.chin) * mandFront;
     sy -= chin * 0.030;
     // ...and the button has a WIDTH: two mental tubercles either side of the
     // midline with a shallow dimple between them, which is what stops the chin
@@ -2726,7 +2833,7 @@ export function buildHead(b, rig, o, f) {
     sx += chin * 0.075 * clamp01(ax * 2.6 - 0.15);
     // Labiomental sulcus — the furrow between the lower lip and the button. It
     // has to be DEEPER than the button is proud is wide, or the two merge.
-    sz -= blob(dy - FY(T_MENTAL + 0.006), 0.048, dx, 0.300) * smoothstep(0.16, 0.62, dz) * 0.125;
+    sz -= blob(dy - FY(T_MENTAL - 0.002), 0.030, dx, 0.300) * smoothstep(0.16, 0.62, dz) * 0.310;
 
     // --- 8. SUBMANDIBULAR UNDERCUT ----------------------------------------
     // The single most important thing separating a head from a neck. The plane
@@ -2738,14 +2845,28 @@ export function buildHead(b, rig, o, f) {
     // pulled 8.1 mm of z out of it, which is most of why the profile never
     // moved outward. It is a plane UNDER the jaw: it belongs at dy -0.95, and
     // its z-pull has to release as the surface turns to face the camera.
-    const under = gauss(dy + 0.955, 0.235) * smoothstep(-0.40, 0.55, dz);
+    // ROUND 8: 0.235 wide centred at -0.955 still reached up to dy -0.80, which
+    // is the chin button's own height, and pulled 6-9 mm of z back out of the
+    // boss above. Narrowed and dropped so it is genuinely the plane UNDER the
+    // jaw, and its z-pull halved — the undercut's job is `sy` (tucking the plane
+    // up and back), not flattening the front of the chin.
+    const under = gauss(dy + 1.010, 0.190) * smoothstep(-0.40, 0.55, dz);
     sy -= under * 0.105;
-    sz -= under * 0.150 * (1 - 0.55 * clamp01(dz - 0.10));
+    sz -= under * 0.078 * (1 - 0.55 * clamp01(dz - 0.10));
     // ...and the same tuck at the back, under the occiput, so the skull sits
     // ON the neck instead of merging into it.
     sy -= gauss(dy + 0.80, 0.24) * back * 0.075;
 
-    return [clamp(sx, 0.45, 1.45), clamp(sy, 0.45, 1.45), clamp(sz, 0.45, 1.45)];
+    // THE CEILING WAS 1.45 AND IT WAS CLIPPING THE CHIN OFF THE FACE.
+    // At the pogonion the surface direction has dy ~ -0.87, so dz ~ 0.49 and one
+    // unit of sz buys only 0.49 * R[2] = 42 mm of z. The chin needs to sit 30 mm
+    // forward of where the bare ellipsoid puts it, which is sz ~ 1.7 — so every
+    // milliradian of the chin boss, the vertical-plane multiplier and the mental
+    // tubercles was being thrown away by the clamp, and the profile came out
+    // monotonic no matter how large the amplitudes were made. Measured: raising
+    // the chin term from 0.135 to 0.40 moved the built surface 4.4 mm, i.e. 20 %
+    // of what the arithmetic said, because 80 % of it was clipped.
+    return [clamp(sx, 0.45, 1.45), clamp(sy, 0.45, 1.45), clamp(sz, 0.45, 1.95)];
   };
 
   b.setZone(ZONE.SKIN).setBones(HEAD).setColor(o.skin).setMottle(0.028);
@@ -3344,6 +3465,27 @@ export function buildBody(b, rig, o) {
  * Bind a finished geometry to the rig. The character group MUST still be at
  * the identity transform when this runs: Skeleton inverses are captured from
  * the bones' current world matrices and the bind matrix is identity.
+ *
+ * THE BONE TREE IS NOT PARENTED HERE, AND THAT IS THE FIX FOR "NOT ONE OF THE
+ * FOUR SOLDIERS IS CARRYING A WEAPON".
+ *
+ * It used to do `mesh.add(rig.root)`. Everything attached to a bone — and the
+ * weapon anchor is attached to handR — therefore lived UNDER the hero
+ * SkinnedMesh in the scene graph. The distance LOD switches meshes by writing
+ * `mesh.visible = false`, and three's projectObject early-returns on an
+ * invisible object without descending, so every soldier past 26 m silently lost
+ * his rifle. Measured before the fix, on `overview`: eleven of sixteen soldiers
+ * had `weaponVisibleChain === false`, including all four Imperials on the far
+ * bank and the sniper at 26.4 m — which is exactly the "four unarmed, faceless,
+ * handless lozenges" the round-7 critique led with.
+ *
+ * The caller now parents rig.root to the CHARACTER GROUP instead, a sibling of
+ * both body meshes. The skinning maths is bit-identical: bindMatrix is the
+ * identity and three recomputes bindMatrixInverse as inverse(mesh.matrixWorld)
+ * every frame (AttachedBindMode), so what the shader sees is
+ * meshWorld^-1 * boneWorld * boneInverse — and mesh.matrixWorld and
+ * charRoot.matrixWorld are the same matrix, because the mesh's local transform
+ * is the identity.
  */
 export function createSkinnedBody(geometry, rig, material) {
   const mesh = new THREE.SkinnedMesh(geometry, material || actorBodyMaterial());
@@ -3356,7 +3498,6 @@ export function createSkinnedBody(geometry, rig, material) {
   // asked for. State it on the object instead: the focal subject of the frame
   // must carry the fattest stroke in it.
   mesh.userData.outlineWidth = 2.15;
-  mesh.add(rig.root);
   rig.root.updateMatrixWorld(true);
   mesh.bind(rig.skeleton, new THREE.Matrix4());
   return mesh;

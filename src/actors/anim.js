@@ -52,9 +52,14 @@ const ANIMATED = BONE_NAMES.filter((n) => n !== 'root' && n !== 'headTop' &&
 // with the hand hanging in mid-air 8 cm short of the wood. Keeping the gun
 // elbow near 85 degrees tucks the weapon in against the chest where a soldier
 // at low ready actually carries it, and the support hand lands on the grip.
+// ROUND 8: the abduction terms were uR +9 / uL -12, and by the sign convention
+// above BOTH of those are ADDUCTION — the keyframe was actively pressing each
+// upper arm into the ribcage. On a figure whose sleeve is the same cloth as the
+// tunic behind it that is a guaranteed fusion: no silhouette gap, no interior
+// edge, no arm. +3 / -4 leaves the humerus clear of the ribs at a low ready.
 const CARRY = {
-  cR: [3, -2, -2], uR: [14, -8, 9], fR: [84, 12, 0], wR: [-6, 0, 10],
-  cL: [5, 2, 3], uL: [22, -18, -12], fL: [92, 16, 0], wL: [2, 0, 8],
+  cR: [3, -2, -2], uR: [14, -8, 3], fR: [84, 12, 0], wR: [-6, 0, 10],
+  cL: [5, 2, 3], uL: [22, -18, -4], fL: [92, 16, 0], wL: [2, 0, 8],
 };
 // Shouldered: cheek weld, right elbow up, torso bladed to the right.
 const AIMED = {
@@ -1495,9 +1500,19 @@ export class Animator {
       const rise = clamp01((_p2.y - (_p0.y - 0.06 * sc)) / (0.16 * sc));
       // Reference elbow: hanging arms drop the olecranon DOWN and a little
       // back; a raised arm swings it outboard and up under the butt plate.
+      // ROUND 8: the lateral term was 0.14 at a low carry, i.e. the reference
+      // elbow hung 8 degrees off vertical and the 44-degree cone was measured
+      // from THERE — so both elbows sat inside the ribcage silhouette and the
+      // whole upper arm was buried in the torso's value mass. Measured on
+      // `squad`'s engineer (640 px tall, arm 40 px wide): no arm resolved at all
+      // between the deltoid and the grip, which is what "a stretched elbow-less
+      // arm for three rounds" actually is — not a missing bend, a missing GAP.
+      // 0.30 stands the reference elbow 17 degrees outboard, which puts 60-70 mm
+      // of daylight between the humerus and the ribs at a low ready. That is the
+      // gap the outline pass needs to draw two edges instead of one.
       _refC.copy(_upC).multiplyScalar(-1.00 + 1.25 * rise)
         .addScaledVector(_fwdC, -0.42 + 0.10 * rise)
-        .addScaledVector(_latC, outSign * (0.14 + 0.76 * rise));
+        .addScaledVector(_latC, outSign * (0.30 + 0.62 * rise));
       _refC.addScaledVector(_dirC, -_dirC.dot(_refC));
       if (_refC.lengthSq() < 1e-8) {                 // reference along the limb
         _refC.copy(_fwdC).multiplyScalar(-1).addScaledVector(_dirC, _dirC.dot(_fwdC));

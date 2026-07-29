@@ -37,6 +37,20 @@
 // normal by one texel times tan(acos(N·L)) — the depth a surface climbs across
 // one texel. three's own constant `normalBias` is left at a small value purely
 // as a safety net for any foreign material that does not use our vertex stage.
+//
+// ROUND 8 — `uShadowTexel` HAS A SECOND CONSUMER NOW, and it is load-bearing.
+// canvasRenderPipeline resamples this light's shadow map in screen space, from
+// the G-buffer, and paints the result as a quantised wash over the whole frame
+// (see CONTACT_FRAG). That exists because the map itself was never the round-7
+// defect — rendering the mask on its own showed correct, crisply-shaped shadows
+// for the bridge, the poplars and the hero — but three of the paths that carry
+// it into the picture drop it: the river has no shadow code at all, every NPR
+// surface floors the key at uShadowFloor and lets the sky term flood back in,
+// and anything outside the lighting solve is simply lit. The pipeline reads
+// `sun.shadow.map`, `sun.shadow.matrix` and `sun.shadow.bias` straight off this
+// light and the world texel size off MaterialRegistry, so all four must keep
+// describing the SAME frustum in the same frame. applyRadius() is where that is
+// guaranteed; do not re-derive any of them anywhere else.
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'three';

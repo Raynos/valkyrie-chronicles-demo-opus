@@ -1381,6 +1381,48 @@ const FIG_PAL = {
   },
 };
 
+/**
+ * A screen-scale paper tooth, laid INSIDE a drawn map symbol.
+ *
+ * Round 7's measurement of the command frame: "down x = 1172 through Alicia's
+ * tunic, 18 consecutive pixels carry the identical float 153.554", against
+ * 40 distinct values in 40 pixels on a same-size patch of terrain. The symbols
+ * are DOM composited over the finished render, so the pipeline's paper and
+ * granulation passes never touch them, and the result is a vinyl sticker on a
+ * watercolour — band-to-noise 0.00 against the terrain's 0.09-0.28.
+ *
+ * The sheet cannot be run through them from outside (a full-rect multiply would
+ * darken a rectangle of terrain around every counter), so the tooth is drawn
+ * INSIDE the symbol and clipped to it: a scatter of short graphite flecks and a
+ * faint laid ruling, deterministic from the seed, at roughly the pitch the
+ * pipeline's own grain runs at once the symbol is scaled to the page. It puts a
+ * measurable residual back into the fill without moving its mean.
+ *
+ * @param {number} seed
+ * @param {number} w symbol viewBox width
+ * @param {number} hgt symbol viewBox height
+ * @param {number} n how many flecks
+ */
+function _toothPath(seed, w, hgt, n = 90) {
+  const rng = makeRng((seed >>> 0) || 11);
+  let d = '';
+  for (let i = 0; i < n; i++) {
+    const x = rng() * w, y = rng() * hgt;
+    const a = (rng() - 0.5) * 0.9 - 0.5;      // roughly one ruling, hand-wandered
+    const l = 0.7 + rng() * 1.5;
+    d += 'M' + x.toFixed(1) + ' ' + y.toFixed(1) +
+      'L' + (x + Math.cos(a) * l).toFixed(1) + ' ' + (y + Math.sin(a) * l).toFixed(1);
+  }
+  return d;
+}
+
+/** The tooth as a clipped group, ready to drop inside a symbol's SVG. */
+function _tooth(clipId, seed, w, hgt, { n = 90, color = '#4a4257', opacity = 0.30 } = {}) {
+  return '<g clip-path="url(#' + clipId + ')"><path d="' + _toothPath(seed, w, hgt, n) +
+    '" stroke="' + color + '" stroke-width="0.62" stroke-linecap="round" fill="none" opacity="' +
+    opacity + '"/></g>';
+}
+
 /** A wandering vertical terminator: where the light leaves the figure. */
 function _termPath(seed, hgt) {
   const rng = makeRng((seed >>> 0) || 3);
@@ -1481,6 +1523,8 @@ export function fieldFigure(team, cls, seed = 1) {
     '<clipPath id="' + cid + '"><path d="' + _termPath(S, 76) + '"/></clipPath>' +
     '<clipPath id="' + cid + 'r"><path d="' + _termPath(S, 76) +
     '" transform="translate(44,0) scale(-1,1)"/></clipPath>' +
+    '<clipPath id="' + cid + 'b"><path d="' + torso + '"/><path d="' + legL +
+    '"/><path d="' + legR + '"/><path d="' + helm + '"/><path d="' + head + '"/></clipPath>' +
     '</defs>' +
     // contact shadow — cast to screen-right, which is where the command shot's
     // sun (bearing -0.405) throws every other shadow on the map
@@ -1499,5 +1543,121 @@ export function fieldFigure(team, cls, seed = 1) {
     '<path d="' + wobblyPath(14.6 - bulk * 0.6, 39.5, 29.4 + bulk * 0.6, 39.5,
       { seed: S + 23, amp: 0.45, segs: 3 }) +
     '" stroke="' + P.ink + '" stroke-width="1.6" opacity="0.82" fill="none"/>' +
+    // ...and the sheet's own tooth, inside the silhouette. See _tooth().
+    _tooth(cid + 'b', S + 131, 44, 76, { n: 74, color: P.hatch, opacity: 0.26 }) +
+    '</svg>');
+}
+
+/**
+ * The same thing for ARMOUR: the counter a staff officer draws for a tank.
+ *
+ * Round 7's single most damning measurement on the command frame was about this
+ * object and nothing else: "The Edelweiss — the one object the map exists to
+ * track — is a ~100x80 px cream amoeba with NO ink outline: a 160 px transect
+ * through it at y=470 crosses the silhouette twice reading 172->193->215 with
+ * zero pixels below local-mean-minus-35, and at y=500 the whole boundary is five
+ * isolated 1 px stipple dots." The hero object of the mode was the ONLY unit
+ * still being rendered as 3D geometry while every soldier beside it had been
+ * promoted to an authored symbol, and at map range the NPR outline pass cannot
+ * find an edge on it.
+ *
+ * So armour gets the same treatment the infantry got. This is a side ELEVATION,
+ * not a plan counter, because the soldiers beside it are elevations and a plan
+ * symbol standing among them reads as two maps printed on one sheet. It is
+ * drawn in the same language: flat bands split by a wandering terminator into a
+ * warm lit half and a violet shade, a double-struck ink silhouette at 2.6 and
+ * 0.8, interior creases at the hull/turret split and along the track guard, the
+ * paper tooth inside the clip, and a violet contact shadow under the running
+ * gear. The gun points along +X and worldLabels mirrors the whole symbol when
+ * the vehicle is facing screen-left, exactly as it does with the infantry.
+ *
+ * @param {0|1} team
+ * @param {number} seed
+ */
+export function fieldVehicle(team, seed = 1) {
+  const P = FIG_PAL[team === 1 ? 1 : 0];
+  const S = (seed >>> 0) || 1;
+  const cid = 'fv' + S;
+  const W = 118, HG = 64;
+
+  // --- silhouette, forward = +X -------------------------------------------
+  // running gear: one long track run with a raised guard over it
+  const track = 'M15 40 L103 40 L110 46 L110 53 L103 58 L15 58 L8 52 L8 46 Z';
+  // hull: glacis up from the front of the tracks, flat deck, rear plate
+  const hull = 'M12 40 L30 25 L96 25 L104 32 L104 40 Z';
+  // turret: a cast box with a sloped face, set back over the drive
+  const turret = 'M46 25 L52 11 L80 11 L86 18 L86 25 Z';
+  // mantlet + barrel, running forward over the glacis
+  const barrel = 'M46 16 L8 16 L8 20 L46 20 Z';
+  const mantlet = 'M43 12 L50 12 L50 24 L43 24 Z';
+
+  const band = (d, pair) =>
+    '<path d="' + d + '" fill="' + pair[1] + '"/>' +
+    '<g clip-path="url(#' + cid + ')"><path d="' + d + '" fill="' + pair[0] + '"/></g>';
+  const outline = (d, w, op) => '<path d="' + d + '" fill="none" stroke="' + P.ink +
+    '" stroke-width="' + w + '" stroke-linejoin="round" stroke-linecap="round"' +
+    (op ? ' opacity="' + op + '"' : '') + '/>';
+  const crease = (x0, y0, x1, y1, sd, w) => '<path d="' +
+    wobblyPath(x0, y0, x1, y1, { seed: S + sd, amp: 0.45, segs: 4 }) +
+    '" stroke="' + P.ink + '" stroke-width="' + w + '" opacity="0.8" fill="none"/>';
+
+  // road wheels — six discs and the two end stations, which is the single
+  // strongest "this is a tank" cue at a hundred pixels. Each one is a hand-drawn
+  // circle rather than a perfect one, and each takes the same lit/shade split
+  // the hull does, so a bogie run does not read as a row of stamped holes.
+  const rw = makeRng(S + 401);
+  let wheels = '';
+  const wheel = (wx, wy, r, sw) =>
+    '<path d="' + roughCircle(wx, wy, r, { seed: S + Math.round(wx * 7), amp: 0.32, segs: 14 }) +
+    '" fill="' + P.leg[1] + '" stroke="' + P.ink + '" stroke-width="' + sw + '"/>' +
+    '<path d="' + roughCircle(wx, wy - r * 0.30, r * 0.58,
+      { seed: S + Math.round(wx * 11), amp: 0.26, segs: 12 }) +
+    '" fill="' + P.leg[0] + '" opacity="0.55" stroke="none"/>';
+  for (let i = 0; i < 6; i++) {
+    wheels += wheel(24 + i * 13.4 + (rw() - 0.5) * 0.9, 50.5 + (rw() - 0.5) * 0.6, 4.6, 1.3);
+  }
+  wheels += wheel(13.5, 49, 6.0, 1.5) + wheel(104, 49, 6.0, 1.5);
+
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + HG +
+    '" width="' + W + '" height="' + HG + '">' +
+    '<defs>' +
+    // The terminator runs along the vehicle rather than across it: on a hull the
+    // light leaves at the deck edge, so the split is horizontal-ish and the
+    // glacis and turret face keep the cream while the flanks fall to violet.
+    '<clipPath id="' + cid + '"><path d="M-2 -2 L' + (W + 2) + ' -2 L' + (W + 2) +
+    ' 37 L86 34 L52 39 L18 34 L-2 39 Z"/></clipPath>' +
+    // ...and its complement, so the graphite can be clipped to the shade half
+    // and CANNOT leak onto the lit one. Round 7 found the hatch gate inverted on
+    // every rendered surface in the game (dark:lit stroke energy 0.57 on the
+    // engineer against a bar of 3.0); on a drawn symbol the gate is a clip path,
+    // so it is right by construction.
+    '<clipPath id="' + cid + 's"><path d="M-2 39 L18 34 L52 39 L86 34 L' + (W + 2) +
+    ' 37 L' + (W + 2) + ' ' + (HG + 4) + ' L-2 ' + (HG + 4) + ' Z"/></clipPath>' +
+    '<clipPath id="' + cid + 'b"><path d="' + track + '"/><path d="' + hull +
+    '"/><path d="' + turret + '"/><path d="' + barrel + '"/></clipPath>' +
+    '</defs>' +
+    // contact shadow under the running gear, thrown screen-right with the rest
+    '<ellipse cx="62" cy="59.6" rx="52" ry="4.6" fill="#4b4270" opacity="0.42"/>' +
+    '<ellipse cx="56" cy="59.0" rx="34" ry="3.0" fill="#3a3159" opacity="0.40"/>' +
+    band(track, P.leg) + wheels +
+    band(hull, P.coat) + band(barrel, P.helm) + band(mantlet, P.helm) +
+    band(turret, P.helm) +
+    // double-struck ink
+    '<g opacity="0.96">' + outline(track, 2.6) + outline(hull, 2.6) + outline(turret, 2.6) +
+    outline(barrel, 2.2) + '</g>' +
+    '<g opacity="0.34">' + outline(hull, 0.8) + outline(turret, 0.8) + '</g>' +
+    // interior creases: the track guard, the glacis fold and the turret ring
+    crease(14, 40.5, 103, 40.5, 23, 1.5) +
+    crease(30, 25.5, 96, 25.5, 29, 1.4) +
+    crease(52, 17, 84, 17, 37, 1.1) +
+    // pencil cross-hatch, in the shade half of the body and nowhere else
+    '<g clip-path="url(#' + cid + 'b)"><g clip-path="url(#' + cid + 's)">' +
+    '<path d="' + hatchPath(4, 24, W - 8, HG - 24, { spacing: 3.0, angle: -0.98, seed: S + 53 }) +
+    '" stroke="' + P.hatch + '" stroke-width="0.85" opacity="0.46" fill="none"/>' +
+    '<path d="' + hatchPath(4, 34, W - 8, HG - 34, { spacing: 4.6, angle: 0.62, seed: S + 59 }) +
+    '" stroke="' + P.hatch + '" stroke-width="0.75" opacity="0.30" fill="none"/>' +
+    '</g></g>' +
+    _tooth(cid + 'b', S + 211, W, HG, { n: 120, color: P.hatch, opacity: 0.24 }) +
     '</svg>');
 }

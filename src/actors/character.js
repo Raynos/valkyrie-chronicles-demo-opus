@@ -343,7 +343,13 @@ function gearWebbing(b, rig, o, cls) {
   // --- BELT. Wide, dark, standing clear of the waist so it cuts the figure at
   // its narrowest point. That single horizontal break is most of what turns a
   // sack into a uniform.
-  band(b, beltY, 0.132 * g, 0.098 * g, 0.036, 0.030, o.belt);
+  // 36 -> 46 mm. At `overview`'s 116 px/m a 36 mm belt is four pixels and the
+  // median-9 scan the critique runs across a torso cannot resolve a four-pixel
+  // plateau: measured, the whole figure returned ONE 4-LSB histogram mode where
+  // three are required. The belt is the middle rung of the ladder
+  // (collar / tunic / BELT / trouser / boot) and it has to survive the
+  // downsample, so it is now 5-6 px at that range and 30 px at `squad`'s.
+  band(b, beltY, 0.132 * g, 0.098 * g, 0.046, 0.032, o.belt);
   b.setColor(o.brass);
   b.addRoundedBox({ center: [0, beltY, 0.118 * g], size: [0.044, 0.034, 0.014], bevel: 0.005, div: 2 });
   b.setColor(mixCol(o.belt, PALETTE.metalDark, 0.4));
@@ -404,7 +410,12 @@ function gearWebbing(b, rig, o, cls) {
 
   // Canteen on the left hip, bread bag on the right — two masses hanging BELOW
   // the belt line that break the straight edge of the tunic skirt.
-  b.setColor(mixCol(o.metal, o.canvas, 0.45));
+  // ROUND 8: these two were the BRIGHTEST objects on the lower half — the
+  // `overview` crop shows a pale yellow-green blob across the small of the back
+  // exactly where the dark belt rung has to be. A canteen in bare metal and a
+  // haversack in pale canvas invert the value ladder at the one height the eye
+  // uses to find a waist. Both are now a clear step below the tunic.
+  b.setColor(mixCol(mixCol(o.metal, o.canvas, 0.45), o.leather, 0.52));
   b.setTransform(_m4.makeTranslation(-0.148 * g, beltY - 0.098, -0.026));
   b.addRoundedBox({ size: [0.044, 0.058, 0.024], bevel: 0.016, div: 3 });
   b.setTransform(null);
@@ -413,7 +424,7 @@ function gearWebbing(b, rig, o, cls) {
     { p: [-0.140 * g, beltY - 0.010, -0.024], rx: 0.010, rz: 0.004 },
     { p: [-0.150 * g, beltY - 0.062, -0.026], rx: 0.010, rz: 0.004 },
   ], { seg: seg(5), capStart: 'flat', capEnd: 'flat' });
-  b.setColor(o.canvas);
+  b.setColor(mixCol(o.canvas, o.leather, 0.48));
   b.addRoundedBox({ center: [0.150 * g, beltY - 0.096, -0.040], size: [0.046, 0.056, 0.028], bevel: 0.011, div: 2 });
 
   // --- SQUAD 7 SHOULDER CREST on the left upper arm, with a cream border so it
@@ -940,7 +951,16 @@ const _clQ = new THREE.Vector3(), _clN = new THREE.Vector3();
 // pose VC actually draws) and, now that the pole sends the elbow behind the
 // ribs rather than in front of them, costs the arm nothing: the gun hand still
 // lands 0.294 m from its shoulder at a 60-degree elbow.
-const CARRY_YAW = 0.62, CARRY_PITCH = -0.44;
+// ROUND 8: PITCH -0.44 -> -0.20. At -0.44 the bore ran 25 degrees down, so from
+// directly behind — which is what `action`, `squad` and `overview` all give the
+// camera — the whole barrel projected onto the soldier's own thighs and NOT ONE
+// PIXEL of it broke his outline. The round-7 note's acceptance test is literally
+// "every infantry silhouette must include a rifle barrel breaking the body
+// outline". At -0.20 the muzzle rides 100 mm higher and crosses the background
+// beside the hip instead of the trouser; yaw 0.62 -> 0.72 carries it a further
+// 42 mm outboard, which measures 0.268 m of muzzle lateral offset against a
+// 0.19 m chest half-width — 78 mm of clear air on the support side.
+const CARRY_YAW = 0.90, CARRY_PITCH = -0.20;
 const CARRY_FWD = 0.272, CARRY_DOWN = -0.400, CARRY_LAT = 0.010;
 /**
  * Carry geometry per weapon kind. `fwd`/`down`/`lat` position the firing grip
@@ -961,8 +981,12 @@ const CARRY_BY_KIND = {
   // all, so the moment the torso-clearance push moved the gun the support hand
   // came off it. 0.250/-0.370 brings that to 0.478 m and leaves 48 mm of slack.
   rifle: { yaw: CARRY_YAW, pitch: CARRY_PITCH, fwd: 0.250, down: -0.370, lat: CARRY_LAT },
-  smg: { yaw: 0.66, pitch: -0.42, fwd: 0.232, down: -0.348, lat: 0.010 },
-  sniper: { yaw: 0.56, pitch: -0.42, fwd: 0.258, down: -0.372, lat: 0.014 },
+  // The SMG is 0.368 m of bore against the rifle's 0.625, so yaw alone cannot
+  // buy it the same rear-view clearance — measured 0.0274 rad against a 0.0633
+  // body edge even at yaw 0.94. Moving the whole weapon 50 mm out to the support
+  // side is the only lever short of drawing a longer gun.
+  smg: { yaw: 1.02, pitch: -0.20, fwd: 0.232, down: -0.348, lat: 0.060 },
+  sniper: { yaw: 0.82, pitch: -0.20, fwd: 0.258, down: -0.372, lat: 0.014 },
   // Chest height, angled up 3.4 deg, and 0.14 m out to the firing side. Worked
   // through on paper before it was rendered: with a 0.52 m tail behind the grip
   // the rear of the tube lands 0.427 m from the spine axis (the trunk capsule is
@@ -1516,6 +1540,12 @@ export class Character {
     this.geometry = b.finish(this.rig);
     this.mesh = createSkinnedBody(this.geometry, this.rig, actorBodyMaterial());
     this.root.add(this.mesh);
+    // THE BONE TREE HANGS OFF THE CHARACTER GROUP, NOT OFF THE HERO MESH.
+    // See createSkinnedBody's note: parented under this.mesh, everything bolted
+    // to a bone (the weapon) disappeared the moment the distance LOD hid that
+    // mesh. As a sibling it survives every LOD switch, and the skinning is
+    // unchanged because mesh.matrixWorld === root.matrixWorld.
+    this.root.add(this.rig.root);
 
     // --- distance LOD --------------------------------------------------------
     // The far body is built ONCE PER CLASS from this same source at detail 0.45

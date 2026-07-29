@@ -60,6 +60,53 @@ const WASH_SS = 3;
  */
 const RIG_MIN_PX = 70;
 
+/**
+ * The same gate for armour, quoted as projected HULL LENGTH in pixels.
+ *
+ * 150 is set above what `command` actually produces (the Edelweiss projects
+ * ~118 px of length at dist 50 / fov 41) so the swap is certain there, and
+ * well below anything an action or hero shot ever gets — `tank` frames the
+ * Edelweiss at over a thousand pixels, so that plate is untouched.
+ */
+const RIG_MIN_VEH_PX = 280;
+
+/**
+ * How many pixels of page a vehicle's hull actually spans, from the projected
+ * footprint rather than from (size / depth).
+ *
+ * The first cut of the armour LOD used `6.2 * pxAt1m / depth` — the same form
+ * the infantry gate uses — and it is wrong by a factor of nearly two under a
+ * map camera: at 33 degrees of pitch a 6.2 m hull lying on the ground
+ * foreshortens to about 118 px where that formula predicts 195, so the gate
+ * never fired and the Edelweiss shipped as the cream lozenge round 7 measured.
+ * Project the four corners of the footprint and take the larger screen extent.
+ *
+ * MUST stay in step with WorldLabels._vehicleScreenLength — the label layer
+ * decides whether to DRAW the counter with the identical test, and if the two
+ * disagree the tank is either drawn twice or not at all. Same box, same maths.
+ */
+function vehicleScreenLength(cam, unit, vh) {
+  const yaw = unit.yaw || 0;
+  const s = Math.sin(yaw), c = Math.cos(yaw);
+  const HL = 3.1, HW = 1.45, Y = 1.2;
+  const vw = (typeof innerWidth === 'number' && innerWidth > 0) ? innerWidth : 1920;
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+  for (let k = 0; k < 4; k++) {
+    const a = k < 2 ? 1 : -1, b = (k & 1) ? -1 : 1;
+    _proj.set(
+      unit.pos.x + s * HL * a + c * HW * b,
+      unit.pos.y + Y,
+      unit.pos.z + c * HL * a - s * HW * b,
+    );
+    _proj.project(cam);
+    const sx = (_proj.x * 0.5 + 0.5) * vw;
+    const sy = (-_proj.y * 0.5 + 0.5) * vh;
+    if (sx < minX) minX = sx; if (sx > maxX) maxX = sx;
+    if (sy < minY) minY = sy; if (sy > maxY) maxY = sy;
+  }
+  return Math.max(maxX - minX, maxY - minY);
+}
+
 /** Deterministic 2-D value hash in [0,1). */
 function hash2(x, y) {
   let n = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1);
@@ -115,6 +162,11 @@ precision highp float;
 uniform vec3 uInk;        // contour ink
 uniform vec3 uGrat;       // graticule ink
 uniform vec3 uWater;      // river wash
+uniform vec3 uTintLow;    // hypsometric: water meadow
+uniform vec3 uTintMid;    // hypsometric: pasture
+uniform vec3 uTintHigh;   // hypsometric: dry crest
+uniform vec3 uTintTop;    // hypsometric: heath above the last contour
+uniform float uTintAmt;   // how wet the base wash is laid
 uniform float uStep;      // contour interval, metres
 uniform float uGrid;      // graticule pitch, metres
 uniform float uWaterY;
@@ -183,26 +235,88 @@ void main() {
   // ground takes none at all, so the landforms draw themselves.
   vec3 nrm = normalize(vec3(-grad.x, 1.0, -grad.y));
   float lam = dot(nrm, normalize(vec3(-0.58, 0.60, 0.55)));
-  float relief = smoothstep(0.60, 0.16, lam);
+  // GATED ON DARKNESS, NOT ONLY ON SLOPE.
+  //
+  // Round 7 swept the frame in 60 px tiles and got a Pearson correlation of
+  // r = -0.053 between directional (hatch) amplitude and tile luminance, with
+  // the darkest quartile averaging 3.29 against the brightest quartile's 2.54 —
+  // i.e. NO relationship between darkness and graphite, because the gate was a
+  // narrow slope window and one steep bank was soaking up the entire pencil
+  // budget. The shade term below is a genuine 0..1 darkness for the sheet — steepness
+  // TIMES how far the face is turned from the light, which is what actually
+  // makes a hillside dark — and the window is opened right up so every
+  // anti-sun face takes some, in proportion, instead of one bank taking all.
+  float steep = smoothstep(0.06, 0.55, length(grad));
+  float away = smoothstep(0.78, 0.02, lam);
+  float shade = clamp(steep * 0.45 + away * 0.55 * (0.35 + 0.65 * steep), 0.0, 1.0);
+  float relief = smoothstep(0.08, 0.72, shade);
+  // Two rulings at a constant SCREEN pitch (rubric axis 5), the second only in
+  // the darkest fifth, so the deepest ground is genuinely cross-hatched.
   float hl = sin((gl_FragCoord.x + gl_FragCoord.y) * 0.62);
+  float hl2 = sin((gl_FragCoord.x * 1.7 - gl_FragCoord.y * 0.9) * 0.55);
   float hatch = smoothstep(0.05, 0.55, hl) * relief;
+  hatch = max(hatch, smoothstep(0.10, 0.60, hl2) * smoothstep(0.62, 0.95, shade));
 
   // the river: a pale wash below the pool level with a firm pen line on the bank
   float wet = 1.0 - smoothstep(uWaterY - 0.10, uWaterY + 0.30, vW.y);
   float bankT = (vW.y - uWaterY) / 0.9;
   float bank = 1.0 - smoothstep(0.0, 2.4 * max(fwidth(bankT), 1e-5), abs(bankT));
 
+  // ---- HYPSOMETRIC BASE WASH ----------------------------------------------
+  // The command frame measured 80.2% of its chromatic pixels inside ONE 55 deg
+  // wedge and 2.7% green, because the sheet was drawing ink furniture over a
+  // sepia photograph of a hillside and adding no colour of its own. Every real
+  // survey sheet lays a flat layer tint by ELEVATION BAND under its contours —
+  // green in the water meadows, buff on the pasture, ochre on the dry crests,
+  // heather-brown on the tops. It is the most characteristic thing about the
+  // object we are pretending to be, it is driven by the height this shader
+  // already interpolates, and it puts three pigments on the page that the
+  // terrain underneath cannot supply.
+  //
+  // Laid WET rather than flat: the same wandering noise that wobbles the
+  // contours also wobbles the band boundaries, so the layers bleed into one
+  // another the way a hand-laid tint does, and the granulation keeps the body
+  // of each band off a single flat value.
+  // Band edges are set against the elevations this map actually has rather
+  // than against a generic ramp: the pool is at uWaterY, the banks run 4-8 m
+  // over it, the village shelf 8-12, the windmill knoll and the southern ridge
+  // 12-20. Putting the pasture band across 1.5-9 m is what makes the layer
+  // tint READ — the first cut had green stop at 4.6 m, i.e. at the waterline,
+  // and the whole sheet came out buff-on-buff for exactly that reason.
+  float e = (vW.y - uWaterY) + wob * 1.4;
+  vec3 tint = mix(uTintLow, uTintMid, smoothstep(0.4, 2.4, e));
+  tint = mix(tint, uTintHigh, smoothstep(9.0, 13.0, e));
+  tint = mix(tint, uTintTop, smoothstep(13.0, 18.0, e));
+  // granulation: pigment settles in the tooth, so the body of a wash is never
+  // one value. Two scales, neither of them the graticule pitch.
+  float gr = 0.80 + 0.40 * vnoise(vW.xz * 2.7) + 0.16 * (vnoise(vW.xz * 9.1) - 0.5);
+  // ...and the VALUE granulates too, not only the coverage. A layer tint laid at
+  // this weight over a NormalBlend is an averaging operation, so at uTintAmt 0.9
+  // it took the frame's low-SD tile fraction from 0.26 to 0.35 — the wash was
+  // buying hue at the cost of the terrain's own modulation, which is the exact
+  // trade the composition axis punishes. Modulating the pigment itself puts the
+  // variation back INSIDE the wash: three scales of granulation, plus a slight
+  // deepening where the sheet is already in shade, so the layer carries relief
+  // of its own rather than flattening what is under it.
+  float grV = 0.74 + 0.30 * vnoise(vW.xz * 1.35 + 11.0)
+            + 0.24 * vnoise(vW.xz * 5.9 - 4.0)
+            + 0.10 * (vnoise(vW.xz * 17.0) - 0.5);
+  tint *= grV * (1.0 - 0.22 * shade);
+  float tintA = uTintAmt * gr * (1.0 - wet) * (0.62 + 0.38 * (1.0 - shade));
+
   float inkA = max(minor * 0.95, major * 1.0);
-  vec3 col = uGrat;
-  float a = max(grat * 0.86, gratM * 0.98);
+  vec3 col = tint;
+  float a = tintA;
+  col = mix(col, uGrat, max(grat * 0.86, gratM * 0.98));
+  a = max(a, max(grat * 0.86, gratM * 0.98));
   col = mix(col, uInk, hatch);
-  a = max(a, hatch * 0.26);
+  a = max(a, hatch * 0.30);
   col = mix(col, uInk, step(0.004, inkA));
   a = max(a, inkA);
   col = mix(col, uInk, bank * 0.9);
   a = max(a, bank * 0.72);
   col = mix(col, uWater, wet * 0.85);
-  a = max(a, wet * 0.32);
+  a = max(a, wet * 0.42);
 
   gl_FragColor = vec4(col, a * uOpacity);
   #include <colorspace_fragment>
@@ -374,8 +488,24 @@ export class CommandMode {
   // src/ui/worldLabels.js draws an authored figure in DOM at 1.75x the size he
   // projected to, above the render and therefore outside the grain entirely.
   //
-  // Vehicles are exempt: the Edelweiss projects ~88 px here and the lit tank is
-  // one of the few things the critics have consistently scored well.
+  // ARMOUR IS NOT EXEMPT ANY MORE.
+  //
+  // It was, and the comment that justified it — "the lit tank is one of the few
+  // things the critics have consistently scored well" — was measuring the `tank`
+  // plate, where the Edelweiss is 1400 px long, and quietly applying the
+  // conclusion at 100 px. Round 7 measured what actually shipped here: "a
+  // ~100x80 px cream lozenge ... transect y=470 returns widths [2,16] where the
+  // 16 is the shade wash, not a stroke ... transect y=500 returns five isolated
+  // 1 px dots. Inside it there is no hull, no turret ring, no track run, no
+  // barrel." The one object the mode exists to track was the only unit still
+  // being rendered as geometry, and the worst-formed thing in the frame.
+  //
+  // The threshold is quoted in projected LENGTH rather than height, because a
+  // hull is 6.2 m long and 2.8 m tall and only the first number says how much
+  // page it owns. Below RIG_MIN_VEH_PX of it, worldLabels draws the authored
+  // AFV counter (icons.js fieldVehicle) instead — same treatment the infantry
+  // have had since round 6, and the same reason: at map range the outline pass
+  // cannot find an edge, so stop asking it to and draw the symbol.
   // -------------------------------------------------------------------------
 
   /** Hide every rig too small to read; remember which ones so exit can undo it. */
@@ -387,9 +517,13 @@ export class CommandMode {
     const vh = (typeof innerHeight === 'number' && innerHeight > 0) ? innerHeight : 1080;
     const pxAt1m = vh / (2 * Math.tan(((cam.fov || 40) * Math.PI) / 360));
     for (const u of this.battle.units) {
-      if (!u.root || u.isVehicle || !u.deployed) continue;
-      const d = Math.max(1, cam.position.distanceTo(u.pos));
-      if ((1.75 * pxAt1m) / d >= RIG_MIN_PX) continue;
+      if (!u.root || !u.deployed) continue;
+      if (u.isVehicle) {
+        if (vehicleScreenLength(cam, u, vh) >= RIG_MIN_VEH_PX) continue;
+      } else {
+        const d = Math.max(1, cam.position.distanceTo(u.pos));
+        if ((1.75 * pxAt1m) / d >= RIG_MIN_PX) continue;
+      }
       if (u.root.visible) { u.root.visible = false; hidden.push(u); }
     }
   }
@@ -879,6 +1013,22 @@ export class CommandMode {
         uInk: { value: new THREE.Color(0.0423, 0.0284, 0.0194) },
         uGrat: { value: new THREE.Color(0.0670, 0.0670, 0.1248) },
         uWater: { value: new THREE.Color(0.109, 0.219, 0.249) },
+        // Layer tints, in LINEAR space (the sheet is composited before the
+        // colour-space fragment, so these are pow-2.2 of the sRGB pigments a
+        // sheet would actually be printed in):
+        //   low   #4f6b52  water-meadow green
+        //   mid   #6c7a4a  pasture sage
+        //   high  #8a7c52  dry buff
+        //   top   #5e5470  heath, into the violet the shade ladder ends on
+        // Deep rather than pale on purpose: a pale layer tint over a NormalBlend
+        // lifts every dark on the sheet and the map goes chalky, which is what
+        // the first pass did (frame mean L 153.9 -> 150.9 with no hue movement
+        // at all — it was washing, not tinting).
+        uTintLow: { value: new THREE.Color(0.079, 0.152, 0.084) },
+        uTintMid: { value: new THREE.Color(0.152, 0.201, 0.068) },
+        uTintHigh: { value: new THREE.Color(0.259, 0.209, 0.084) },
+        uTintTop: { value: new THREE.Color(0.113, 0.088, 0.166) },
+        uTintAmt: { value: 0.86 },
         uStep: { value: 2.0 },
         uGrid: { value: 10.0 },
         uWaterY: { value: 2.0 },

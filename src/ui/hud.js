@@ -51,7 +51,7 @@ const CLASS_NAME = {
 // full sentence stays as the card's tooltip.
 const DEFAULT_ORDERS = [
   { id: 'caution', name: 'Caution', cost: 1, icon: 'shield', short: 'Evades fire, two turns.', desc: 'One soldier evades and shrugs off fire for two turns.' },
-  { id: 'resupply', name: 'Resupply', cost: 2, icon: 'ammo', short: 'Ammunition and ragnaid.', desc: 'Restore ammunition and ragnaid to one unit.' },
+  { id: 'resupply', name: 'Resupply', cost: 2, icon: 'ammo', short: 'Ammunition and Ragnaid.', desc: 'Restore ammunition and Ragnaid to one unit.' },
   { id: 'attackBoost', name: 'Attack Boost', cost: 2, icon: 'shock', short: 'Damage and aim raised.', desc: 'Raise one soldier’s damage and accuracy.' },
   { id: 'demolitionBoost', name: 'Demolition Boost', cost: 2, icon: 'lancer', short: 'Anti-armour raised.', desc: 'Anti-armour damage raised by seven tenths.' },
   { id: 'enemyRecon', name: 'Enemy Recon', cost: 2, icon: 'eye', short: 'Every position revealed.', desc: 'Reveal every enemy position on the map.' },

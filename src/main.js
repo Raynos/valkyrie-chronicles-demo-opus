@@ -94,11 +94,29 @@ const CAPTURE_WATCHDOG_MS = 32000;
  * capture a function of wall-clock time, and the world is already paused, so
  * the extra frames cannot advance an animation.
  */
-const PIXEL_PROBE_W = 128;
-const PIXEL_STABLE_FRAMES = 24;
+// 256, not 128. The probe is the ONLY thing standing between the harness and a
+// frame that is still moving, and a 128-wide thumbnail of a 1920-wide page
+// averages 15 x 15 source pixels into one sample — which is a 225:1 low-pass
+// over exactly the high-frequency ink, hatch and grain the whole art direction
+// is made of. Measured on `command` and `village`, two captures of the same shot
+// taken at --wait 700 and --wait 2600 still differed by up to 21 and 30 LSB on
+// isolated pixels with the old probe reporting convergence: the difference was
+// real and the probe could not see it.
+const PIXEL_PROBE_W = 256;
+const PIXEL_STABLE_FRAMES = 30;
 const PIXEL_SETTLE_MAX = 900;
-/** Mean absolute LSB difference between two probes that still counts as equal. */
-const PIXEL_EPS = 0.25;
+/**
+ * Mean absolute LSB difference between two probes that still counts as equal.
+ *
+ * 0.25 was two and a half times too loose: convergence here is asymptotic (the
+ * grade, the wet-edge term and the overlay washes all creep toward a fixed
+ * point), so the threshold IS the residual, and 0.25 LSB of thumbnail residual
+ * is tenths of an LSB of full-frame residual with occasional 20-LSB outliers
+ * where a band boundary happens to sit on a quantiser step. At 0.05 the loop
+ * costs a few dozen extra render-only frames on a paused scene — nothing, since
+ * `settlePixels` runs after the freeze — and buys a genuinely repeatable PNG.
+ */
+const PIXEL_EPS = 0.05;
 
 const _focus = new THREE.Vector3();
 
