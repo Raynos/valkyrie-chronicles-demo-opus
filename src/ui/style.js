@@ -864,6 +864,19 @@ function css() {
 /* A hit is the most urgent thing on the page for the second it exists, so it
    goes over the counters and the name slips rather than under them — the world
    layer is one stacking context and DOM order alone put the slips on top. */
+/* Command-map field figures: the SOLDIER, drawn, standing on his own boots.
+   Anchored by the feet (transform-origin bottom-centre) so the contact shadow
+   lands exactly where the projected ground point is, and drawn UNDER the
+   counters and name slips — a symbol is annotated, it does not annotate. */
+.vc-figure{
+  width:44px; height:76px; transform-origin:50% 100%; z-index:0;
+}
+.vc-figure svg{ display:block; width:100%; height:100%; overflow:visible; }
+.vc-figure.mirror svg{ transform:scaleX(-1); transform-origin:50% 50%; }
+/* Spent: the figure goes flat and pale, the way a used counter is turned over.
+   Selected: the man the page is about is lifted off the sheet a little. */
+.vc-figure.spent{ opacity:.60 !important; filter:grayscale(.34); }
+.vc-figure.sel svg{ filter:drop-shadow(0 2px 4px rgba(48,36,32,.46)); }
 .vc-dmg{ transform:translate(-50%,-50%); z-index:3; }
 .vc-nametag{ z-index:2; }
 .vc-token{ z-index:1; }

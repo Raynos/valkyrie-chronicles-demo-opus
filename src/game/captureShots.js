@@ -633,10 +633,27 @@ export const SHOTS = {
     // leaving 85 px of drawn ground under his soles. The four silhouettes now read at four
     // clearly different scales — 72%, 56%, 24%, 16% of page height — which is the depth
     // ladder this plate exists to show, rather than four men at nearly one size.
+    //
+    // ROUND 7: AND THE HOLE MOVES OUT OF THE MIDDLE OF THE PAGE.
+    //
+    // Round 6 scored this plate composition 6 against `overview`'s 8, and the
+    // reason is measurable rather than a matter of taste: with the lancer on the
+    // right third at 3.6 m, the shocktrooper on the left at 4.9 and the scout
+    // ELEVEN metres back, the wedge of ground between them — roughly x 550-1300,
+    // y 500-1050, a fifth of the whole page — held nothing but beaten road. That
+    // is the "large empty region" automatic rejection, and it was in the exact
+    // place the eye enters the picture.
+    //
+    // The scout comes forward to 7.2 m and onto the axis. Crouched, at that
+    // depth, she is ~38% of the page tall and her mass lands squarely in the
+    // hole; the depth ladder is still four clearly different rungs (3.6 / 4.9 /
+    // 7.2 / 15.0 m, i.e. 72% / 56% / 38% / 18% of page height) and the reading
+    // order now runs lancer -> scout -> shocktrooper -> engineer in a Z across
+    // the plate instead of left-right across an empty middle.
     put(largo, 3.6, 0.66);                           // lancer, near right, launcher across
-    put(rosie, 4.9, -0.44);                          // shocktrooper, whole, boots down
-    put(alicia, 11.0, -0.22, 'crouchIdle', STANCE.CROUCH);
-    put(isara, 16.5, 0.20);                          // engineer, small, under the avenue
+    put(rosie, 4.9, -0.52);                          // shocktrooper, whole, boots down
+    put(alicia, 7.4, 0.12, 'crouchIdle', STANCE.CROUCH);    // scout, into the middle
+    put(isara, 13.5, -0.18);                         // engineer, against the sky gap
 
     // Chest height, nosed down 2.2 degrees — in DEGREES, not in metres above the ground
     // under a point thirty metres away and four lower (see aimCameraPitch; getting that

@@ -192,7 +192,15 @@ function make2d(w, h) {
   return new OffscreenCanvas(w, h);
 }
 
-function finish(tex, { repeat = true, mips = true, aniso = 8 } = {}) {
+// aniso 16, not 8. Every one of these sheets is fetched in WORLD space by the
+// surface shaders — the ground detail off wp.xz, the paper off vcSurfUV — and
+// the surface that matters most is a road running to the horizon, whose pixel
+// footprint is a long thin sliver along the view direction. At 8 samples the
+// sliver is under-covered and the fetch keeps a coherent remnant of the tile's
+// finest octave, compressed in y; the closeup critic measured the result as a
+// single 85 deg ruling on the brightest surface in frame. 16 is the cap on
+// every GPU this runs on and costs nothing on a texture this small.
+function finish(tex, { repeat = true, mips = true, aniso = 16 } = {}) {
   tex.wrapS = tex.wrapT = repeat ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   tex.magFilter = THREE.LinearFilter;
   tex.minFilter = mips ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;

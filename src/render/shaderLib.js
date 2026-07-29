@@ -616,14 +616,38 @@ float vcToothFbm3d(vec3 p) {              // 2 octaves; the third is invisible
   s += vcNoise3(p * 2.03 + 11.3) * 0.3333;
   return s;
 }
+// IT ALSO HAS TO BE BAND-LIMITED, and round 6 was not.
+//
+// This field lives in WORLD space at a fixed scale, and it perturbs a SHADING
+// normal — so its screen frequency rises without bound as a surface turns away
+// from the camera, and there is no mip chain to catch it because it is
+// procedural. On a ground plane running to the horizon the finest octave passes
+// Nyquist a few metres out and folds back as a coherent beat, compressed in y
+// by the same perspective that compressed the field: a horizontal ruling.
+//
+// Measured on the round-6 closeup, windowed 2D FFT of the 1.5-4 px band over
+// the lit road patch (250,620,128x128): angular power concentrated in ONE of 36
+// bins, dominant 85 deg, with the vertical 1D spectrum a broad hump at 5-7 px —
+// exactly a world-space field aliasing on a receding plane, on the brightest
+// surface in the frame, where axis 4 says the sheet must be invisible.
+//
+// fwidth(wp) is the world-space footprint of one screen pixel, so it knows
+// about the compression directly — including the fact that on a grazing plane
+// the footprint is enormous along one axis and tiny along the other. Fade the
+// whole term out once the field's own period drops under about two and a half
+// pixels. Everything the camera can actually resolve is untouched.
 vec3 vcToothGradient(vec3 wp, float scale) {
   vec3 q = wp * scale;
   const float e = 0.21;
+  vec3 fw = fwidth(wp);
+  float wpp = max(max(fw.x, fw.y), fw.z);       // world units per screen pixel
+  float fade = 1.0 - smoothstep(0.22, 0.72, wpp * scale);
+  if (fade <= 0.002) return vec3(0.0);
   float n0 = vcToothFbm3d(q);
   float nx = vcToothFbm3d(q + vec3(e, 0.0, 0.0));
   float ny = vcToothFbm3d(q + vec3(0.0, e, 0.0));
   float nz = vcToothFbm3d(q + vec3(0.0, 0.0, e));
-  return vec3(nx - n0, ny - n0, nz - n0) * (1.0 / e);
+  return vec3(nx - n0, ny - n0, nz - n0) * (fade / e);
 }
 `;
 

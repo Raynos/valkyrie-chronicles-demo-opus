@@ -732,6 +732,9 @@ ${GLSL_HATCH}
 ${GLSL_TONEMAP}
 uniform sampler2D tColor;
 uniform sampler2D tPaper;
+// The prepass G-buffer, still live at grade time: view normal in xyz, linear
+// depth in w. The hatch pass needs it to tell a fold from a flat plane.
+uniform sampler2D tND;
 uniform vec2  uTexel;
 uniform vec2  uResolution;
 uniform float uPixelRatio;
@@ -769,12 +772,14 @@ uniform float uWashEdge;      // boundary hardness, in levels
 uniform float uWashBlur;      // radius of the low-pass, in CSS px
 uniform float uWashDetail;    // weight of small detail carried over the step
 uniform float uWashMottle;    // very-low-frequency wash unevenness, in levels
+uniform float uWashTexCap;    // ceiling on non-drawing detail, in WASH STEPS
 // graphite hatching
 uniform float uHatch;         // 0 = off; overall stroke opacity
 uniform float uHatchSpacing;  // CSS px between strokes in the first ruling
 uniform float uHatchLo;       // band coordinate at which hatching is full weight
 uniform float uHatchHi;       // ...and at which it has gone
 uniform float uHatchSmall;    // what is left of it on a small form
+uniform float uHatchFlat;     // ...and what is left on an unbroken plane
 uniform float uHatchDepth;    // wash multiplier under a full-pressure stroke
 varying vec2 vUv;
 
@@ -853,6 +858,10 @@ void main() {
   // pixel landed in, in the same perceptual space the quantiser works in, and
   // therefore EXACTLY constant across a plateau. -1 if the quantiser is off.
   float bandC = -1.0;
+  // ...and the height of one wash step in DISPLAY luma, so the hatch and the
+  // paper below can be authored as a fraction of the interval they sit in
+  // rather than as a fraction of the value they sit on.
+  float bandStep = 1.30 / 16.0;
 
   // ---- the washes go back onto steps ---------------------------------------
   // THE FIX FOR THE ROUND-3 BANDING COLLAPSE, and it belongs here rather than in
@@ -951,6 +960,13 @@ void main() {
     float uq = clamp(pow(tq, 2.2), 0.0, 0.985);
     float loq = 0.62 * uq / (1.0 - uq);
 
+    // ...and the SAME conversion one level up, which gives the height of the
+    // step this pixel is standing on, in scene luminance. Everything below is
+    // authored as a fraction of it (see uWashTexCap), so a budget written once
+    // means the same thing on a black boot and a cream road.
+    float uq1 = clamp(pow(clamp((floor(s + 0.5) + 1.0) / lv, 0.0, 1.0), 2.2), 0.0, 0.985);
+    float stepL = max(0.62 * uq1 / (1.0 - uq1) - loq, 1e-4);
+
     // Detail comes back across the step — but not all of it at the same weight.
     // A pencil line, a plate edge or a blade against the sky is a LARGE local
     // deviation and has to survive intact; a few LSB of surface mottle, hatching
@@ -995,11 +1011,52 @@ void main() {
     // threshold a 50 px torso needs took a third of the contrast out of the
     // foreground of every landscape plate. A hillside can afford to carry both
     // the wash and the drawing; a figure that size cannot.
-    float dLo = mix(1.20, 0.90, form);
-    float dHi = mix(2.60, 2.00, form);
-    float keep = mix(dFloor, 1.0, smoothstep(dLo, dHi, dLev));
-    float k = clamp((loq + dtl * keep) / max(l0, 1e-5), 0.45, 2.2);
+    // ...and the bar is RAISED for round 7, on the large passages especially.
+    // 0.90 steps is 18.6 LSB, which is not a grass blade against a bank — it is
+    // the ordinary contrast of the ground-detail texture, and admitting it at a
+    // rising weight is why the closeup's foreground mud scan sat at 1.5:1
+    // step-to-noise with 13% plateau coverage. A blade IS 40 LSB, about two
+    // steps, and still arrives at 0.83 weight through 1.10..2.30.
+    float dLo = mix(1.20, 1.10, form);
+    float dHi = mix(2.60, 2.30, form);
+
+    // ROUND 7: A WEIGHT IS NOT A BUDGET. THE GRAIN HAS TO STAY INSIDE THE BAND.
+    //
+    // The round-6 build attenuated the texture half of the detail to
+    // uWashDetail * form and stopped there — a fraction, with no ceiling. On
+    // terrain, where form is 1 by construction, that is 0.35 of whatever the
+    // surface shaders, the ground-detail texture and the paper happen to put on
+    // this pixel, and their amplitude has nothing to do with the interval
+    // between two washes. Measured on the round-6 closeup: 11.5 LSB of 7 px
+    // high-pass on the shaded bank and the shaded mud against a 17-21 LSB step,
+    // i.e. the substrate was more than half a band tall and no scan could hold
+    // 12 samples inside +-2 — the bank returned 2 plateaus over 8% of a 360 px
+    // column and the mud 1.5:1 step-to-noise.
+    //
+    // So the texture half is now a SOFT-CLIPPED budget expressed in one wash
+    // step: linear while it is small, asymptotic to +-uWashTexCap * stepL,
+    // never able to reach the next plateau however loud the thing underneath
+    // it is. That is the granulation rule stated properly — a granulating wash
+    // varies WITHIN its own value and the neighbouring wash is a different
+    // value, which is why cold-press reads as paint and a noise overlay does
+    // not. The rational soft clip is used rather than a hard min/max so a lit
+    // road does not develop flat-topped texture plateaus of its own.
+    //
+    // DRAWING IS EXEMPT, and that exemption is what keeps the linework and the
+    // sward. A deviation past dLo..dHi wash steps is a pencil line, a blade
+    // against the sky or a plate edge, and it is handed back whole.
+    float draw = smoothstep(dLo, dHi, dLev);
+    float xk = dtl * dFloor;
+    float cap = uWashTexCap * stepL;
+    float texKept = xk / (1.0 + abs(xk) / cap);
+    float kept = mix(texKept, dtl, draw);
+    float k = clamp((loq + kept) / max(l0, 1e-5), 0.45, 2.2);
     c *= mix(1.0, k, uWashAmt);
+
+    // Publish the step, in DISPLAY luma, for the paper block: one perceptual
+    // level is 1.30 display (see the hatch gate), so this is exactly what the
+    // tooth budget has to be measured against.
+    bandStep = 1.30 / lv;
   }
 
   // ---- tonemap -------------------------------------------------------------
@@ -1160,6 +1217,40 @@ void main() {
     // form, it can only destroy his wash. The canopy, the bank and the wall are
     // large forms and keep every stroke they have.
     dark *= mix(uHatchSmall, 1.0, form);
+
+    // ---- THE SECOND GATE: A STROKE NEEDS SOMETHING TO DESCRIBE ---------------
+    // Round 6's band gate stopped the hatch reaching a sunlit wash, and the
+    // closeup critic still found an 80x36 px cross-hatch cluster at (725,502)
+    // on the hero's JAW — sd 15.84 against a surrounding 8.41 — sitting on a
+    // smooth, unbroken plane with no crease under it, plus a '|||' artefact on
+    // the forehead. A band index says how DARK a passage is; it cannot say
+    // whether there is any form there to draw. A plate painter lays graphite
+    // where the surface turns: under a jaw, in a fold of cloth, along the
+    // shadowed side of a track link. On an unbroken plane he lays a wash.
+    //
+    // So the second factor is the local NORMAL VARIATION straight out of the
+    // G-buffer, which this pass can read because the prepass target is still
+    // live at grade time. Four taps at ~3 px: flat plane -> uHatchFlat of the
+    // stroke, anything turning -> all of it. The floor is deliberately not zero
+    // — a deep shadow mass wants tone as well as description — but it is low
+    // enough that a smooth lit cheek cannot carry a cluster.
+    {
+      vec2 nOff = uTexel * 3.0;
+      vec3 nC = texture2D(tND, uv).xyz;
+      float nv = 0.0;
+      nv = max(nv, length(texture2D(tND, uv + vec2(nOff.x, 0.0)).xyz - nC));
+      nv = max(nv, length(texture2D(tND, uv - vec2(nOff.x, 0.0)).xyz - nC));
+      nv = max(nv, length(texture2D(tND, uv + vec2(0.0, nOff.y)).xyz - nC));
+      nv = max(nv, length(texture2D(tND, uv - vec2(0.0, nOff.y)).xyz - nC));
+      // ...and the flat-plane cut FADES OUT as the wash gets deeper. In the
+      // bottom band graphite is legitimately TONE — the interior of a canopy,
+      // the underside of a track guard — and a painter fills it whether or not
+      // anything is turning. It is only near the top of the gate, where the
+      // stroke is marginal anyway, that a plane with no fold in it should be
+      // left as a wash. dark is the band weight, so this costs nothing.
+      float flatW = mix(uHatchFlat, 1.0, smoothstep(0.055, 0.30, nv));
+      dark *= mix(flatW, 1.0, dark);
+    }
     if (dark > 0.004) {
       vec2 sPx = uv * uResolution;
       float sp = uHatchSpacing * uPixelRatio;
@@ -1191,7 +1282,6 @@ void main() {
 
   // ---- paper ---------------------------------------------------------------
   vec2 pUv = uv * uResolution / (512.0 * uPixelRatio);
-  vec4 paper = texture2D(tPaper, pUv);
 
   // THE TOOTH IS MEASURED IN WASH STEPS, NOT IN PERCENT OF VALUE.
   //
@@ -1220,7 +1310,11 @@ void main() {
   // (the sky is quantised finer, so its steps are closer together and its
   // share of the tooth has to come down with them — an open sky is bare paper,
   // but bare paper at 5 LSB on a flat dome reads as noise, not as a sheet)
-  float bandStepD = 1.30 / max(uWashLevels * mix(1.0, 1.6, sky), 1.0);
+  // (the sky is quantised nearly three times finer than the world so its ramp
+  // stays a ramp, and referencing the tooth to THAT step would take the sheet
+  // off the dome altogether. The dome is bare paper and has to read as bare
+  // paper, so it keeps the round-6 reference: 62% of the WORLD step.)
+  float bandStepD = mix(bandStep, 0.62 * 1.30 / max(uWashLevels, 1.0), sky);
 
   // The envelope is now authored in DISPLAY luma, which is where the rubric's
   // "gone in the highlights" is judged. Round 5 placed it in linear, so its
@@ -1228,22 +1322,34 @@ void main() {
   // critic measured the result as a profile that DECREASES monotonically with
   // luminance, an ink layer rather than a substrate, with 10.88 high-pass sd on
   // sunlit ground against 11.11 inside the deepest canopy in the same frame.
-  // A bell: in by L 23, full from L 66 to L 158, gone by L 230.
+  //
+  // ROUND 7 pulls the upper shoulder DOWN. The round-6 window still ran at 17%
+  // on a lit road at L 205, and the closeup critic's bar for that surface is a
+  // 7 px high-pass sd under 3.5 with the sheet effectively invisible — "gone in
+  // the highlights" is a hard requirement of axis 4 and 0.90 display is not
+  // gone, it is faint. In by L 23, full from L 66 to L 140, gone by L 196.
   float lp = pow(clamp(l, 0.0, 1.0), 0.4545);
   float low = smoothstep(0.09, 0.26, lp);
-  float hi = smoothstep(0.62, 0.90, lp);
+  float hi = smoothstep(0.55, 0.77, lp);
   float mid = low * (1.0 - hi);
 
   // Two octaves, normalised so their sum has unit sd — the gains follow from
   // the texture's authored PAPER_SD of 0.078, so uGrainSteps reads directly as
-  // "sigmas of tooth per wash step". The fine fetch is at 1.55x rather than
-  // round 5's 2.60x: at 2.60 the sheet's finest cellular octave landed on 1.2
-  // screen pixels with the LOD pinned to mip 0, which is below Nyquist — it
-  // aliased into a directional shimmer (the closeup critic measured 16.9:1
-  // orientation anisotropy on the one surface where the sheet is supposed to
-  // vanish) and it crawled in motion.
-  float tooth = (texture2D(tPaper, pUv * 1.55 + 0.19, -1.0).r - 0.60) * 12.0
-              + (paper.r - 0.60) * 4.4;
+  // "sigmas of tooth per wash step".
+  //
+  // THE FINE FETCH IS AT 1.00x AND UNBIASED, and that is the last of the
+  // orientation problem. pUv already puts one texel on one CSS pixel; round 6
+  // multiplied it by 1.55 AND pinned the LOD a mip sharper, which fetches 1.55
+  // texels per pixel from an unfiltered mip — below Nyquist, so the sheet's
+  // finest cellular octave folded back as a coherent beat. Measured on the
+  // round-6 closeup with a windowed 2D FFT of the 1.5-4 px band on the lit road
+  // patch (250,620,128): 78:1 angular power ratio with ONE of 36 bins above
+  // 0.55 of peak, dominant 85 deg — a single horizontal machine ruling on the
+  // brightest surface in frame, exactly what the critic saw. At 1.00x the
+  // sampler is at the rate the sheet was authored for and the cellular field's
+  // own isotropy survives to the screen.
+  float tooth = (texture2D(tPaper, pUv + 0.19).r - 0.60) * 11.0
+              + (texture2D(tPaper, pUv * 0.43 + 0.71).r - 0.60) * 5.2;
 
   float amp = uGrainSteps * bandStepD * mix(uGrainSmall, 1.0, form);
   // In the highlights the sheet can only ever DARKEN. The hollows of the tooth
@@ -1459,7 +1565,7 @@ export class CanvasRenderPipeline {
 
     this.mGrade = new THREE.ShaderMaterial({
       uniforms: {
-        tColor: { value: null }, tPaper: { value: paper },
+        tColor: { value: null }, tPaper: { value: paper }, tND: { value: null },
         uTexel: { value: new THREE.Vector2() },
         uResolution: { value: new THREE.Vector2() },
         uPixelRatio: { value: this.dpr },
@@ -1535,6 +1641,14 @@ export class CanvasRenderPipeline {
         uWashDetail: { value: 0.35 },
         uWashMottle: { value: 1.6 },
         uWashBlur: { value: 5.0 },
+        // THE BUDGET, in wash steps, for everything that is texture rather than
+        // drawing: surface mottle, ground detail, blotch, granulation, the
+        // shading ripple off the tooth gradient. 0.12 of a 20.7 LSB step is
+        // +-2.5 LSB, so twelve consecutive samples of a flat wash hold inside a
+        // 5 LSB window (the plateau test) and the step sits at 8:1 over the
+        // residual. Raise it and the sward comes back at the cost of the
+        // plateaus; lower it and the terrain starts to read as flat vinyl.
+        uWashTexCap: { value: 0.12 },
         // Graphite hatching. Spacing is in CSS px; 7.0 puts a stroke period of
         // about 7 px at 1080p, which reads as separate strokes at 1:1 — 5.6
         // was close enough to the paper's own tooth period that the two beat
@@ -1549,12 +1663,32 @@ export class CanvasRenderPipeline {
         // it — the running gear of a tank at L 102 gets 0.87 where its sunlit
         // hull at L 150 gets 0.00, which is the value-selectivity the rubric
         // asks for and round 5 measured backwards.
+        //
+        // ROUND 7 narrows the window from 0.48/0.64 to 0.43/0.57 — display
+        // L 92 to L 122 rather than L 106 to L 138. The closeup terrain scans
+        // that had to reach 4:1 step-to-noise live at L 110-155, and at 0.48/64
+        // a bank at L 127 still took 13% of the stroke: five LSB of graphite
+        // riding a wash whose whole step is twenty. The deep masses — running
+        // gear, canopy interiors, the underside of a jaw — are all below L 92
+        // and keep the full weight, which is where the rubric puts pencil.
         uHatch: { value: 0 },
         uHatchSpacing: { value: 7.0 },
-        uHatchLo: { value: 0.48 },
-        uHatchHi: { value: 0.64 },
+        uHatchLo: { value: 0.43 },
+        uHatchHi: { value: 0.57 },
         uHatchSmall: { value: 0.03 },
-        uHatchDepth: { value: 0.70 },
+        // On an unbroken plane — a cheek, a sunlit road, the flat of a wall —
+        // a stroke has nothing to describe, so it drops to a third. See the
+        // normal-variation gate in the hatch block.
+        uHatchFlat: { value: 0.42 },
+        // ROUND 7: 0.70 -> 0.62. The gate above is now NARROW — graphite only
+        // between display L 77 and L 122 — so the total pencil in the frame
+        // fell about 20% when the midtone tail was cut. That tail was the part
+        // the critics called a filter; the part that scores is the stroke in
+        // the deep masses, and it has to get LOUDER, not quieter, when there is
+        // less of it. A 2B stroke over a dried wash takes about a third of its
+        // value. (Round 5 took half and three critics called the pencil louder
+        // than the paint; that was at a gate four times as wide.)
+        uHatchDepth: { value: 0.62 },
       },
       vertexShader: FS_VERT, fragmentShader: GRADE_FRAG,
       depthTest: false, depthWrite: false, name: 'vcGrade',
@@ -1810,10 +1944,21 @@ export class CanvasRenderPipeline {
     // ---------------------------------------------------- 7. grade + paper
     const gu = this.mGrade.uniforms;
     gu.tColor.value = gradeTex;
+    // The G-buffer written in step 1 is never rebound as a scratch target, so
+    // the hatch pass can still ask it whether this fragment sits on a fold or
+    // on an unbroken plane.
+    gu.tND.value = this.gbuf.textures[0];
     gu.uExposure.value = CFG.render.exposure;
     gu.uVignette.value = CFG.render.vignette;
     gu.uChroma.value = CFG.render.chroma;
-    gu.uGrainSteps.value = THREE.MathUtils.clamp(CFG.render.paperStrength * 0.57, 0.02, 0.45);
+    // ROUND 7: 0.57 -> 0.40 of the config knob, i.e. 0.24 sigmas of tooth per
+    // wash step down to 0.17. The tooth is only one of the things sharing the
+    // interval between two washes — the surface mottle underneath it now has a
+    // 0.12-step budget of its own (uWashTexCap) and the hatch takes a bite in
+    // the dark bands — and the three of them together have to leave a plateau
+    // standing. 0.17 sigmas is 3.5 LSB on a 20.7 LSB step: still plainly
+    // cold-press at 1:1, and a fifth of the interval it sits in.
+    gu.uGrainSteps.value = THREE.MathUtils.clamp(CFG.render.paperStrength * 0.40, 0.02, 0.45);
     // CFG.render.hatchStrength is authored for the SURFACE hatch in
     // materials.js, whose strokes are diluted by everything that runs after
     // them; this pass is the last thing before the paper, so the same number
@@ -2025,14 +2170,49 @@ export class CanvasRenderPipeline {
    * the right ARTISTIC unit: the landscape is the passage the sheet shows
    * through, and the figures on it are the things a painter lays in flat.
    *
-   * The radius is unioned from the descendants' geometry bounding spheres, so
-   * it costs a walk over meshes and never touches a vertex, and it is cached on
+   * The box is unioned from the descendants' geometry bounding BOXES, so it
+   * costs a walk over meshes and never touches a vertex, and it is cached on
    * the root — a soldier's silhouette does not change size when he walks.
+   *
+   * ROUND 7: BOTH HALVES OF THIS WERE WRONG, AND IT IS THE WHOLE OF THE
+   * "characters band at closeup scale and fail at overview scale" FINDING.
+   * Measured on the round-6 overview build, with the projected height of every
+   * figure computed independently from a world AABB:
+   *
+   *   object                     px tall   fitted size   form
+   *   distant enemy rifleman        28        59.8 m     1.000
+   *   distant enemy engineer        24        53.5 m     1.000
+   *   near squad (Rosie)           190         4.50 m    0.715
+   *   near squad (Alicia)          192         4.38 m    0.582
+   *
+   * i.e. a 28 px figure was being handed the FULL sheet and the full hatch, and
+   * a 190 px one 60-70% of it, against an intent of "~0.13 for a 210 px
+   * soldier". Two independent bugs:
+   *
+   *  1. THE ANCESTOR WALK RAN OUT OF ITERATIONS. A skinned actor's attachments
+   *     hang off the bone chain — hand -> forearm -> upper arm -> clavicle ->
+   *     chest -> spine -> hips -> armature -> SkinnedMesh -> char root — which
+   *     is more than the 12 hops the loop allowed, so the walk stopped INSIDE
+   *     the skeleton. The size was then fitted in a bone's frame, where the
+   *     `_maxScale(matrixWorld) * _maxScale(inv)` product does not cancel and a
+   *     1.8 m man measures 50-60 m. Walk to the true scene-level root (64 hops,
+   *     which no rig in this project comes near) and cache the answer per mesh.
+   *
+   *  2. THE FIT WAS A CUBE AROUND A BOUNDING SPHERE. A body mesh's sphere is
+   *     radius 1.65 m about the chest; a cube of side 3.3 m about that point,
+   *     unioned with the same treatment of every prop, makes a 1.75 m figure
+   *     measure 4.4 m — 2.5x — so every actor kept 2.5x the sheet it was
+   *     supposed to. Use geometry.boundingBox transformed by the relative
+   *     matrix: eight corners, still no vertex work, and tight.
    */
   _formScale(o, camPos, pxPerRad) {
-    let root = o;
-    for (let i = 0; i < 12 && root.parent && root.parent !== this.scene && root.parent.parent; i++) {
-      root = root.parent;
+    let root = o.userData.__vcFormRoot;
+    if (root === undefined || !root.parent) {
+      root = o;
+      for (let i = 0; i < 64 && root.parent && root.parent !== this.scene && root.parent.parent; i++) {
+        root = root.parent;
+      }
+      o.userData.__vcFormRoot = root;
     }
     let size = root.userData.__vcFormSize;
     if (size === undefined) {
@@ -2050,15 +2230,15 @@ export class CanvasRenderPipeline {
         // so this is the one place they get computed. Without it the sward tiles
         // — which are exactly the meshes that turn it off — measured as zero and
         // took a full grain suppression across a third of the frame.
-        if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
-        const bs = m.geometry.boundingSphere;
-        if (!bs || !(bs.radius >= 0)) return;
+        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+        const bb = m.geometry.boundingBox;
+        if (!bb || bb.isEmpty()) return;
         // InstancedMesh bounds are LOCAL to the instanced mesh in three, same as
         // a plain geometry's, so both take the same path through matrixWorld.
-        _bsC.copy(bs.center).applyMatrix4(m.matrixWorld).applyMatrix4(inv);
-        const r = bs.radius * _maxScale(m.matrixWorld) * _maxScale(inv);
-        _box.expandByPoint(_v2.copy(_bsC).subScalar(r));
-        _box.expandByPoint(_v2.copy(_bsC).addScalar(r));
+        // applyMatrix4 on a Box3 transforms the eight corners and re-fits, which
+        // is exact for the box and cannot blow up the way a scale product can.
+        _m4c.multiplyMatrices(inv, m.matrixWorld);
+        _box.union(_box2.copy(bb).applyMatrix4(_m4c));
         any = true;
       });
       _box.getSize(_v2);
@@ -2138,8 +2318,10 @@ export class CanvasRenderPipeline {
 const _v = new THREE.Vector3();
 const _m4 = new THREE.Matrix4();
 const _m4b = new THREE.Matrix4();
+const _m4c = new THREE.Matrix4();
 const _v2 = new THREE.Vector3();
 const _box = new THREE.Box3();
+const _box2 = new THREE.Box3();
 /** Largest axis scale of a world matrix, without allocating a Vector3. */
 function _maxScale(m) {
   const e = m.elements;

@@ -1426,6 +1426,55 @@ const bp = (rig, name) => {
  * because the GAP is the thing that reads — a full band round the neck is a
  * pipe, an arc with an opening at the throat is a collar.
  */
+/**
+ * Catmull-Rom resample of an addTube station list.
+ *
+ * ROUND 6 measured the consequence of NOT doing this: "the torso shows a
+ * straight horizontal construction seam at y~722 and a vertical one at x~755",
+ * and a raycast into the closeup lands both of them on trunk triangles running
+ * (-0.250,1.431,0.003) -> (-0.239,1.350,0.041) — an 81 mm x 38 mm facet, i.e.
+ * 143 x 67 px on a 1.12 m portrait. Two things go wrong at that spacing and
+ * both of them draw straight lines:
+ *   * the ring-to-ring quad edge IS the construction seam — a horizontal circle
+ *     seen near edge-on projects to a straight rule across the figure;
+ *   * every `shape` term is only EVALUATED at the stations, so the serratus
+ *     ripple (period 0.24 in t) was being sampled twice per cycle and aliased
+ *     into nothing.
+ * Resampling fixes both for the cost of triangles that were always going to be
+ * needed on the largest plane on the figure.
+ *
+ * `div` is subdivisions PER AUTHORED SEGMENT, not an arc-length step, and that
+ * is deliberate: addTube hands its `shape` hook `t = stationIndex / (N-1)`, so
+ * a resampler that placed rings by arc length would silently re-map every
+ * window in every shape function it touched — the trunk's chest window at
+ * t 0.30..0.52 would slide off the chest and onto the waist. Uniform division
+ * leaves t exactly where the author put it.
+ */
+function resample(st, div) {
+  if (st.length < 2 || div <= 1) return st;
+  const at = (i) => st[clamp(i, 0, st.length - 1)];
+  const cr = (a, b2, c, d, t, f) => {
+    const p0 = f(a), p1 = f(b2), p2 = f(c), p3 = f(d);
+    const t2 = t * t, t3 = t2 * t;
+    return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+      + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+  };
+  const out = [];
+  for (let i = 0; i < st.length - 1; i++) {
+    const a = at(i - 1), b2 = at(i), c = at(i + 1), d = at(i + 2);
+    for (let k = 0; k < div; k++) {
+      const t = k / div;
+      out.push({
+        p: [cr(a, b2, c, d, t, (s) => s.p[0]), cr(a, b2, c, d, t, (s) => s.p[1]), cr(a, b2, c, d, t, (s) => s.p[2])],
+        rx: cr(a, b2, c, d, t, (s) => s.rx),
+        rz: cr(a, b2, c, d, t, (s) => s.rz),
+      });
+    }
+  }
+  out.push(st[st.length - 1]);
+  return out;
+}
+
 function addArc(b, o) {
   const n = o.div || 9;
   const pts = [];
@@ -1485,24 +1534,57 @@ function buildTorso(b, rig, o) {
   //   * the ILIAC crest flare just above the belt.
   // Segments 18 -> 24 as well: at 18 the chord across a 0.37 m chest is 65 mm,
   // which at closeup distance IS the "hard vertical facets".
+  //
+  // ROUND 6, MEASURED: every one of these terms was 2-5 % of the radius, i.e.
+  // 4-10 mm on a 0.19 m chest, which turns the surface normal by about four
+  // degrees. A band quantiser needs a normal TURN, not a bump — four degrees is
+  // an order of magnitude short of a band width, so the trunk still quantised
+  // as one cylinder and a cylinder's iso-N.L contours are STRAIGHT VERTICAL
+  // LINES. That is the "vertical construction seam at x~755", exactly: not a
+  // seam at all, a band boundary on an untextured barrel. The amplitudes below
+  // are 2-3x round 6's and the wavelengths are shorter, so the terminator has
+  // real corners to break on.
   const trunk = (t, ct, st) => {
     const front = clamp01(st), back = clamp01(-st), lat = Math.abs(ct);
     // chest .. waist window (stations 3..7 -> t 0.33..0.78)
     const chest = smoothstep(0.30, 0.52, t) * (1 - smoothstep(0.74, 0.92, t));
     const ribs = smoothstep(0.26, 0.44, t) * (1 - smoothstep(0.58, 0.76, t));
     let k = 1;
-    k -= 0.030 * chest * front * Math.exp(-((ct / 0.26) * (ct / 0.26)));   // sternal furrow
-    k += 0.055 * back * clamp01(lat - 0.28) * smoothstep(0.34, 0.72, t)
+    k -= 0.052 * chest * front * Math.exp(-((ct / 0.20) * (ct / 0.20)));   // sternal furrow
+    k += 0.082 * back * clamp01(lat - 0.24) * smoothstep(0.34, 0.72, t)
       * (1 - smoothstep(0.80, 0.95, t));                                   // latissimus
-    k -= 0.022 * back * Math.exp(-((ct / 0.22) * (ct / 0.22)))
-      * smoothstep(0.30, 0.60, t);                                         // spinal furrow
-    k += 0.026 * ribs * clamp01(lat - 0.55) * Math.cos(t * 26.0);          // serratus ripple
-    k += 0.030 * smoothstep(0.24, 0.10, t) * clamp01(lat - 0.35);          // iliac flare
+    k -= 0.040 * back * Math.exp(-((ct / 0.17) * (ct / 0.17)))
+      * smoothstep(0.30, 0.62, t);                                         // spinal furrow
+    k += 0.044 * ribs * clamp01(lat - 0.45) * Math.cos(t * 26.0);          // serratus ripple
+    k += 0.038 * smoothstep(0.24, 0.10, t) * clamp01(lat - 0.35);          // iliac flare
+    // PECTORAL SHELF and its armpit crease. The single biggest plane break on
+    // the front of a clothed torso: the pec stands proud, then falls away into
+    // the axilla on a diagonal, and that diagonal is where a terminator wants
+    // to sit. Without it the chest is a barrel and the wash runs straight down.
+    const pec = smoothstep(0.56, 0.72, t) * (1 - smoothstep(0.86, 0.97, t));
+    k += 0.060 * pec * front * clamp01(0.80 - lat) * clamp01(lat * 3.4 - 0.35);
+    k -= 0.048 * pec * clamp01(lat - 0.62) * (0.35 + 0.65 * front);        // axilla
+    // FLANK PLANE. The external oblique turns the side of the trunk into a flat
+    // face between the front and back planes; on a tube of revolution there is
+    // no such face and the light rolls round it without a break.
+    k -= 0.034 * Math.exp(-((Math.abs(lat - 0.93) / 0.16) * (Math.abs(lat - 0.93) / 0.16)))
+      * smoothstep(0.20, 0.42, t) * (1 - smoothstep(0.72, 0.90, t));
+    // TRAPEZIUS SLOPE. The last three stations take the section from a 0.36 m
+    // shoulder to a 0.17 m neck in 30 mm of height, and on a tube of revolution
+    // that is a horizontal CLIFF: a hard ring at constant y, which projects to
+    // exactly the "straight horizontal construction seam" the round-6 closeup
+    // measured on the torso. A real shoulder line SLOPES, so the section up here
+    // has to be a wide flat-topped lozenge and the transition has to happen
+    // across the width of the trapezius rather than all at one height.
+    // ...and it has to release again by the neck hole, or the tunic's open top
+    // ring ends up wider than the collar that is supposed to cover it.
+    k += 0.38 * smoothstep(0.78, 0.90, t) * (1 - 0.55 * smoothstep(0.90, 1.0, t))
+      * Math.pow(clamp01(lat), 1.5) * (1 - 0.35 * clamp01(-st));
     return k;
   };
   // The WEDGE: 0.118 at the waist against 0.186 at the upper chest, a 58 %
   // swell over 29 cm. A uniform silhouette is a wedge; a 30 % swell is a sack.
-  b.addTube([
+  b.addTube(resample([
     { p: [0, hy - 0.150, zc - 0.006], rx: 0.126 * g, rz: 0.094 * g },
     { p: [0, hy - 0.075, zc - 0.002], rx: 0.152 * g, rz: 0.114 * g },      // hip shelf
     { p: [0, hy - 0.010, zc], rx: 0.142 * g, rz: 0.103 * g },
@@ -1513,7 +1595,7 @@ function buildTorso(b, rig, o) {
     { p: [0, hy + 0.445, zc + 0.004], rx: 0.178 * g * sh, rz: 0.109 * g }, // shoulder shelf
     { p: [0, ny - 0.038, zc], rx: 0.122 * g, rz: 0.088 * g },              // traps
     { p: [0, ny - 0.020, zc + 0.002], rx: 0.084 * g, rz: 0.070 * g },      // neck hole
-  ], { seg: seg(simple() ? 14 : 24), capStart: 'round', capEnd: 'none', shape: trunk });
+  ], simple() ? 1 : 3), { seg: seg(simple() ? 14 : 26), capStart: 'round', capEnd: 'none', shape: trunk });
 
   // Pectoral planes — two shallow shields on the front of the chest, so the
   // chest is not a smooth cylinder with nothing for the wash to bite on.
@@ -1801,9 +1883,19 @@ function buildArms(b, rig, o) {
       const ant = 0.150 * Math.exp(-((t - 0.02) / 0.185) * ((t - 0.02) / 0.185)) * clamp01(-st);
       const pos = 0.130 * Math.exp(-((t - 0.06) / 0.200) * ((t - 0.06) / 0.200)) * clamp01(st);
       const seam = 0.052 * lat * Math.cos(Math.atan2(st, ct * side) * 3.0);
-      return 1 + lat * Math.pow(out, 1.35) + ant + pos - seam * out;
+      // SLEEVE DRAPE. A serge sleeve is not a cylinder, and the difference is
+      // not decoration: the closeup raycasts into the round-6 "flat card
+      // shoulder mass" land on this tube, and a cylinder's iso-N.L contours are
+      // straight vertical lines, which is exactly what a dead-straight band
+      // boundary down the middle of an arm is. Three shallow longitudinal
+      // folds, drifting round the arm as they descend, give the terminator
+      // somewhere to break — and they are what a hanging sleeve does anyway.
+      const az = Math.atan2(st, ct * side);
+      const fold = 0.026 * Math.cos(az * 3.0 + t * 2.6 + 0.7) * smoothstep(0.14, 0.34, t)
+        + 0.016 * Math.cos(az * 5.0 - t * 1.8) * smoothstep(0.30, 0.55, t) * (1 - smoothstep(0.80, 0.96, t));
+      return 1 + lat * Math.pow(out, 1.35) + ant + pos - seam * out + fold;
     };
-    b.addTube([
+    b.addTube(resample([
       { p: at(sh, el, -0.13), rx: 0.055 * g, rz: 0.058 * g },
       { p: at(sh, el, 0.16), rx: 0.052 * g, rz: 0.059 * g },
       { p: at(sh, el, 0.40), rx: 0.050 * g, rz: 0.058 * g },   // bicep / tricep belly
@@ -1819,7 +1911,7 @@ function buildArms(b, rig, o) {
       { p: at(sh, el, 0.90), rx: 0.0330 * g, rz: 0.0392 * g },
       { p: at(sh, el, 0.955), rx: 0.0312 * g, rz: 0.0386 * g },
       { p: el, rx: 0.0428 * g, rz: 0.0452 * g },                // elbow
-    ], { seg: seg(12), shape: delt });
+    ], simple() ? 1 : 3), { seg: seg(simple() ? 12 : 16), shape: delt });
 
     // Triceps: the mass on the BACK of the upper arm, running from the deltoid's
     // rear head down to the point of the elbow. It is what makes an arm read as
@@ -1858,12 +1950,17 @@ function buildArms(b, rig, o) {
     // being a tan blob on a tan sleeve — the arm now reads sleeve / skin / hand
     // as three separate values, which is why the extremity survives to 40 m.
     const rollT = 0.44;
-    b.addTube([
+    b.addTube(resample([
       { p: el, rx: 0.0405 * g, rz: 0.0435 * g },
       { p: at(el, wr, 0.10), rx: 0.0470 * g, rz: 0.0490 * g }, // forearm belly (brachioradialis)
       { p: at(el, wr, 0.22), rx: 0.0475 * g, rz: 0.0485 * g },
       { p: at(el, wr, rollT - 0.02), rx: 0.0395 * g, rz: 0.0415 * g },
-    ], { seg: seg(12) });
+    ], simple() ? 1 : 3), {
+      seg: seg(simple() ? 12 : 14),
+      // Same drape as the upper sleeve, half the amplitude: the lower sleeve is
+      // stretched over the forearm rather than hanging off it.
+      shape: (t, ct, st) => 1 + 0.018 * Math.cos(Math.atan2(st, ct * side) * 3.0 - t * 2.0 + 1.2) * smoothstep(0.10, 0.32, t),
+    });
     // CUBITAL CREASE. The elbow's own ink line: a 3 mm ring in the shade cloth
     // sunk into the joint, on the FRONT of the arm where the sleeve gathers when
     // the joint closes. Geometry alone gives a bent arm a corner in silhouette;
@@ -2002,13 +2099,36 @@ function buildHands(b, rig, o) {
     // At 2.10 the fingertip lands 24 mm along the finger's own direction and
     // 41 mm ACROSS the palm — a closed fist, and the tips finish under the
     // thumb where the grip is instead of pointing at the sky.
-    const palmF = 1.62;
     // index, middle, ring, little — real relative lengths, so the fingertip arc
     // is a curve rather than a straight cut.
     const FLEN = [0.058, 0.062, 0.057, 0.047];
-    const FRAD = [0.0084, 0.0086, 0.0080, 0.0070];
-    const FPITCH = 0.0232;
+    // ROUND 6 asked for "four proximal-phalange capsules 0.018 m diameter with
+    // 0.004 m gaps". 0.0090 radius at a 0.0220 pitch is exactly that, and the
+    // slightly fatter finger at a slightly tighter pitch matters: an 18 mm
+    // capsule holds 2 px of ink in its valley at twelve metres where a 16.8 mm
+    // one at a 6.4 mm pitch holds none, because the valley is what the outline
+    // pass bites and the CAPSULE is what carries the skin between the valleys.
+    const FRAD = [0.0090, 0.0092, 0.0086, 0.0076];
+    const FPITCH = 0.0220;
     const vFing = b.vertexCount;
+    // JOINT-WISE CURL, and this is the whole fix for "zero finger separation
+    // anywhere in the figure — the arm terminates in a rounded fingerless stub
+    // with no knuckle line".
+    //
+    // Round 6 swept each finger along ONE constant-curvature arc of 2.19 rad.
+    // A finger built that way starts turning at the metacarpal head, so all
+    // four present their ENDS to the camera and their silhouette is a single
+    // rolled lozenge — measured, correctly, as a mitten. A real grip flexes at
+    // three hinges, and the segment between the first two, the PROXIMAL
+    // PHALANX, comes almost straight out of the knuckle. That segment is the
+    // only place on a closed hand where four parallel runs with a valley
+    // between each pair are presented broadside, and it is what the eye reads
+    // as "fingers" from the back of the hand — which is the view every carry,
+    // aim and reload pose gives the camera.
+    const MCP = 0.60, PIP = 1.06, DIP = 0.44;
+    const hinge = (t) => MCP * smoothstep(0.00, 0.13, t)
+      + PIP * smoothstep(0.38, 0.58, t)
+      + DIP * smoothstep(0.74, 0.90, t);
     for (let f = 0; f < (simple() ? 2 : 4); f++) {
       // THE VALLEY IS THE PRODUCT. Round 4 ran 0.0100 radius fingers at a
       // 0.0205 pitch, i.e. a 0.5 mm gap, which at portrait distance is half a
@@ -2031,24 +2151,31 @@ function buildHands(b, rig, o) {
       // SHORTENS the finger's projection the way a real curl does. Round 4 kept
       // full length whatever the "curl" was, so a closed hand was exactly as long
       // as an open one and read as a splayed paddle at every distance.
-      const TH = 1.35 * palmF, kk = TH / len;
+      // Integrate the tangent so the chain keeps its arc length whatever the
+      // hinge profile does — a closed hand has to SHORTEN the way a real one
+      // does, which a fixed-length sausage with a bend added never did.
+      const NS = 32;
+      const path = [[0, 0]];
+      for (let i = 1; i <= NS; i++) {
+        const ph = hinge((i - 0.5) / NS), d = len / NS;
+        path.push([path[i - 1][0] + Math.cos(ph) * d, path[i - 1][1] + Math.sin(ph) * d]);
+      }
       const at = (t) => {
-        const ph = t * TH, sN = Math.sin(ph) / kk, cN = (1 - Math.cos(ph)) / kk;
-        return [
-          px + dir.x * sN - side * (cN + 0.004 * t * t),
-          y0 + dir.y * sN,
-          pz + dir.z * sN,
-        ];
+        const u = clamp01(t) * NS, i = Math.min(NS - 1, Math.floor(u)), fr = u - i;
+        const a = lerp(path[i][0], path[i + 1][0], fr);
+        const c = lerp(path[i][1], path[i + 1][1], fr);
+        return [px + dir.x * a - side * c, y0 + dir.y * a, pz + dir.z * a];
       };
       b.addTube([
-        { p: at(0.00), rx: r0 * 1.02, rz: r0 * 0.94 },
-        { p: at(0.26), rx: r0 * 1.10, rz: r0 * 0.98 },   // proximal knuckle
-        { p: at(0.42), rx: r0 * 0.82, rz: r0 * 0.76 },   // waist at the PIP
-        { p: at(0.60), rx: r0 * 0.98, rz: r0 * 0.90 },   // middle phalanx
-        { p: at(0.76), rx: r0 * 0.74, rz: r0 * 0.70 },   // waist at the DIP
-        { p: at(0.90), rx: r0 * 0.84, rz: r0 * 0.78 },   // distal phalanx
+        { p: at(0.00), rx: r0 * 1.00, rz: r0 * 0.94 },
+        { p: at(0.11), rx: r0 * 1.12, rz: r0 * 1.02 },   // metacarpal head
+        { p: at(0.30), rx: r0 * 0.98, rz: r0 * 0.92 },   // proximal shaft
+        { p: at(0.47), rx: r0 * 0.80, rz: r0 * 0.74 },   // waist at the PIP
+        { p: at(0.62), rx: r0 * 0.98, rz: r0 * 0.90 },   // middle phalanx
+        { p: at(0.82), rx: r0 * 0.74, rz: r0 * 0.70 },   // waist at the DIP
+        { p: at(0.92), rx: r0 * 0.84, rz: r0 * 0.78 },   // distal phalanx
         { p: at(0.99), rx: r0 * 0.52, rz: r0 * 0.48 },   // tip
-      ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
+      ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
     }
     // THE PAINTED VALLEY. Geometry buys finger separation down to about ten
     // metres and then the gap goes sub-pixel and the hand fuses again. A
@@ -2060,8 +2187,30 @@ function buildHands(b, rig, o) {
       b.paintRange(vFing, b.vertexCount, (x, y, z) => {
         const u = (z - z0) / (FPITCH * 0.98);
         const frac = Math.abs(u - Math.round(u));          // 0 mid-finger, 0.5 at a seam
-        return 1 - 0.34 * smoothstep(0.17, 0.46, frac);
+        // 0.34 -> 0.46 and a harder shoulder. The acceptance test on this is
+        // "the hand box must contain >= 3 parallel ink runs 2-5 px wide
+        // separated by 6-14 px of skin"; a 34 % dip with a soft ramp lands one
+        // band step at best, and one band step across a 2 px valley is invisible
+        // once the paper grain is composited on top of it.
+        return 1 - 0.46 * smoothstep(0.20, 0.44, frac);
       });
+    }
+    // KNUCKLE CREASE — the 4-vertex line the round-6 note asked for, sunk
+    // BETWEEN the metacarpal heads rather than laid over them. The knuckle bar
+    // above gives the back of the hand its scalloped ridge; this is the dark
+    // that separates the ridge from the proximal phalanges, and it is the mark
+    // that tells a fist from a mitten when the fingers themselves are only
+    // eight pixels across.
+    if (!simple()) {
+      b.setColor(mixCol(col, [0.038, 0.026, 0.026], 0.62)).setMottle(0.006);
+      const kz = fg.z, ky = fg.y + 0.0155;
+      b.addTube([
+        { p: [fg.x - side * 0.0175, ky + 0.0016, kz - 0.0330], rx: 0.0026, rz: 0.0020 },
+        { p: [fg.x - side * 0.0205, ky, kz - 0.0110], rx: 0.0032, rz: 0.0024 },
+        { p: [fg.x - side * 0.0205, ky, kz + 0.0110], rx: 0.0032, rz: 0.0024 },
+        { p: [fg.x - side * 0.0175, ky + 0.0016, kz + 0.0320], rx: 0.0026, rz: 0.0020 },
+      ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
+      b.setColor(col);
     }
     // Thumb, laid ACROSS the closed fingers. With the four fingers now curling
     // into the palm along -side*X, the thumb has to come over the top of them or
@@ -2376,7 +2525,17 @@ export function buildHead(b, rig, o, f) {
   // 198 mm, 7.28 heads, against the brief's 7.25 target. Verified by
   // tools/-side measurement over 220x440 surface samples per body type; see the
   // heads= column in the round-5 notes.
-  const R = [0.0756 * f.width * hs, 0.1294 * f.length * hs, 0.0950 * f.depth * hs];
+  // ROUND 6: "bobblehead — head+helmet bbox 334x425 px against a flat-card
+  // shoulder mass", and the measurement behind it is head+HELMET against
+  // standing height, not the bare skull. Built at round 6's numbers that came
+  // out 0.2716 m of head-and-helmet on a 1.788 m soldier = 0.152, i.e. 6.58
+  // heads tall — genuinely bobbleheaded, however good the bare skull's 7.4
+  // looked in isolation. SKULL scales the whole head, and the headgear in
+  // character.js shells this same radius, so the helmet comes with it: 0.895
+  // lands head+helmet at ~0.137 of standing, 7.3 heads, which is the brief's
+  // target and the proportion VC actually draws.
+  const SKULL = 0.880;
+  const R = [0.0756 * f.width * hs * SKULL, 0.1294 * f.length * hs * SKULL, 0.0950 * f.depth * hs * SKULL];
 
   const gauss = (v, w) => Math.exp(-(v / w) * (v / w));
   /** 2-D gaussian blob, the workhorse for every soft landmark below. */
@@ -2503,13 +2662,71 @@ export function buildHead(b, rig, o, f) {
     // the ramus: the vertical bar of jaw running up to the ear
     sx += blob(dy + 0.26, 0.20, ax - 0.72, 0.20) * (1 - smoothstep(-0.10, 0.55, dz)) * 0.055 * f.jaw;
 
-    // --- 7. CHIN -----------------------------------------------------------
-    const chinY = FY(T_CHIN);
-    const chin = blob(dy - chinY, 0.185, dx, 0.285) * smoothstep(0.02, 0.58, dz);
-    sz += chin * 0.175 * (0.55 + f.chin * 0.52);
-    sy -= chin * 0.040;
-    // Mental crease — the furrow between the lower lip and the chin button.
-    sz -= blob(dy - FY(T_MENTAL), 0.070, dx, 0.30) * smoothstep(0.22, 0.72, dz) * 0.038;
+    // --- 6c. LIPS AND THE LABIAL SEAM, AS SURFACE -------------------------
+    // ROUND 6: "the mouth is a lip pasted on the silhouette — restricted to the
+    // face interior there is no horizontal seam at all, only paper mottle at
+    // -14.9 to -32.5 LSB". It was built entirely as three little TUBES lying on
+    // the face, and a tube only reads where it crosses the silhouette; on the
+    // interior it is a 2 mm colour change with no normal break, so the band
+    // quantiser and the outline pass both walk straight past it.
+    //
+    // A mouth is a groove between two rolls. Both belong in the SURFACE, where
+    // they turn the normal through 30-40 degrees and every downstream pass —
+    // bands, outline, AO, hatch — finds them automatically, at any yaw, all the
+    // way across the face rather than only at its edge. Quoted in metres and
+    // converted to the radial scale factor the displacement works in.
+    {
+      const mSpan = 1 - smoothstep(0.30, 0.70, ax);      // full to 0.30, gone by 0.70
+      const mFront = smoothstep(0.10, 0.46, dz);
+      const rz = Math.max(0.10, Math.abs(dz)) * R[2];    // radial metres per unit sz here
+      // upper lip roll (+4 mm), lower lip roll (+4 mm), seam groove (-6 mm)
+      const up = gauss(dy - FY(T_LIPUP - 0.004), 0.052) * mSpan * mFront;
+      const lo = gauss(dy - FY(T_LIPLOW + 0.002), 0.050) * mSpan * mFront;
+      const sm = gauss(dy - FY(T_MOUTH), 0.026) * mSpan * mFront;
+      sz += (up * 0.0040 + lo * 0.0044 - sm * 0.0062) / rz;
+      // The commissures: the mouth ENDS, and it ends in a dimple. A seam that
+      // fades out is a scratch; a stop at each end is a mouth, and it is the
+      // one part of it that survives a three-quarter view.
+      sz -= blob(dy - FY(T_MOUTH + 0.004), 0.048, ax - 0.335, 0.082) * mFront * 0.0078 / rz;
+    }
+
+    // --- 7. CHIN, and it is a MENTAL PROTUBERANCE, not a slower taper -------
+    // ROUND 6 MEASURED THE MISS EXACTLY: the midline profile ran x873(y483) ->
+    // x821(y543) — 56 px of monotonic recession below the lower lip with no
+    // outward move anywhere, "anatomically a muzzle". Three causes, all here:
+    //   1. the chin gaussian was 0.185 wide in dy, i.e. half the lower face, so
+    //      it lifted the labiomental crease and the chin button by the same
+    //      amount and the two never stepped apart;
+    //   2. the crease itself was 2.1 mm deep over a 0.070 width — under the
+    //      paper grain;
+    //   3. the submandibular undercut in (8) was centred at dy -0.86, which IS
+    //      the chin button's height, so it ate the bump it is supposed to sit
+    //      under.
+    // The button is now a tight boss just above the chin point with a deep,
+    // narrow sulcus over it, so the midline reads lip -> in -> OUT -> under.
+    const chinFront = smoothstep(0.02, 0.44, dz) * (1 - smoothstep(0.36, 0.88, ax));
+    // (a) THE CHIN'S FRONT PLANE IS VERTICAL, and that is the whole trick. On an
+    // ellipsoid the front-facing component dz collapses from 0.64 at the sulcus
+    // to 0.41 at the chin point, so ANY multiplicative bump — however large —
+    // still lands on a profile that is receding 14 mm over those four
+    // centimetres. Cancelling the collapse is what buys the corner: sz has to
+    // rise as 1/dz through the button for the profile to hold station, and a
+    // little more than that for it to move OUT. 0.72 overshoots 1/dz by ~12%,
+    // which is the 4-6 mm of forward travel the round-6 note asked for.
+    const plane = smoothstep(FY(T_MENTAL - 0.004), FY(T_CHIN - 0.022), dy) * chinFront;
+    sz *= 1 + plane * 0.84;
+    // (b) ...and the button itself, a boss on that plane.
+    const chinY = FY(T_CHIN + 0.034);
+    const chin = blob(dy - chinY, 0.115, dx, 0.245) * chinFront;
+    sz += chin * 0.135 * (0.62 + f.chin * 0.44);
+    sy -= chin * 0.030;
+    // ...and the button has a WIDTH: two mental tubercles either side of the
+    // midline with a shallow dimple between them, which is what stops the chin
+    // reading as a nose-cone in the front view.
+    sx += chin * 0.075 * clamp01(ax * 2.6 - 0.15);
+    // Labiomental sulcus — the furrow between the lower lip and the button. It
+    // has to be DEEPER than the button is proud is wide, or the two merge.
+    sz -= blob(dy - FY(T_MENTAL + 0.006), 0.048, dx, 0.300) * smoothstep(0.16, 0.62, dz) * 0.125;
 
     // --- 8. SUBMANDIBULAR UNDERCUT ----------------------------------------
     // The single most important thing separating a head from a neck. The plane
@@ -2517,9 +2734,13 @@ export function buildHead(b, rig, o, f) {
     // throat; the AO bake then finds an occluded wedge and the outline pass
     // finds a crease. Without it the eye fuses head and neck into one mass and
     // reads the result as an egg on a stick, which is the verbatim critique.
-    const under = gauss(dy + 0.86, 0.26) * smoothstep(-0.40, 0.55, dz);
+    // ROUND 6: centred at dy -0.86 this sat ON the chin button (dy -0.85) and
+    // pulled 8.1 mm of z out of it, which is most of why the profile never
+    // moved outward. It is a plane UNDER the jaw: it belongs at dy -0.95, and
+    // its z-pull has to release as the surface turns to face the camera.
+    const under = gauss(dy + 0.955, 0.235) * smoothstep(-0.40, 0.55, dz);
     sy -= under * 0.105;
-    sz -= under * 0.165;
+    sz -= under * 0.150 * (1 - 0.55 * clamp01(dz - 0.10));
     // ...and the same tuck at the back, under the occiput, so the skull sits
     // ON the neck instead of merging into it.
     sy -= gauss(dy + 0.80, 0.24) * back * 0.075;
@@ -2800,24 +3021,36 @@ export function buildHead(b, rig, o, f) {
       { p: faceT(mW * 0.46, loT + 0.002, 0.0015), rx: 0.0056, rz: 0.0028 },
       { p: faceT(mW * 0.92, seamT + 0.002, 0.0007), rx: 0.0026, rz: 0.0013 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
-    // the seam — the single strongest mark on the lower half of a face
-    b.setColor(mixCol(PALETTE.lip, [0.018, 0.012, 0.013], 0.82)).setMottle(0.008);
+    // THE SEAM. It now lies in a 6 mm groove cut into the skull itself (see
+    // section 6c of the displacement) rather than standing on a flat face, so
+    // it is a dark line at the BOTTOM of a crease — which is what makes it an
+    // ink mark to the outline pass at every yaw instead of only where it
+    // crosses the silhouette. The lift is negative against the grooved surface
+    // for the same reason: at +0.0024 the rod filled its own crease.
+    //
+    // It also runs WIDER than the lips it divides (1.14 mW against 0.92), so
+    // the line continues past the visible lip mass into the cheek. A seam that
+    // stops exactly where the lip volume stops draws a lozenge; a seam that
+    // runs on draws a mouth.
+    b.setColor(mixCol(PALETTE.lip, [0.018, 0.012, 0.013], 0.86)).setMottle(0.008);
     b.addTube([
-      { p: faceT(-mW * 1.02, seamT + 0.011, 0.0010), rx: 0.0018, rz: 0.0012 },
-      { p: faceT(-mW * 0.50, seamT + 0.001, 0.0020), rx: 0.0032, rz: 0.0020 },
-      { p: faceT(0, seamT, 0.0024), rx: 0.0036, rz: 0.0022 },
-      { p: faceT(mW * 0.50, seamT + 0.001, 0.0020), rx: 0.0032, rz: 0.0020 },
-      { p: faceT(mW * 1.02, seamT + 0.011, 0.0010), rx: 0.0018, rz: 0.0012 },
+      { p: faceT(-mW * 1.14, seamT + 0.013, 0.0004), rx: 0.0017, rz: 0.0011 },
+      { p: faceT(-mW * 0.74, seamT + 0.004, 0.0004), rx: 0.0028, rz: 0.0016 },
+      { p: faceT(-mW * 0.34, seamT + 0.000, 0.0006), rx: 0.0034, rz: 0.0019 },
+      { p: faceT(0, seamT - 0.001, 0.0008), rx: 0.0036, rz: 0.0020 },
+      { p: faceT(mW * 0.34, seamT + 0.000, 0.0006), rx: 0.0034, rz: 0.0019 },
+      { p: faceT(mW * 0.74, seamT + 0.004, 0.0004), rx: 0.0028, rz: 0.0016 },
+      { p: faceT(mW * 1.14, seamT + 0.013, 0.0004), rx: 0.0017, rz: 0.0011 },
     ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
     // Two corner darks. The commissures are where a mouth ends, and a seam that
     // fades out at both ends reads as a scratch; a stop at each end reads as a
     // mouth. They are also the only part of it that survives a three-quarter
     // view, which is the angle every shot in the set uses.
     if (!simple()) {
-      b.setColor(mixCol(PALETTE.lip, [0.016, 0.011, 0.012], 0.86)).setMottle(0);
+      b.setColor(mixCol(PALETTE.lip, [0.016, 0.011, 0.012], 0.90)).setMottle(0);
       for (const side of [1, -1]) {
-        const p = faceT(side * mW * 0.98, seamT + 0.006, 0.0012);
-        b.addEllipsoid({ center: p, radius: [0.0034, 0.0030, 0.0026], seg: seg(7), rings: seg(4) });
+        const p = faceT(side * mW * 0.88, seamT + 0.005, 0.0002);
+        b.addEllipsoid({ center: p, radius: [0.0044, 0.0042, 0.0030], seg: seg(7), rings: seg(5) });
       }
     }
     // Philtrum ridges, nose base down to the bow.
@@ -2960,10 +3193,29 @@ export function buildHead(b, rig, o, f) {
       // THE MOUTH. A hard horizontal lozenge on the stomion, 60 mm wide and
       // 6 mm tall. The geometry above builds a seam; this is what makes it
       // survive the band quantiser at a 250 px head and the downsample at 25.
-      k -= 0.400 * mark * blob(dy - mouthYv, 0.036, dx, 0.215) * smoothstep(0.24, 0.66, dz);
+      //
+      // ROUND 6: "the mouth argmin still walks 52 px down the silhouette because
+      // no interior lip seam exists" — and the cause was here, not in the
+      // geometry. A gaussian of half-width 0.215 in dx is down to 0.14 by
+      // |dx| 0.30 and gone by 0.40, and in the three-quarter view EVERY shot in
+      // the set uses, the midline is the SILHOUETTE. So the only part of the
+      // mark that survived was the part hanging off the face's edge. It is now a
+      // flat-topped lozenge: full value clear across the philtrum-to-commissure
+      // span, then a hard shoulder, so the mark exists on the interior cheek
+      // where an inset scan can find it.
+      const mouthLoz = 1 - smoothstep(0.285, 0.430, ax);
+      k -= 0.460 * mark * gauss(dy - mouthYv, 0.050) * mouthLoz * smoothstep(0.16, 0.56, dz);
+      // COMMISSURE. The mouth's full stop. It is also the one landmark on the
+      // lip band whose x does not drift row to row, which is exactly what an
+      // interior argmin scan locks onto — a seam alone gives a scan nothing to
+      // hold, because its darkest column is wherever the noise happens to sit.
+      k -= 0.400 * mark * blob(dy - (mouthYv + 0.004), 0.078, ax - 0.335, 0.070) * smoothstep(0.16, 0.56, dz);
       // ...and the shadow the lower lip casts on the chin, which is what gives
       // the mouth a THIRD dimension instead of a drawn line.
-      k -= 0.150 * blob(dy - FY(T_MENTAL + 0.010), 0.055, dx, 0.215) * smoothstep(0.24, 0.70, dz);
+      k -= 0.150 * blob(dy - FY(T_MENTAL + 0.010), 0.055, dx, 0.245) * smoothstep(0.24, 0.70, dz);
+      // The lower lip itself CATCHES light — a mouth is a light-over-dark pair
+      // exactly like a brow, and without the pale roll the seam reads as a cut.
+      k += 0.105 * blob(dy - FY(T_LIPLOW + 0.004), 0.038, dx, 0.260) * mouthLoz * smoothstep(0.20, 0.62, dz);
       // NOSTRIL / nose base. Two small deep darks under the ball of the nose:
       // an AREA, which is the only part of a nose that survives to thirty metres.
       k -= 0.320 * mark * blob(dy - FY(T_SUBNAS - 0.012), 0.038, ax - 0.085, 0.062) * smoothstep(0.34, 0.74, dz);
@@ -2986,12 +3238,34 @@ export function buildHead(b, rig, o, f) {
 
       // --- MODELLING. Half round 4's amplitude. ----------------------------
       // temple: a flat plane, not a bruise
-      k -= 0.115 * blob(dy - 0.30, 0.26, ax - 0.86, 0.220) * smoothstep(-0.7, 0.5, dz);
-      // nasolabial: a CREASE. 0.150 over a 0.130 half-width painted an 18x34 px
-      // scar down the cheek; 0.070 over 0.075 paints a fold.
-      k -= 0.100 * blob(dy - FY(0.225), 0.085, ax - 0.285, 0.075) * smoothstep(0.34, 0.80, dz);
-      // buccal hollow under the cheekbone, wide and shallow
-      k -= 0.105 * blob(dy - FY(0.300), 0.140, ax - 0.50, 0.200) * front;
+      k -= 0.090 * blob(dy - 0.30, 0.26, ax - 0.86, 0.220) * smoothstep(-0.7, 0.5, dz);
+      // THE PERIORAL CHAIN — nasolabial fold, commissure, marionette line — as
+      // ONE continuous dark running down the corner of the mouth rather than as
+      // three unrelated blobs. This is the mark that makes the interior mouth
+      // scan work, and the reason is geometric, not cosmetic: on a head turned
+      // 60 degrees a horizontal lip seam foreshortens to a short stroke whose
+      // darkest column drifts row to row, so an argmin scan cannot lock onto
+      // it, which is exactly what round 6 reported ("the interior argmin
+      // scatters over x=692..819"). The perioral chain is near VERTICAL in
+      // image space at any yaw, because it runs from the nose wing down past
+      // the corner to the jaw, so every row of the mouth band finds its darkest
+      // interior pixel at the same x. It is also just what a face does.
+      {
+        const dn = smoothstep(FY(0.315), FY(0.245), dy) * (1 - smoothstep(FY(0.118), FY(0.070), dy));
+        // the chain leans outboard as it descends from the ala to the corner,
+        // then tucks back in along the marionette
+        const cx2 = 0.250 + 0.090 * smoothstep(FY(0.300), FY(0.170), dy)
+          - 0.055 * smoothstep(FY(0.150), FY(0.080), dy);
+        k -= 0.245 * mark * dn * Math.exp(-Math.pow((ax - cx2) / 0.056, 2)) * smoothstep(0.20, 0.62, dz);
+      }
+      // Buccal hollow under the cheekbone, wide and shallow. ROUND 6 found an
+      // 80x36 px cross-hatch cluster at (725,502) — meanL 114.8 / sd 15.84
+      // against a surrounding jaw of 142.3 / 8.41 — i.e. a hatch tile firing on
+      // a LIT plane with no crease under it. The hatch pass gates on band index,
+      // so a wide 0.105 albedo dark on the masseter is enough to drop a fully
+      // lit cheek into band 1 and turn the graphite on. Narrowed and halved: the
+      // hollow is a modelling nudge, and the shading is what should carry it.
+      k -= 0.062 * blob(dy - FY(0.300), 0.115, ax - 0.50, 0.165) * front;
       // under the nose: the plane between the alar base and the upper lip, which
       // is in shade under any key above the horizon and is what stops a nose
       // reading as a bump drawn on a flat mask.
@@ -3005,8 +3279,17 @@ export function buildHead(b, rig, o, f) {
 
       // --- BLOCK-IN. The two terms that carry the head at any distance. -----
       // UNDER THE JAW: the wedge that separates head from neck.
-      k -= 0.300 * gauss(dy + 0.84, 0.28) * smoothstep(-0.45, 0.50, dz);
-      k = clamp(k, 0.36, 1.20);
+      // ROUND 6: centred at dy -0.84 this wedge sat at MOUTH height on the front
+      // of the face and put 0.18 of darkening under the lip, which is why an
+      // interior argmin scan kept landing on the jaw shade instead of on the
+      // mouth. It belongs under the mandible.
+      k -= 0.300 * gauss(dy + 0.93, 0.255) * smoothstep(-0.45, 0.50, dz);
+      // 0.36 -> 0.315. At 0.36 the commissure and the perioral chain both
+      // saturated the floor, so the corner of the mouth could not draw itself any
+      // darker than the nasolabial fold beside it and an interior argmin scan had
+      // nothing to lock onto. The floor still keeps the darkest skin mark at 31 %
+      // of base albedo, i.e. well clear of the ink the outline pass lays on top.
+      k = clamp(k, 0.315, 1.20);
       // The cheekbone division: the plane above catches the sky, the plane below
       // turns away and goes a step down. View- and light-independent, so it
       // survives a soldier standing in tree shade with the key pinned at zero.

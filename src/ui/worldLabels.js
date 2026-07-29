@@ -12,7 +12,7 @@ import { makeRng } from '../core/rng.js';
 import { h, clear, svgEl } from './dom.js';
 import {
   captureRing, inkRule, inkGauge, damagePlate, wobblyPath, splatPath, hatchPath,
-  iconMarkup, roughCircle,
+  iconMarkup, roughCircle, fieldFigure,
 } from './icons.js';
 import { deckleClip } from './style.js';
 
@@ -217,6 +217,15 @@ const DMG_GRAV = 900;
 const DMG_LIFE = 1.35;
 const CRIT_LIFE = 1.75;
 
+// How much bigger than life a command-map figure is drawn, and the window it is
+// held inside. FIG_MIN is the floor below which a silhouette stops being one:
+// at 24 px — what round 6 measured — a soldier is a smudge, and the whole reason
+// `command` has been the worst card in the set for five rounds. FIG_MAX stops a
+// counter in the near corner of the map from towering over the survey.
+const FIG_GAIN = 1.75;
+const FIG_MIN = 40;
+const FIG_MAX = 88;
+
 export class WorldLabels {
   /**
    * @param {HTMLElement} layer container (position:absolute, inset:0)
@@ -231,6 +240,7 @@ export class WorldLabels {
 
     this.tags = new Map();      // unit -> { el, fill, hpKey, offset }
     this.tokens = new Map();    // unit -> { el, key }
+    this.figures = new Map();   // unit -> { el, ang }  (command-map symbols)
     this.rings = new Map();     // id   -> { el, anchor, circle, progress }
 
     this._p = new THREE.Vector3();
@@ -249,6 +259,15 @@ export class WorldLabels {
     this.screenLift = 0;
     /** Command mode pushes counters onto the map; action mode does not. */
     this.useTokens = false;
+    /**
+     * Command mode also draws the SOLDIER, not only his counter.
+     *
+     * At the map camera the rendered figure is 13x24 px of salt-and-pepper (see
+     * icons.js fieldFigure), so CommandMode hides the rig and this layer draws an
+     * authored symbol in its place at FIG_GAIN times the size the man projected
+     * to. Off in every other phase — an action shot photographs the actual model.
+     */
+    this.useFigures = false;
     /** The unit the page is currently pointed at (its counter is ringed). */
     this.markedUnit = null;
     this._occClock = 0;
@@ -287,15 +306,23 @@ export class WorldLabels {
    *   `occlusion`    -> cull slips whose soldier is out of sight
    *   `lift`         -> extra screen-space rise above the anchor, in px
    */
-  setPolicy({ filter = null, occlusion = true, lift = 0, tokens = false, marked = null } = {}) {
+  setPolicy({
+    filter = null, occlusion = true, lift = 0, tokens = false, marked = null, figures = null,
+  } = {}) {
     this.filter = typeof filter === 'function' ? filter : null;
     this.useOcclusion = occlusion !== false;
     this.screenLift = lift || 0;
     this.useTokens = !!tokens;
+    this.useFigures = figures === null ? !!tokens : !!figures;
     this.markedUnit = marked || null;
     if (!this.useTokens) {
       for (const t of this.tokens.values()) {
         if (t.el.style.visibility !== 'hidden') t.el.style.visibility = 'hidden';
+      }
+    }
+    if (!this.useFigures) {
+      for (const f of this.figures.values()) {
+        if (f.el.style.visibility !== 'hidden') f.el.style.visibility = 'hidden';
       }
     }
   }
@@ -386,6 +413,8 @@ export class WorldLabels {
     this.tags.delete(unit);
     const tok = this.tokens.get(unit);
     if (tok) { tok.el.remove(); this.tokens.delete(unit); }
+    const fig = this.figures.get(unit);
+    if (fig) { fig.el.remove(); this.figures.delete(unit); }
   }
 
   /** Re-sync the tracked set to a unit list (adds new, drops removed). */
@@ -692,6 +721,7 @@ export class WorldLabels {
    */
   _updateTokens() {
     if (!this.useTokens) return;
+    this._tokStamp = (this._tokStamp || 0) + 1;
     const out = this._out;
     const order = this._tokOrder || (this._tokOrder = []);
     order.length = 0;
@@ -717,7 +747,13 @@ export class WorldLabels {
       // and where his boots are, for the leader
       this._pf.set(unit.pos.x, unit.pos.y, unit.pos.z);
       this.project(this._pf, out);
-      const footY = out.y;
+      const footY = out.y, footX = out.x;
+      // How tall the man actually projects. This is the number the whole command
+      // frame turns on: round 6 measured it at 24 px and the critic could not
+      // find a soldier under sixteen of eighteen markers.
+      const projH = Math.max(2, footY - hy);
+      t.figH = this.useFigures && !unit.isVehicle
+        ? Math.min(FIG_MAX, Math.max(FIG_MIN, projH * FIG_GAIN)) : 0;
 
       if (!tok) {
         const el = h('div', { class: 'vc-wl vc-token' + (t.foe ? ' foe' : '') });
@@ -745,11 +781,15 @@ export class WorldLabels {
       // page, give or take the small perspective courtesy that keeps the far
       // ones from shouting over the near ones.
       tok.sc = clamp01(1.30 - Math.max(0, depth - 30) / 190) * 0.40 + 0.86;
-      // Card bottom edge just clears the crown, so the stem between the two is a
-      // tick and not a flagpole.
-      tok.x = hx; tok.y = hy - 13 * tok.sc; tok.footY = footY; tok.depth = depth;
+      // Card bottom edge just clears the head of whatever is standing there —
+      // the DRAWN figure when there is one, otherwise the rendered crown.
+      const crownY = t.figH ? footY - t.figH : hy;
+      tok.x = t.figH ? footX : hx;
+      tok.y = crownY - 13 * tok.sc;
+      tok.footY = footY; tok.crownY = crownY; tok.depth = depth;
       tok.halfW = 27 * tok.sc; tok.rowH = 30 * tok.sc;
       tok.unit = unit; tok.foe = t.foe;
+      tok.figH = t.figH; tok.figX = footX; tok.figY = footY;
       order.push(tok);
     }
 
@@ -772,7 +812,10 @@ export class WorldLabels {
       }
       if (lane >= 5) lane = 0;
       k.lane = lane;
-      k.cy = k.y - lane * (k.rowH * 0.80);
+      // ...and never above the sheet's own headline. A counter lifted over the
+      // running head ("SURVEY SHEET IV — Vasel Crossing") covers the one line
+      // that says what the map IS, which is worse than a counter one lane low.
+      k.cy = Math.max(this.h * 0.045 + k.rowH * 0.5, k.y - lane * (k.rowH * 0.80));
       placed.push({ cx: k.x, cy: k.cy, halfW: k.halfW, rowH: k.rowH });
     }
 
@@ -787,8 +830,11 @@ export class WorldLabels {
       // first cut of this looked like. Capped at 30 px it reads as the tick a
       // draughtsman puts between a symbol and the thing it labels.
       k.el.style.setProperty('--lead',
-        (Math.max(5, Math.min(30, k.footY - k.cy - 14 * k.sc)) / k.sc).toFixed(1) + 'px');
+        (Math.max(5, Math.min(30, k.crownY - k.cy - 14 * k.sc)) / k.sc).toFixed(1) + 'px');
       if (k.fac) k.fac.setAttribute('transform', 'rotate(' + k.ang.toFixed(1) + ' 26 29)');
+
+      // --- the figure the counter belongs to -------------------------------
+      if (k.figH) this._placeFigure(unit, k);
 
       const isSel = unit === this.markedUnit;
       if (isSel !== k.isSel) {
@@ -818,10 +864,54 @@ export class WorldLabels {
       }
     }
 
+    // Any figure whose counter did not place this frame has nothing standing
+    // under it: park it rather than leaving a soldier drawn on stale ground.
+    for (const [unit, fig] of this.figures) {
+      if (fig.stamp !== this._tokStamp && fig.el.style.visibility !== 'hidden') {
+        fig.el.style.visibility = 'hidden';
+      }
+    }
+
     // units that vanished from the tracked set
     for (const [unit, tok] of this.tokens) {
       if (!this.tags.has(unit)) { tok.el.remove(); this.tokens.delete(unit); }
     }
+    for (const [unit, fig] of this.figures) {
+      if (!this.tags.has(unit)) { fig.el.remove(); this.figures.delete(unit); }
+    }
+  }
+
+  /**
+   * Draw (or move) the map symbol for one soldier, standing on his own boots.
+   *
+   * The figure is anchored by its FEET at the projected ground point and scaled
+   * so it reads at map distance — never smaller than FIG_MIN, which is the size
+   * below which a silhouette stops being a silhouette. It is mirrored when the
+   * man is facing screen-left, so a section reads as a formation with a
+   * direction rather than as a row of identical stamps.
+   */
+  _placeFigure(unit, k) {
+    let fig = this.figures.get(unit);
+    if (!fig) {
+      const foe = (unit.team | 0) === 1;
+      const el = h('div', { class: 'vc-wl vc-figure' + (foe ? ' foe' : '') });
+      el.appendChild(fieldFigure(foe ? 1 : 0, String(unit.cls || 'scout').toLowerCase(),
+        (hashStr(unit.name || 'x') & 0x3ff) + 11));
+      this.layer.appendChild(el);
+      fig = { el, flip: null, stamp: -1 };
+      this.figures.set(unit, fig);
+    }
+    fig.stamp = this._tokStamp;
+    const sc = k.figH / 76;
+    // Facing: `k.ang` is the screen bearing of the man's own aim, 0 = up the page.
+    const flip = Math.sin((k.ang || 0) * Math.PI / 180) < -0.12;
+    if (flip !== fig.flip) { fig.flip = flip; fig.el.classList.toggle('mirror', flip); }
+    fig.el.style.visibility = 'visible';
+    fig.el.style.opacity = (k.foe ? 0.94 : 1).toFixed(2);
+    fig.el.style.transform = 'translate(' + k.figX.toFixed(1) + 'px,' + k.figY.toFixed(1) +
+      'px) translate(-50%,-100%) scale(' + sc.toFixed(3) + ')';
+    fig.el.classList.toggle('spent', !!unit.hasActed && !k.foe);
+    fig.el.classList.toggle('sel', unit === this.markedUnit);
   }
 
   // ---------------------------------------------------------------- update
@@ -899,6 +989,8 @@ export class WorldLabels {
     this.tags.clear();
     for (const t of this.tokens.values()) t.el.remove();
     this.tokens.clear();
+    for (const f of this.figures.values()) f.el.remove();
+    this.figures.clear();
     for (const r of this.rings.values()) r.el.remove();
     this.rings.clear();
     for (const d of this.dmg) d.el.remove();

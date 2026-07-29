@@ -74,6 +74,32 @@ const SETTLE_TOTAL = 120;
 /** Hard watchdog so the harness always gets a frame instead of a 45 s timeout. */
 const CAPTURE_WATCHDOG_MS = 32000;
 
+/**
+ * PIXEL convergence, run after the world has been frozen.
+ *
+ * The settle loop above keys on `renderer.info` and the label layer, which
+ * catches everything that changes the DRAW LIST and nothing that changes only
+ * the picture. Measured on `command`: the PNG at --wait 900 and the PNG at
+ * --wait 2600 differ on 18.3% of their bytes (max 60 LSB), the difference
+ * concentrated on the masonry and the terrain edges — i.e. something is still
+ * converging after `__READY__` with every render counter identical, so the
+ * harness reports success and writes whichever of two different images the
+ * shutter happened to land on. Both long waits agree with each other, so it is
+ * a settling process and not noise.
+ *
+ * The only signal that catches that is the frame itself. After the freeze the
+ * loop below keeps pumping render-only frames and downsamples each one to a
+ * PIXEL_PROBE-wide thumbnail; the shutter is only armed once consecutive
+ * thumbnails stop moving. It is bounded in FRAMES, so it cannot make the
+ * capture a function of wall-clock time, and the world is already paused, so
+ * the extra frames cannot advance an animation.
+ */
+const PIXEL_PROBE_W = 128;
+const PIXEL_STABLE_FRAMES = 24;
+const PIXEL_SETTLE_MAX = 900;
+/** Mean absolute LSB difference between two probes that still counts as equal. */
+const PIXEL_EPS = 0.25;
+
 const _focus = new THREE.Vector3();
 
 const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -836,7 +862,60 @@ async function captureFlow(S) {
     '#hud *, #hud *::before, #hud *::after{animation-play-state:paused!important;transition:none!important}';
   document.head.appendChild(freeze);
   await raf();                     // one frozen frame, so the canvas holds it
+  const pixelFrames = await settlePixels(renderer);
+  window.__STATS__ = Object.assign({}, window.__STATS__, { pixelSettleFrames: pixelFrames });
   window.__READY__ = true;
+}
+
+/**
+ * Pump render-only frames until the IMAGE stops changing. See PIXEL_PROBE_W.
+ * Returns how many frames it took (or -1 if the readback is unavailable, in
+ * which case nothing is waited for and the old behaviour stands).
+ */
+async function settlePixels(renderer) {
+  const src = renderer && renderer.domElement;
+  if (!src || typeof document === 'undefined') return -1;
+  let ctx, w, h;
+  try {
+    const probe = document.createElement('canvas');
+    w = PIXEL_PROBE_W;
+    h = Math.max(2, Math.round((PIXEL_PROBE_W * src.height) / Math.max(1, src.width)));
+    probe.width = w; probe.height = h;
+    ctx = probe.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return -1;
+  } catch { return -1; }
+
+  // The readback has to happen inside a rAF callback, immediately after the
+  // engine's own callback has rendered into the drawing buffer: the context is
+  // not `preserveDrawingBuffer`, so outside that window there is nothing to
+  // copy. `raf()` resolves from within the callback, so awaiting it lands here.
+  const grab = () => {
+    try {
+      ctx.drawImage(src, 0, 0, w, h);
+      return ctx.getImageData(0, 0, w, h).data;
+    } catch { return null; }
+  };
+
+  let prev = null, stable = 0, n = 0;
+  while (n < PIXEL_SETTLE_MAX) {
+    await raf();
+    n++;
+    const cur = grab();
+    if (!cur) return -1;
+    if (prev) {
+      let sum = 0;
+      for (let i = 0; i < cur.length; i += 4) {
+        sum += Math.abs(cur[i] - prev[i]) + Math.abs(cur[i + 1] - prev[i + 1]) +
+          Math.abs(cur[i + 2] - prev[i + 2]);
+      }
+      const mad = sum / ((cur.length / 4) * 3);
+      if (mad <= PIXEL_EPS) stable++; else stable = 0;
+      if (stable >= PIXEL_STABLE_FRAMES) return n;
+    }
+    prev = cur;
+  }
+  console.warn('[main] pixel settle never converged in ' + PIXEL_SETTLE_MAX + ' frames');
+  return n;
 }
 
 function publishStats(S, extra) {

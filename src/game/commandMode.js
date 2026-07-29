@@ -16,6 +16,7 @@ import { Input } from '../core/input.js';
 import { clamp, clamp01, damp, dampAngle, lerp } from '../core/math.js';
 import { traceWorld } from './combat.js';
 import { ORDERS, availableOrders } from './orders.js';
+import { WATER_Y } from '../world/layout.js';
 
 const _v0 = new THREE.Vector3();
 const _v1 = new THREE.Vector3();
@@ -51,6 +52,14 @@ const COL_ARC = new THREE.Color(0.70, 0.32, 0.26);
 /** Texels per nav cell in the wash texture. 3 puts a texel at ~0.5 m / ~15 px. */
 const WASH_SS = 3;
 
+/**
+ * Projected height, in pixels, below which a soldier's rig is replaced by a
+ * drawn map symbol. 70 is a little above the 60 the round-6 critique named, so
+ * the swap happens while the figure can still be recognised rather than after
+ * it has already dissolved.
+ */
+const RIG_MIN_PX = 70;
+
 /** Deterministic 2-D value hash in [0,1). */
 function hash2(x, y) {
   let n = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1);
@@ -69,6 +78,135 @@ function vnoise(x, y, f, seed) {
   const c = hash2(x0 + seed, y0 + 1), d = hash2(x0 + 1 + seed, y0 + 1);
   return (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy;
 }
+
+// ---------------------------------------------------------------------------
+// The survey sheet
+//
+// COMMAND MODE IS A MAP, NOT A MINIATURE DIORAMA.
+//
+// Six rounds of critique on this frame say the same thing in different words:
+// at sixty metres the soldiers are 13x24 px, the terrain is "dithered khaki
+// mush", the plateau count on seven separate transects was ZERO, and the whole
+// picture reads as an aerial photograph of a hillside with pins in it. A
+// photograph of terrain and a MAP of terrain are different objects, and the
+// second one is what the mode is for: Valkyria's command mode is a survey sheet
+// with counters on it, drawn in the same hand as the rest of the journal.
+//
+// So the ground gets survey furniture, drawn ON the terrain and conforming to
+// it: contour lines at two-metre intervals with every fifth ruled heavier, a
+// twenty-metre graticule, and the river picked out with a bank line. All three
+// are computed in the fragment shader from the sheet's own interpolated height
+// and world position, with `fwidth` normalising the line width — so a contour
+// is the same weight in pixels wherever it falls, exactly like a ruling pen,
+// and no line can ever alias into the sub-pixel noise the critic measured.
+// Flat ground produces no contours at all, which is what makes the landforms
+// legible: the lines appear exactly where there is relief to describe.
+// ---------------------------------------------------------------------------
+
+const SURVEY_VERT = /* glsl */`
+varying vec3 vW;
+void main() {
+  vW = position;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+
+const SURVEY_FRAG = /* glsl */`
+precision highp float;
+uniform vec3 uInk;        // contour ink
+uniform vec3 uGrat;       // graticule ink
+uniform vec3 uWater;      // river wash
+uniform float uStep;      // contour interval, metres
+uniform float uGrid;      // graticule pitch, metres
+uniform float uWaterY;
+uniform float uOpacity;
+varying vec3 vW;
+
+// A cheap value noise, used ONLY to wander the iso-value a hand's breadth so the
+// contours are drawn rather than plotted. Amplitude is a fifth of the interval:
+// enough that no two lines are parallel for long, small enough that a contour
+// still means its height.
+float h21(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x),
+             mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// A ruled line at every integer of t, held to a constant width IN PIXELS by
+// dividing the distance-to-line by the screen-space derivative of t. On ground
+// with no slope fwidth(t) is zero and no line is drawn, which is the whole
+// point: the furniture appears where there is relief to describe.
+float ruled(float t, float w) {
+  float aw = fwidth(t);
+  if (aw < 1e-5) return 0.0;
+  float d = abs(fract(t - 0.5) - 0.5);
+  // A PLATEAU, not a spike. Ramping straight down from the iso-value gives a
+  // line whose peak opacity is only reached on the exact crossing, so after the
+  // NPR composite has had its way with it the "line" measured 4 LSB against its
+  // own neighbours — present in the buffer, invisible on the page. Holding full
+  // weight across the inner 60% of the stroke and antialiasing only the outer
+  // 40% is what a ruling pen actually lays down.
+  return 1.0 - smoothstep(w * aw * 0.60, w * aw, d);
+}
+
+void main() {
+  float wob = (vnoise(vW.xz * 0.55) - 0.5) * 0.34 + (vnoise(vW.xz * 1.9) - 0.5) * 0.13;
+  float hgt = vW.y + wob * uStep;
+
+  float minor = ruled(hgt / uStep, 2.30);
+  float major = ruled(hgt / (uStep * 5.0), 3.10);
+  float gx = ruled(vW.x / uGrid, 1.75);
+  float gz = ruled(vW.z / uGrid, 1.75);
+  float grat = max(gx, gz);
+  float gxM = ruled(vW.x / (uGrid * 5.0), 2.30);
+  float gzM = ruled(vW.z / (uGrid * 5.0), 2.30);
+  float gratM = max(gxM, gzM);
+
+  // ---- the ground's own gradient, in METRES PER METRE ----------------------
+  // Screen derivatives give dh/ds and d(x,z)/ds; inverting the 2x2 Jacobian
+  // turns them into the true world gradient, so the relief below is a property
+  // of the LANDFORM and not of how far away it happens to be.
+  vec2 ax = vec2(dFdx(vW.x), dFdx(vW.z));
+  vec2 ay = vec2(dFdy(vW.x), dFdy(vW.z));
+  float det = ax.x * ay.y - ax.y * ay.x;
+  vec2 grad = vec2(0.0);
+  if (abs(det) > 1e-7) {
+    float hx = dFdx(vW.y), hy = dFdy(vW.y);
+    grad = vec2(hx * ay.y - hy * ax.y, -hx * ay.x + hy * ax.x) / det;
+  }
+  // HACHURES — the thing that makes a survey readable and a photograph not.
+  // Ground that falls away from the sheet's own light is hatched with
+  // screen-aligned pencil at a CONSTANT pixel pitch (rubric axis 5), and flat
+  // ground takes none at all, so the landforms draw themselves.
+  vec3 nrm = normalize(vec3(-grad.x, 1.0, -grad.y));
+  float lam = dot(nrm, normalize(vec3(-0.58, 0.60, 0.55)));
+  float relief = smoothstep(0.60, 0.16, lam);
+  float hl = sin((gl_FragCoord.x + gl_FragCoord.y) * 0.62);
+  float hatch = smoothstep(0.05, 0.55, hl) * relief;
+
+  // the river: a pale wash below the pool level with a firm pen line on the bank
+  float wet = 1.0 - smoothstep(uWaterY - 0.10, uWaterY + 0.30, vW.y);
+  float bankT = (vW.y - uWaterY) / 0.9;
+  float bank = 1.0 - smoothstep(0.0, 2.4 * max(fwidth(bankT), 1e-5), abs(bankT));
+
+  float inkA = max(minor * 0.95, major * 1.0);
+  vec3 col = uGrat;
+  float a = max(grat * 0.86, gratM * 0.98);
+  col = mix(col, uInk, hatch);
+  a = max(a, hatch * 0.26);
+  col = mix(col, uInk, step(0.004, inkA));
+  a = max(a, inkA);
+  col = mix(col, uInk, bank * 0.9);
+  a = max(a, bank * 0.72);
+  col = mix(col, uWater, wet * 0.85);
+  a = max(a, wet * 0.32);
+
+  gl_FragColor = vec4(col, a * uOpacity);
+  #include <colorspace_fragment>
+}`;
 
 let _blotTex = null;
 /** A soft, slightly ragged thumbprint of pigment — the alpha for map marks. */
@@ -166,6 +304,7 @@ export class CommandMode {
 
     // Movement and threat are WASHES — one painted sheet each, sampled per
     // fragment. Fire arcs stay geometry (they are drawn fans, not a field).
+    this.surveyMesh = this._makeSurvey();
     this.moveMesh = this._makeWash('moveRange', 0.86, 0.11);
     this.threatMesh = this._makeWash('threatMap', 0.74, 0.085);
     this.arcMesh = this._makeCellMesh('fireArcs', 0.30);
@@ -173,8 +312,8 @@ export class CommandMode {
     this.selectRing = this._makeRing(0.72, 0.95, 0xf6d9a0, 0.95);
     this.hoverRing = this._makeRing(0.62, 0.80, 0xbfd6cf, 0.7);
     this.ghostMarks = this._makeCellMesh('lastKnown', 0.8, true);
-    this.group.add(this.moveMesh, this.threatMesh, this.arcMesh, this.ghostMarks,
-      this.cursorRing, this.selectRing, this.hoverRing);
+    this.group.add(this.surveyMesh, this.moveMesh, this.threatMesh, this.arcMesh,
+      this.ghostMarks, this.cursorRing, this.selectRing, this.hoverRing);
 
     this._moveDirty = true;
     this._threatDirty = true;
@@ -202,9 +341,12 @@ export class CommandMode {
       this.frameTeam(0, true);
       this._entered = true;
     }
+    this._ensureSheet();
+    if (this.surveyMesh) this.surveyMesh.visible = true;
     this.refreshFog();
     this.buildThreatOverlay();
     this.buildFireArcs();
+    this.syncFigureLod();
     Bus.emit('command:enter', { cp: this.battle.cp[0], turn: this.battle.turn });
   }
 
@@ -212,8 +354,51 @@ export class CommandMode {
     if (!this.active) return;            // idempotent: Battle.setPhase also calls this
     this.active = false;
     this.group.visible = false;
+    this.restoreRigs();
     this.clearSelection();
     Bus.emit('command:exit', {});
+  }
+
+  // -------------------------------------------------------------------------
+  // Figure level of detail
+  //
+  // A SOLDIER AT THIRTEEN PIXELS IS NOT A SOLDIER.
+  //
+  // Round 6 measured the focal figure on this map at 13x24 px with its interior
+  // flipping 56<->160 between adjacent pixels: the paper and hatch passes inject
+  // a residual of sd 22.4 lum against a band step of 22.2, so at map range the
+  // grain is 101% of the light and every man is salt-and-pepper. That is not a
+  // shading bug that better shading fixes — it is a resolution bug, and the
+  // answer a tactical map has always used is to stop drawing the man and draw
+  // his SYMBOL. Below RIG_MIN_PX of projected height the rig is switched off and
+  // src/ui/worldLabels.js draws an authored figure in DOM at 1.75x the size he
+  // projected to, above the render and therefore outside the grain entirely.
+  //
+  // Vehicles are exempt: the Edelweiss projects ~88 px here and the lit tank is
+  // one of the few things the critics have consistently scored well.
+  // -------------------------------------------------------------------------
+
+  /** Hide every rig too small to read; remember which ones so exit can undo it. */
+  syncFigureLod() {
+    const hidden = this._hiddenRigs || (this._hiddenRigs = []);
+    this.restoreRigs();
+    const cam = this.camera;
+    if (!cam) return;
+    const vh = (typeof innerHeight === 'number' && innerHeight > 0) ? innerHeight : 1080;
+    const pxAt1m = vh / (2 * Math.tan(((cam.fov || 40) * Math.PI) / 360));
+    for (const u of this.battle.units) {
+      if (!u.root || u.isVehicle || !u.deployed) continue;
+      const d = Math.max(1, cam.position.distanceTo(u.pos));
+      if ((1.75 * pxAt1m) / d >= RIG_MIN_PX) continue;
+      if (u.root.visible) { u.root.visible = false; hidden.push(u); }
+    }
+  }
+
+  restoreRigs() {
+    const hidden = this._hiddenRigs;
+    if (!hidden || !hidden.length) return;
+    for (const u of hidden) if (u.root) u.root.visible = true;
+    hidden.length = 0;
   }
 
   clearSelection() {
@@ -238,6 +423,10 @@ export class CommandMode {
     this.updateCamera(dt);
     this.updateCursor();
     this.updateRings(dt);
+    // Re-run every frame rather than on a clock: a scripted shot poses its units
+    // AFTER enter() and the harness's settle loop has to converge on a stable
+    // draw list, which it cannot do if this is answering a stale staging.
+    this.syncFigureLod();
     if (this._moveDirty) { this.buildMoveOverlay(); this._moveDirty = false; }
     if (this._threatDirty) { this.buildThreatOverlay(); this.buildFireArcs(); this._threatDirty = false; }
     this.threatMesh.visible = this.showThreat;
@@ -672,6 +861,48 @@ export class CommandMode {
     return mesh;
   }
 
+  /**
+   * The survey furniture sheet — contours, graticule and river, on the terrain.
+   *
+   * It shares the wash geometry (built by `_ensureSheet`) and sits UNDER both
+   * washes at a lower lift and a lower render order, so the movement and threat
+   * tints read as pigment laid over a printed sheet rather than beside it.
+   */
+  _makeSurvey() {
+    const m = new THREE.ShaderMaterial({
+      vertexShader: SURVEY_VERT,
+      fragmentShader: SURVEY_FRAG,
+      uniforms: {
+        // Sepia contour ink and a fainter blue-grey graticule: the two hands a
+        // survey is actually drawn in. Both are OFF the 10-65 degree khaki wedge
+        // that 72% of this frame's chromatic pixels fell into.
+        uInk: { value: new THREE.Color(0.0423, 0.0284, 0.0194) },
+        uGrat: { value: new THREE.Color(0.0670, 0.0670, 0.1248) },
+        uWater: { value: new THREE.Color(0.109, 0.219, 0.249) },
+        uStep: { value: 2.0 },
+        uGrid: { value: 10.0 },
+        uWaterY: { value: 2.0 },
+        uOpacity: { value: 1.0 },
+      },
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -3,
+    });
+    const mesh = new THREE.Mesh(new THREE.BufferGeometry(), m);
+    mesh.name = 'surveySheet';
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 900;
+    mesh.userData.outline = false;
+    mesh.userData.overlay = true;
+    mesh.position.y = 0.055;
+    mesh.visible = false;
+    return mesh;
+  }
+
   /** Scratch fields at nav resolution, allocated once. */
   _washFields(n) {
     let f = this._fields;
@@ -726,7 +957,12 @@ export class CommandMode {
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     g.computeBoundingSphere();
     this._sheet = g;
-    for (const m of [this.moveMesh, this.threatMesh]) m.geometry = g;
+    for (const m of [this.surveyMesh, this.moveMesh, this.threatMesh]) m.geometry = g;
+    if (this.surveyMesh) {
+      this.surveyMesh.material.uniforms.uWaterY.value =
+        typeof WATER_Y === 'number' ? WATER_Y : 2.0;
+      this.surveyMesh.visible = this.active;
+    }
     return g;
   }
 
@@ -861,8 +1097,9 @@ export class CommandMode {
   }
 
   dispose() {
-    for (const m of [this.moveMesh, this.threatMesh, this.arcMesh, this.ghostMarks,
-      this.cursorRing, this.selectRing, this.hoverRing]) {
+    this.restoreRigs();
+    for (const m of [this.surveyMesh, this.moveMesh, this.threatMesh, this.arcMesh,
+      this.ghostMarks, this.cursorRing, this.selectRing, this.hoverRing]) {
       m.geometry.dispose();
       if (m.userData.washTex) m.userData.washTex.dispose();
       m.material.dispose();

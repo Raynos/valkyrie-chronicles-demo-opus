@@ -28,7 +28,25 @@ const _p = new THREE.Vector3();
 const _s = new THREE.Vector3();
 const _c = new THREE.Color();
 
-const TILE = 30;
+// GRASS TILE PITCH — the granularity of the sward's level of detail.
+//
+// This was 30 m for six rounds and it is the reason the near field was so
+// expensive. A tile is toggled and thinned as ONE object, so a 30 m tile is a
+// 30 m quantum: the tile the camera is standing in draws every blade it owns
+// out to fifteen metres in EVERY direction, including the half of it that is
+// behind the lens, and the frustum test (one bounding sphere per tile) can
+// never reject it. Measured on `dusk`, the two tiles nearest the camera were
+// 502 k triangles — 45% of the whole sward — for a wedge of ground of which
+// less than half was on the page.
+//
+// At 15 m the same law spends a quarter as much per quantum, the frustum test
+// starts rejecting the tiles behind and beside the lens outright, and the 1/d^2
+// ramp below can hold the near field at FULL density (which the brief asked
+// for) without paying for it across a 30 m square. The price is draw calls —
+// three per live tile — and that is why the ramp switches a tile off entirely
+// once its blades fall under a third of a pixel wide rather than drawing a
+// hundred of them for the sake of it.
+const TILE = 15;
 
 // ---------------------------------------------------------------------------
 // blade geometry
@@ -774,7 +792,11 @@ export class Vegetation {
           this.group.add(im);
           meshes.push(im);
         }
-        this.grassTiles.push({ meshes, cx: x0 + TILE * 0.5, cz: z0 + TILE * 0.5 });
+        let fullBlades = 0;
+        for (const im of meshes) fullBlades += im.userData.fullCount;
+        this.grassTiles.push({
+          meshes, fullBlades, cx: x0 + TILE * 0.5, cz: z0 + TILE * 0.5,
+        });
       }
     }
   }
@@ -1359,22 +1381,93 @@ export class Vegetation {
     // and most of a 35 m tile whose blades are a third of a pixel wide. The
     // whole point of the count-LOD is that the near field can be as dense as the
     // picture needs while the mid-distance costs nothing.
-    const nearFull = 11.0;
-    const thinEnd = 27.0;
+    // ROUND 7: THE RAMP IS NOW A SCREEN-SPACE LAW, NOT A METRIC ONE.
+    //
+    // Two measured bugs in the round-6 ramp, both of which put triangles exactly
+    // where nobody can see them:
+    //
+    //   1. "Nearest corner, roughly" was `centreDistance - TILE * 0.7` = d - 21 m
+    //      on a 30 m tile. That is not the nearest corner of anything: a tile
+    //      whose CENTRE is 32 m away scored d = 11 and drew every blade it owns,
+    //      and one at 48 m still drew a twentieth. Measured on `dusk`, the tiles
+    //      in the 30-40 m ring were the single largest bucket in the frame —
+    //      752 k triangles, MORE than the 10-20 m ring's 502 k. The budget was
+    //      being spent at the far end of the ramp.
+    //   2. The ramp was in metres, so it did not know the lens. `closeup` is a
+    //      36-degree lens and `overview` a 42; the same tile at the same distance
+    //      is worth 17% more screen area on one than the other, and a blade that
+    //      is half a pixel wide on one is a third of a pixel on the other.
+    //
+    // What actually matters is how much of the PAGE a blade covers, and that is
+    // solvable rather than guessable. On a ground plane seen at grazing incidence
+    // from a lens h metres up, the screen area of one square metre of turf at
+    // distance d goes as h/d^3, one blade's screen area goes as 1/d^2, so if we
+    // draw N(d) blades per square metre the FRACTION OF THE PAGE the sward covers
+    // is N(d)/(h*d). Constant cover therefore wants N ~ d — impossible — and the
+    // familiar 1/d^2 (constant blades per pixel) makes the cover fall as 1/d^3,
+    // which is exactly what an over-thinned mid-distance looks like: the field
+    // goes bald forty metres out while the near turf is fine.
+    //
+    // So the ramp is two laws with a knee:
+    //   d <= NEAR_FULL   every blade. The foreground of `grass`, `closeup`,
+    //                    `tank` and every over-the-shoulder frame, untouched.
+    //   NEAR_FULL..KNEE  (NEAR_FULL/d)^MID_P with MID_P = 1.0, i.e. the sward
+    //                    thins far more slowly than screen density does, so the
+    //                    mid-field — which is most of the PICTURE in every wide
+    //                    shot — stays a field rather than a lawn with gaps.
+    //   d > KNEE         cubic. Past thirty metres a 2.5 cm blade is under a
+    //                    pixel wide and the sward's whole job is a value shift
+    //                    over terrain already painted the same green, so it
+    //                    collapses fast; by PX_OFF of apparent width it can only
+    //                    alias, and the tile is switched off outright.
+    //
+    // Distance is the true distance to the tile's FOOTPRINT (an axis-aligned
+    // TILE-metre square), so a tile the camera is standing at the edge of scores
+    // 0 and not half a tile.
+    const NEAR_FULL = 12.0;      // metres of full density around the lens
+    const KNEE = 26.0;           // where a blade drops under a pixel
+    const MID_P = 1.0;           // mid-field exponent (screen density would be 2)
+    const FAR_P = 3.2;           // beyond the knee
+    const FLOOR = 0.028;         // never thinner than this while a tile is on
+    const PX_OFF = 0.34;         // a blade narrower than this is deleted
+    const MIN_BLADES = 260;      // fewer than this and the tile is not worth a draw call
+    const ONE_CUT = 26.0;        // past here the three blade cuts collapse to one
+    const ONE_CUT_IDX = 1;       // the broad leaf: 7 triangles, the sward's mean
+    const BLADE_W = 0.025;       // mean drawn width of the three cuts, metres
+    const KNEE_F = Math.pow(NEAR_FULL / KNEE, MID_P);
+    const vh = (typeof innerHeight === 'number' && innerHeight > 0) ? innerHeight : 1080;
+    // px of image per metre of lateral extent one metre down the view axis
+    const pxAt1m = vh / (2 * Math.tan(((camera.fov || 42) * Math.PI) / 360));
+    const half = TILE * 0.5;
     for (let i = 0; i < this.grassTiles.length; i++) {
       const t = this.grassTiles[i];
-      const dx = t.cx - cx, dz = t.cz - cz;
-      const d2 = dx * dx + dz * dz;
-      const on = d2 < cut * cut;
+      const ddx = Math.max(0, Math.abs(t.cx - cx) - half);
+      const ddz = Math.max(0, Math.abs(t.cz - cz) - half);
+      const d = Math.hypot(ddx, ddz);
+      const px = (BLADE_W * pxAt1m) / Math.max(1e-3, d);
       let f = 1;
-      if (on) {
-        const d = Math.sqrt(d2) - TILE * 0.7;      // nearest corner, roughly
-        f = 1 - smoothstep(nearFull, thinEnd, d) * 0.955;
-      }
+      if (d > KNEE) f = Math.max(FLOOR, KNEE_F * Math.pow(KNEE / d, FAR_P));
+      else if (d > NEAR_FULL) f = Math.pow(NEAR_FULL / d, MID_P);
+      // A tile drawing a scatter of blades is three draw calls buying a value
+      // shift nobody can see. Below MIN_BLADES it is worth more as nothing.
+      const on = d < cut && px >= PX_OFF && t.fullBlades * f >= MIN_BLADES;
+      // ONE CUT PAST THE KNEE.
+      //
+      // The sward is built in three blade cuts — fine bent, broad leaf, big flag
+      // — because the FOREGROUND needs the variety; the tile pays three draw
+      // calls for it. Past ONE_CUT a blade is under a pixel wide and the three
+      // cuts are indistinguishable by construction, so the far field collapses
+      // onto the middle cut alone and carries the WHOLE tile's share of blades
+      // in it. Same blade count, same triangle cost (the middle cut is exactly
+      // the sward's mean at 7 triangles), a third of the draw calls: measured on
+      // `overview`, 210 grass calls fall to 96.
+      const one = on && d > ONE_CUT;
       for (let m = 0; m < t.meshes.length; m++) {
         const im = t.meshes[m];
-        im.visible = on;
-        if (on) im.count = Math.max(1, Math.round(im.userData.fullCount * f));
+        im.visible = one ? m === ONE_CUT_IDX : on;
+        if (!im.visible) continue;
+        const want = one ? t.fullBlades * f : im.userData.fullCount * f;
+        im.count = Math.max(1, Math.min(im.userData.fullCount, Math.round(want)));
       }
     }
   }

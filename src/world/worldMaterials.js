@@ -261,6 +261,20 @@ uniform sampler2D uPaperTex;
 // of being feathered into the gradient it was supposed to destroy. The warp
 // argument wants a low-frequency field (30-60 screen px lobes); a
 // high-frequency one dissolves the plateau, which is what round 1 measured.
+// HSV, local copies: this chunk is injected into three's Lambert shader, which
+// does not carry shaderLib, and every identifier here has to be np-prefixed.
+vec3 npRgb2Hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+}
+vec3 npHsv2Rgb(vec3 c) {
+  vec3 p = abs(fract(c.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+  return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+}
+
 float bandify(float s, float warp) {
   float sc = clamp(s, 0.0, 1.35) * uBands + warp * uBands;
   float f  = floor(sc);
@@ -301,13 +315,39 @@ const NPR_BODY = /* glsl */ `
   float npQ = bandify(npShade, npWarp);
 
   // Warm in light, violet-blue in shade. Never grey, never black.
-  vec3 npShadeCol = mix(npBase * uShadeTint, uShadeTint, 0.55);
-  // blue must lead red in the shaded wash — the CANVAS rule round 1 failed
-  npShadeCol.b = max(npShadeCol.b, npShadeCol.r * 1.10);
+  //
+  // SAME RULE AS src/render/materials.js vcShadeTurn / vcShadeDeep, and it has
+  // to be, or the one material that falls back here is the one surface in frame
+  // whose shadow goes the other way. Two things separate this from what was
+  // here before:
+  //
+  //  * npBase * uShadeTint is a MULTIPLY, and a multiply cannot cool a warm
+  //    pigment: ochre (0.60,0.45,0.25) times a blue-violet still has red
+  //    highest and blue lowest. Worse, raising blue against green on a
+  //    red-dominant colour moves the HUE DOWN — an ochre at 40 deg came out of
+  //    that pair of lines at 19 deg, which is the measured "every material
+  //    rotates its shadow into red" in one expression.
+  //  * the half-tone is a GLAZE (a mix), and the hue turn is bounded and never
+  //    wraps through 0, so ochre climbs to olive rather than falling to maroon.
+  vec3 npHt = npRgb2Hsv(npBase);
+  npHt.x = clamp(npHt.x + clamp(0.73611 - npHt.x, -0.0944, 0.0944), 0.0, 1.0);
+  npHt.y *= 0.74;
+  npHt.z *= 0.62;
+  vec3 npHalfCol = npHsv2Rgb(npHt);
+  // the deepest wash: the half-tone glazed onto the skylight, then clamped into
+  // the 242..290 violet window so it can never dry to rose
+  float npL = max(dot(npHalfCol, vec3(0.2126, 0.7152, 0.0722)), 1e-5);
+  vec3 npTint = uShadeTint / max(dot(uShadeTint, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+  vec3 npShadeCol = mix(npHalfCol * 0.66, vec3(npL * 0.66) * npTint, 0.62);
+  vec3 npSh = npRgb2Hsv(npShadeCol);
+  npSh.x = npSh.x > 0.80556 ? 0.80556 : (npSh.x > 0.50 ? max(npSh.x, 0.67222) : npSh.x);
+  npSh.y *= 0.66;
+  npShadeCol = npHsv2Rgb(npSh);
   vec3 npMidCol   = npBase * uMidTint;
   vec3 npLitCol   = npBase * uLitTint + vec3(0.045, 0.038, 0.022);
-  vec3 npCol = mix(npShadeCol, npMidCol, smoothstep(0.05, 0.58, npQ));
-  npCol = mix(npCol, npLitCol, smoothstep(0.52, 1.0, npQ));
+  vec3 npCol = mix(npShadeCol, npHalfCol, smoothstep(0.06, 0.26, npQ));
+  npCol = mix(npCol, npMidCol, smoothstep(0.32, 0.58, npQ));
+  npCol = mix(npCol, npLitCol, smoothstep(0.56, 1.0, npQ));
 
   // Rim: a thin straw-coloured halo where the surface turns away, stepped so
   // it reads as a drawn highlight rather than a fresnel gradient.
@@ -417,7 +457,11 @@ function nprUniforms(opts) {
     uSunLum: { value: sunLum() },
     uLitTint: { value: new THREE.Color(opts.litTint ?? 0xfff2d8) },
     uMidTint: { value: new THREE.Color(opts.midTint ?? 0xd8cfc0) },
-    uShadeTint: { value: new THREE.Color(opts.shadeTint ?? 0x4b4270) },
+    // 0x6a5f78, not 0x4b4270. Same hue family, a third less chroma and a third
+    // more value: this colour is now used as a unit-luminance TINT for the
+    // deep-wash glaze rather than as a multiply, and a high-chroma violet used
+    // that way is what put a flat lavender slab on every shaded masonry face.
+    uShadeTint: { value: new THREE.Color(opts.shadeTint ?? 0x6a5f78) },
     uFloorCol: { value: new THREE.Color(opts.floorCol ?? 0x231d26) },
     uPaperTex: { value: getPaperTexture() },
   };
@@ -564,16 +608,24 @@ function tryRender(fn, opts, needs) {
 // pigment character WITHOUT the caller having to name a preset (both have
 // non-zero material defaults), which matters because none of the world's own
 // bins — structures, props, vegetation — pass `surface:` at all.
+// `violet` is the PER-MATERIAL VIOLET MAX the round-6 temperature note asks for:
+// how far the DEEPEST wash may be glazed onto the skylight. It is not a taste
+// knob, it is an area knob. A shaded gable is 20-30% of the `village` frame and
+// a shaded ashlar face is 35% of `bridge`, so masonry and stucco taken to the
+// same violet as a patch of shaded earth is precisely how round 1 produced "a
+// flat lavender wash over 70% of the frame". Earth and foliage — which is where
+// the frame's shade family actually has to be legible, and which is broken up
+// by grass, rock and detail — keep the full amount.
 export const SURFACE_PIGMENT = {
   //            block m  tone  fissure  freq   other
-  masonry:  { blockSize: 0.42, blockTone: 0.115, pigLevels: 15, mottle: 0.105, wetRim: 0.85 },
-  brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15, mottle: 0.090, wetRim: 0.80 },
-  stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35, mottle: 0.125, wetRim: 0.75 },
-  tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14, mottle: 0.080, wetRim: 0.80 },
-  timber:   { fissure: 0.075, fissureFreq: 3.4, pigLevels: 13, mottle: 0.085 },
-  bark:     { fissure: 0.135, fissureFreq: 2.6, pigLevels: 12, curvature: 0.22, mottle: 0.095 },
-  metal:    { pigLevels: 12, grain: 0.25, mottle: 0.055, wetRim: 0.70 },
-  cloth:    { pigLevels: 12, grain: 0.38, mottle: 0.050 },
+  masonry:  { blockSize: 0.42, blockTone: 0.115, pigLevels: 15, mottle: 0.105, wetRim: 0.85, violet: 0.78 },
+  brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15, mottle: 0.090, wetRim: 0.80, violet: 0.82 },
+  stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35, mottle: 0.125, wetRim: 0.75, violet: 0.72 },
+  tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14, mottle: 0.080, wetRim: 0.80, violet: 0.86 },
+  timber:   { fissure: 0.075, fissureFreq: 3.4, pigLevels: 13, mottle: 0.085, violet: 0.95 },
+  bark:     { fissure: 0.135, fissureFreq: 2.6, pigLevels: 12, curvature: 0.22, mottle: 0.095, violet: 1.05 },
+  metal:    { pigLevels: 12, grain: 0.25, mottle: 0.055, wetRim: 0.70, violet: 0.95 },
+  cloth:    { pigLevels: 12, grain: 0.38, mottle: 0.050, violet: 0.90 },
 };
 
 /**
@@ -602,6 +654,10 @@ const NPR_FORWARD = [
   // round 5: the pigment-quantiser leash, the granulating boundary rim, the
   // sub-metre pigment field and the sage/olive clamp. See applyNprOpts.
   'pigWarp', 'wetRim', 'mottle', 'pasture',
+  // round 7: how far, in degrees, this pigment's half-tone may turn toward the
+  // 265 deg skylight. Defaults in applyNprOpts (40 deg, 32 on skin); a bin only
+  // sets it to say "this pigment must stay closer to itself in shade".
+  'shadeTurn',
 ];
 
 function forwardNpr(dst, opts) {
@@ -632,6 +688,16 @@ export function makeSurfaceMaterial(opts = {}) {
       side: opts.side ?? THREE.FrontSide,
       transparent: !!opts.transparent,
       alphaTest: opts.alphaTest ?? 0,
+      // PER-MATERIAL VIOLET MAX. Everything this factory makes is BUILT — a
+      // gable, a barn wall, a parapet, a crate — and built surfaces are the
+      // large flat masses in the frame, so they are where a violet deep wash
+      // stops being a shade family and becomes a lavender slab. Round 1's
+      // rejection was exactly that, and `village` still measures 43-50% of its
+      // pixels in hue 240-300 because one shaded facade owns a quarter of the
+      // plate. Terrain (1.12) and foliage (1.12) keep the full amount: they are
+      // broken up by grass, rock and leaf and they are where the shade family
+      // has to be legible.
+      violet: opts.violet ?? 0.82,
       outline: opts.outline ?? true,
       outlineWidth: opts.outlineWidth ?? CFG.render.outlineWidth,
     }, opts), needs) || makeFallbackSurface({ ...opts, vertexColors: opts.vertexColors ?? true });

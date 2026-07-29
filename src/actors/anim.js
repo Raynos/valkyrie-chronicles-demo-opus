@@ -1030,7 +1030,16 @@ export class Animator {
     // Weapon carry stabiliser — must run AFTER the aim layer (which rotates the
     // whole shoulder girdle) and BEFORE the support-hand IK, which chases the
     // foregrip this puts in place.
-    if (lod < 2 && this._weaponSolver) {
+    // ROUND 6 AUDIT, MEASURED IN THE PAGE: with this gated at lod < 2 every
+    // soldier past 26 m carried his support wrist 0.30-0.33 m off the weapon
+    // axis (Imperial figures in `action` and `aim`: supAxis 0.296-0.333 against
+    // 0.017-0.062 for the near squad), because the keyframe pose puts the hand
+    // in front of the chest and nothing then pulled it onto the wood. At 26-44 m
+    // that gap is 11-19 px — a soldier holding a rifle one-handed with the other
+    // arm in mid-air, in exactly the mid-ground the plates spend their pixels
+    // on. The solve is two quaternion ops; it is the CLOTH and the foot IK that
+    // are worth banding, not this.
+    if (this._weaponSolver) {
       this._weighHold();
       this._weaponSolver(dt, this._holdCarry, this._holdShoulder);
       this.charRoot.updateMatrixWorld(true);
@@ -1041,14 +1050,15 @@ export class Animator {
       this._footIK(dt);
       this.charRoot.updateMatrixWorld(true);
     }
-    if (lod < 2 && this.handTarget) {
+    if (this.handTarget) {
       this._handIK(dt);
       this.charRoot.updateMatrixWorld(true);
     }
     // LAST. Every writer above — keyframes, aim, weapon hold, support IK — can
     // put the arm chain somewhere an arm cannot go, and only their composite is
-    // visible. This is the one place that sees it.
-    if (lod < 2) {
+    // visible. This is the one place that sees it, so it has to run wherever
+    // those writers do (see the lod < 3 note above).
+    {
       this._limitArms();
       this.charRoot.updateMatrixWorld(true);
     }

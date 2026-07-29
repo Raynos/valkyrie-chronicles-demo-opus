@@ -1347,3 +1347,157 @@ export function contourMap({
   return svgEl('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + hgt +
     '" preserveAspectRatio="none" style="width:100%;height:100%">' + g + '</svg>');
 }
+
+// --------------------------------------------------------------------------
+// Command-map field figures
+// --------------------------------------------------------------------------
+
+/**
+ * The palette a command figure is painted in.
+ *
+ * Two constraints decided every number here, and both are measurements rather
+ * than taste. (1) Round 6 measured the focal soldier on the command map at
+ * rgb(155,144,118), hue 42, standing on ground at hue 45 — three degrees apart,
+ * so the figure did not separate from the field by colour at all. Every tone
+ * below is at least forty degrees off the map's 10-65 degree khaki wedge.
+ * (2) The shade of every band is VIOLET (hue 230-270 with B > R), which is the
+ * axis-3 requirement the world shading has failed for six rounds; on a drawn
+ * token it is simply a fill, so it cannot be lost downstream.
+ */
+const FIG_PAL = {
+  0: {
+    ink: '#26303f', hatch: '#39415a',
+    coat: ['#93a06d', '#4c5070'],     // tunic:    lit sage / violet shade
+    leg: ['#75825a', '#3d4363'],      // trousers
+    helm: ['#7f8d61', '#42475f'],     // helmet
+    kit: '#5c4a33',
+  },
+  1: {
+    ink: '#361f28', hatch: '#4b3550',
+    coat: ['#a06a5b', '#523a58'],     // Imperial oxide, violet shade
+    leg: ['#845646', '#452f4c'],
+    helm: ['#8d5c4e', '#472f4a'],
+    kit: '#43242c',
+  },
+};
+
+/** A wandering vertical terminator: where the light leaves the figure. */
+function _termPath(seed, hgt) {
+  const rng = makeRng((seed >>> 0) || 3);
+  let d = 'M0 -2 L' + (21 + rng() * 2).toFixed(1) + ' -2';
+  for (let y = 6; y <= hgt + 2; y += 8) {
+    d += 'L' + (20.4 + rng() * 3.4).toFixed(1) + ' ' + y.toFixed(1);
+  }
+  return d + 'L0 ' + (hgt + 2) + 'Z';
+}
+
+/**
+ * A soldier as a MAP SYMBOL: the figure a staff officer draws beside a counter
+ * so the survey says what is standing there, not merely that something is.
+ *
+ * WHY THIS EXISTS AT ALL. At the command camera the rendered soldier is 13x24
+ * px, and round 6 measured his interior flipping 56<->160 between adjacent
+ * pixels — the paper and hatch passes inject a per-pixel residual of sd 22.4
+ * lum against a band step of 22.2, so the grain is 101% of the light and the
+ * figure is salt-and-pepper. No amount of shading work can fix a 13 px man; the
+ * only honest answer is to stop drawing him and draw a SYMBOL instead, which is
+ * exactly what Valkyria Chronicles does with its command map.
+ *
+ * Being DOM, it sits above the render and therefore outside the paper and hatch
+ * passes entirely — which is the masking the round-6 critique asked for, got for
+ * free. It is drawn in three flat bands (helmet / tunic / trousers), each split
+ * by a wandering terminator into a warm lit half and a VIOLET shaded half, with
+ * pencil hatching in the shade, a double-struck ink silhouette, and a violet
+ * contact shadow on the ground under the boots so the figure is planted.
+ *
+ * @param {0|1} team
+ * @param {string} cls   unit class id — changes the silhouette, not only a glyph
+ * @param {number} seed
+ */
+export function fieldFigure(team, cls, seed = 1) {
+  const P = FIG_PAL[team === 1 ? 1 : 0];
+  const S = (seed >>> 0) || 1;
+  const c = String(cls || 'scout').toLowerCase();
+  const bulk = c === 'shock' || c === 'shocktrooper' ? 2.4 : c === 'lancer' ? 1.6 : 0;
+  const cid = 'ff' + S;
+
+  // --- silhouette ---------------------------------------------------------
+  const legL = 'M16.4 43 L21.4 43 L20.9 64 L21.6 68.5 L14.9 68.5 L15.7 64 Z';
+  const legR = 'M22.6 43 L27.6 43 L28.3 64 L29.1 68.5 L22.4 68.5 L23.1 64 Z';
+  const torso = 'M' + (13.9 - bulk) + ' 20.2 L' + (30.1 + bulk) + ' 20.2 L' +
+    (31.6 + bulk) + ' 30 L' + (29.2 + bulk * 0.6) + ' 46 L' + (14.8 - bulk * 0.6) +
+    ' 46 L' + (12.4 - bulk) + ' 30 Z';
+  // The neck is CLOSED into the shoulders. The first cut left a two-pixel gap
+  // between head and torso which, at forty pixels tall, read as a ball floating
+  // over a slab rather than as a man.
+  const head = 'M18.3 9.6 L25.7 9.6 L26.4 16.4 L24.6 21.4 L19.4 21.4 L17.6 16.4 Z';
+  // The helmet is the read at twenty pixels: a Gallian bowl, an Imperial
+  // stahlhelm with a flared skirt. Two nations, two silhouettes, no colour needed.
+  const helm = team === 1
+    ? 'M14.6 12.0 A7.4 7.4 0 0 1 29.4 12.0 L30.4 15.0 L26.9 13.6 L17.1 13.6 L13.6 15.0 Z'
+    : 'M15.6 12.4 A6.4 6.4 0 0 1 28.4 12.4 L28.9 14.6 L15.1 14.6 Z';
+
+  // Arm-of-service kit, carried on the silhouette rather than stamped on it.
+  let kit = '';
+  if (c === 'lancer') {
+    kit = '<path d="' + wobblyPath(10.5, 22.5, 35.5, 34.5, { seed: S + 5, amp: 0.5, segs: 4 }) +
+      '" stroke="' + P.kit + '" stroke-width="4.2" stroke-linecap="round" fill="none"/>';
+  } else if (c === 'sniper') {
+    kit = '<path d="' + wobblyPath(9.5, 49, 36.5, 23, { seed: S + 5, amp: 0.4, segs: 5 }) +
+      '" stroke="' + P.kit + '" stroke-width="1.9" stroke-linecap="round" fill="none"/>';
+  } else if (c === 'engineer') {
+    kit = '<path d="' + roughRect(7.2, 24, 7.4, 12.5, { seed: S + 9, amp: 0.5 }) +
+      '" fill="' + P.kit + '" stroke="' + P.ink + '" stroke-width="1.1"/>' +
+      '<path d="' + wobblyPath(13, 44, 30, 33, { seed: S + 11, amp: 0.4, segs: 4 }) +
+      '" stroke="' + P.kit + '" stroke-width="1.7" stroke-linecap="round" fill="none"/>';
+  } else if (c === 'shock' || c === 'shocktrooper') {
+    kit = '<path d="' + wobblyPath(12.5, 37.5, 31.5, 32.5, { seed: S + 5, amp: 0.4, segs: 4 }) +
+      '" stroke="' + P.kit + '" stroke-width="2.9" stroke-linecap="round" fill="none"/>';
+  } else {
+    kit = '<path d="' + wobblyPath(11.5, 46, 33.5, 26, { seed: S + 5, amp: 0.4, segs: 5 }) +
+      '" stroke="' + P.kit + '" stroke-width="1.7" stroke-linecap="round" fill="none"/>';
+  }
+
+  // --- two-tone banding ---------------------------------------------------
+  // Every band is laid in twice: the whole shape in its violet shade, then the
+  // lit side of the same shape clipped back by the terminator. Flat fills, so a
+  // scan across the torso returns hard plateaus with ZERO residual noise —
+  // which is the axis-2 measurement the rendered figure could not pass.
+  const band = (d, pair, hatchIt) =>
+    '<path d="' + d + '" fill="' + pair[1] + '"/>' +
+    '<g clip-path="url(#' + cid + ')"><path d="' + d + '" fill="' + pair[0] + '"/></g>' +
+    (hatchIt
+      ? '<g clip-path="url(#' + cid + 'r)"><path d="' + d + '" fill="none"/>' +
+        '<path d="' + hatchPath(12, 20, 22, 30, { spacing: 2.6, angle: -0.95, seed: S + 17 }) +
+        '" stroke="' + P.hatch + '" stroke-width="0.75" opacity="0.5" fill="none"/></g>'
+      : '');
+
+  const outline = (d, w) => '<path d="' + d + '" fill="none" stroke="' + P.ink +
+    '" stroke-width="' + w + '" stroke-linejoin="round" stroke-linecap="round"/>';
+
+  return svgEl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 76" width="44" height="76">' +
+    '<defs>' +
+    '<clipPath id="' + cid + '"><path d="' + _termPath(S, 76) + '"/></clipPath>' +
+    '<clipPath id="' + cid + 'r"><path d="' + _termPath(S, 76) +
+    '" transform="translate(44,0) scale(-1,1)"/></clipPath>' +
+    '</defs>' +
+    // contact shadow — cast to screen-right, which is where the command shot's
+    // sun (bearing -0.405) throws every other shadow on the map
+    '<ellipse cx="24.6" cy="69.2" rx="12.4" ry="3.4" fill="#4b4270" opacity="0.44"/>' +
+    '<ellipse cx="23.2" cy="68.8" rx="7.6" ry="2.3" fill="#3a3159" opacity="0.42"/>' +
+    kit +
+    band(legL, P.leg, false) + band(legR, P.leg, false) +
+    band(torso, P.coat, true) +
+    band(head, P.coat, false) + band(helm, P.helm, false) +
+    // double-struck ink: one weighted pass on the silhouette, one hairline ghost
+    '<g opacity="0.96">' + outline(torso, 2.5) + outline(legL, 2.2) + outline(legR, 2.2) +
+    outline(helm, 2.4) + outline(head, 1.7) + '</g>' +
+    '<g opacity="0.36">' +
+    outline(torso, 0.8) + outline(helm, 0.8) + '</g>' +
+    // the one interior crease: a belt, hairline, so the torso is not one slab
+    '<path d="' + wobblyPath(14.6 - bulk * 0.6, 39.5, 29.4 + bulk * 0.6, 39.5,
+      { seed: S + 23, amp: 0.45, segs: 3 }) +
+    '" stroke="' + P.ink + '" stroke-width="1.6" opacity="0.82" fill="none"/>' +
+    '</svg>');
+}

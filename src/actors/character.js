@@ -2243,7 +2243,11 @@ export class Character {
     // this point left the support hand 0.22-0.35 m off the weapon on five of
     // six soldiers in `tank`; recomputed after the push it is 0.03-0.09 m.
     const hands = this.animator.handsMode;
-    if (this.alive && lod < 2 && hands === 'weapon' && this.weapon) {
+    // The gate is lod < 3, not lod < 2: see the note on the same band in
+    // anim.js update(). A support hand a third of a metre off the weapon is
+    // MORE conspicuous at 30 m than at 10 m, because at 30 m the whole figure
+    // is 80 px tall and that gap is a fifth of him.
+    if (this.alive && hands === 'weapon' && this.weapon) {
       this._supportTarget();
       this.animator.setHandTarget(this._handTarget, 1);
       // ...and roll the wrist until the palm looks back up at the wood.
