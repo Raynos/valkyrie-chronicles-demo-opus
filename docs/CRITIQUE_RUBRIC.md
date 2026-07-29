@@ -45,6 +45,42 @@ For each shot the critic must answer, in order, without hedging:
 - Anything that reads as a debug view (wireframe, gizmo, un-styled text).
 - Pure black or pure white pixels in the shadow/highlight ends.
 
+## Metric integrity — how these numbers get gamed
+
+Every measurement below has been satisfied at least once without the picture improving.
+When you measure, measure the thing, not its proxy.
+
+**The banding plateau count is the worst offender.** "A luminance scan across a shaded mass
+shows ≥3 plateaus of ≥12 samples" is satisfiable two ways: by *lighting a form* so the
+quantiser lays washes across it, or by *painting hard albedo patches* so the scan crosses
+colour boundaries. Round 11 found the codebase had done the second — `rig.js` states outright
+that three albedo zones "put hard albedo AND hard value steps across the torso, so a vertical
+scan finds plateaus instead of the ramp every round so far has measured." The metric passed.
+The soldier came out looking like he was wearing camouflage instead of a uniform, because the
+value steps were painted on rather than lit.
+
+So, when measuring banding:
+1. Sample **within a single albedo zone** — one continuous piece of cloth, one stone face, one
+   patch of grass. A plateau that ends where the colour changes is not a band.
+2. Check the **terminator follows the form**: a real band boundary curves around a body and
+   wanders irregularly (pigment into wet paper). A straight vertical or horizontal edge is an
+   albedo seam or a construction seam, not a wash.
+3. Confirm the same surface bands **differently under different light** — re-render the shot at
+   another sun azimuth. Painted-on steps do not move; lit ones do.
+
+The same caution applies elsewhere:
+- **Hatch dark:lit energy ratio** can be passed by darkening the lit half rather than putting
+  strokes in shadow. Check the strokes are actually *there*, and that they sit where a crease is.
+- **Cast-shadow LSB delta** can be passed by darkening the whole ground. Check the *un*occluded
+  ground did not move.
+- **Frame violet fraction** can be passed by tinting everything violet. Check lit surfaces still
+  read as their own hue.
+- **Contact-shadow footprint counts** can be passed by moving the sampling annulus. State the
+  annulus you used and why.
+
+If a metric and the picture disagree, the picture wins — say so plainly and explain what the
+metric was actually measuring.
+
 ## Output contract
 
 The critic returns strict JSON:
