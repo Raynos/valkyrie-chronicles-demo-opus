@@ -533,8 +533,16 @@ export class CommandMode {
       f.amt[ci] = lerp(1.0, 0.42, t * t);
       f.ramp[ci] = t * t;
     }
+    // A HAND-TINTED AREA, NOT A FILLED POLYGON.
+    //
+    // A staff officer washing a movement area onto a survey does not flood it: he
+    // runs the boundary in with a loaded brush and lets the pigment pool there,
+    // and the middle of the area keeps almost all of the map underneath. So the
+    // BODY is thin and the wet EDGE carries the read — which is also the only way
+    // the terrain survives being annotated, and the round-4/5 note "the whole
+    // middle of the frame went to one flat pale teal" was the opposite arrangement.
     this._paintWash(this.moveMesh, f, COL_MOVE_NEAR, COL_MOVE_FAR, COL_MOVE_EDGE, {
-      seed: 17, edge: 0.95, grain: 0.30, blur: 2, body: 0.48, rim: 0.42,
+      seed: 17, edge: 1.20, grain: 0.34, blur: 2, body: 0.22, rim: 0.80,
     });
     this.moveMesh.visible = cells.length > 0;
     Bus.emit('command:range', { unit: u, metres: range, cells: cells.length });
@@ -560,8 +568,10 @@ export class CommandMode {
       f.ramp[i] = t;
       any++;
     }
+    // Same reasoning as the movement wash: the killing ground is drawn as an
+    // outline that has bled inward, not as a red sheet over the village.
     this._paintWash(this.threatMesh, f, COL_THREAT, COL_THREAT_HOT, COL_THREAT_EDGE, {
-      seed: 91, edge: 0.55, grain: 0.38, blur: 3, body: 0.26, rim: 0.34,
+      seed: 91, edge: 0.90, grain: 0.40, blur: 3, body: 0.22, rim: 0.78,
     });
     // The threat wash is opt-in (T key / a shot asking for it). Painting the
     // sheet is not a reason to SHOW it — only the caller knows that.

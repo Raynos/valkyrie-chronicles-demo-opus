@@ -398,7 +398,17 @@ export class Vegetation {
     // colour and the meadow reads as a mown lawn.
     this.matGrass = makeFoliageMaterial({
       color: 0xffffff, vertexColors: true, instanced: true,
-      rootColor: 0x32432a, tipColor: 0x7d8a49, variation: 0.28,
+      // THE ACID CAME FROM HERE. src/render/shaderLib.js vcPasture names this
+      // exact literal in its own comment — "no future 'tipColor: 0x7d8a49'
+      // (HSV sat 0.47, hue 72) can put the acid back" — and the literal was
+      // still sitting in this file, four rounds after the palette table it
+      // bypasses was pulled down to 0.25-0.34. The sward is the largest green
+      // mass in every landscape shot and it was authored at TWICE the chroma of
+      // the terrain it grows out of.
+      //                 display HSV       was
+      rootColor: 0x3d4636,  // 94 / 0.23   0x32432a  101 / 0.37
+      tipColor: 0x858c68,   // 72 / 0.26   0x7d8a49   72 / 0.47
+      variation: 0.28,
       windStrength: 0.13, windSpeed: 2.3, windHeight: 1.0, stiffness: 1.7,
       fadeStart: this.grassFade[0], fadeEnd: this.grassFade[1],
       alphaTest: 0.05, rim: 0.9, hatch: 0.22, subsurface: 0.9,
@@ -406,7 +416,9 @@ export class Vegetation {
 
     this.matReed = makeFoliageMaterial({
       color: 0xffffff, vertexColors: true, instanced: true,
-      rootColor: 0x46592c, tipColor: PALETTE.reed, variation: 0.22,
+      // 0x46592c was HSV sat 0.51 — the single most saturated pigment in the
+      // world table, on the plants that line the waterline in every river shot.
+      rootColor: 0x4d5540, tipColor: PALETTE.reed, variation: 0.22,
       windStrength: 0.19, windSpeed: 1.8, windHeight: 1.0, stiffness: 1.5,
       fadeStart: 90, fadeEnd: 120, alphaTest: 0.05, rim: 1.0, hatch: 0.22,
     });
@@ -540,8 +552,25 @@ export class Vegetation {
     // behind them. The fix is the opposite trade: HALVE the blade width and
     // spend the fill rate on twice as many of them, because a sward reads as a
     // sward through density, not through the size of any one leaf.
-    const clumpsPerM2 = q >= 2 ? 3.5 : q === 1 ? 2.1 : 0.5;
-    const perClump = q >= 2 ? 12 : q === 1 ? 8 : 4;
+    // ROUND 6: SPEND THE BLADES WHERE THE CAMERA IS, NOT WHERE IT ISN'T.
+    //
+    // The measured facts. In `overview` the sward is 1.13 M of the 1.91 M unique
+    // triangles in the frame — 59% of the whole scene — and yet the bottom of
+    // `tank` is "a handful of isolated blades against bare ground rather than a
+    // meadow". Both are true at once because the density is UNIFORM in world
+    // space and the LOD ramp only halves it by forty metres: a tile at 35 m,
+    // where a 1.9 cm blade is a third of a pixel wide, was still drawing most of
+    // its instances, while the tile the camera is standing in drew a QUARTER
+    // FEWER than it built (the round-5 `f *= lerp(0.74, 1.0, ...)` term below).
+    // That is a distribution problem, not a budget problem.
+    //
+    // So: build 60% more, draw all of it inside eleven metres, and take the
+    // distance ramp from 0.93 to 0.955 over 27 m instead of 40. Blades are also
+    // SHORTER and NARROWER (see `geos` and `hgt`), which is the other half of
+    // reading as turf rather than as spikes — a 45 cm blade at 25 cm spacing is
+    // a picket fence; a 25 cm blade at 12 cm spacing is a lawn.
+    const clumpsPerM2 = q >= 2 ? 5.6 : q === 1 ? 3.4 : 0.8;
+    const perClump = q >= 2 ? 13 : q === 1 ? 8 : 4;
 
     // THREE blade cuts, not one. A meadow made from a single 3.8 cm straight
     // spike is exactly what the closeup critique measured — "sparse flat
@@ -562,10 +591,18 @@ export class Vegetation {
     // (0.17-0.47 over a 0.4 m blade) is 1.4 mm — a quarter of a pixel on the
     // closeup lens, well under the 1.6 px minimum width the blade already has.
     // A blade reads as a spike when it is STRAIGHT, not when its arc is coarse.
+    //
+    // ROUND 6 narrows all three cuts by ~26% and drops one segment off the two
+    // fine ones. Both moves pay for the density above: a blade is 7 triangles
+    // and the frame is drawing 143 000 of them, so a segment is worth ~20% of
+    // the sward's whole budget, and it is spent on arc smoothness nobody can
+    // resolve on a 1.4 cm leaf. The WIDTH is the pictorial half — at 1.5-2 cm a
+    // near-field blade is a drawn line rather than a slab, which is what lets
+    // the density read as turf instead of as a wall of ribbons.
     const geos = [
-      bladeGeometry(4, 0.0115, 0.17, 0.03),  // fine bent
-      bladeGeometry(5, 0.0165, 0.30, 0.08),  // broad leaf, arched
-      bladeGeometry(5, 0.0225, 0.47, -0.13), // big flag leaf, well over
+      bladeGeometry(3, 0.0086, 0.17, 0.03),  // fine bent            5 tris
+      bladeGeometry(4, 0.0122, 0.30, 0.08),  // broad leaf, arched   7 tris
+      bladeGeometry(5, 0.0170, 0.47, -0.13), // big flag leaf        9 tris
     ];
     this.grassGeos = geos;
     this.grassGeo = geos[0];
@@ -635,7 +672,11 @@ export class Vegetation {
             const bx = cx + Math.cos(a) * rr;
             const bz = cz + Math.sin(a) * rr;
             const by = this.terrain.heightAt(bx, bz);
-            const hgt = lerp(0.26, 0.66, tall) * rngRange(rng, 0.62, 1.32)
+            // Shorter by a third. Turf, not a hayfield: with the density above,
+            // 0.175-0.46 m before the per-blade scatter puts the sward at
+            // ankle-to-shin on a standing figure and still leaves the tall-grass
+            // field (tall -> 1) reading as concealment.
+            const hgt = lerp(0.175, 0.46, tall) * rngRange(rng, 0.62, 1.32)
               * (v === 2 ? 1.22 : v === 1 ? 1.05 : 1)
               // straw stands taller and coarser; a trodden yard is cropped short
               * (1 + straw * 0.30 + rush * 0.14 - clamp01(vmHere * 2.0) * 0.34);
@@ -669,9 +710,16 @@ export class Vegetation {
             // value one: straw pulls the tuft toward ochre and takes half the
             // green out of it, rush pushes it deeper and cooler. Applied after
             // the per-blade jitter so two tufts of the same species still differ.
+            // ROUND 6: the straw pull was 0.34/0.10/-0.30, which rotates a tuft
+            // clear off the sage lobe — down to ~55 degrees — and the chroma
+            // clamp in src/render/materials.js deliberately stops short of that
+            // hue so it cannot reach the road ochre. The straw tufts were
+            // therefore the ONE unclamped green in the sward, and they measured
+            // as most of the `grass` shot's 0.35 lit saturation. Same pictorial
+            // move at two thirds of the chroma, which keeps it inside the lobe.
             if (straw > 0.001) {
               const k = straw * (0.55 + rng() * 0.45);
-              _c.setRGB(_c.r * (1 + k * 0.34), _c.g * (1 + k * 0.10), _c.b * (1 - k * 0.30));
+              _c.setRGB(_c.r * (1 + k * 0.22), _c.g * (1 + k * 0.08), _c.b * (1 - k * 0.18));
             }
             if (rush > 0.001) {
               const k = rush * (0.55 + rng() * 0.45);
@@ -1304,8 +1352,15 @@ export class Vegetation {
     // it from 0.90 to 0.93 removes the blades that were only ever contributing
     // sparkle, and leaves everything inside ten metres — the whole of `grass`,
     // `closeup`, `squad` and every over-the-shoulder frame — untouched.
-    const nearFull = 10.0;
-    const thinEnd = 40.0;
+    //
+    // ROUND 6 pulls it in again — 11 m to 27 m, bottoming at 0.045 — and DELETES
+    // the near-field re-thin that used to run underneath it. See the note on
+    // clumpsPerM2: the frame was drawing three quarters of its near-field sward
+    // and most of a 35 m tile whose blades are a third of a pixel wide. The
+    // whole point of the count-LOD is that the near field can be as dense as the
+    // picture needs while the mid-distance costs nothing.
+    const nearFull = 11.0;
+    const thinEnd = 27.0;
     for (let i = 0; i < this.grassTiles.length; i++) {
       const t = this.grassTiles[i];
       const dx = t.cx - cx, dz = t.cz - cz;
@@ -1314,14 +1369,7 @@ export class Vegetation {
       let f = 1;
       if (on) {
         const d = Math.sqrt(d2) - TILE * 0.7;      // nearest corner, roughly
-        f = 1 - smoothstep(nearFull, thinEnd, d) * 0.93;
-        // ...and thin AGAIN in the first few metres. A camera at eye height is
-        // fine in a full-density sward; a camera at 0.3-1.5 m — which is every
-        // over-the-shoulder and prone shot — has the whole tuft between it and
-        // the subject. Halving the count under 4 m opens the sward enough to
-        // see through without changing what it looks like at 10 m, and the
-        // per-tile buffers are shuffled so the thinned set stays unbiased.
-        f *= lerp(0.74, 1.0, smoothstep(0, 12.0, d));
+        f = 1 - smoothstep(nearFull, thinEnd, d) * 0.955;
       }
       for (let m = 0; m < t.meshes.length; m++) {
         const im = t.meshes[m];

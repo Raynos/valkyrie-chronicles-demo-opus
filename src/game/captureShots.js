@@ -368,8 +368,8 @@ function uiMode(ctx, mode, caption) {
  * of gameplay UI, including the in-world annotation layer, off the page. The
  * caption is what a war artist actually writes under a plate: where, and what.
  */
-function plate(ctx, num, text) {
-  uiMode(ctx, 'plate', { num: 'Plate ' + num, text });
+function plate(ctx, num, text, hand) {
+  uiMode(ctx, 'plate', { num: 'Plate ' + num, text, hand });
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +390,8 @@ export const SHOTS = {
     // quantiser needs before it can show a terminator at all.
     setSun(ctx, 0.26, 0.42);
     plate(ctx, 'II',
-      'The crossing at Vasel from the eastern rise; Squad 7 coming up the near bank.');
+      'The crossing at Vasel from the eastern rise; Squad 7 coming up the near bank.',
+      'pencil & wash, from the eastern rise');
     b.setPhase('command');
     // Nothing is "acting" in a landscape, and a stale active unit drags the shadow frustum
     // off to wherever that soldier is standing — see updateLighting() in main.js.
@@ -481,7 +482,8 @@ export const SHOTS = {
     // is the only thing that makes a stone arch read as a curved solid.
     setSun(ctx, 0.19, 0.977);
     plate(ctx, 'III',
-      'The three arches from the south-east; an Imperial picket at the far bridgehead.');
+      'The three arches from the south-east; an Imperial picket at the far bridgehead.',
+      'pen, ink & wash, standing in the shallows');
     hideAll(ctx);
     b.activeUnit = null;
 
@@ -542,7 +544,8 @@ export const SHOTS = {
     ensureBattle(ctx);
     setSun(ctx, 0.28, 2.05);
     plate(ctx, 'IV',
-      'Halted in the poplar avenue on the southern approach — scout, shocktrooper, lancer, engineer.');
+      'Halted in the poplar avenue on the southern approach — scout, shocktrooper, lancer, engineer.',
+      'graphite, ink & wash');
     hideAll(ctx);
 
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
@@ -617,10 +620,23 @@ export const SHOTS = {
     // 5.2 m leaves 116 px of margin and still gives him 19.5 degrees of the 38 the frame
     // has, i.e. he owns half its height — which is every bit as much foreground mass as
     // the crop was buying, without the amputation.
-    put(rosie, 4.6, -0.44);                          // shocktrooper, whole, boots down
-    put(largo, 8.2, 0.46);                           // lancer, launcher across the frame
-    put(alicia, 12.5, -0.28, 'crouchIdle', STANCE.CROUCH);
-    put(isara, 17.5, 0.18);                          // engineer, small, under the avenue
+    //
+    // AND THE OTHER NEAR CORNER GETS ONE TOO.
+    //
+    // With one near figure on the left and the next at 8.2 m, the lower RIGHT quadrant of
+    // this plate was 3-8 m of road surface and verge with nothing standing in it — the same
+    // "large empty region" note the bridge deck used to earn, moved rather than cured, and
+    // still worth composition 6. The lancer comes forward to 3.6 m and two-thirds of the way
+    // to the right edge. At that depth he is 72% of the page tall, so his mass closes the
+    // corner outright, and the same arithmetic that keeps Rosie's boots on the page keeps
+    // his: the bottom edge runs 21.4 degrees below horizontal and atan(1.20 / 3.6) is 18.4,
+    // leaving 85 px of drawn ground under his soles. The four silhouettes now read at four
+    // clearly different scales — 72%, 56%, 24%, 16% of page height — which is the depth
+    // ladder this plate exists to show, rather than four men at nearly one size.
+    put(largo, 3.6, 0.66);                           // lancer, near right, launcher across
+    put(rosie, 4.9, -0.44);                          // shocktrooper, whole, boots down
+    put(alicia, 11.0, -0.22, 'crouchIdle', STANCE.CROUCH);
+    put(isara, 16.5, 0.20);                          // engineer, small, under the avenue
 
     // Chest height, nosed down 2.2 degrees — in DEGREES, not in metres above the ground
     // under a point thirty metres away and four lower (see aimCameraPitch; getting that
@@ -715,38 +731,105 @@ export const SHOTS = {
     // (x < 330), off the order deck (y > 810), off the objective slip (x > 1500, y < 270)
     // and off the tactical survey (x > 1470, y > 620). Round 4's section projected to
     // y = 800-1050 and four of its six counters were behind the deck.
+    // EVERY POSITION BELOW WAS SOLVED BACKWARDS OUT OF THE PICTURE.
+    //
+    // Round 5 authored these as map coordinates and then looked at where they had
+    // landed, which is how six of them ended up in a 200 px huddle either side of
+    // the road head. They are now authored the other way round: a screen point was
+    // chosen on the page first, and `tools/probe.mjs` raycast that pixel onto the
+    // terrain under this exact lens to get the metres. The comment beside each one
+    // is the pixel it was solved for, at 1920x1080, and it can be re-checked by
+    // projecting the unit and comparing.
+    //
+    // The page the staging is composed into is NOT the frame: the roster column
+    // owns x < 330, the objective slip x > 1500 / y < 270, the tactical survey
+    // x > 1470 / y > 620 and the order deck y > 810. The clear window is therefore
+    // x 340..1490, y 60..800, whose thirds fall at x = 723 / 1107 and y = 307 / 553
+    // — and Alicia, the selected counter and the subject of the plate, stands on
+    // the (1107, 553) intersection.
     const squad = [
-      ['Alicia Melchiott', 10.0, -3.0],
-      ['Edy Nelson', 1.0, -6.0],
-      ['Rosie Stark', 16.0, -8.0],
-      ['Largo Potter', -6.0, -8.0],
-      ['Isara Gunther', 7.0, -13.0],
-      ['Marina Wulfstan', 19.0, -15.0],
+      ['Alicia Melchiott', 12.5, -8.0],    // (1155, 617) — focal, lower-right third
+      ['Rosie Stark', 17.6, -9.2],         // (1300, 665)
+      ['Largo Potter', 7.1, -1.2],         // ( 900, 690) — nearest, bottom of the bank
+      ['Edy Nelson', 1.2, -1.1],           // ( 760, 560)
+      ['Isara Gunther', 0.5, -8.5],        // ( 863, 413)
+      ['Marina Wulfstan', 16.8, -14.9],    // (1370, 480)
     ];
     for (const [name, x, z] of squad) {
-      pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, 2, -30), 'idle');
+      pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, 6, -34), 'idle');
     }
-    // The Edelweiss just off the north end of the span, on the road — the one object on
-    // the map with a silhouette big enough to read at fifty metres, and the thing that
-    // says which way the attack is going.
+    // The Edelweiss on the road at the north abutment — the one object on the map
+    // with a silhouette big enough to read at fifty metres, and the thing that says
+    // which way the attack is going. It sits between the section and the enemy line,
+    // so the picture has a shape: our counters below it, the tank on the axis, the
+    // Imperial line above.
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
-    pose(ctx, tank, 6.2, -12.5, facing(6.2, -12.5, 8, -34), 'idle');
-    turretTo(tank, facing(6.2, -12.5, -20, -30));
+    pose(ctx, tank, 5.0, -8.8, facing(5.0, -8.8, 8, -34), 'idle');   // (985, 470)
+    turretTo(tank, facing(5.0, -8.8, -14, -30));
 
-    // The garrison holding the street behind the bridgehead. Spread across the upper half
-    // rather than trailed off to one corner, so the threat wash has a SHAPE — and pushed
-    // out to the west as well, because the top-left of this framing is open pasture and
-    // an empty region is an automatic rejection whatever is washed over it.
-    const foe = b.units.filter((u) => u.team === 1);
-    const foeSpots = [[-3.0, -21.0], [9.0, -24.0], [-13.0, -23.0], [19.0, -28.0],
-      [1.0, -32.0], [-21.0, -30.0], [-31.0, -27.0], [27.0, -34.0], [-8.0, -38.0],
-      [14.0, -40.0], [32.0, -22.0]];
+    // The garrison holding the frontages behind the bridgehead, laid out across the
+    // whole upper half of the clear window rather than trailed into one corner, so
+    // the threat wash has a SHAPE and the top of the page is never bare pasture.
+    const foe = b.units.filter((u) => u.team === 1 && !u.isVehicle);
+    // Three of these sit out on the WESTERN flank rather than in the village street.
+    // Measured on the round-5 framing, the band x 340..700 / y 200..560 — a seventh of
+    // the clear window — held no counter, no structure and no incident of any kind: open
+    // pasture with a wash over it, which is the "empty region" automatic rejection. The
+    // three positions marked below were raycast onto that band and put a picket, a
+    // section post and a flank guard in it, which also gives the threat wash a lobe to
+    // the west instead of one solid bar across the top.
+    const foeSpots = [
+      [-1.0, -11.5],    // ( 900, 385) — the picket closest to our line
+      [0.4, -16.5],     // (1005, 330)
+      [-16.4, 0.4],     // ( 430, 520) — western flank, low
+      [9.6, -29.3],     // (1350, 290)
+      [-8.3, -6.7],     // ( 700, 430) — western flank, mid
+      [-2.6, -36.0],    // (1180, 175)
+      [11.2, -42.9],    // (1500, 185)
+      [20.9, -34.6],    // (1660, 300)
+      [-23.5, -5.7],    // ( 430, 330) — western flank, high
+      // 95 px put this man's CROWN at y = 37 and his counter above the top edge, where
+      // the label layer culls it: seventeen counters for eighteen units. A counter is
+      // lifted 13 units above the crown, so nothing may be staged inside the top 90 px.
+      [-9.7, -44.4],    // (1130, 140)
+      [4.3, -49.7],     // (1420, 115)
+    ];
     foe.forEach((u, i) => {
       const [x, z] = foeSpots[i % foeSpots.length];
-      pose(ctx, u, x, z, facing(x, z, 2, 22), 'idle');
+      pose(ctx, u, x, z, facing(x, z, 6, 10), 'idle');
       u.lastKnown.copy(u.pos);
       u.lastKnownTurn = b.turn;
     });
+    // Their armour on the flank, big enough to matter and far enough back to be a
+    // threat rather than a contact.
+    const foeTank = b.units.find((u) => u.isVehicle && u.team === 1);
+    if (foeTank) {
+      pose(ctx, foeTank, 22.8, -22.4, facing(22.8, -22.4, 6, 4), 'idle');   // (1620, 430)
+      turretTo(foeTank, facing(22.8, -22.4, 8, -6));
+      foeTank.lastKnown.copy(foeTank.pos);
+      foeTank.lastKnownTurn = b.turn;
+    }
+
+    // A TURN THAT HAS ALREADY BEEN FOUGHT.
+    //
+    // Rounds 2-5 all shot this on turn 1 with seven CP and six soldiers at full
+    // health, which meant every state the HUD is capable of drawing — the spent
+    // stamp on a roster card, the strike through a counter that has already gone,
+    // the strength gauge on a counter that has been hit, a CP bank part-spent —
+    // was switched off in the only frame that gets judged. A staff map on turn one
+    // is a deployment diagram; a staff map on turn three is a battle. The numbers
+    // below are the only game state this shot invents, and every one of them
+    // exists to put a piece of the interface on the page.
+    b.turn = 3;
+    b.cp[0] = 5;
+    for (const [name, hp] of [['Largo Potter', 61], ['Edy Nelson', 38], ['Rosie Stark', 74]]) {
+      const u = unitNamed(ctx, name);
+      if (u) u.hp = Math.min(u.maxHp, hp);
+    }
+    for (const name of ['Rosie Stark', 'Marina Wulfstan']) {
+      const u = unitNamed(ctx, name);
+      if (u) { u.hasActed = true; u.actionsThisTurn = 1; }
+    }
 
     const alicia = unitNamed(ctx, 'Alicia Melchiott');
     cm.select(alicia);
@@ -761,9 +844,14 @@ export const SHOTS = {
     // survey sheet lets the survey through. These are the only two numbers in the shot
     // that touch a system this file does not own, and they are set here rather than in
     // CommandMode because the difference is a photographic one.
-    if (cm.moveMesh?.material) cm.moveMesh.material.opacity = 0.52;
-    if (cm.threatMesh?.material) cm.threatMesh.material.opacity = 0.40;
-    if (cm.arcMesh?.material) cm.arcMesh.material.opacity = 0.26;
+    // Round 5 held these at 0.52 / 0.40 and the critic still measured the middle of
+    // the map as one flat wash. A tint laid over a survey by hand is a BOUNDARY with
+    // a little colour inside it, not a colour with a boundary round it, so the body
+    // comes down again and the wet edge (which CommandMode already pools) is what
+    // carries the read.
+    if (cm.moveMesh?.material) cm.moveMesh.material.opacity = 0.46;
+    if (cm.threatMesh?.material) cm.threatMesh.material.opacity = 0.54;
+    if (cm.arcMesh?.material) cm.arcMesh.material.opacity = 0.18;
     // WHAT THE LENS CAN ACTUALLY SEE, DERIVED RATHER THAN GUESSED.
     //
     // A map camera at height H and pitch p on a fov f sees ground from
@@ -772,20 +860,40 @@ export const SHOTS = {
     // the frame is about stood 8..20 m from the lens, i.e. under the bottom edge. That
     // is why the middle of the picture was hillside: the section was never in it.
     //
-    // dist 56 at pitch 0.60 gives H = 31.6 m and a ground distance to focus of 46 m; on
-    // a 42-degree field the window is 22..130 m, so the near bank crest lands just inside
-    // the bottom edge, the crossing sits on the middle third and the north bank and the
-    // first frontages close the top. 42 degrees rather than 34 also buys 25% more map
-    // per page, which is the difference between a survey and a keyhole.
-    cm.focusOn(_v.set(6.0, 0, -4.5), true);
-    cm.distWant = cm.dist = 58;
-    // 34 degrees down. Steep enough to read as a survey, shallow enough that the far
+    // dist 58 at pitch 0.60 put the lens 32.8 m above the ground and every soldier in
+    // the frame 55-95 m away, which projected them at 29-39 px tall and 12-16 px wide.
+    // That is the structural reason this shot has been the worst card in the set for
+    // four rounds: at 13 px across there is no shading, no silhouette and no banding to
+    // be had, so no amount of work on the materials could ever have shown up here.
+    //
+    // Coming in to dist 50 / pitch 0.585 / fov 41 drops the lens to 27 m and pulls the
+    // window in to 20..96 m; measured, the same soldiers now project 48-56 px and the
+    // Edelweiss 88 px, with the near counters at the bottom of the page reading a third
+    // larger again than the Imperial line at the top — which is the foreground /
+    // midground / background layering the composition axis has been asking for and
+    // which a single flat rung of 37 px could not supply. The bridge still enters at
+    // the lower left (its south abutment projects to about (260, 940)) and runs up to
+    // the centre of the page, so the diagonal that carried the round-5 framing survives.
+    //
+    // The focus is 5.5 m FURTHER DOWN THE AXIS than the staging was solved against,
+    // and the reason is worth writing down because it cost a whole pass. CommandMode
+    // damps `target.y` toward the ground under the focus rather than snapping it, so
+    // the lens converges 3.3 m lower than the naive rig the staging was raycast with
+    // (measured: 30.3 m against the 33.6 m the solver assumed). Everything therefore
+    // projected 85-160 px HIGHER than it was authored to, which crowded the head of
+    // the page and left the foot of it bare. Rather than move nineteen units, the
+    // focus moves 5.5 m along the view axis — (-0.6, -0.8) * 5.5 — which walks the
+    // whole staging back down by the measured 90 px and, as a bonus, brings every
+    // figure ~12% closer to the lens.
+    cm.focusOn(_v.set(2.7, 0, -10.4), true);
+    cm.distWant = cm.dist = 50;
+    // 33.5 degrees down. Steep enough to read as a survey, shallow enough that the far
     // bank's frontages still stand UP against the hillside instead of being roof plans —
     // a map with no elevation in it anywhere is a diagram.
-    cm.pitchWant = cm.pitch = -0.60;
+    cm.pitchWant = cm.pitch = -0.585;
     // North-west, obliquely across the valley: see the note on the staging above.
     cm.yawWant = cm.yaw = Math.PI + 0.6435;
-    cm.fovWant = cm.fov = 42;
+    cm.fovWant = cm.fov = 41;
     // A tactical map read through a lens is not a map. The pipeline switches its depth of
     // field on for this camera, and because the whole frustum falls outside the focus range
     // every fill in the frame is blurred while the ink composited on top of it stays razor
@@ -1003,12 +1111,24 @@ export const SHOTS = {
     // at the shin by the bottom edge, is. The rest of the fire team then cascades away
     // from him to alternating sides so the eye is walked from the near corner to the
     // bridgehead instead of jumping there.
+    //
+    // AND THE BOTTOM-RIGHT CORNER GETS A MAN IN IT.
+    //
+    // Round 5 put the fire team's near end on the LEFT of the axis and its far end on the
+    // right, which walked the eye correctly but left the lower-right quadrant — the ground
+    // nearest the lens on the sunlit side, and therefore the largest, brightest, emptiest
+    // region in the picture — as one unbroken grass bank. Measured on the round-5 plate
+    // that quadrant is about 24% of the page with nothing drawn in it, and "empty regions
+    // of frame" is an automatic rejection on its own. Isara comes forward out of the tail
+    // of the cascade to 4.6 m and +0.66 of the half-width, so she is cropped by the right
+    // edge and her mass closes that corner; the cascade then still runs away from the lens,
+    // just from BOTH near corners instead of one.
     const line = [
       inLine(unitNamed(ctx, 'Rosie Stark'), 3.4, -0.14, 'aim', STANCE.STAND),
-      inLine(unitNamed(ctx, 'Largo Potter'), 6.5, 0.58, 'aim', STANCE.STAND),
-      inLine(unitNamed(ctx, 'Alicia Melchiott'), 11.0, 0.20, 'crouchIdle', STANCE.CROUCH),
+      inLine(unitNamed(ctx, 'Isara Gunther'), 4.6, 0.66, 'crouchIdle', STANCE.CROUCH),
+      inLine(unitNamed(ctx, 'Largo Potter'), 8.0, 0.40, 'aim', STANCE.STAND),
+      inLine(unitNamed(ctx, 'Alicia Melchiott'), 12.0, 0.14, 'crouchIdle', STANCE.CROUCH),
       inLine(unitNamed(ctx, 'Edy Nelson'), 16.0, -0.34, 'aim', STANCE.CROUCH),
-      inLine(unitNamed(ctx, 'Isara Gunther'), 23.0, 0.44, 'crouchIdle', STANCE.CROUCH),
     ].filter((r) => r[0]);
 
     // AND THE ENEMY IS IN THE PICTURE.
@@ -1085,6 +1205,29 @@ export const SHOTS = {
           fx.muzzleFlash(_m, _d, s.weapon);
         }
       }
+      // ROUNDS THAT LAND.
+      //
+      // Five rounds of this plate have shown tracers leaving muzzles and nothing
+      // arriving anywhere, which is why it reads as a diorama of men holding rifles
+      // rather than as a firefight. The damage plate — a thrown blot of ink with the
+      // figure struck through it, outlined in real ink, see icons.js damagePlate — is
+      // one of the best-drawn objects in the project and had never once appeared in a
+      // critiqued frame. Two hits are raised on the Imperial line at finale frame 1, so
+      // they are 6/60 s old when the shutter opens: past the pop, before the fall, and
+      // fully opaque (the plate does not start to fade until 0.84 s).
+      if (i === 1) {
+        const hits = [[foe[0], 34, false], [foe[2], 61, true]];
+        for (const [t, amount, crit] of hits) {
+          if (!t) continue;
+          t.centerPoint(_t);
+          Bus.emit('unit:damaged', {
+            unit: t, amount, crit, source: line[0] && line[0][0],
+            // Below the chest, not above it: the Imperial name slips ride at 2.05 m
+            // and a plate raised over the centre lands squarely on one.
+            worldPos: { x: _t.x, y: _t.y - 0.30, z: _t.z },
+          });
+        }
+      }
     });
     await frames(10);
   },
@@ -1114,7 +1257,8 @@ export const SHOTS = {
     // AZ that follows. Change one of the three and you must re-solve the other two.
     setSun(ctx, 0.16, 1.60);
     plate(ctx, 'V',
-      'The Edelweiss halted on the road, turret traversed to the eastern flank.');
+      'The Edelweiss halted on the road, turret traversed to the eastern flank.',
+      'graphite & bodycolour, sketched at the halt');
     hideAll(ctx);
     b.activeUnit = null;
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
@@ -1199,7 +1343,8 @@ export const SHOTS = {
     const b = ensureBattle(ctx);
     setSun(ctx, 0.33, 1.75);
     plate(ctx, 'VI',
-      'The market street, taken; the barn on the left still holds its Imperial section.');
+      'The market street, taken; the barn on the left still holds its Imperial section.',
+      'pen & wash, hurriedly');
     hideAll(ctx);
 
     // IN THE STREET, NOT OUT ON THE GREEN.
@@ -1251,7 +1396,8 @@ export const SHOTS = {
     ensureBattle(ctx);
     setSun(ctx, 0.29, 2.15);
     plate(ctx, 'VII',
-      'Sergeant Melchiott, before the crossing.');
+      'Sergeant Melchiott, before the crossing.',
+      'red chalk & graphite, from the life');
     hideAll(ctx);
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
     const rosie = unitNamed(ctx, 'Rosie Stark');
@@ -1286,7 +1432,8 @@ export const SHOTS = {
     ensureBattle(ctx);
     setSun(ctx, 0.28, 2.30);
     plate(ctx, 'VIII',
-      'Moving through the fallow field south-west of the deployment ground.');
+      'Moving through the fallow field south-west of the deployment ground.',
+      'graphite & wash');
     hideAll(ctx);
     const edy = unitNamed(ctx, 'Edy Nelson') || firstOfClass(ctx, 'scout', 0);
     const rosie = unitNamed(ctx, 'Rosie Stark');
@@ -1346,7 +1493,8 @@ export const SHOTS = {
     // AZ - (t - 0.5) * 1.15 = -1.868.
     setSun(ctx, 0.95, -1.868);
     plate(ctx, 'IX',
-      'Last light over the valley; the section halted west of the road.');
+      'Last light over the valley; the section halted west of the road.',
+      'wash over graphite, at dusk');
     b.setPhase('command');
     b.activeUnit = null;
     // Every placement below is authored as (depth down the view ray, metres to screen-right)

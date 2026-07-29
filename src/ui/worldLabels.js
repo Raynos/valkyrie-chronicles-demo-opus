@@ -8,6 +8,7 @@
 
 import * as THREE from 'three';
 import { V0, clamp01, easeOutBack, easeOutCubic } from '../core/math.js';
+import { makeRng } from '../core/rng.js';
 import { h, clear, svgEl } from './dom.js';
 import {
   captureRing, inkRule, inkGauge, damagePlate, wobblyPath, splatPath, hatchPath,
@@ -23,9 +24,15 @@ const BANNER_POOL = 10;
 // 40 m river came back with one slip on it. Both are now set to "everything the
 // eye can actually see", and the DECLUTTER pass — not an arbitrary cap — is what
 // keeps the page from becoming a list.
-const MAX_FOE_TAGS = 5;
+// Round 5 held it at 5 and the firefight plate came back with four Imperial slips
+// stacked in one column over the far frontages — the exact "list of names laid over
+// a drawing of a fight" this file's own comment warns about, and the reason is that
+// a garrison dug in along one bank projects into one column however well it is
+// staged. Three is enough to say who is over there and few enough that they can be
+// spread by the declutter pass instead of queued by it.
+const MAX_FOE_TAGS = 3;
 // And how many slips of ANY colour.
-const MAX_TAGS = 9;
+const MAX_TAGS = 7;
 // Line-of-sight is re-tested this often (seconds). A slip over a man who is
 // behind a house is the single most damning HUD tell there is, but the answer
 // does not change at 140 fps.
@@ -59,41 +66,140 @@ const TOKEN_CLS = {
   engineer: 'engineer', sniper: 'sniper', tank: 'tank',
 };
 
+/** Counter geometry, in the counter's own 52x56 viewBox. */
+const CTR = { cx: 26, cy: 29 };
+
+/**
+ * The hand-cut card a command counter is drawn on.
+ *
+ * Allegiance is carried by the CUT, not only by the colour: a Gallian counter
+ * has its top corners taken off (a tab that points forward), an Imperial one has
+ * its bottom corners taken off (a tab that points back). Two counters printed in
+ * grey still tell you whose they are, which is the test a map symbol has to pass
+ * and which the old red-and-blue discs failed.
+ */
+function counterPoints(foe, w, hgt, seed) {
+  const { cx, cy } = CTR;
+  const x0 = cx - w / 2, x1 = cx + w / 2, y0 = cy - hgt / 2, y1 = cy + hgt / 2;
+  const ch = 4.6;
+  const p = foe
+    ? [[x0, y0], [x1, y0], [x1, y1 - ch], [x1 - ch, y1], [x0 + ch, y1], [x0, y1 - ch]]
+    : [[x0 + ch, y0], [x1 - ch, y0], [x1, y0 + ch], [x1, y1], [x0, y1], [x0, y0 + ch]];
+  // Hand-cut: every corner is a little off where a ruler would have put it.
+  const rng = makeRng((seed >>> 0) || 7);
+  return p.map(([x, y]) => [x + (rng() * 2 - 1) * 0.62, y + (rng() * 2 - 1) * 0.62]);
+}
+
+const polyD = (p) => 'M' + p.map((q) => q[0].toFixed(2) + ' ' + q[1].toFixed(2)).join('L') + 'Z';
+
+/** The card's outline as N wobbly runs — a drawn edge, never a vector one. */
+function polyStroke(p, seed, amp) {
+  let d = '';
+  for (let i = 0; i < p.length; i++) {
+    const a = p[i], b = p[(i + 1) % p.length];
+    d += wobblyPath(a[0], a[1], b[0], b[1],
+      { seed: seed + i * 13, amp, segs: 3, overshoot: 0.55 }) + ' ';
+  }
+  return d;
+}
+
 /**
  * A command-mode counter: the marker a staff officer pushes across a survey.
  *
- * Round 1 and round 2 both put a name slip over the tactical map with NOTHING
- * under it — the soldier it belonged to was behind a poplar canopy, so the plate
- * labelled leaves. A map needs counters, not captions: this is drawn in DOM over
- * the render, so it reads through canopy the way a real counter sits on top of
- * the paper, and the slip's leader line now always lands on one.
+ * Round 5 drew this as a round disc on a stem — which, at the command camera and
+ * over a painted landscape, is a map-application PIN, and a map-application pin
+ * is the single most modern object it is possible to put on a page that is
+ * pretending to be a 1930s field journal. It is replaced here by the thing a
+ * staff officer actually pushes across a survey: a small card of cream stock,
+ * cut by hand, ruled in ink, with a colour bar at the head, the arm-of-service
+ * glyph on the body, a facing pip, and a strength gauge along the foot.
+ *
+ * Everything about it is drawn: the outline is six wobbly runs with overshoot,
+ * the corners are jittered off the ruler, the card throws an offset paper shadow
+ * and the Imperial stock is hatched along its foot. It carries five states —
+ * plain, selected (a grease-pencil ring), spent (struck through), damaged (the
+ * gauge) and down (crossed out) — because a marker that cannot say what the unit
+ * has DONE is decoration rather than a HUD.
  *
  * @param {0|1} team
  * @param {string} cls unit class id
  * @param {number} seed
+ * @param {{vehicle?:boolean}} [opts]
  */
-function unitToken(team, cls, seed) {
+function unitCounter(team, cls, seed, { vehicle = false } = {}) {
   const foe = team === 1;
-  const ink = foe ? '#5e1c19' : '#22364a';
-  const body = foe ? '#a44a3c' : '#5d7f9c';
-  const S = 34, c = S / 2;
+  const ink = foe ? '#59201b' : '#28394c';
+  const band = foe ? '#9c4032' : '#4b6a8b';
+  const stock = foe ? '#e7d5b4' : '#f3e8ce';
+  const w = vehicle ? 34 : 27;
+  const hgt = vehicle ? 23 : 21;
+  const { cx, cy } = CTR;
+  const p = counterPoints(foe, w, hgt, seed);
+  const card = polyD(p);
+  const y0 = cy - hgt / 2, y1 = cy + hgt / 2;
+  const cid = 'cclip' + (seed >>> 0);
   const glyph = iconMarkup(TOKEN_CLS[cls] || 'scout', {
-    size: 15, width: 2.0, stroke: '#fbf3df', rough: false,
-  }).replace(/^<svg /, '<svg x="' + (c - 7.5) + '" y="' + (c - 7.5) + '" ');
+    size: vehicle ? 17 : 14, width: 2.1, stroke: ink, rough: false,
+  }).replace(/^<svg /, '<svg x="' + (cx - (vehicle ? 8.5 : 7)) + '" y="' +
+    (cy - (vehicle ? 6.5 : 5.4)) + '" ');
+
   return svgEl(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + S + ' ' + S +
-    '" width="' + S + '" height="' + S + '">' +
-    // the shadow the counter casts on the paper
-    '<path d="' + splatPath(c + 0.7, c + 1.4, 10.6, { seed: seed + 5, lobes: 9, rough: 0.16 }) +
-    '" fill="#3a2f33" opacity="0.26"/>' +
-    // the counter itself, cut by hand
-    '<path d="' + roughCircle(c, c, 9.6, { seed, amp: 0.55, segs: 20 }) +
-    '" fill="' + body + '" stroke="' + ink + '" stroke-width="2.0" stroke-linejoin="round"/>' +
-    // a facing wedge, so a column of counters shows which way the line looks
-    '<g class="fac"><path d="M' + c + ' ' + (c - 15.4) + 'L' + (c + 4.6) + ' ' + (c - 9.2) +
-    'L' + (c - 4.6) + ' ' + (c - 9.2) + 'Z" fill="' + body + '" stroke="' + ink +
-    '" stroke-width="1.7" stroke-linejoin="round"/></g>' +
-    glyph + '</svg>');
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 56" width="52" height="56">' +
+    '<defs><clipPath id="' + cid + '"><path d="' + card + '"/></clipPath></defs>' +
+    // the counter's own shadow on the survey — an offset copy of the same cut,
+    // because a card of pasteboard does not cast a round blur
+    '<path d="' + card + '" fill="#453630" opacity="0.30" transform="translate(1.5 2.9)"/>' +
+    // the stock
+    '<path d="' + card + '" fill="' + stock + '"/>' +
+    '<g clip-path="url(#' + cid + ')">' +
+    // colour bar at the head: the one saturated mark on the counter
+    '<rect x="0" y="' + y0.toFixed(1) + '" width="52" height="6.4" fill="' + band +
+    '" opacity="0.95"/>' +
+    '<rect x="0" y="' + (y0 + 6.4).toFixed(1) + '" width="52" height="1.1" fill="' + ink +
+    '" opacity="0.45"/>' +
+    // Imperial stock is hatched along the foot; Gallian is clean. Shape, mark AND
+    // texture differ, so the two read apart at 20 px and in monochrome.
+    (foe
+      ? '<path d="' + hatchPath(cx - w / 2, y1 - 7, w, 7,
+        { spacing: 2.5, angle: -0.86, seed: seed + 21 }) +
+        '" stroke="' + ink + '" stroke-width="0.6" opacity="0.34" fill="none"/>'
+      : '') +
+    // a laid tint so the stock is not a flat fill
+    '<path d="' + splatPath(cx - 3, cy + 2, w * 0.52, { seed: seed + 5, lobes: 9, rough: 0.34 }) +
+    '" fill="#a8905f" opacity="0.13"/>' +
+    '</g>' +
+    // double-struck rim: one weighted pass, one hairline ghost beside it
+    '<path d="' + polyStroke(p, seed + 3, 0.52) + '" fill="none" stroke="' + ink +
+    '" stroke-width="1.75" stroke-linecap="round" opacity="0.95"/>' +
+    '<path d="' + polyStroke(p, seed + 61, 0.85) + '" fill="none" stroke="' + ink +
+    '" stroke-width="0.55" stroke-linecap="round" opacity="0.34"/>' +
+    glyph +
+    // strength gauge along the foot — hidden until the unit is actually hurt
+    '<g class="hp" style="display:none">' +
+    '<rect x="' + (cx - w / 2 + 2.5).toFixed(1) + '" y="' + (y1 - 3.4).toFixed(1) +
+    '" width="' + (w - 5).toFixed(1) + '" height="2.3" fill="' + ink + '" opacity="0.22"/>' +
+    '<rect class="hpf" x="' + (cx - w / 2 + 2.5).toFixed(1) + '" y="' + (y1 - 3.4).toFixed(1) +
+    '" width="' + (w - 5).toFixed(1) + '" height="2.3" fill="#8a2f2c"/></g>' +
+    // facing pip: a pen-nib triangle that swings round the card
+    '<g class="fac"><path d="M' + cx + ' ' + (cy - 20) + 'L' + (cx + 4.4) + ' ' + (cy - 13.2) +
+    'L' + (cx - 4.4) + ' ' + (cy - 13.2) + 'Z" fill="' + band + '" stroke="' + ink +
+    '" stroke-width="1.5" stroke-linejoin="round"/></g>' +
+    // spent: the counter is struck off with a grease pencil
+    '<path class="act" d="' + wobblyPath(cx - w / 2 - 1, y1 - 2, cx + w / 2 + 1, y0 + 2,
+      { seed: seed + 33, amp: 0.9, segs: 5, overshoot: 1.2 }) +
+    '" stroke="#4b3f36" stroke-width="2.1" stroke-linecap="round" fill="none" opacity="0"/>' +
+    // down: crossed out entirely
+    '<g class="dwn" opacity="0"><path d="' +
+    wobblyPath(cx - w / 2, y0, cx + w / 2, y1, { seed: seed + 41, amp: 1.1, segs: 5 }) + ' ' +
+    wobblyPath(cx + w / 2, y0, cx - w / 2, y1, { seed: seed + 47, amp: 1.1, segs: 5 }) +
+    '" stroke="#5d2420" stroke-width="2.4" stroke-linecap="round" fill="none"/></g>' +
+    // selected: a ring of red grease pencil thrown round the counter by hand
+    '<g class="sel" opacity="0">' +
+    '<path d="' + roughCircle(cx, cy, w * 0.72, { seed: seed + 71, amp: 1.15, segs: 22 }) +
+    '" fill="none" stroke="#a32f34" stroke-width="2.3" stroke-linecap="round" opacity="0.92"/>' +
+    '<path d="' + roughCircle(cx, cy, w * 0.78, { seed: seed + 83, amp: 1.5, segs: 20, open: 1.9 }) +
+    '" fill="none" stroke="#a32f34" stroke-width="1.0" stroke-linecap="round" opacity="0.45"/>' +
+    '</g></svg>');
 }
 
 /** Stable 32-bit hash of a string, for per-name deckle seeds. */
@@ -572,17 +678,34 @@ export class WorldLabels {
    * each one to face the way its soldier is looking. Screen-space facing is read
    * off the projection of a point one metre in front of him, so it stays honest
    * under any camera yaw without the label layer having to know the rig.
+   *
+   * THE COUNTER STANDS OVER ITS SOLDIER, NOT ON HIM.
+   *
+   * Round 5 centred the marker on the man's feet. At the command camera a
+   * soldier is 40 px tall and the marker is 40 px across, so the marker sat
+   * exactly on top of the only thing that proved there was a soldier there — the
+   * critic counted eighteen markers and could find a model under two of them,
+   * which is not a staging bug, it is the marker eating its own referent. The
+   * counter is therefore lifted clear of the man's head in SCREEN space and a
+   * leader hairline is dropped from its foot to his boots, so every counter has
+   * a visible figure standing under it and the sizes never fight.
    */
   _updateTokens() {
     if (!this.useTokens) return;
     const out = this._out;
+    const order = this._tokOrder || (this._tokOrder = []);
+    order.length = 0;
+
     for (const [unit, t] of this.tags) {
       let tok = this.tokens.get(unit);
       const live = !!unit.pos && !(unit.alive === false && !unit.downed) &&
         !(t.foe && unit.spotted === false) && unit.deployed !== false;
       if (!live) { if (tok) tok.el.style.visibility = 'hidden'; continue; }
 
-      this.project(unit.pos, out);
+      // Anchor on the CROWN, not the feet: the counter has to clear the figure.
+      const hgt = unit.isVehicle ? 2.9 : 1.85;
+      V0.set(unit.pos.x, unit.pos.y + hgt, unit.pos.z);
+      this.project(V0, out);
       // Counters live on the map, so they hold to a much longer leash than the
       // name slips do — the whole point is that the survey shows the whole force.
       if (!out.visible || out.depth > 220 ||
@@ -590,31 +713,111 @@ export class WorldLabels {
         if (tok) tok.el.style.visibility = 'hidden';
         continue;
       }
+      const hx = out.x, hy = out.y, depth = out.depth;
+      // and where his boots are, for the leader
+      this._pf.set(unit.pos.x, unit.pos.y, unit.pos.z);
+      this.project(this._pf, out);
+      const footY = out.y;
 
       if (!tok) {
         const el = h('div', { class: 'vc-wl vc-token' + (t.foe ? ' foe' : '') });
-        el.appendChild(unitToken(t.foe ? 1 : 0, String(unit.cls || 'scout').toLowerCase(),
-          (hashStr(unit.name || 'x') & 0x3ff) + 3));
+        el.appendChild(unitCounter(t.foe ? 1 : 0, String(unit.cls || 'scout').toLowerCase(),
+          (hashStr(unit.name || 'x') & 0x3ff) + 3, { vehicle: !!unit.isVehicle }));
         this.layer.appendChild(el);
-        tok = { el, fac: el.querySelector('.fac'), sel: null, isSel: false };
+        tok = {
+          el, fac: el.querySelector('.fac'), hp: el.querySelector('.hp'),
+          hpf: el.querySelector('.hpf'), act: el.querySelector('.act'),
+          dwn: el.querySelector('.dwn'), sel: el.querySelector('.sel'),
+          isSel: false, hpKey: -1, actKey: null, dwnKey: null,
+          hpW: 0,
+        };
+        if (tok.hpf) tok.hpW = parseFloat(tok.hpf.getAttribute('width')) || 22;
         this.tokens.set(unit, tok);
       }
 
       // facing: project a point a metre ahead and take the screen angle
       const yaw = unit.aimYaw != null ? unit.aimYaw : (unit.yaw || 0);
-      this._pf.set(unit.pos.x + Math.sin(yaw), unit.pos.y, unit.pos.z + Math.cos(yaw));
-      const bx = out.x, by = out.y;
+      this._pf.set(unit.pos.x + Math.sin(yaw), unit.pos.y + hgt, unit.pos.z + Math.cos(yaw));
       this.project(this._pf, out);
-      const ang = Math.atan2(out.x - bx, -(out.y - by)) * 180 / Math.PI;
+      tok.ang = Math.atan2(out.x - hx, -(out.y - hy)) * 180 / Math.PI;
 
-      const sc = clamp01(1.28 - Math.max(0, out.depth - 26) / 150) * 0.92 + 0.30;
-      const isSel = unit === this.markedUnit;
-      if (isSel !== tok.isSel) { tok.isSel = isSel; tok.el.classList.toggle('sel', isSel); }
-      tok.el.style.visibility = 'visible';
-      tok.el.style.transform = 'translate(' + bx.toFixed(1) + 'px,' + by.toFixed(1) +
-        'px) translate(-50%,-50%) scale(' + sc.toFixed(3) + ')';
-      if (tok.fac) tok.fac.setAttribute('transform', 'rotate(' + ang.toFixed(1) + ' 17 17)');
+      // A counter is a piece of card: it is the same size wherever it is on the
+      // page, give or take the small perspective courtesy that keeps the far
+      // ones from shouting over the near ones.
+      tok.sc = clamp01(1.30 - Math.max(0, depth - 30) / 190) * 0.40 + 0.86;
+      // Card bottom edge just clears the crown, so the stem between the two is a
+      // tick and not a flagpole.
+      tok.x = hx; tok.y = hy - 13 * tok.sc; tok.footY = footY; tok.depth = depth;
+      tok.halfW = 27 * tok.sc; tok.rowH = 30 * tok.sc;
+      tok.unit = unit; tok.foe = t.foe;
+      order.push(tok);
     }
+
+    // Declutter. Counters may not be dropped — a survey that hides a platoon is
+    // worse than a busy one — so a clashing counter is lifted a lane at a time
+    // and its leader grows to follow. Nearest keeps its place.
+    order.sort((a, b) => a.depth - b.depth);
+    const placed = this._placedToks || (this._placedToks = []);
+    placed.length = 0;
+    for (const k of order) {
+      let lane = 0;
+      for (; lane < 5; lane++) {
+        const cy = k.y - lane * (k.rowH * 0.80);
+        let clash = false;
+        for (const q of placed) {
+          if (Math.abs(q.cx - k.x) > q.halfW + k.halfW - 3) continue;
+          if (Math.abs(q.cy - cy) < (q.rowH + k.rowH) * 0.46) { clash = true; break; }
+        }
+        if (!clash) break;
+      }
+      if (lane >= 5) lane = 0;
+      k.lane = lane;
+      k.cy = k.y - lane * (k.rowH * 0.80);
+      placed.push({ cx: k.x, cy: k.cy, halfW: k.halfW, rowH: k.rowH });
+    }
+
+    for (const k of order) {
+      const unit = k.unit;
+      k.el.style.visibility = 'visible';
+      k.el.style.transform = 'translate(' + k.x.toFixed(1) + 'px,' + k.cy.toFixed(1) +
+        'px) translate(-50%,-50%) scale(' + k.sc.toFixed(3) + ')';
+      // The leader hairline down toward the boots the counter belongs to. It is
+      // CAPPED: run all the way to a soldier 50 px below and the counter stops
+      // being a counter and becomes a signpost on a pole, which is what the
+      // first cut of this looked like. Capped at 30 px it reads as the tick a
+      // draughtsman puts between a symbol and the thing it labels.
+      k.el.style.setProperty('--lead',
+        (Math.max(5, Math.min(30, k.footY - k.cy - 14 * k.sc)) / k.sc).toFixed(1) + 'px');
+      if (k.fac) k.fac.setAttribute('transform', 'rotate(' + k.ang.toFixed(1) + ' 26 29)');
+
+      const isSel = unit === this.markedUnit;
+      if (isSel !== k.isSel) {
+        k.isSel = isSel;
+        k.el.classList.toggle('sel', isSel);
+        if (k.sel) k.sel.setAttribute('opacity', isSel ? '1' : '0');
+      }
+      // spent / down / hurt — the three things a counter must be able to say
+      const acted = !!unit.hasActed && !k.foe;
+      if (acted !== k.actKey) {
+        k.actKey = acted;
+        if (k.act) k.act.setAttribute('opacity', acted ? '0.85' : '0');
+        k.el.classList.toggle('spent', acted);
+      }
+      const down = !!unit.downed || unit.alive === false;
+      if (down !== k.dwnKey) {
+        k.dwnKey = down;
+        if (k.dwn) k.dwn.setAttribute('opacity', down ? '0.9' : '0');
+      }
+      if (unit.maxHp && k.hp) {
+        const key = Math.round(clamp01(unit.hp / unit.maxHp) * 20);
+        if (key !== k.hpKey) {
+          k.hpKey = key;
+          k.hp.style.display = key >= 20 ? 'none' : '';
+          if (k.hpf) k.hpf.setAttribute('width', (k.hpW * (key / 20)).toFixed(2));
+        }
+      }
+    }
+
     // units that vanished from the tracked set
     for (const [unit, tok] of this.tokens) {
       if (!this.tags.has(unit)) { tok.el.remove(); this.tokens.delete(unit); }

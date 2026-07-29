@@ -333,11 +333,22 @@ export function getPaperTexture() {
         const uu = u + coarseAt(fWu, x, y) * 0.070;
         const vv = v + coarseAt(fWv, x, y) * 0.070;
 
-        // ---- tooth: fractal cellular hills, ~13 px and ~6 px cells ----------
+        // ---- tooth: fractal cellular hills ----------------------------------
+        // WEIGHTED FOR WHAT THE SCREEN CAN ACTUALLY RESOLVE. The grade fetches
+        // this tile at 1.55x, so 512 texels cover 330 screen px and the three
+        // octaves land on 8.3, 3.8 and 2.0 px cells. The 168-cell octave is at
+        // Nyquist: at round 5's 2.60x fetch it was 1.2 px with the LOD pinned
+        // to mip 0, which does not read as tooth at all — it aliases, which is
+        // both the directional shimmer the closeup critic measured on the one
+        // surface where the sheet is meant to vanish (16.9:1 orientation
+        // anisotropy on a lit road) and a large part of the frame's 1.26%
+        // per-pixel sparkle. Energy moved down into the octaves that survive
+        // the sampler; total sd is held by norm() below, so this is a change of
+        // SPECTRUM, not of strength.
         const a1 = cellF1(Pa, 40, uu * 40, vv * 40);
         const b1 = cellF1(Pb, 88, uu * 88 + 2.7, vv * 88 + 5.1);
         const c1 = cellF1(Pc, 168, uu * 168 + 1.3, vv * 168 + 9.7);
-        const tooth = (1 - a1) * 0.46 + (1 - b1) * 0.34 + (1 - c1) * 0.20;
+        const tooth = (1 - a1) * 0.50 + (1 - b1) * 0.38 + (1 - c1) * 0.12;
 
         // ---- granulation: clustered pigment specks --------------------------
         // Clumps sit ON the fine feature points; their DENSITY comes from an
@@ -360,7 +371,15 @@ export function getPaperTexture() {
         // ---- fine speckle: keeps the grain alive under magnification --------
         const speck = tnoise(u * 256, v * 256, 256, seed + 131);
 
-        lumF[p] = tooth * 0.62 - gran * 0.34 + (fibre - 0.5) * 0.16 + (speck - 0.5) * 0.13;
+        // The fibre is the only ORIENTED term in the sheet — three masked
+        // directions whose aggregate has no axis, but whose local patches
+        // certainly do. At 0.16 it was a sixth of the multiply, and the closeup
+        // critic measured the consequence as a single machine ruling at 85 deg
+        // over the brightest surface in the frame. Paper has strands in it;
+        // they are not a sixth of what you see. The speckle comes down for the
+        // same reason as the 168-cell octave: at 256 cells it is 1.3 screen px,
+        // i.e. it is not texture, it is aliasing.
+        lumF[p] = tooth * 0.62 - gran * 0.34 + (fibre - 0.5) * 0.07 + (speck - 0.5) * 0.05;
 
         // G: isotropic mid-frequency mottle for the wet-edge boundary tooth.
         // Two cellular octaves at ~26 px and ~10 px plus a broad wash so a

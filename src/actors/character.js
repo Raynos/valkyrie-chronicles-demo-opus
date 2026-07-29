@@ -903,6 +903,9 @@ const _cGoal = new THREE.Vector3(), _cPole = new THREE.Vector3();
 const _cBore = new THREE.Vector3(), _cFore = new THREE.Vector3(), _cAxis = new THREE.Vector3();
 const _cShHand = new THREE.Vector3();
 const _cWQ = new THREE.Quaternion();
+// Private to the torso-clearance solve; it runs while _cA/_cB are live.
+const _clT0 = new THREE.Vector3(), _clT1 = new THREE.Vector3(), _clP = new THREE.Vector3();
+const _clQ = new THREE.Vector3(), _clN = new THREE.Vector3();
 // Low-ready bore, in character space: 37 degrees across the body, 21 degrees
 // down, with the foregrip 0.24 m forward and 0.38 m below the shoulder line.
 //
@@ -939,6 +942,39 @@ const _cWQ = new THREE.Quaternion();
 // lands 0.294 m from its shoulder at a 60-degree elbow.
 const CARRY_YAW = 0.62, CARRY_PITCH = -0.44;
 const CARRY_FWD = 0.272, CARRY_DOWN = -0.400, CARRY_LAT = 0.010;
+/**
+ * Carry geometry per weapon kind. `fwd`/`down`/`lat` position the firing grip
+ * relative to the midpoint of the two shoulders (character axes, metres);
+ * `yaw`/`pitch` aim the bore (radians, +yaw across to the character's left).
+ *
+ * The lance row is the one that matters. A rifle carried at the waist tucks a
+ * 0.55 m receiver in front of the belly and nothing intersects; the same
+ * numbers applied to a 1.16 m launch tube put its rear half through the
+ * shooter's chest, which is exactly what round 5 shipped. Raising the grip to
+ * 0.11 m below the shoulders, moving it 0.18 m out to the firing side and
+ * levelling the bore puts the tube on top of the trapezius where it belongs.
+ */
+const CARRY_BY_KIND = {
+  // fwd/down pulled in from 0.272/-0.400. Worked out from the rig table: with
+  // the foregrip at shoulderMid + (0.272 fwd, -0.400 up) it sits 0.513 m from
+  // the support shoulder against a 0.526 m elbow-limited reach — no headroom at
+  // all, so the moment the torso-clearance push moved the gun the support hand
+  // came off it. 0.250/-0.370 brings that to 0.478 m and leaves 48 mm of slack.
+  rifle: { yaw: CARRY_YAW, pitch: CARRY_PITCH, fwd: 0.250, down: -0.370, lat: CARRY_LAT },
+  smg: { yaw: 0.66, pitch: -0.42, fwd: 0.232, down: -0.348, lat: 0.010 },
+  sniper: { yaw: 0.56, pitch: -0.42, fwd: 0.258, down: -0.372, lat: 0.014 },
+  // Chest height, angled up 3.4 deg, and 0.14 m out to the firing side. Worked
+  // through on paper before it was rendered: with a 0.52 m tail behind the grip
+  // the rear of the tube lands 0.427 m from the spine axis (the trunk capsule is
+  // 0.202 m), and the forward grip after the support hand has choked up to
+  // z = +0.10 sits 0.483 m from the left shoulder against a 0.494 m working
+  // reach. Both constraints clear, which the round-5 numbers (0.208 m from the
+  // spine, support hand 0.129 m off the tube) did not.
+  lance: { yaw: 0.34, pitch: 0.06, fwd: 0.200, down: -0.260, lat: -0.140 },
+  pistol: { yaw: 0.30, pitch: -0.50, fwd: 0.240, down: -0.330, lat: -0.060 },
+  thrown: { yaw: CARRY_YAW, pitch: CARRY_PITCH, fwd: CARRY_FWD, down: CARRY_DOWN, lat: CARRY_LAT },
+  tool: { yaw: 0.40, pitch: -0.30, fwd: 0.240, down: -0.330, lat: 0.010 },
+};
 /** Exponential smoothing that is stable at any frame rate. */
 const damp = (cur, tgt, rate, dt) => tgt + (cur - tgt) * Math.exp(-rate * dt);
 const _cn = new THREE.Vector3(), _ce1 = new THREE.Vector3(), _ce2 = new THREE.Vector3();
@@ -1592,10 +1628,19 @@ export class Character {
     _cUp.set(0, 1, 0).applyQuaternion(_carryQ);
     _cLeft.set(1, 0, 0).applyQuaternion(_carryQ);
 
+    // Per-kind carry. A 1.16 m launch tube cannot be held at the waist across
+    // the chest the way a rifle is: round 5's lancer put 0.52 m of steel through
+    // his own ribcage (bore axis 0.208 m from the spine against a 0.186 m chest
+    // half-width) and the plate drew it crossing his shoulder. A lancer carries
+    // the tube ON the shoulder — grip up at shoulder height and outboard, bore
+    // nearly level — which clears the body by construction AND brings the
+    // forward grip 0.30 m ahead of the right shoulder, inside the support arm.
+    const K = CARRY_BY_KIND[this.weaponStats ? this.weaponStats.kind : 'rifle'] || CARRY_BY_KIND.rifle;
+
     // Desired bore. Shouldered: straight down the body's facing — the aim layer
     // has already twisted the spine to the commanded yaw/pitch, so "forward" is
-    // the right answer. Carried: 26 degrees down, 14 degrees across the body.
-    const yaw = CARRY_YAW * cf, pitch = CARRY_PITCH * cf;
+    // the right answer. Carried: muzzle down and across the body by K.
+    const yaw = K.yaw * cf, pitch = K.pitch * cf;
     _cBore.copy(_cFwd).multiplyScalar(Math.cos(yaw) * Math.cos(pitch))
       .addScaledVector(_cLeft, Math.sin(yaw) * Math.cos(pitch))
       .addScaledVector(_cUp, Math.sin(pitch))
@@ -1609,9 +1654,9 @@ export class Character {
     boneWorld(bm.upperArmL, _cA);
     boneWorld(bm.upperArmR, _cB);
     _cFore.addVectors(_cA, _cB).multiplyScalar(0.5)
-      .addScaledVector(_cFwd, CARRY_FWD * s)
-      .addScaledVector(_cUp, CARRY_DOWN * s)
-      .addScaledVector(_cLeft, CARRY_LAT * s);
+      .addScaledVector(_cFwd, K.fwd * s)
+      .addScaledVector(_cUp, K.down * s)
+      .addScaledVector(_cLeft, K.lat * s);
 
     // Shouldered: target the TRIGGER HAND, not the handguard. The weapon's own
     // origin is the firing grip, so putting the hand under the cheek and pointing
@@ -1630,17 +1675,22 @@ export class Character {
     // ELBOW POLE. A two-bone solve puts the joint on a circle of radius
     // sqrt(l1^2 - a^2) about the shoulder->hand axis and the pole picks the point
     // — so with the hand tucked in at a rifle carry that radius is 0.23 m and the
-    // pole is choosing where a quarter of a metre of humerus goes. Forward was
-    // the wrong quarter-metre: it swings the elbow across the front of the ribs
-    // and forces the forearm back across the chest to reach the grip.
+    // pole is choosing where a quarter of a metre of humerus goes.
     //
-    // Carried: down, BEHIND, and 0.13 m outboard — the elbow hangs off the back
-    // of the ribcage the way it does on anyone holding a rifle at the waist.
-    // Shouldered: up and hard outboard, under the butt plate, which is the other
-    // real pose. Blended by `cf` so raising the rifle carries the elbow with it.
-    _cPole.copy(_cFwd).multiplyScalar(-0.05 - 0.57 * cf)
-      .addScaledVector(_cUp, 0.30 - 0.72 * cf)
-      .addScaledVector(_cLeft, -0.95 + 0.43 * cf).normalize();
+    // ROUND 6, MEASURED. The old pole read (fwd -0.62, up -0.42, left -0.52) at
+    // a full carry, i.e. dominated by the OUTBOARD term, and every soldier in
+    // every plate came out with the gun elbow 0.098-0.147 m outboard of the
+    // shoulder->hand chord and 0.12-0.18 m behind it: a quarter of a metre of
+    // humerus flung back and sideways, which is precisely the S-curve the last
+    // three critiques led with. A low-ready elbow is DOWN first, back second and
+    // barely outboard at all — the forearm is what crosses the body, not the
+    // humerus. Shouldered, the elbow does legitimately come up and out under the
+    // butt plate, so `cf` blends between the two.
+    // cf == 1 is fully CARRIED (elbow down, a little back, barely out);
+    // cf == 0 is fully SHOULDERED (elbow up and out under the butt plate).
+    _cPole.copy(_cUp).multiplyScalar(0.30 - 1.22 * cf)
+      .addScaledVector(_cFwd, -0.10 - 0.24 * cf)
+      .addScaledVector(_cLeft, -0.86 + 0.64 * cf).normalize();
 
     /** Roll the wrist until the bore sits on `_cBore`. Returns the angle used. */
     const align = () => {
@@ -1706,6 +1756,164 @@ export class Character {
     // are independent and one pass lands both exactly.
     align();
     if (fore) place();
+    this._clearTorso(cw);
+    // The weapon has just moved; re-derive the support-hand goal from where it
+    // ACTUALLY is, so the IK that runs immediately after this is not chasing a
+    // stale foregrip. See the note at the call site in update().
+    if (this.animator.handTarget) this._supportTarget();
+  }
+
+  /**
+   * Where the support hand goes on the weapon, in world space.
+   *
+   * The IK drives the WRIST bone, and a wrist parked on the handguard puts the
+   * palm and all four fingers through the wood, so the goal is dropped 48 mm
+   * along the weapon's own -Y (its "down", which tracks the gun's roll however
+   * the bore is canted).
+   *
+   * SLIDING. The foregrip on a lance sits 0.30 m ahead of the firing grip and
+   * on a sniper rifle 0.34 m, while a support arm is 0.53 m long and its
+   * shoulder is not where the gun hand is. Round 5's fallback when the grip was
+   * out of range was to fade the support IK out entirely, leaving an open hand
+   * in mid-air short of the wood; measured on `tank`, the support hand sat
+   * 0.071-0.209 m off the weapon on every soldier in the frame. A soldier does
+   * not do either of those things — he chokes up on the handguard. Walking the
+   * goal back along the weapon's own +Z keeps the hand ON the weapon AND inside
+   * the elbow limit, which is the only way to satisfy both at once.
+   */
+  _supportTarget() {
+    const w = this.weapon;
+    if (!w) return;
+    const ud = w.userData;
+    const e = ud.foreGrip.matrixWorld.elements;
+    this._handRoll.set(e[4], e[5], e[6]).normalize();
+    const s = this.root.scale.y || 1;
+    this._handTarget.set(e[12], e[13], e[14]).addScaledVector(this._handRoll, -0.048 * s);
+
+    const reach = this.animator.armReach('L');
+    const we = w.matrixWorld.elements;
+    _cAxis.set(we[8], we[9], we[10]).normalize();          // weapon +Z (bore)
+    boneWorld(this.rig.boneMap.upperArmL, _cA);
+    // A SEARCH, NOT A WALK. The first cut stepped blindly backwards along the
+    // bore and it made things WORSE on exactly the weapon it was written for:
+    // a lance is carried out to the firing side, so "back toward the trigger"
+    // is AWAY from the support shoulder — measured, the slide took the lancer's
+    // goal from 0.469 m off that shoulder (already reachable) to 0.544 m (not).
+    // Sampling the whole grippable span and keeping the best candidate cannot
+    // do that: it is monotone in the thing we care about by construction.
+    //
+    // 0.94 rather than "just reachable": the support arm has to still have a
+    // creasing elbow at the end of it, and a goal parked exactly on the reach
+    // shell puts the joint at the limit with nothing left over.
+    const near = ud.holdNear !== undefined ? ud.holdNear : 0.10;
+    const far = ud.holdFar !== undefined ? ud.holdFar : 0.25;
+    const good = reach * 0.94;
+    let best = _cA.distanceTo(this._handTarget), bestSlide = 0;
+    if (best > good && far > near) {
+      const N = 10;
+      for (let i = 1; i <= N; i++) {
+        const slide = (far - near) * (i / N);
+        _clP.copy(this._handTarget).addScaledVector(_cAxis, -slide * s);
+        const dd = _cA.distanceTo(_clP);
+        if (dd < best) { best = dd; bestSlide = slide; }
+        if (dd <= good) break;
+      }
+      if (bestSlide > 0) this._handTarget.addScaledVector(_cAxis, -bestSlide * s);
+    }
+  }
+
+  /**
+   * PUSH THE WEAPON OUT OF THE BODY.
+   *
+   * Measured on the round-5 `tank` plate: the lancer's launch tube passed
+   * 0.208 m from the spine3 axis while the chest tube alone is 0.186 m in
+   * half-width and the deltoid cap reaches 0.235 — so 0.52 m of steel ran
+   * straight through his ribs and out over the far shoulder, which is exactly
+   * what the plate draws. The closeup's rifle does the same thing across the
+   * throat. Neither is a pose problem: the hold solver places a GRIP, and a
+   * weapon is a metre-long line through that grip, so nothing upstream ever
+   * looks at where the rest of it ends up.
+   *
+   * The test is a capsule: the trunk from hips to neck at a radius taken from
+   * the actual girth. If the weapon's bore line pierces it, the whole weapon
+   * (and the hand holding it, and the arm behind that) is translated along the
+   * shortest way out. Translating rather than re-aiming keeps the bore
+   * direction the aim layer asked for, which is what the sight picture and the
+   * shot ray both depend on.
+   */
+  _clearTorso(cw) {
+    const w = this.weapon;
+    if (!w || cw < 0.02) return;
+    const ud = w.userData;
+    const bm = this.rig.boneMap;
+    const s = this.root.scale.y || 1;
+
+    boneWorld(bm.spine1, _clT0);
+    boneWorld(bm.neck, _clT1);
+    // Trunk radius. The chest tube is 0.186*girth in half-width, so 0.180*girth
+    // + 22 mm of serge puts the capsule right on the tunic surface: a barrel is
+    // then allowed to GRAZE the uniform (which is what a carried weapon does)
+    // but not enter it. Pushing to the deltoid's 0.235 instead floats the gun
+    // visibly clear of the body and reads worse than the clip did.
+    const rT = (0.180 * (this.appearance ? this.appearance.girth : 1) + 0.022) * s;
+    const rW = (ud.clearRadius || 0.055) * s;
+
+    // The weapon as a segment: from its rearmost point to the muzzle.
+    const me = ud.muzzle.matrixWorld.elements;
+    _cAxis.set(me[8], me[9], me[10]).normalize();
+    _clP.set(me[12], me[13], me[14]);                     // muzzle
+    _clQ.copy(_clP).addScaledVector(_cAxis, -(ud.clearLen || 1.10) * s);
+
+    // Closest approach between segment(_clQ.._clP) and segment(_clT0.._clT1).
+    _cA.copy(_clP).sub(_clQ);                             // weapon dir * len
+    _cB.copy(_clT1).sub(_clT0);                           // trunk dir * len
+    _clN.copy(_clQ).sub(_clT0);
+    const a = _cA.dot(_cA), b = _cA.dot(_cB), c = _cB.dot(_cB);
+    const d = _cA.dot(_clN), e = _cB.dot(_clN);
+    const den = a * c - b * b;
+    let tW = den > 1e-9 ? clamp01((b * e - c * d) / den) : 0;
+    let tT = c > 1e-9 ? clamp01((b * tW + e) / c) : 0;
+    tW = a > 1e-9 ? clamp01((b * tT - d) / a) : 0;
+    _clP.copy(_clQ).addScaledVector(_cA, tW);             // point on the weapon
+    _clQ.copy(_clT0).addScaledVector(_cB, tT);            // point on the trunk
+    _clN.copy(_clP).sub(_clQ);
+    const gap = _clN.length();
+    const want = rT + rW;
+    if (gap >= want) return;
+
+    // Push out of the trunk axis — but BIASED FORWARD.
+    //
+    // The naive push is straight along the radial, and on a weapon carried out
+    // to one side that radial is lateral, so clearing the ribs drags the gun
+    // away from the support shoulder: measured, a pure radial push took the
+    // rifle's forward grip from 0.513 m to 0.582 m off the left shoulder
+    // against a 0.526 m working reach, and the support hand fell off the wood.
+    // Forward costs the support arm nothing (both arms simply extend), so the
+    // push direction is half radial, half the character's own forward, with the
+    // magnitude divided by the radial component so the CLEARANCE ACHIEVED is
+    // identical either way.
+    if (gap < 1e-4) _clN.copy(_cFwd);
+    else _clN.multiplyScalar(1 / gap);
+    _clQ.copy(_clN);                                    // keep the pure radial
+    _clN.addScaledVector(_cFwd, 0.55).normalize();
+    // Never push a weapon UP through the chin — flatten the vertical component.
+    _clN.addScaledVector(_cUp, -0.85 * _clN.dot(_cUp));
+    if (_clN.lengthSq() < 1e-6) _clN.copy(_cFwd);
+    _clN.normalize();
+    // Cap the total travel at 1.6x the deficit. Dividing by `eff` guarantees the
+    // radial component, but on an oblique push the surplus all goes forward, and
+    // measured on `village` an unbounded divide moved a carried SMG 0.11 m down
+    // range — enough to take its handguard out of the support arm's reach.
+    const eff = Math.max(0.42, _clN.dot(_clQ));
+    const push = Math.min((want - gap) / eff, (want - gap) * 1.6) * cw;
+    const hand = bm.handR;
+    boneWorld(hand, _cA);
+    _cGoal.copy(_cA).addScaledVector(_clN, push);
+    hand.getWorldQuaternion(_cWQ);
+    this.animator.solveArm(bm.upperArmR, bm.foreArmR, hand, _cGoal, _cPole, 1);
+    hand.parent.getWorldQuaternion(_carryQ);
+    hand.quaternion.copy(_carryQ.invert()).multiply(_cWQ);
+    hand.updateMatrixWorld(true);
   }
 
   // -- construction helpers -------------------------------------------------
@@ -2027,19 +2235,16 @@ export class Character {
     }
 
     // Support hand snaps onto the foregrip whenever the pose calls for it.
+    //
+    // ONLY THE GATE LIVES HERE. The target itself is recomputed by
+    // _supportTarget() at the END of the weapon-hold solve, because the hold
+    // solve MOVES the weapon and a target sampled here is a frame stale.
+    // Measured: with the torso-clearance push added below, a target baked at
+    // this point left the support hand 0.22-0.35 m off the weapon on five of
+    // six soldiers in `tank`; recomputed after the push it is 0.03-0.09 m.
     const hands = this.animator.handsMode;
     if (this.alive && lod < 2 && hands === 'weapon' && this.weapon) {
-      const fg = this.weapon.userData.foreGrip;
-      const e = fg.matrixWorld.elements;
-      // The IK drives the WRIST bone, and a wrist parked on the handguard puts
-      // the palm and all four fingers through the wood. Drop the target 48 mm
-      // along the weapon's own -Y (its "down", so this tracks the gun's roll)
-      // so the wrist sits under the handguard and the palm meets it.
-      // The weapon's local +Y is its "up" (the sights), so -Y tracks the gun's
-      // roll and this stays correct however the bore is canted.
-      this._handRoll.set(e[4], e[5], e[6]).normalize();
-      const s = this.root.scale.y || 1;
-      this._handTarget.set(e[12], e[13], e[14]).addScaledVector(this._handRoll, -0.048 * s);
+      this._supportTarget();
       this.animator.setHandTarget(this._handTarget, 1);
       // ...and roll the wrist until the palm looks back up at the wood.
       this.animator.setHandRoll(this._handRoll);

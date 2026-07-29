@@ -41,16 +41,43 @@ export const PALETTE = {
   // the dark and lush variants a real hue apart from the base so a hillside has
   // something to vary BETWEEN.
   //
-  //                      display HSV      was
-  grass: 0x6f7a50,     // 76 deg / 0.34    0x5e7440  85 deg / 0.45
-  grassDry: 0x8f8b5f,  // 55 deg / 0.34    0x8d8d56  60 deg / 0.39
-  grassDark: 0x4d5540, // 83 deg / 0.25    0x3f5433  91 deg / 0.42
-  grassLush: 0x5c6a48, // 85 deg / 0.32    0x4c6b3c  96 deg / 0.44
-  dirt: 0x967c4e,
-  dirtDark: 0x715a37,
+  //
+  // ROUND 6. Round 5's numbers are in the third column, and they were still too
+  // hot: measured on the shipped frames, lit grass came back at HSV saturation
+  // 0.271 (overview), 0.305 (tank), 0.316 (firefight) and 0.351 (grass) against
+  // a target of 0.28 and falling — i.e. the round-5 build moved the number the
+  // WRONG WAY, and two critics independently called the hillsides "a flat
+  // acid-green paint-bucket wash" and "electric green".
+  //
+  // Two things are clamped here now rather than one. The GREENS are pulled to
+  // 0.22-0.28 display chroma — src/render/materials.js vcSageFinish enforces a
+  // hard 0.26 linear ceiling on the green lobe on top of this, so these are the
+  // authored intent and that is the guarantee. The STRAWS (grassDry, wheat,
+  // wheatDark) are pulled down as well, and they matter more than they look:
+  // they sit at 43-55 degrees, which is BELOW the sage clamp's lobe — the clamp
+  // deliberately cannot reach them, because widening it far enough to would also
+  // reach the road ochre and pull the cart track toward green. The straws are
+  // therefore the one green-family pigment whose only ceiling is this table, and
+  // they are most of what the `grass` shot's fallow field is made of.
+  //
+  // assertPalette() at the bottom of this block enforces both at load.
+  //                      display HSV      round 5           round 3
+  grass: 0x717a58,     // 76 deg / 0.28    0x6f7a50 / 0.34   0x5e7440 / 0.45
+  grassDry: 0x8d8a72,  // 53 deg / 0.19    0x8f8b5f / 0.34   0x8d8d56 / 0.39
+  grassDark: 0x4d5540, // 83 deg / 0.25    0x4d5540 / 0.25   0x3f5433 / 0.42
+  grassLush: 0x5e6a4f, // 87 deg / 0.25    0x5c6a48 / 0.32   0x4c6b3c / 0.44
+  // Earth is UMBER AND OCHRE, and in this frame it is also the majority
+  // pigment: the busiest 55-degree hue wedge holds 47-72% of every shot and it
+  // is the 8-63 degree one, which is these four colours plus the stucco. Round
+  // 5 had dirt at HSV 0.48 and sand at 0.33 — the road was the most saturated
+  // large surface in the game and it is 30-40% of the ground in half the shots.
+  // Pulling the two of them to 0.36 and 0.25 is the only move available on this
+  // side of the wedge that does not touch the pantiles or the ribbon.
+  dirt: 0x92805e,      // 39 deg / 0.36   was 0x967c4e / 0.48
+  dirtDark: 0x6f5c42,  // 36 deg / 0.40   was 0x715a37 / 0.51
   mud: 0x5b5140,
   rock: 0x928c80,
-  sand: 0xc2ad83,
+  sand: 0xc0af90,      // 39 deg / 0.25   was 0xc2ad83 / 0.33
   // architecture
   stucco: 0xd6cab0,
   stuccoWarm: 0xd9c49c,
@@ -102,14 +129,16 @@ export const PALETTE = {
   // wooded shot; a canopy in a gouache study is a low-chroma olive with its
   // VALUE doing the work, not its hue. Species stay a real hue apart from each
   // other so a treeline is still a treeline.
-  //                        display HSV     was
-  leafOak: 0x606b42,     // 76 deg / 0.38   0x53692f  83 deg / 0.55
-  leafPoplar: 0x6c784b,  // 76 deg / 0.38   0x62793a  82 deg / 0.52
-  leafWillow: 0x7c8558,  // 72 deg / 0.34   0x738345  76 deg / 0.47
-  leafDark: 0x3f4832,    // 85 deg / 0.31   0x38492a  93 deg / 0.43
-  wheat: 0xb9a565,
-  wheatDark: 0x8f7c48,
-  reed: 0x848a5c,        // 68 deg / 0.33   0x7d8a4a  72 deg / 0.46
+  //                        display HSV      round 5           round 3
+  leafOak: 0x646d51,     // 79 deg / 0.26   0x606b42 / 0.38   0x53692f / 0.55
+  leafPoplar: 0x6f785a,  // 78 deg / 0.25   0x6c784b / 0.38   0x62793a / 0.52
+  leafWillow: 0x7e8566,  // 74 deg / 0.23   0x7c8558 / 0.34   0x738345 / 0.47
+  leafDark: 0x414838,    // 86 deg / 0.22   0x3f4832 / 0.31   0x38492a / 0.43
+  // Straw, not gold. See the note on grassDry: these sit below the sage clamp's
+  // lobe, so this table is the only ceiling they have.
+  wheat: 0xb3a684,       // 43 deg / 0.26   0xb9a565 / 0.45
+  wheatDark: 0x877c64,   // 41 deg / 0.26   0x8f7c48 / 0.50
+  reed: 0x868a68,        // 67 deg / 0.25   0x848a5c / 0.33   0x7d8a4a / 0.46
   bark: 0x7a6349,
   barkPale: 0x9a8a6f,
   flowerA: 0xd6c268,
@@ -132,6 +161,59 @@ export const PALETTE = {
   waterDeep: 0x466c67,
   foam: 0xe8e4d6,
 };
+
+// ---------------------------------------------------------------------------
+// palette assertion
+// ---------------------------------------------------------------------------
+//
+// Four rounds running, a critique has come back with "clamp every PALETTE green
+// at source" and four rounds running the table has drifted back up, because a
+// hex literal carries no units and 0x7d8a49 does not look saturated written
+// down (it is 0.47). This makes the ceiling executable.
+//
+// It is a WARNING, not a throw: a palette that is 0.01 over its ceiling must not
+// be able to black-screen the game in front of a player. It fails loudly in the
+// console instead, and the shader-side clamp (vcSageFinish) is the guarantee.
+const PIGMENT_CEILING = {
+  // the green lobe the sage clamp covers
+  green: { hue: [52, 130], maxSat: 0.30 },
+  // straw and stubble sit below that lobe and have no shader-side ceiling
+  straw: { hue: [38, 52], maxSat: 0.38, keys: ['grassDry', 'wheat', 'wheatDark'] },
+};
+
+function hexHsv(hex) {
+  const r = ((hex >> 16) & 255) / 255, g = ((hex >> 8) & 255) / 255, b = (hex & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d > 1e-6) {
+    if (mx === r) h = ((g - b) / d) % 6;
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+  }
+  h *= 60; if (h < 0) h += 360;
+  return [h, mx > 0 ? d / mx : 0, mx];
+}
+
+export function assertPalette(palette = PALETTE) {
+  const bad = [];
+  for (const [k, v] of Object.entries(palette)) {
+    if (typeof v !== 'number') continue;
+    const [h, s] = hexHsv(v);
+    const rule = PIGMENT_CEILING.straw.keys.includes(k)
+      ? PIGMENT_CEILING.straw
+      : (h >= PIGMENT_CEILING.green.hue[0] && h <= PIGMENT_CEILING.green.hue[1])
+        ? PIGMENT_CEILING.green : null;
+    if (rule && s > rule.maxSat + 1e-4) {
+      bad.push(`${k}=0x${v.toString(16).padStart(6, '0')} hue ${h.toFixed(0)} sat ${s.toFixed(3)} > ${rule.maxSat}`);
+    }
+  }
+  if (bad.length) {
+    console.warn('[palette] pigment ceiling exceeded — a Gallian pasture is sage and '
+      + 'olive, not video-game green:\n  ' + bad.join('\n  '));
+  }
+  return bad;
+}
+assertPalette();
 
 // ---------------------------------------------------------------------------
 // shared lighting state (World owns the actual lights and writes these)
@@ -638,6 +720,14 @@ export function makeTerrainSurfaceMaterial(opts = {}) {
       // which is what a laid wash actually does when it dries in stages.
       pigLevels: opts.pigLevels ?? 12,
       pigQ: opts.pigQ ?? 0.86,
+      // GRANULATING BOUNDARIES. "Give surfaces pigment character... granulating
+      // dark edges where a wash meets its shade boundary" has been on the
+      // materials note for three rounds, and the ground is the largest set of
+      // wash boundaries in every frame. uWetRim is independent of bandBleed —
+      // how far a boundary WANDERS and how much pigment DRIES OUT on it are
+      // unrelated quantities — and the terrain has been running on the generic
+      // 0.55 default while its bleed did all the work.
+      wetRim: opts.wetRim ?? 1.05,
     }, opts), ['vertexColors']) ||
     makeFallbackSurface({
       color: 0xffffff,

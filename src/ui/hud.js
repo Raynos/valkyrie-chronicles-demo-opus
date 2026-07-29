@@ -249,6 +249,29 @@ export class HUD {
     this.bookmarkEl = h('div', { class: 'vc-bookmark' });
     this.bookmarkEl.appendChild(bookmark({ w: 34, h: 96, text: 'I' }));
     f.appendChild(this.bookmarkEl);
+
+    // THE PAGE'S RUNNING HEAD, ON A GUMMED TAB.
+    //
+    // The plate caption is the strongest single element in the project, and the
+    // reason it works is that it is INK ON PAPER: bare type set over the picture
+    // is legible on a pale frame and gone on a dark one, which is exactly why the
+    // first cut of this — a running head ruled across the top margin, no stock
+    // under it — measured as invisible against the map. So the same trick is used
+    // again. A narrow tab of the book's own cream stock is gummed to the head of
+    // the page, carrying the chapter on the left, the sheet or plate reference on
+    // the right, and a ruled hairline between them.
+    const hp = panel({ seed: 623, cls: 'vc-runhead', tilt: 0.18, soft: true });
+    this.runHeadEl = hp.root;
+    this.runHeadL = h('span', { class: 'vc-runhead-l', text: 'Chapter II' });
+    this.runHeadR = h('span', { class: 'vc-runhead-r', text: 'The Crossing at Vasel' });
+    this.runHeadN = h('span', { class: 'vc-runhead-n', text: '46' });
+    const hrow = h('div', { class: 'vc-runhead-row' });
+    hrow.appendChild(this.runHeadL);
+    hrow.appendChild(this.runHeadR);
+    hrow.appendChild(this.runHeadN);
+    hp.content.appendChild(hrow);
+    f.appendChild(this.runHeadEl);
+
     f.appendChild(h('div', { class: 'vc-vignette' }));
     this.root.appendChild(f);
 
@@ -270,6 +293,16 @@ export class HUD {
     cp.content.appendChild(this.capNum);
     cp.content.appendChild(this.capText);
     cp.content.appendChild(this.capRule);
+    // The artist's own hand under the rule, and the folio in the corner of the
+    // slip: the medium he worked in and the leaf the plate is tipped onto. Both
+    // are on the SLIP, where there is stock to carry them, rather than out in a
+    // margin the picture has already bled into.
+    const foot = h('div', { class: 'vc-cap-f' });
+    this.capHand = h('span', { class: 'vc-cap-h', text: 'graphite, ink & wash' });
+    this.capFolio = h('span', { class: 'vc-cap-p', text: '46' });
+    foot.appendChild(this.capHand);
+    foot.appendChild(this.capFolio);
+    cp.content.appendChild(foot);
     this.root.appendChild(this.capEl);
   }
 
@@ -289,9 +322,30 @@ export class HUD {
    */
   setCaptureMode(mode, caption) {
     this.root.classList.toggle('vc-plate', mode === 'plate');
+    // The head of the page says what the page IS. On a plate it carries the
+    // plate's own reference; on the survey it names the sheet and its scale,
+    // which is the single line that turns a picture of terrain into a MAP.
+    if (mode === 'command') {
+      this.runHeadL.textContent = 'Survey Sheet IV';
+      this.runHeadR.textContent = 'Vasel Crossing — the north bank';
+      this.runHeadN.textContent = '1:2500';
+    }
     if (caption) {
       if (caption.num) this.capNum.textContent = caption.num;
       if (caption.text) this.capText.textContent = caption.text;
+      // The folio walks with the plate: plate V is not on the same leaf as
+      // plate II, and a book whose page number never changes is a template.
+      if (caption.num) {
+        const R = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6, VII: 7, VIII: 8, IX: 9, X: 10, XI: 11, XII: 12 };
+        const n = R[String(caption.num).replace(/^Plate\s+/i, '').trim()];
+        if (n) {
+          this.capFolio.textContent = String(38 + n * 4);
+          this.runHeadN.textContent = caption.num;
+        }
+        this.runHeadL.textContent = 'Chapter II';
+        this.runHeadR.textContent = 'The Crossing at Vasel';
+      }
+      if (caption.hand) this.capHand.textContent = caption.hand;
     }
   }
 
@@ -1890,8 +1944,14 @@ export class HUD {
   _applyLabelPolicy() {
     const cmd = this.phase === 'command' || this.phase === 'enemy';
     if (cmd) {
+      // The selected soldier and BOTH tanks get a name. One slip on a whole survey
+      // says only "this one is chosen"; naming the armour as well is what a staff
+      // map is for — an Edelweiss slip on our side of the crossing and an Imperial
+      // one on theirs tells you the shape of the fight without reading the roster —
+      // and three slips is still well inside the declutter pass's budget.
       this.labels.setPolicy({
-        filter: (u) => u === this.selected, occlusion: false, lift: 34,
+        filter: (u) => u === this.selected || !!u.isVehicle,
+        occlusion: false, lift: 52,
         tokens: true, marked: this.selected,
       });
     } else {

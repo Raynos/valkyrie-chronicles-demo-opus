@@ -81,7 +81,25 @@ export const PALETTE = {
   // 0.93, bright and unmistakably sunlit, with headroom left for the cream trim
   // to still read as the brightest thing on the figure.
   tunic: rgbLin(0x9c8d68),
-  tunicShade: rgbLin(0x7c7050),
+  // SHADE CLOTH IS VIOLET, NOT ROSE.
+  // Round 5 measured the `dusk` tunic's shaded mass at median hue 350 / sat 0.15
+  // — a dusty pink — while the world around it went violet, and the rubric's
+  // whole second axis is "warmer in light, violet-blue in shade, never grey".
+  // The shader's violet gain is not ours to change, but the ALBEDO it multiplies
+  // is: 0x7c7050 is (124,112,80), R-dominant by 44 LSB, so no amount of downstream
+  // tinting could pull it past neutral. 0x645d66 is (100,93,102) — blue-dominant
+  // by 2 LSB at HSV sat 0.088, i.e. hue 277 — so the shade band now STARTS on the
+  // cool side of neutral and the grade carries it the rest of the way.
+  // Tuned against the render, not the swatch — three passes on `squad`'s hero,
+  // sampling the shoulder-yoke band (which is authored in this colour):
+  //   0x7c7050 (round 5)  hue  26 / B-R -31   an orange sash
+  //   0x645d66            hue 290 / B-R  +4   magenta, and too violet when lit
+  //   0x646a72            hue 246 / B-R +16   correct in shade, too blue when lit
+  //   0x67666f (kept)     hue 268 / B-R  +8 shaded, hue 35 / B-R -14 lit
+  // 265 deg is the target the closeup critique names, and the lit third still
+  // reads warm, which is the whole of rubric axis 2. It is also 12% darker in
+  // luma (112 -> 99), which sharpens every crease authored in it.
+  tunicShade: rgbLin(0x67666f),
   // Headgear is a clear step DARKER and greener than the tunic. A cap in tunic
   // colour on a tan face reads as a bald head with a stripe on it.
   // A HEAD IS READ AS A DARK MASS OVER A LIGHT FACE. Under this fill-dominated
@@ -91,7 +109,7 @@ export const PALETTE = {
   // as head luma 110 against torso 92. Authored at 80 it lands a clear step below
   // the tunic in every light, which is what makes a capped head read as capped.
   cap: rgbLin(0x66663d),
-  capShade: rgbLin(0x4a4c2e),
+  capShade: rgbLin(0x3f3f48),
   // The COLLAR is doing more work than any other 3 cm of this character: it is
   // the dark ring that separates a pale face from a pale tunic, and it is what
   // makes a head read as a head rather than as the top of a sack.
@@ -101,7 +119,7 @@ export const PALETTE = {
   // it and the tunic (140) a whole step above, so the leg resolves into three
   // reads instead of one.
   trouser: rgbLin(0x77694a),
-  trouserCuff: rgbLin(0x5e5339),
+  trouserCuff: rgbLin(0x4d4b56),
   leather: rgbLin(0x62462c),
   belt: rgbLin(0x43301e),
   boot: rgbLin(0x352820),
@@ -138,7 +156,7 @@ export const PALETTE = {
   // Imperial (team 1) — the same ladder, shifted to a cold grey-green so the two
   // armies are told apart by TEMPERATURE at any distance, not by an insignia.
   impTunic: rgbLin(0x8d9184),
-  impTunicShade: rgbLin(0x6c7065),
+  impTunicShade: rgbLin(0x60656e),
   impCollar: rgbLin(0x41443c),
   impTrouser: rgbLin(0x44473e),
   impLeather: rgbLin(0x38342c),
@@ -1793,10 +1811,14 @@ function buildArms(b, rig, o) {
       // SUPRACONDYLAR PINCH, and it is the whole reason a bent arm reads as
       // hinged rather than as a hose: the joint has to be NARROWER than the
       // muscle bellies either side of it, so the silhouette steps in, corners,
-      // and steps back out. 0.0395 -> 0.0350 takes the waist from 8% to 19%
-      // below the bicep, which is what an elbow actually does.
-      { p: at(sh, el, 0.93), rx: 0.0350 * g, rz: 0.0400 * g },
-      { p: el, rx: 0.0405 * g, rz: 0.0435 * g },                // elbow
+      // and steps back out. 0.0395 -> 0.0350 took the waist from 8% to 19%
+      // below the bicep; ROUND 6 takes it to 0.0312, i.e. 28% below, and adds a
+      // second station so the notch has a floor rather than a single vertex.
+      // On the `tank` lancer (486 px tall, arm radius ~14 px) that is a 4 px
+      // step in and a 5 px step out — a corner the outline pass can bite.
+      { p: at(sh, el, 0.90), rx: 0.0330 * g, rz: 0.0392 * g },
+      { p: at(sh, el, 0.955), rx: 0.0312 * g, rz: 0.0386 * g },
+      { p: el, rx: 0.0428 * g, rz: 0.0452 * g },                // elbow
     ], { seg: seg(12), shape: delt });
 
     // Triceps: the mass on the BACK of the upper arm, running from the deltoid's
@@ -1815,12 +1837,18 @@ function buildArms(b, rig, o) {
     // is "a single lozenge from shoulder to hand with no elbow bend anywhere in
     // its silhouette"; the bend comes from anim.js, but the KNUCKLE of the joint
     // has to exist or a bent arm is still a bent hose.
-    b.setColor(mixCol(o.tunic, o.tunicShade, 0.35)).setMottle(0.05);
+    // ROUND 6: 0.030x0.032x0.023 at 0.030 back put the olecranon INSIDE the
+    // sleeve's own 0.043 radius — a bump that never reached the silhouette. It
+    // now stands 0.041*g behind the joint at 0.034x0.037x0.028, so the point of
+    // the elbow is a genuine corner on the extensor side from any viewpoint,
+    // which is what makes the joint read when the bend is foreshortened (the
+    // `tank` lancer's forearm projects to 45 px against a 200 px humerus).
+    b.setColor(mixCol(o.tunic, o.tunicShade, 0.50)).setMottle(0.05);
     b.addEllipsoid({
-      center: [el[0] + side * 0.004, el[1] + 0.004, el[2] - 0.030 * g],
-      radius: [0.030 * g, 0.032 * g, 0.023 * g],
+      center: [el[0] + side * 0.004, el[1] + 0.002, el[2] - 0.041 * g],
+      radius: [0.034 * g, 0.037 * g, 0.028 * g],
       seg: seg(9), rings: seg(6),
-      displace: (dx, dy, dz) => [1, 1, 0.45 + 0.55 * clamp01(-dz)],
+      displace: (dx, dy, dz) => [1, 1, 0.40 + 0.60 * clamp01(-dz)],
     });
     b.setColor(o.tunic);
 
@@ -1932,7 +1960,10 @@ function buildHands(b, rig, o) {
     // the ridge still reads as one line at forty metres.
     const dir = new THREE.Vector3().copy(fg).sub(wr).normalize();
     const kn = [fg.x + dir.x * 0.004, fg.y + dir.y * 0.004 + 0.024, fg.z + dir.z * 0.004];
-    b.setColor(mixCol(col, [0.045, 0.032, 0.030], 0.30));
+    // 0.30 -> 0.48. The knuckle bar is the ONE line that tells a fist from a
+    // mitten at any distance, and at 0.30 it was measurably invisible against
+    // the back of the hand in the 0.35 m portrait frame.
+    b.setColor(mixCol(col, [0.045, 0.032, 0.030], 0.48));
     b.addTube([
       { p: [kn[0] - side * 0.008, kn[1] - 0.002, kn[2] - 0.034], rx: 0.0098, rz: 0.0086 },
       { p: [kn[0], kn[1] + 0.003, kn[2] - 0.004], rx: 0.0116, rz: 0.0100 },
@@ -1960,11 +1991,22 @@ function buildHands(b, rig, o) {
     // its local Z, so the palm FACES local +-X; the bone frames put local +X at
     // world -X for both hands, and a hanging palm faces medially, so the closing
     // direction is world -X on the left and +X on the right: -side.
-    const palmF = 0.96;
+    // ROUND 6, LOOKED AT FROM 0.35 m WITH THE CAMERA ON THE HAND. The curl was
+    // 1.35 rad — 77 degrees of total turn over the whole finger — and a 58 mm
+    // finger bent 77 degrees describes an arc of radius 43 mm, i.e. it sweeps
+    // AROUND a fist-sized hole and never reaches the palm. What that renders as
+    // is four blunt prongs standing off the back of the hand with the rifle
+    // passing underneath them, untouched, which is exactly what the portrait
+    // frame showed. A hand closed on a 40 mm grip is an arc of radius ~28 mm:
+    //   R = len / TH, so TH = 0.058 / 0.028 = 2.07 rad (119 degrees).
+    // At 2.10 the fingertip lands 24 mm along the finger's own direction and
+    // 41 mm ACROSS the palm — a closed fist, and the tips finish under the
+    // thumb where the grip is instead of pointing at the sky.
+    const palmF = 1.62;
     // index, middle, ring, little — real relative lengths, so the fingertip arc
     // is a curve rather than a straight cut.
     const FLEN = [0.058, 0.062, 0.057, 0.047];
-    const FRAD = [0.0092, 0.0094, 0.0087, 0.0076];
+    const FRAD = [0.0084, 0.0086, 0.0080, 0.0070];
     const FPITCH = 0.0232;
     const vFing = b.vertexCount;
     for (let f = 0; f < (simple() ? 2 : 4); f++) {
@@ -1999,12 +2041,13 @@ function buildHands(b, rig, o) {
         ];
       };
       b.addTube([
-        { p: at(0.00), rx: r0, rz: r0 * 0.92 },
-        { p: at(0.30), rx: r0 * 1.06, rz: r0 * 0.96 },   // proximal knuckle
-        { p: at(0.46), rx: r0 * 0.86, rz: r0 * 0.80 },   // waist at the PIP
-        { p: at(0.64), rx: r0 * 0.96, rz: r0 * 0.88 },   // middle phalanx
-        { p: at(0.85), rx: r0 * 0.78, rz: r0 * 0.72 },
-        { p: at(0.99), rx: r0 * 0.60, rz: r0 * 0.56 },
+        { p: at(0.00), rx: r0 * 1.02, rz: r0 * 0.94 },
+        { p: at(0.26), rx: r0 * 1.10, rz: r0 * 0.98 },   // proximal knuckle
+        { p: at(0.42), rx: r0 * 0.82, rz: r0 * 0.76 },   // waist at the PIP
+        { p: at(0.60), rx: r0 * 0.98, rz: r0 * 0.90 },   // middle phalanx
+        { p: at(0.76), rx: r0 * 0.74, rz: r0 * 0.70 },   // waist at the DIP
+        { p: at(0.90), rx: r0 * 0.84, rz: r0 * 0.78 },   // distal phalanx
+        { p: at(0.99), rx: r0 * 0.52, rz: r0 * 0.48 },   // tip
       ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
     }
     // THE PAINTED VALLEY. Geometry buys finger separation down to about ten

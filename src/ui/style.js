@@ -348,6 +348,35 @@ function css() {
 .vc-cap-r{ margin-top:.22em; opacity:.7; }
 .vc-cap-r svg{ display:block; }
 
+/* ---------- the page's running head ---------------------------------------
+   A narrow tab of the book's own stock gummed to the head of the page. The
+   first cut set this as bare type in the top margin and it measured invisible:
+   a full-bleed plate has no margin, so ink laid straight over the picture had
+   nothing to hold it. On stock it reads in every shot, and it is the line that
+   turns the command frame from a picture of terrain into a numbered SHEET. */
+.vc-runhead{
+  position:absolute; top:.34em; left:50%; transform:translateX(-50%);
+  z-index:6; padding:.18em 1.1em .24em; min-width:24em; pointer-events:none;
+}
+.vc-runhead-row{ display:flex; align-items:baseline; gap:1.1em; white-space:nowrap; }
+.vc-runhead-l{
+  font-variant:small-caps; letter-spacing:.24em; font-size:.66em; color:var(--ink-2);
+}
+.vc-runhead-r{
+  flex:1; text-align:center; font-style:italic; font-size:.72em;
+  letter-spacing:.05em; color:var(--ink);
+}
+.vc-runhead-n{
+  font-variant:small-caps; letter-spacing:.18em; font-size:.64em; color:var(--ink-3);
+}
+/* The artist's hand and the folio, on the caption slip itself. */
+.vc-cap-f{
+  display:flex; align-items:baseline; justify-content:space-between;
+  margin-top:.2em; gap:1em;
+}
+.vc-cap-h{ font-size:.62em; font-style:italic; color:var(--ink-3); letter-spacing:.05em; }
+.vc-cap-p{ font-size:.66em; letter-spacing:.20em; color:var(--ink-3); }
+
 /* ---------- stacking order ----------------------------------------------- */
 /* frame < world labels < mode HUDs < reticle < dialogue < pages < toasts */
 .vc-frame{ z-index:0; }
@@ -439,14 +468,17 @@ function css() {
 .vc-ru-gr .n b{ font-weight:400; color:var(--ink); font-size:1.16em; }
 /* A rubber stamp in the corner of the personnel card, clear of the name. */
 .vc-ru-stamp{
-  position:absolute; right:.3em; top:.3em; white-space:nowrap;
-  font-variant:small-caps; letter-spacing:.16em; font-size:.52em;
-  color:var(--red); padding:.14em .5em .18em;
+  position:absolute; right:.26em; top:.26em; white-space:nowrap;
+  font-variant:small-caps; letter-spacing:.12em; font-size:.46em;
+  color:var(--red); padding:.12em .38em .16em;
   transform:rotate(-8deg); opacity:.82;
 }
 .vc-ru-stamp svg{ position:absolute; inset:0; width:100%; height:100%; }
 .vc-ru-stamp span{ position:relative; }
-.vc-ru.acted .vc-ru-name{ padding-right:3.3em; }
+/* 2.5em, not 3.3: at 3.3 the stamp's reservation ate "Marina Wulfstan" down to
+   "Marina Wulf…" on every command frame — a roster that cannot print its own
+   soldier's name is worse than one with no spent stamp on it. */
+.vc-ru.acted .vc-ru-name{ padding-right:2.5em; }
 .vc-ru-ribbon{ position:absolute; left:-.55em; top:.5em; width:.85em; height:2.6em; }
 
 /* A meter is a wash of pigment brushed into a ruled trough, not a filled div:
@@ -647,8 +679,11 @@ function css() {
 
 /* The heading tape is a strip of gummed paper stuck across the top of the page,
    not a hairline rule: bare ticks over the render read as a debug overlay. */
+/* 2.5em, not 1.5: the page's running head is gummed to the head of the sheet at
+   0.34em and the cardinal tape used to sit hard under it, so two strips of cream
+   stock touched along the top edge of every action frame. */
 .vc-compass{
-  position:absolute; top:1.5em; left:50%; transform:translateX(-50%);
+  position:absolute; top:2.5em; left:50%; transform:translateX(-50%);
   width:36em; max-width:62vw; height:4.0em; overflow:hidden;
   -webkit-mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
   mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
@@ -806,15 +841,32 @@ function css() {
    They are drawn in DOM over the render, so a soldier under a poplar canopy
    still has something on the page where he stands — a name slip anchored to
    nothing but leaves is an automatic rejection. */
-.vc-token{ width:1.85em; height:1.85em; }
-.vc-token svg{ width:100%; height:100%; overflow:visible;
-  filter:drop-shadow(0 1px 2px rgba(48,36,32,.42)); }
-.vc-token.sel svg{ filter:drop-shadow(0 0 0 rgba(0,0,0,0))
-  drop-shadow(0 0 .22em rgba(163,47,52,.9)) drop-shadow(0 1px 2px rgba(48,36,32,.5)); }
+.vc-token{ width:52px; height:56px; }
+.vc-token svg{ display:block; width:100%; height:100%; overflow:visible;
+  filter:drop-shadow(0 1px 2px rgba(48,36,32,.34)); }
+/* The leader hairline from the counter's foot down to the boots it belongs to.
+   A counter floating over a landscape with nothing joining it to a man is the
+   "anchored to nothing" plate rounds 2 and 5 were both rejected for; this is the
+   line that proves there is a soldier under every marker on the page. */
+.vc-token::after{
+  content:''; position:absolute; left:50%; top:76%; width:1px; height:var(--lead,10px);
+  background:linear-gradient(180deg, rgba(52,42,38,.72) 0%, rgba(52,42,38,.30) 70%, rgba(52,42,38,0) 100%);
+}
+/* Selected: the counter is picked out with a red grease pencil (drawn inside the
+   SVG) and lifted off the sheet a little further. */
+.vc-token.sel svg{ filter:drop-shadow(0 2px 3px rgba(48,36,32,.5)); }
+/* Spent: the card is struck off and the whole thing goes flat, the way a used
+   counter is turned face-down on a real map. */
+.vc-token.spent svg{ opacity:.62; filter:grayscale(.42) drop-shadow(0 1px 1px rgba(48,36,32,.3)); }
 /* A hit is a thrown blot of ink with the figure struck through it — one drawn
    piece, outlined in real ink (paint-order:stroke), so it holds against a busy
    hillside. Bare DOM digits under a text-shadow read as browser text. */
-.vc-dmg{ transform:translate(-50%,-50%); }
+/* A hit is the most urgent thing on the page for the second it exists, so it
+   goes over the counters and the name slips rather than under them — the world
+   layer is one stacking context and DOM order alone put the slips on top. */
+.vc-dmg{ transform:translate(-50%,-50%); z-index:3; }
+.vc-nametag{ z-index:2; }
+.vc-token{ z-index:1; }
 .vc-dmg-svg{
   display:block; width:5.6em; height:auto; overflow:visible;
   filter:drop-shadow(0 2px 3px rgba(44,24,20,.5));

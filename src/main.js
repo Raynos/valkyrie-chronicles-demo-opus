@@ -701,6 +701,19 @@ async function captureFlow(S) {
   hud.briefing.hide();
   hud.chapterCard.hide();
 
+  // Measurement handle. `tools/probe.mjs` evaluates arbitrary script inside the
+  // page with `vc` = window.__VC__ in scope, and the pipeline only ever put the
+  // RENDER half of the game on it. Every claim about a shot's staging — how many
+  // pixels tall a soldier projects, whether a counter has a soldier under it,
+  // where the bridge actually is — needs the game half too, and measuring by eye
+  // off a PNG is exactly how four rounds of "characters are too small" went
+  // unnoticed. Capture builds only; a played build never has __VC__ at all.
+  if (typeof window !== 'undefined') {
+    window.__VC__ = Object.assign(window.__VC__ || {}, {
+      engine, scene, camera, renderer, pipeline, world, battle, fx, rig, hud, Bus, CFG,
+    });
+  }
+
   // Compile every material we already know about before the clock starts, so
   // the first frames are not spent stalling on shader compiles.
   try { renderer.compile(scene, camera); } catch (e) { console.warn('[main] precompile', e); }
@@ -721,7 +734,25 @@ async function captureFlow(S) {
   //                            has finished streaming in around the new camera
   //   geometries + textures    nothing is still being uploaded
   //   _dofBlend                the pipeline's temporal depth-of-field has converged
+  //   labels                   the DOM annotation layer (name slips, command-mode
+  //                            counters, damage plates) has stopped adding or
+  //                            hiding elements
   // Shadow maps re-render every frame, so a stable draw list means a stable shadow.
+  //
+  // The label layer is in the key because it is NOT part of renderer.info and it is
+  // now load-bearing: `command` draws eighteen counters that are created lazily the
+  // first frame their unit projects on screen and hidden again by a declutter pass,
+  // so a frame grabbed while that layer was still settling would differ from the
+  // next one with every render counter identical. Counting the visible elements is
+  // one DOM query per settle frame and there are at most SETTLE_MAX of them.
+  const labelHost = document.querySelector('.vc-world');
+  const labelKey = () => {
+    if (!labelHost) return '0';
+    const kids = labelHost.children;
+    let shown = 0;
+    for (let i = 0; i < kids.length; i++) if (kids[i].style.visibility !== 'hidden') shown++;
+    return kids.length + ':' + shown;
+  };
   let n = 0, stable = 0, lastKey = '';
   let fpsFrames = 0, fpsT0 = 0;
   const wantDof = pipeline.quality >= 2 && pipeline.dof.enabled ? 1 : 0;
@@ -731,7 +762,8 @@ async function captureFlow(S) {
     if (n === 4) { fpsT0 = performance.now(); fpsFrames = 0; } else if (n > 4) fpsFrames++;
     const info = renderer.info;
     const key = `${info.programs ? info.programs.length : 0}|${info.render.calls}|`
-      + `${info.render.triangles}|${info.memory.geometries}|${info.memory.textures}`;
+      + `${info.render.triangles}|${info.memory.geometries}|${info.memory.textures}`
+      + `|${labelKey()}`;
     const dofDone = Math.abs(pipeline._dofBlend - wantDof) < 0.004;
     if (key === lastKey && dofDone) stable++; else stable = 0;
     lastKey = key;
@@ -744,6 +776,19 @@ async function captureFlow(S) {
   // Then pad to the fixed budget so the animated phase of the captured frame is
   // a function of the shot and nothing else. See SETTLE_TOTAL.
   while (n < SETTLE_TOTAL) { await raf(); n++; }
+  // ...and say so out loud when that guarantee did NOT hold. The contract is
+  // "same shot name => same frame count => same pixels", and it only holds while
+  // convergence finishes inside the fixed budget: a shot that takes 130 frames to
+  // converge is captured at frame 130 here and at frame 118 on a faster machine,
+  // with the animator, the tracers and the LOD all at different phases. That is a
+  // silent failure — the harness reports success and writes a subtly different
+  // PNG — so it is published as a stat and warned about rather than left to be
+  // discovered by a critic wondering why a shot changed with nothing edited.
+  const settleOverran = converged > SETTLE_TOTAL;
+  if (settleOverran) {
+    console.warn('[main] settle overran the fixed budget: converged at frame ' + converged +
+      ' of ' + SETTLE_TOTAL + ' — this shot is no longer frame-count deterministic');
+  }
 
   // The scripted VFX frames. A tracer lives for tenths of a second and a muzzle
   // flash for ~0.07 s, so neither can survive the settle loop above; the shot
@@ -762,7 +807,8 @@ async function captureFlow(S) {
   await raf();
   publishStats(S, {
     shot, requestedShot: requested, fallback: shot !== requested,
-    fps, settleFrames: n, convergedAt: converged, finaleFrames: fin ? fin.frames : 0,
+    fps, settleFrames: n, convergedAt: converged, settleOverran,
+    finaleFrames: fin ? fin.frames : 0,
   });
 
   // FREEZE — and freeze the SYSTEMS, not just the clock.

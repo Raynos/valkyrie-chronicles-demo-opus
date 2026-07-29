@@ -444,6 +444,10 @@ function buildLance() {
     muzzle: [0, 0.03, tubeFront + 0.27], foreGrip: [0, -0.052, gz + 0.30],
     eject: [0, 0.03, tubeBack - 0.08], sight: [-0.052, 0.086, gz + 0.10],
     boltPivot: [0.036, 0.03, gz - 0.20], boltThrow: 0, scale: 1, backblast: [0, 0.03, tubeBack - 0.08],
+    // The launch tube is grippable for its whole length, so the support hand may
+    // choke all the way back to the trigger housing when the arm cannot make the
+    // forward grip. On a rifle that range is the handguard only.
+    holdNear: 0.02, holdFar: 0.30,
   };
 }
 
@@ -740,6 +744,20 @@ export function createWeapon(type, opts = {}) {
 
   if (parts.scale !== 1) g.scale.setScalar(parts.scale);
 
+  // CLEARANCE CAPSULE. A weapon is a long line through a grip, and the hold
+  // solver only ever places the grip — so nothing upstream knows the other
+  // 0.6-1.1 m of it exists. Round 5 shipped a lancer whose launch tube ran
+  // 0.208 m from his own spine axis (chest half-width 0.186 m) and a rifle lying
+  // across a closeup's throat. `clearLen` is the distance from the MUZZLE back
+  // to the rearmost point of the weapon, `clearRadius` the fattest half-section
+  // along it; character.js `_clearTorso` tests that segment against the trunk
+  // capsule every frame and pushes the whole hold out of the body if it fails.
+  const CLEAR = {
+    gallianRifle: [1.14, 0.055], gallianRifleB: [1.14, 0.055],
+    smg: [0.86, 0.055], lance: [1.16, 0.062], sniperRifle: [1.32, 0.058],
+    pistol: [0.30, 0.040], grenade: [0.12, 0.045], toolkit: [0.26, 0.060],
+  };
+  const cl = CLEAR[key] || [1.10, 0.055];
   g.userData = {
     type: key,
     stats: WEAPONS[key] || WEAPONS.gallianRifle,
@@ -748,6 +766,14 @@ export function createWeapon(type, opts = {}) {
     boltThrow: parts.boltThrow || 0,
     magRest: mag ? mag.position.clone() : null,
     backblast: parts.backblast || null,
+    clearLen: cl[0] * (parts.scale || 1),
+    clearRadius: cl[1] * (parts.scale || 1),
+    // Where along the weapon's own +Z the support hand may slide when the
+    // foregrip is outside the support arm's elbow-limited reach. Both are
+    // metres from the firing grip (the weapon's origin); the hand walks from
+    // `holdFar` back toward `holdNear` until it is inside the arm.
+    holdNear: parts.holdNear !== undefined ? parts.holdNear : 0.10,
+    holdFar: parts.holdFar !== undefined ? parts.holdFar : (parts.foreGrip ? parts.foreGrip[2] : 0.25),
   };
   return g;
 }

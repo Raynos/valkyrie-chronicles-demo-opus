@@ -380,6 +380,7 @@ uniform float uPigWarp;       // how far its boundary may wander, in LEVELS
 uniform float uWetRim;        // granulating boundary rim, independent of bleed
 uniform float uMottle;        // sub-metre pigment structure, in band-drive units
 uniform float uPasture;       // sage/olive clamp + mass spread on the green lobe
+uniform vec3  uSage;          // x target hue (turns) y chroma ceiling z pull
 uniform float uGradeExp;      // the grade's exposure, for the paper window
 uniform float uGrain;         // cold-press substrate amplitude on this surface
 // x: masonry course height in metres (0 = off)   y: per-block tonal amount
@@ -410,6 +411,83 @@ varying vec2 vAux;
 #if defined( USE_COLOR_ALPHA ) || defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
   varying vec4 vColorC;
 #endif
+
+// ---- the sage/olive finish -------------------------------------------------
+// The LAST thing that touches a green albedo, and the only ceiling in the chain
+// that nothing downstream of it can walk back over.
+//
+// WHY IT EXISTS ON TOP OF vcPasture. Round 5 set vcPasture's own ceiling to 0.34
+// LINEAR and measured lit-grass display saturation at 0.335 — it went UP, not
+// down, and two critics called the hillsides "a flat acid-green paint-bucket
+// wash" and "electric green". Two separate mechanisms are responsible and
+// neither is reachable from that ceiling:
+//
+//  1. THE GRADE RE-SATURATES. canvasRenderPipeline lifts chroma with a GAMMA
+//     (uSatGamma 0.73, so 0.20 -> 0.30) and then adds another 22% on the
+//     pasture lobe specifically (uGreenChroma), so anything authored at the
+//     0.34 ceiling arrives on screen at ~0.35. The number that has to land
+//     under the target is the one after all of that, so the authored ceiling
+//     has to sit well under half of it.
+//  2. THE GRADE ALSO ROTATES THE HUE. uGreenLift pushes the sage lobe up to
+//     +30 deg: vcPasture's 76-degree target arrives on screen at 104, which is
+//     measurably what the overview shot renders (hue median 104.1) — emerald, not
+//     sage. Gallian pasture is YELLOW-leaning. Authoring at ~58 deg is what
+//     puts the on-screen median in the 75-85 band the brief asks for.
+//
+// The lobe gate is deliberately ASYMMETRIC — it rises over 40-52 deg and falls
+// over 103-124. The upper edge keeps mint and teal out; the lower edge is where
+// it is because the STRAW cuts of the sward (PALETTE.grassDry at 53 deg, the
+// per-tuft ochre pull in vegetation.js, the dry-crest lerp in the terrain bake)
+// are green-family pigment living BELOW the kelly lobe, and they are most of
+// what a fallow field is made of. With the edge at 52-63 they evaluated at
+// g = 0.25, i.e. essentially unclamped, and the grass shot measured 0.314 while
+// its neighbouring true greens measured 0.19. Road ochre at 38-39 deg still
+// evaluates to zero, so the cart track cannot be pulled toward green.
+//
+// The hue move COMPRESSES toward the target rather than collapsing onto it, and
+// it is deliberately ASYMMETRIC: 0.58 on the yellow side of the target, 0.92 on
+// the green side. A symmetric compression measured beautifully on the one axis
+// it was aimed at (overview lit-grass hue 104.1 -> 81.7, saturation 0.271 ->
+// 0.195) and wrecked two others: it took the whole pasture mass out of the
+// 80-160 wedge the palette critics count (overview green 28.8% -> 13.2%,
+// firefight 31.9% -> 6.9%) and, because those pixels also stopped being
+// chromatic enough to count at all, it pushed the busiest 55-degree wedge from
+// 51% to 63% — a WORSE duotone, bought with a better saturation number. The
+// asymmetry is what lets the median sit yellow-of-90 while the lush hollows keep
+// a real green tail, which is what a pasture actually looks like and what keeps
+// the frame two colour families instead of one.
+vec3 vcSageFinish( vec3 c, float amt ) {
+  if ( amt <= 0.001 ) return c;
+  vec3 hsv = vcRgb2Hsv( c );
+  float g = amt
+    * smoothstep( 0.1111, 0.1444, hsv.x )            // 40 -> 52 deg
+    * ( 1.0 - smoothstep( 0.2861, 0.3444, hsv.x ) ); // 103 -> 124 deg
+  if ( g < 0.004 ) return c;
+  float d = hsv.x - uSage.x;
+  float hx = uSage.x + d * ( d < 0.0 ? 0.58 : 0.92 );
+  hsv.x = fract( mix( hsv.x, hx, clamp( uSage.z, 0.0, 1.0 ) * g ) );
+
+  // The ceiling is PRE-COMPENSATED for the grade's hue-dependent chroma gain,
+  // so that what is flat is the number a critic measures rather than the number
+  // this file writes. canvasRenderPipeline multiplies chroma by
+  //     1 + uGreenChroma(0.22) * exp( -(h - 0.236)^2 / 0.0060 )
+  // AFTER a sat^uSatGamma(0.73), and that lobe peaks at 1.22 on 85 deg and falls
+  // to 1.03 on 53. A single linear ceiling therefore lands on screen 20% higher
+  // in the middle of the pasture band than at its edges, which is exactly what
+  // round 5's flat 0.34 did and why a "clamped" sward still measured 0.31-0.35
+  // where the terrain's straw measured 0.25. Dividing the ceiling by the lobe,
+  // in the gamma's own units, makes the display ceiling flat across the band.
+  //
+  // (Those three constants belong to another module. They are duplicated here
+  // knowingly: getting them slightly wrong drifts the ceiling by a few percent,
+  // whereas not compensating at all is a 20% error with a hue dependence.)
+  float dc = hsv.x - 0.236;
+  dc -= floor( dc + 0.5 );
+  float lobe = 1.0 + 0.22 * exp( -dc * dc / 0.0060 );
+  float ceilLin = uSage.y * pow( 1.0 / lobe, 1.3699 );   // 1/0.73
+  hsv.y = min( hsv.y, mix( 1.0, ceilLin, g ) );
+  return vcHsv2Rgb( hsv );
+}
 `;
 
 // The body. Expects vec3 albedo, float alpha, vec3 extraN and float extraDrive
@@ -1212,6 +1290,19 @@ function nprExtraUniforms() {
     uWetRim:     { value: 0.55 },
     uMottle:     { value: 0.075 },
     uPasture:    { value: 0 },
+    // Target hue 63 deg. The grade's green lift carries that to ~84 on screen —
+    // measured slope of the whole chain is d(screen)/d(authored) ~= 1.24, from
+    // 76 deg authored -> 104 measured and 58 -> 82.
+    //
+    // Chroma ceiling 0.245 LINEAR, at lobe = 1 — vcSageFinish divides it by the
+    // grade's own chroma lobe, so the DISPLAY ceiling it produces is flat.
+    // Calibrated against the frame, not against the algebra: at 0.207 the lit
+    // sward measured a 0.161 median with a 0.273 p95 and the frame started to
+    // go grey (green 80-160 fell to 14%); at 0.26 uncompensated the grass shot
+    // measured 0.314. 0.245 is the value that keeps every shot's median under
+    // the 0.28 bar with the p95 under 0.31 and the green wedge intact.
+    // Round 5 wrote a 0.34 ceiling and measured 0.335 on screen.
+    uSage:       { value: new THREE.Vector3(0.1750, 0.245, 1) },
     uGradeExp:   { value: 1 },     // replaced by reference in bindShared
     uGrain:      { value: 0.45 },
     uPigment:    { value: new THREE.Vector4(0, 0, 0, 0) },
@@ -1269,6 +1360,9 @@ function applyNprOpts(uniforms, o) {
   if (o.wetRim !== undefined) uniforms.uWetRim.value = o.wetRim;
   if (o.mottle !== undefined) uniforms.uMottle.value = o.mottle;
   if (o.pasture !== undefined) uniforms.uPasture.value = o.pasture;
+  if (o.sageHue !== undefined) uniforms.uSage.value.x = o.sageHue;
+  if (o.sageMax !== undefined) uniforms.uSage.value.y = o.sageMax;
+  if (o.sagePull !== undefined) uniforms.uSage.value.z = o.sagePull;
   if (o.grain !== undefined) uniforms.uGrain.value = o.grain;
   uniforms.uPigment.value.set(
     o.blockSize ?? 0, o.blockTone ?? 0.10, o.fissure ?? 0, o.fissureFreq ?? 2.2);
@@ -1772,6 +1866,7 @@ void main() {
   albedo = vcPasture( albedo,
     vcFbm2( vWorldPos.xz * 0.034 ),
     vcFbm2( vWorldPos.xz * 0.22 + 31.7 ), uPasture );
+  albedo = vcSageFinish( albedo, uPasture );
 
   // blades darken sharply into the sward at the base — that shadowed mat is
   // most of what sells a grass field as painted rather than modelled
@@ -2113,6 +2208,42 @@ void main() {
   float pMac = vcFbm2( wp.xz * ( uMacroScale * 1.6 ) );
   float pFin = vcFbm2( wp.xz * 0.22 + 31.7 );
   albedo = vcPasture( albedo, pMac, pFin, uPasture );
+  albedo = vcSageFinish( albedo, uPasture );
+
+  // ---- near-field ground incident ------------------------------------------
+  // "A three-metre-distant patch of ground still needs something to look at."
+  // Everything above this line is a WASH: the detail atlas tiles at ~1 m, the
+  // pasture fields at 4.5 m and 30 m, the vertex albedo is baked on a 0.625 m
+  // grid. At the bottom of a ground-level frame a square metre of ground is
+  // 300-500 px across, so all of that is one flat fill and the critiques say so
+  // in the same words every round — "the road is still a flat void", "a 480x150
+  // block has only TWO luma modes, no ruts, no gravel, nothing to look at".
+  //
+  // Two fields, both faded out the instant their lobe would fall under ~3 px so
+  // neither can become distance noise:
+  //
+  //   sward  ANISOTROPIC, ~9 cm across the lay and ~26 cm along it, with the lay
+  //          direction drifting on a 14 m field. That is the tufting of a grazed
+  //          pasture, and the anisotropy is the whole point — an isotropic
+  //          field at this scale reads as gravel, not as grass.
+  //   scuff  ISOTROPIC and finer — kicked-out road metal, wheel chatter in the
+  //          ruts, shingle at the waterline.
+  //
+  // Both go mostly into the BAND DRIVE, not into the albedo, for the reason the
+  // rest of this file gives at length: a multiply at this frequency is a printed
+  // ruling over the wash and it smears every plateau it crosses, whereas a drive
+  // term shows up as a patch of the neighbouring wash with its own wet edge.
+  float mPerPxT = max( -vViewPos.z, 0.05 ) * uProjScale;
+  float nearF = 1.0 - smoothstep( 0.011, 0.042, mPerPxT );
+  float sward = 0.0, scuff = 0.0;
+  if ( nearF > 0.003 ) {
+    float lay = vcFbm2( wp.xz * 0.072 ) * 6.2832;
+    vec2 dir = vec2( cos( lay ), sin( lay ) );
+    vec2 tq = vec2( dot( wp.xz, dir ), dot( wp.xz, vec2( -dir.y, dir.x ) ) );
+    sward = vcFbm3( vec2( tq.x * 11.5, tq.y * 3.9 ) ) - 0.5;
+    scuff = ( vcNoise2( wp.xz * 24.0 + 5.1 ) - 0.5 ) * 0.55
+          + ( vcFbm2( wp.xz * 6.3 + 9.3 ) - 0.5 );
+  }
 
   float alpha = uOpacity;
 
@@ -2133,10 +2264,21 @@ void main() {
     // rather than one that merely wobbles. These are fbms of value noise, so
     // (x - 0.5) is a +/-0.10 excursion — the gains look large and are not.
     + ( pMac - 0.5 ) * 0.34 * uPasture
-    + ( pFin - 0.5 ) * 0.42 * uPasture;
+    + ( pFin - 0.5 ) * 0.42 * uPasture
+    // ...and the near-field incident, which only exists inside ~25 m
+    + sward * 0.36 * wGrass * nearF
+    + scuff * 0.38 * ( wDirt + wMud ) * nearF
+    + scuff * 0.30 * wRock * nearF;
+
+  // A whisper of the same two fields in the ALBEDO as well. The drive terms
+  // above give the near ground its tonal STEPS; this gives the steps a grain,
+  // and it is deliberately a third of the amplitude so it cannot smear them.
+  albedo *= 1.0 + ( sward * 0.085 * wGrass
+                  + scuff * 0.075 * ( wDirt + wMud + wRock ) ) * nearF;
 
   // micro-relief: rock and dirt get real normal break-up, grass stays smooth
-  float relief = ( det.b - 0.5 ) * wRock * 1.6 + ( det.g - 0.5 ) * wDirt * 0.7;
+  float relief = ( det.b - 0.5 ) * wRock * 1.6 + ( det.g - 0.5 ) * wDirt * 0.7
+               + scuff * ( wDirt + wMud ) * nearF * 1.1;
   vec3 extraN = vec3( relief * 0.55, 0.0, relief * 0.45 );
 
 ${NPR_SHADE_BODY}

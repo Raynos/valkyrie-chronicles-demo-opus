@@ -75,11 +75,11 @@ export const CLIP_DEFS = {
   idle: {
     dur: 3.8, loop: true, stride: 0, speed: 0, hands: 'weapon', mirror: 0,
     keys: [
-      [0.00, P(CARRY, { h: [1, 0, 1.2], hP: [0.012, 0, 0], s1: [1.5, 0, -0.6], s2: [1, 0, -0.5], s3: [-0.5, 0, 0], nk: [-1.5, 0, 0.4], hd: [1, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
-      [0.24, P(CARRY, { h: [1.6, 0, 0.9], hP: [0.008, -0.005, 0], s1: [2.4, 0, -0.4], s2: [1.6, 0, -0.3], s3: [-1.6, 0, 0], nk: [-1.8, 0, 0.3], hd: [1.4, 0, 0], cL: [6, 2, 4.5], cR: [4, -2, -3.5], tL: [-1.5, 0, -1.5], kL: [2.5, 0, 0], ftL: [-1, 0, 0] })],
-      [0.50, P(CARRY, { h: [1, 0, -1.2], hP: [-0.012, 0, 0], s1: [1.5, 0, 0.6], s2: [1, 0, 0.5], s3: [-0.5, 0, 0], nk: [-1.5, 0, -0.4], hd: [1, 0, 0], tL: [-1, 0, -1], kL: [2, 0, 0], ftL: [-1, 0, 0] })],
-      [0.74, P(CARRY, { h: [1.6, 0, -0.9], hP: [-0.008, -0.005, 0], s1: [2.4, 0, 0.4], s2: [1.6, 0, 0.3], s3: [-1.6, 0, 0], nk: [-1.8, 0, -0.3], hd: [1.4, 0, 0], cL: [6, 2, 4.5], cR: [4, -2, -3.5], tL: [-1.5, 0, -1], kL: [2.5, 0, 0], ftL: [-1, 0, 0] })],
-      [1.00, P(CARRY, { h: [1, 0, 1.2], hP: [0.012, 0, 0], s1: [1.5, 0, -0.6], s2: [1, 0, -0.5], s3: [-0.5, 0, 0], nk: [-1.5, 0, 0.4], hd: [1, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
+      [0.00, P(CARRY, { h: [1, 0, 1.2], hP: [0.012, 0, 0], s1: [1.5, 0, -0.6], s2: [1, 0, -0.5], s3: [-0.5, 0, 0], nk: [-1.5, 0, 0.4], hd: [1, 0, 0], tL: [3, 0, -1.5], kL: [-7, 0, 0], ftL: [4, 0, 0] })],
+      [0.24, P(CARRY, { h: [1.6, 0, 0.9], hP: [0.008, -0.005, 0], s1: [2.4, 0, -0.4], s2: [1.6, 0, -0.3], s3: [-1.6, 0, 0], nk: [-1.8, 0, 0.3], hd: [1.4, 0, 0], cL: [6, 2, 4.5], cR: [4, -2, -3.5], tL: [3.5, 0, -1.5], kL: [-8, 0, 0], ftL: [4.5, 0, 0] })],
+      [0.50, P(CARRY, { h: [1, 0, -1.2], hP: [-0.012, 0, 0], s1: [1.5, 0, 0.6], s2: [1, 0, 0.5], s3: [-0.5, 0, 0], nk: [-1.5, 0, -0.4], hd: [1, 0, 0], tL: [3, 0, -1], kL: [-7, 0, 0], ftL: [4, 0, 0] })],
+      [0.74, P(CARRY, { h: [1.6, 0, -0.9], hP: [-0.008, -0.005, 0], s1: [2.4, 0, 0.4], s2: [1.6, 0, 0.3], s3: [-1.6, 0, 0], nk: [-1.8, 0, -0.3], hd: [1.4, 0, 0], cL: [6, 2, 4.5], cR: [4, -2, -3.5], tL: [3.5, 0, -1], kL: [-8, 0, 0], ftL: [4.5, 0, 0] })],
+      [1.00, P(CARRY, { h: [1, 0, 1.2], hP: [0.012, 0, 0], s1: [1.5, 0, -0.6], s2: [1, 0, -0.5], s3: [-0.5, 0, 0], nk: [-1.5, 0, 0.4], hd: [1, 0, 0], tL: [3, 0, -1.5], kL: [-7, 0, 0], ftL: [4, 0, 0] })],
     ],
   },
 
@@ -254,11 +254,11 @@ export const CLIP_DEFS = {
   hitHeavy: {
     dur: 0.86, once: true, hands: 'weapon', mirror: 0, carry: false,
     keys: [
-      [0.00, P(CARRY, { h: [2, 0, 0], hP: [0, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
+      [0.00, P(CARRY, { h: [2, 0, 0], hP: [0, 0, 0], tL: [3, 0, -1.5], kL: [-7, 0, 0], ftL: [4, 0, 0] })],
       [0.14, P(CARRY, { uR: [2, -4, 18], fR: [36, 8, 0], uL: [10, -12, -4], fL: [46, 10, 0], h: [-12, 6, 4], hP: [0, -0.04, -0.09], s1: [-14, 4, 5], s2: [-12, 5, 6], s3: [-10, 6, 7], nk: [16, -4, -5], hd: [18, -6, -6], cR: [-8, -3, -5], tL: [16, 2, -3], kL: [-24, 0, 0], ftL: [8, 0, 0], tR: [-16, -2, 3], kR: [-14, 0, 0], ftR: [30, 0, 0] })],
       [0.40, P(CARRY, { uR: [12, -6, 14], fR: [50, 10, 0], uL: [22, -16, -8], fL: [62, 12, 0], h: [-6, 3, 2], hP: [0, -0.075, -0.20], s1: [-6, 2, 2], s2: [-5, 2, 3], s3: [-4, 3, 3], nk: [8, -2, -2], hd: [10, -3, -3], tL: [40, 2, -3], kL: [-52, 0, 0], ftL: [12, 0, 0], tR: [-24, -2, 3], kR: [-16, 0, 0], ftR: [40, 0, 0] })],
       [0.70, P(CARRY, { h: [4, 0, 0], hP: [0, -0.03, -0.16], s1: [4, 0, 0], s2: [3, 0, 0], s3: [1, 0, 0], nk: [-2, 0, 0], hd: [2, 0, 0], tL: [16, 1, -2], kL: [-22, 0, 0], ftL: [6, 0, 0], tR: [-8, -1, 2], kR: [-8, 0, 0], ftR: [16, 0, 0] })],
-      [1.00, P(CARRY, { h: [2, 0, 0], hP: [0, 0, -0.16], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
+      [1.00, P(CARRY, { h: [2, 0, 0], hP: [0, 0, -0.16], tL: [3, 0, -1.5], kL: [-7, 0, 0], ftL: [4, 0, 0] })],
     ],
   },
 
@@ -266,7 +266,7 @@ export const CLIP_DEFS = {
   death: {
     dur: 1.55, once: true, hold: true, hands: 'free', mirror: 0, ik: false, carry: false,
     keys: [
-      [0.00, P(CARRY, { h: [2, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
+      [0.00, P(CARRY, { h: [2, 0, 0], tL: [3, 0, -1.5], kL: [-7, 0, 0], ftL: [4, 0, 0] })],
       [0.12, { cR: [-4, -2, -6], uR: [-14, -6, 4], fR: [30, 8, 0], wR: [-6, 0, 4], cL: [2, 2, 4], uL: [-10, -8, -6], fL: [26, 10, 0], h: [-8, 2, 2], hP: [0, -0.02, 0], s1: [-8, 2, 2], s2: [-7, 2, 2], s3: [-6, 3, 3], nk: [10, -2, -2], hd: [12, -3, -3], tL: [4, 0, -2], kL: [-14, 0, 0], ftL: [10, 0, 0], tR: [2, 0, 2], kR: [-10, 0, 0], ftR: [8, 0, 0] }],
       [0.34, { cR: [4, -2, -2], uR: [22, -10, 12], fR: [56, 10, 0], wR: [-4, 0, 6], cL: [6, 2, 2], uL: [26, -14, -12], fL: [50, 12, 0], h: [26, 4, 4], hP: [0, -0.30, -0.04], s1: [18, 3, 3], s2: [14, 4, 4], s3: [10, 5, 5], nk: [-6, -4, -3], hd: [-4, -5, -4], tL: [72, 2, -8], kL: [-104, 0, 0], ftL: [30, 0, 0], tR: [66, -2, 8], kR: [-98, 0, 0], ftR: [30, 0, 0] }],
       [0.58, { cR: [8, -2, 0], uR: [48, -12, 16], fR: [40, 8, 0], wR: [0, 0, 4], cL: [10, 2, 0], uL: [52, -16, -16], fL: [36, 10, 0], h: [58, 8, 10], hP: [0, -0.56, 0.10], s1: [26, 5, 6], s2: [20, 6, 7], s3: [14, 8, 8], nk: [-10, -6, -5], hd: [-8, -8, -6], tL: [96, 2, -12], kL: [-116, 0, 0], ftL: [24, 0, 0], tR: [88, -2, 12], kR: [-110, 0, 0], ftR: [24, 0, 0] }],
@@ -279,7 +279,7 @@ export const CLIP_DEFS = {
   deathBack: {
     dur: 1.70, once: true, hold: true, hands: 'free', mirror: 0, ik: false, carry: false,
     keys: [
-      [0.00, P(CARRY, { h: [2, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
+      [0.00, P(CARRY, { h: [2, 0, 0], tL: [3, 0, -1.5], kL: [-7, 0, 0], ftL: [4, 0, 0] })],
       [0.14, { cR: [-8, -4, -10], uR: [-56, -10, 10], fR: [42, 8, 0], cL: [-6, 4, 8], uL: [-52, -12, -12], fL: [38, 10, 0], h: [-20, -4, -2], hP: [0, -0.03, -0.10], s1: [-18, -3, -2], s2: [-16, -3, -2], s3: [-14, -4, -3], nk: [20, 3, 2], hd: [24, 4, 3], tL: [20, 0, -2], kL: [-18, 0, 0], ftL: [-2, 0, 0], tR: [8, 0, 2], kR: [-10, 0, 0], ftR: [2, 0, 0] }],
       [0.38, { cR: [-10, -4, -12], uR: [-78, -8, 12], fR: [28, 6, 0], cL: [-8, 4, 10], uL: [-74, -10, -14], fL: [24, 8, 0], h: [-38, -6, -4], hP: [0, -0.30, -0.34], s1: [-24, -4, -3], s2: [-22, -5, -3], s3: [-20, -6, -4], nk: [26, 5, 3], hd: [30, 6, 4], tL: [56, 0, -4], kL: [-34, 0, 0], ftL: [-14, 0, 0], tR: [34, 0, 4], kR: [-20, 0, 0], ftR: [-8, 0, 0] }],
       [0.62, { cR: [-6, -3, -8], uR: [-92, -6, 20], fR: [16, 4, 0], cL: [-4, 3, 6], uL: [-88, -8, -22], fL: [14, 6, 0], h: [-58, -6, -4], hP: [0, -0.70, -0.56], s1: [-14, -4, -3], s2: [-12, -4, -3], s3: [-10, -5, -3], nk: [20, 4, 3], hd: [22, 5, 3], tL: [72, 0, -6], kL: [-44, 0, 0], ftL: [-18, 0, 0], tR: [44, 0, 6], kR: [-24, 0, 0], ftR: [-10, 0, 0] }],
@@ -302,11 +302,11 @@ export const CLIP_DEFS = {
   salute: {
     dur: 1.9, once: true, hands: 'right', mirror: 0, carry: false,
     keys: [
-      [0.00, P(CARRY, { h: [1, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
-      [0.24, { cR: [10, -6, 8], uR: [46, -30, -68], fR: [126, 26, 0], wR: [-14, 0, 22], cL: [2, 2, 2], uL: [-4, -4, -4], fL: [16, 6, 0], wL: [0, 0, 4], h: [0, 0, 0], s1: [-3, 0, 0], s2: [-3, 0, 0], s3: [-2, 0, 0], nk: [1, 0, 0], hd: [2, 0, 0], tL: [-3, 0, -2], kL: [2, 0, 0], ftL: [1, 0, 0], tR: [-3, 0, 2], kR: [2, 0, 0], ftR: [1, 0, 0] }],
-      [0.68, { cR: [11, -6, 9], uR: [48, -30, -70], fR: [128, 26, 0], wR: [-14, 0, 22], cL: [2, 2, 2], uL: [-4, -4, -4], fL: [16, 6, 0], wL: [0, 0, 4], h: [0, 0, 0], s1: [-3, 0, 0], s2: [-3, 0, 0], s3: [-2, 0, 0], nk: [1, 0, 0], hd: [2, 0, 0], tL: [-3, 0, -2], kL: [2, 0, 0], ftL: [1, 0, 0], tR: [-3, 0, 2], kR: [2, 0, 0], ftR: [1, 0, 0] }],
-      [0.88, { cR: [4, -3, 2], uR: [8, -12, -14], fR: [64, 14, 0], wR: [-6, 0, 12], cL: [2, 2, 2], uL: [-4, -4, -4], fL: [16, 6, 0], wL: [0, 0, 4], h: [1, 0, 0], s1: [-1, 0, 0], s2: [-1, 0, 0], s3: [0, 0, 0], nk: [0, 0, 0], hd: [1, 0, 0], tL: [-3, 0, -2], kL: [2, 0, 0], ftL: [1, 0, 0], tR: [-3, 0, 2], kR: [2, 0, 0], ftR: [1, 0, 0] }],
-      [1.00, P(CARRY, { h: [1, 0, 0], tL: [-2, 0, -1.5], kL: [3, 0, 0], ftL: [-1, 0, 0] })],
+      [0.00, P(CARRY, { h: [1, 0, 0], tL: [3, 0, -1.5], kL: [-7, 0, 0], ftL: [4, 0, 0] })],
+      [0.24, { cR: [10, -6, 8], uR: [46, -30, -68], fR: [126, 26, 0], wR: [-14, 0, 22], cL: [2, 2, 2], uL: [-4, -4, -4], fL: [27, 6, 0], wL: [0, 0, 4], h: [0, 0, 0], s1: [-3, 0, 0], s2: [-3, 0, 0], s3: [-2, 0, 0], nk: [1, 0, 0], hd: [2, 0, 0], tL: [2, 0, -2], kL: [-7, 0, 0], ftL: [5, 0, 0], tR: [2, 0, 2], kR: [-7, 0, 0], ftR: [5, 0, 0] }],
+      [0.68, { cR: [11, -6, 9], uR: [48, -30, -70], fR: [128, 26, 0], wR: [-14, 0, 22], cL: [2, 2, 2], uL: [-4, -4, -4], fL: [27, 6, 0], wL: [0, 0, 4], h: [0, 0, 0], s1: [-3, 0, 0], s2: [-3, 0, 0], s3: [-2, 0, 0], nk: [1, 0, 0], hd: [2, 0, 0], tL: [2, 0, -2], kL: [-7, 0, 0], ftL: [5, 0, 0], tR: [2, 0, 2], kR: [-7, 0, 0], ftR: [5, 0, 0] }],
+      [0.88, { cR: [4, -3, 2], uR: [8, -12, -14], fR: [64, 14, 0], wR: [-6, 0, 12], cL: [2, 2, 2], uL: [-4, -4, -4], fL: [27, 6, 0], wL: [0, 0, 4], h: [1, 0, 0], s1: [-1, 0, 0], s2: [-1, 0, 0], s3: [0, 0, 0], nk: [0, 0, 0], hd: [1, 0, 0], tL: [2, 0, -2], kL: [-7, 0, 0], ftL: [5, 0, 0], tR: [2, 0, 2], kR: [-7, 0, 0], ftR: [5, 0, 0] }],
+      [1.00, P(CARRY, { h: [1, 0, 0], tL: [3, 0, -1.5], kL: [-7, 0, 0], ftL: [4, 0, 0] })],
     ],
   },
 
@@ -590,17 +590,60 @@ const _av = new THREE.Vector3(), _av2 = new THREE.Vector3(), _av3 = new THREE.Ve
 // scratch any of them is still holding.
 const _goalC = new THREE.Vector3(), _poleC = new THREE.Vector3(), _perpC = new THREE.Vector3();
 const _dirC = new THREE.Vector3(), _fwdC = new THREE.Vector3();
+const _latC = new THREE.Vector3(), _upC = new THREE.Vector3(), _refC = new THREE.Vector3();
 const _axisR = new THREE.Vector3(), _palmR = new THREE.Vector3(), _wantR = new THREE.Vector3();
 const _crossR = new THREE.Vector3();
+// Private to _handIK: the reach-clamped copy of the support-hand goal.
+const _handG = new THREE.Vector3();
 const _aq = new THREE.Quaternion();
 const _up = new THREE.Vector3(0, 1, 0);
 const AIM_GAIN = 1.11;   // see _applyAim
-// Elbow joint limits, radians. 26 deg is a hand-at-the-shoulder full flex; 176
-// is straight with the last 4 degrees held back so the two-bone solve never has
-// to divide by a degenerate triangle. 0.060 m is how far forward of the
-// shoulder->hand chord an olecranon may sit before the arm reads as broken.
-const ELBOW_MIN = 26 * Math.PI / 180, ELBOW_MAX = 176 * Math.PI / 180;
-const ELBOW_FWD_MAX = 0.060;
+
+// ---------------------------------------------------------------------------
+// JOINT LIMITS
+// ---------------------------------------------------------------------------
+//
+// ROUND 6. The previous ELBOW_MAX was 176 degrees, and that number is a no-op
+// dressed as a limit. Reach fraction is a cosine of the half-angle, so it is
+// almost perfectly FLAT next to full extension:
+//
+//     176 deg -> 0.9994 of full reach     (perpendicular elbow offset  9 mm)
+//     170     -> 0.9962                                              17 mm
+//     160     -> 0.9848                                              46 mm
+//     152     -> 0.9703                                              64 mm
+//     140     -> 0.9397                                              91 mm
+//
+// A limit at 176 therefore permitted a dead-straight arm and the plates read it
+// exactly as built, three rounds running: "a stretched tube running down to the
+// weapon with no elbow", "elbow-less garden-hose S-curves". A limit only earns
+// its name at the point where the crease is worth PIXELS. 152 degrees puts 64 mm
+// of olecranon outside the shoulder->hand chord, which on a 1.74 m soldier is
+// 3.7% of his height: 18 px at the `tank` lancer's 486 px, 82 px at closeup.
+// That is a corner the outline pass can bite, in every clip and every solve,
+// without the pose reading as "bent".
+const ELBOW_MIN = 34 * Math.PI / 180, ELBOW_MAX = 152 * Math.PI / 180;
+// The knee gets the same treatment for the same reason: `idle` and `walk`
+// measured 176.6-177.6 degrees on the stance leg, i.e. locked, and a locked leg
+// is a cylinder. 171 keeps 34 mm of patella off the chord, which is what a
+// soldier standing at ease actually does.
+const KNEE_MIN = 30 * Math.PI / 180, KNEE_MAX = 171 * Math.PI / 180;
+
+// THE ELBOW ENVELOPE. Flexion alone does not make an arm readable — WHERE on
+// the circle of possible elbows the olecranon sits is the other half, and the
+// old code only guarded the FORWARD quadrant. Measured on the round-5 build,
+// every soldier in every plate carried his gun elbow at lat +0.10..+0.15 m and
+// fwd -0.12..-0.18 m: a quarter-metre of humerus flung backwards and outboard,
+// which is the "both arms thrown out to his left" the squad critique named.
+//
+// Limits are in metres of perpendicular offset from the shoulder->hand chord,
+// measured in CHARACTER space, and scaled by the actor's height.
+// ELBOW_CONE is the half-angle, in radians, that the olecranon may stray from
+// the anatomical reference below. 44 degrees at a hanging arm is generous —
+// a real shoulder's internal/external rotation covers about that — and it opens
+// to 44+34 = 78 for a shouldered rifle, which is the one pose in which a human
+// elbow genuinely stands clear of the ribs.
+const ELBOW_CONE = 44 * Math.PI / 180;
+const ELBOW_CONE_HI = 34 * Math.PI / 180;
 
 /**
  * Rotate `bone` (in world space) so the vector from `from` to `cur` points at
@@ -885,9 +928,25 @@ export class Animator {
     this._holdShoulder = clamp01(sh);
   }
 
-  /** Public two-bone IK so the weapon solver can place the gun arm. */
+  /**
+   * Public two-bone IK so the weapon solver can place the gun arm. The elbow
+   * limits are applied INSIDE the solve, so a weapon hold can never lock the
+   * arm out — it shortens the reach by up to 3% and bends instead, which is
+   * also what a soldier's arm does when the grip is at the edge of it.
+   */
   solveArm(upper, lower, end, targetW, poleDir, weight) {
-    this._solve2Bone(upper, lower, end, targetW, poleDir, weight);
+    this._solve2Bone(upper, lower, end, targetW, poleDir, weight, ELBOW_MIN, ELBOW_MAX);
+  }
+
+  /** Reach, in metres, that an arm can cover without exceeding ELBOW_MAX. */
+  armReach(side) {
+    const bm = this.rig.boneMap;
+    const u = side === 'L' ? bm.upperArmL : bm.upperArmR;
+    const f = side === 'L' ? bm.foreArmL : bm.foreArmR;
+    const h = side === 'L' ? bm.handL : bm.handR;
+    boneWorld(u, _av); boneWorld(f, _av2); boneWorld(h, _av3);
+    const l1 = _av.distanceTo(_av2), l2 = _av2.distanceTo(_av3);
+    return Math.sqrt(l1 * l1 + l2 * l2 - 2 * l1 * l2 * Math.cos(ELBOW_MAX));
   }
 
   get handsMode() {
@@ -1104,7 +1163,7 @@ export class Animator {
    * buckles. All rotations are world-space, so the rest orientation of the
    * chain is irrelevant.
    */
-  _solve2Bone(upper, lower, end, targetW, poleDirIn, weight) {
+  _solve2Bone(upper, lower, end, targetW, poleDirIn, weight, minAng, maxAng) {
     // Callers hand us shared scratch vectors; take private copies first.
     _goal.copy(targetW);
     _poleDir.copy(poleDirIn);
@@ -1119,7 +1178,15 @@ export class Animator {
     _tmp.copy(_goal).sub(_p0);
     let d = _tmp.length();
     if (d < 1e-5) return;
-    const dMin = Math.abs(l1 - l2) + 1e-4, dMax = l1 + l2 - 1e-4;
+    // JOINT LIMITS LIVE HERE, not in a post-pass. d is a monotone function of
+    // the interior joint angle (d^2 = l1^2 + l2^2 - 2 l1 l2 cos(theta)), so
+    // clamping the angle IS clamping d — and doing it inside the solve means
+    // every caller gets a creasing joint for free instead of the post-pass
+    // dragging an already-placed hand off its grip afterwards.
+    let dMin = Math.abs(l1 - l2) + 1e-4, dMax = l1 + l2 - 1e-4;
+    if (maxAng !== undefined) dMax = Math.min(dMax, Math.sqrt(l1 * l1 + l2 * l2 - 2 * l1 * l2 * Math.cos(maxAng)));
+    if (minAng !== undefined) dMin = Math.max(dMin, Math.sqrt(l1 * l1 + l2 * l2 - 2 * l1 * l2 * Math.cos(minAng)));
+    if (dMin > dMax) dMin = dMax;
     d = clamp(d, dMin, dMax);
     _d0.copy(_tmp).normalize();                       // hip -> goal direction
     _goal.copy(_p0).addScaledVector(_d0, d);          // reachable goal
@@ -1234,7 +1301,11 @@ export class Animator {
       // Knee pole: forward in character space.
       this.charRoot.getWorldQuaternion(_wq3);
       _d1.set(0, 0.15, 1).applyQuaternion(_wq3).normalize();
-      this._solve2Bone(thigh, shin, foot, _pole, _d1, 1);
+      // KNEE_MAX keeps the stance leg soft. Without it the IK straightens the
+      // planted leg to reach the dirt and `idle`/`walk` measured 176.6-177.6
+      // degrees — a locked leg, which draws as one unbroken cylinder from hip to
+      // ankle with no patella anywhere in the silhouette.
+      this._solve2Bone(thigh, shin, foot, _pole, _d1, 1, KNEE_MIN, KNEE_MAX);
 
       // Foot pitch/roll onto the ground normal.
       const e = 0.07 * scale;
@@ -1271,19 +1342,38 @@ export class Animator {
     if (this._handW < 0.02) return;
     const bm = this.rig.boneMap;
 
-    // Fade the solve out when the grip is beyond the arm. _solve2Bone clamps an
-    // unreachable goal onto the reach sphere, which locks the elbow dead
-    // straight and leaves an open hand hanging in mid-air short of the wood —
-    // far more damaging than simply keeping the animated bend.
+    // REACH INSTEAD OF GIVING UP.
+    //
+    // Round 5 faded this solve out when the grip was beyond the arm, on the
+    // grounds that an unreachable goal "locks the elbow dead straight and
+    // leaves an open hand hanging in mid-air short of the wood". The first half
+    // of that is no longer true: _solve2Bone now clamps the goal to ELBOW_MAX,
+    // so an over-long goal produces a 152-degree elbow, not a lockout. Fading
+    // out is strictly worse — it drops the hand back to the keyframe, which is
+    // in front of the chest, so the support hand ends up 0.28 m from a weapon it
+    // is supposed to be gripping instead of 0.04 m. Reaching as far as the arm
+    // goes and stopping there is what a soldier does and what it looks like.
     boneWorld(bm.upperArmL, _p0);
     boneWorld(bm.foreArmL, _p1);
     boneWorld(bm.handL, _p2);
-    const reach = _p0.distanceTo(_p1) + _p1.distanceTo(_p2);
+    const l1 = _p0.distanceTo(_p1), l2 = _p1.distanceTo(_p2);
+    const reach = l1 + l2;
+    // USABLE reach is the ELBOW-LIMITED one, not the anatomical maximum. Round 5
+    // faded the solve out at 96.5% of a straight arm, which means the support arm
+    // was allowed to lock dead out on every long weapon in the game — measured
+    // 0.899 of full reach on the `tank` lancer, i.e. a hose from shoulder to
+    // wood. character.js now slides the support hand back down the weapon until
+    // it is inside THIS number, so the hand still lands on the weapon and the
+    // elbow still creases.
+    const usable = Math.sqrt(l1 * l1 + l2 * l2 - 2 * l1 * l2 * Math.cos(ELBOW_MAX));
     const d = _p0.distanceTo(this.handTarget);
-    let w = this._handW;
-    const usable = reach * 0.965;
-    if (d > usable) w *= clamp01(1 - (d - usable) / (reach * 0.13));
+    const w = this._handW;
     if (w < 0.02) return;
+    // Beyond about 1.35x the arm the goal is not a weapon hold at all (a death
+    // ragdoll, a teleport), so stop pointing at it; otherwise reach.
+    if (d > reach * 1.35) return;
+    _handG.copy(this.handTarget);
+    if (d > usable) _handG.copy(_p0).addScaledVector(_tmp.copy(this.handTarget).sub(_p0).multiplyScalar(1 / d), usable);
 
     this.charRoot.getWorldQuaternion(_wq3);
     // Support elbow: DOWN, barely outboard, barely forward. The old (0.35,-0.5,
@@ -1291,7 +1381,7 @@ export class Animator {
     // the chest and left the forearm crossing the body — half of the squad
     // plate's "both arms thrown out to his left".
     _tmp.set(0.22, -0.95, 0.15).applyQuaternion(_wq3).normalize();
-    this._solve2Bone(bm.upperArmL, bm.foreArmL, bm.handL, this.handTarget, _tmp, w);
+    this._solve2Bone(bm.upperArmL, bm.foreArmL, bm.handL, _handG, _tmp, w, ELBOW_MIN, ELBOW_MAX);
 
     // WRIST ROLL onto the handguard. The palm normal is the hand bone's local
     // +X (the palm box is thin in X and the fingers close along -X), so this
@@ -1334,27 +1424,35 @@ export class Animator {
    *
    * Two limits, both anatomical rather than stylistic:
    *
-   *   1. FLEXION. A human elbow works between about 25 degrees (hand at the
-   *      shoulder) and 180 (locked). Outside 26..176 the goal is pulled onto the
-   *      nearest reachable shell along the shoulder->hand direction, which
-   *      changes where the hand is by centimetres and what the arm LOOKS like
-   *      completely.
-   *   2. NO FORWARD CHICKEN WING. When the hand is at or below shoulder height
-   *      the olecranon may not lead the wrist: an elbow more than 60 mm forward
-   *      of the shoulder->hand chord (in character space) is reflected to the
-   *      same distance behind it. That is the exact failure the plate measured,
-   *      and it cannot fire on a raised arm (cheer, reload, the shouldered gun
-   *      elbow) because those all have the hand above the shoulder or the elbow
-   *      already behind the chord.
+   *   1. FLEXION, clamped to ELBOW_MIN..ELBOW_MAX. The old ceiling of 176 deg
+   *      was a limit in name only — it costs 0.06% of reach, i.e. 9 mm of
+   *      olecranon — so every arm in the game could and did lock out. At 152 the
+   *      elbow stands 64 mm off the chord whatever else happens to the pose,
+   *      which is the difference between a hinged limb and a hose.
+   *   2. THE ELBOW ENVELOPE. Flexion says how bent; this says WHICH WAY. The
+   *      olecranon may never lead the wrist (fwd <= 60 mm), may not swing more
+   *      than 85 mm outboard while the hand is at or below the shoulder, and may
+   *      not trail more than 150 mm behind the chord. A shouldered rifle is the
+   *      one legitimate wing, so the outboard allowance opens to 240 mm as soon
+   *      as the hand comes up to shoulder height.
+   *
+   * Measured on the round-5 build, EVERY soldier in EVERY plate sat outside the
+   * new envelope on the gun arm: lat +0.098..+0.147 m with fwd -0.12..-0.18 m.
+   * That is the composite the plates kept calling an S-curve, and no single
+   * writer above is responsible for it, which is why the guarantee lives here.
    */
   _limitArms() {
     const bm = this.rig.boneMap;
+    const sc = this.charRoot.scale.y || 1;
     this.charRoot.getWorldQuaternion(_wq3);
     _fwdC.set(0, 0, 1).applyQuaternion(_wq3);
+    _latC.set(1, 0, 0).applyQuaternion(_wq3);
+    _upC.set(0, 1, 0).applyQuaternion(_wq3);
     for (let s = 0; s < 2; s++) {
       const up = s === 0 ? bm.upperArmL : bm.upperArmR;
       const lo = s === 0 ? bm.foreArmL : bm.foreArmR;
       const hd = s === 0 ? bm.handL : bm.handR;
+      const outSign = s === 0 ? 1 : -1;            // +_latC is the character's LEFT
       boneWorld(up, _p0); boneWorld(lo, _p1); boneWorld(hd, _p2);
       const l1 = _p0.distanceTo(_p1), l2 = _p1.distanceTo(_p2);
       if (l1 < 1e-5 || l2 < 1e-5) continue;
@@ -1369,25 +1467,56 @@ export class Animator {
       if (d < 1e-5) continue;
       let need = d < dMin ? dMin : d > dMax ? dMax : 0;
 
-      // --- 2. forward chicken wing -----------------------------------------
-      // Perpendicular offset of the elbow from the shoulder->hand chord.
+      // --- 2. the envelope, as a CONE about an anatomical reference ---------
+      //
+      // The first cut of this clamped the elbow's forward/outboard components
+      // separately and it does not work, for a reason worth recording: the
+      // solve puts the elbow at `hgt` from the chord no matter what, so
+      // shortening one component of the pole and then renormalising restores
+      // most of it (measured: a -0.219 m rearward elbow corrected to a target
+      // of -0.150 came back at -0.210). `hgt` is not ours to choose — it falls
+      // out of the bone lengths and the reach. WHERE ON THE CIRCLE is, and
+      // an angular limit about a reference direction bounds that exactly.
       _dirC.copy(_goalC).multiplyScalar(1 / d);
       _perpC.copy(_p1).sub(_p0).addScaledVector(_dirC, -_dirC.dot(_p1) + _dirC.dot(_p0));
-      const fwdOff = _perpC.dot(_fwdC);
-      const raised = _p2.y > _p0.y - 0.02 * (this.charRoot.scale.y || 1);
-      const wing = !raised && fwdOff > ELBOW_FWD_MAX * (this.charRoot.scale.y || 1);
-      if (!need && !wing) continue;
+      const hgt = _perpC.length();
+      // "Raised" is the shouldered-rifle case, and it is the only pose in which
+      // a human elbow legitimately stands out from the ribs.
+      const rise = clamp01((_p2.y - (_p0.y - 0.06 * sc)) / (0.16 * sc));
+      // Reference elbow: hanging arms drop the olecranon DOWN and a little
+      // back; a raised arm swings it outboard and up under the butt plate.
+      _refC.copy(_upC).multiplyScalar(-1.00 + 1.25 * rise)
+        .addScaledVector(_fwdC, -0.42 + 0.10 * rise)
+        .addScaledVector(_latC, outSign * (0.14 + 0.76 * rise));
+      _refC.addScaledVector(_dirC, -_dirC.dot(_refC));
+      if (_refC.lengthSq() < 1e-8) {                 // reference along the limb
+        _refC.copy(_fwdC).multiplyScalar(-1).addScaledVector(_dirC, _dirC.dot(_fwdC));
+      }
+      if (_refC.lengthSq() < 1e-8) { _perpC.set(0, 0, 0); }
+      let overCone = 0, cosA = 1;
+      const coneMax = ELBOW_CONE + ELBOW_CONE_HI * rise;
+      if (hgt > 1e-5 && _refC.lengthSq() > 1e-8) {
+        _refC.normalize();
+        cosA = clamp(_perpC.dot(_refC) / hgt, -1, 1);
+        overCone = Math.acos(cosA) - coneMax;
+      }
+      if (!need && overCone <= 0) continue;
 
       if (!need) need = d;
       _goalC.copy(_p0).addScaledVector(_dirC, need);
-      if (wing) {
-        // Keep the sideways half of the artist's elbow, flip the forward half.
-        _poleC.copy(_perpC).addScaledVector(_fwdC, -2 * fwdOff);
-      } else {
-        _poleC.copy(_perpC);
+      if (overCone > 0) {
+        // Rotate the pole back toward the reference by exactly the excess, about
+        // the axis that separates them. Length is irrelevant — _solve2Bone only
+        // reads the direction — so this is an exact angular clamp.
+        _poleC.crossVectors(_perpC, _refC);
+        if (_poleC.lengthSq() < 1e-10) _poleC.copy(_dirC);   // antiparallel: any axis
+        else _poleC.normalize();
+        _perpC.applyAxisAngle(_poleC, overCone);
       }
-      if (_poleC.lengthSq() < 1e-8) _poleC.copy(_fwdC).multiplyScalar(-1);
-      this._solve2Bone(up, lo, hd, _goalC, _poleC, 1);
+      _poleC.copy(_perpC);
+      _poleC.addScaledVector(_dirC, -_dirC.dot(_poleC));
+      if (_poleC.lengthSq() < 1e-8) _poleC.copy(_refC);
+      this._solve2Bone(up, lo, hd, _goalC, _poleC, 1, ELBOW_MIN, ELBOW_MAX);
     }
   }
 
