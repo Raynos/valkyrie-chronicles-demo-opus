@@ -36,7 +36,6 @@ import { SHOT_NAMES, runShot } from './game/captureShots.js';
 
 import { Character } from './actors/character.js';
 import { Tank } from './actors/tank.js';
-import { ContactShadowField } from './actors/contactShadow.js';
 
 import { HUD } from './ui/hud.js';
 import { injectStyles } from './ui/style.js';
@@ -95,29 +94,11 @@ const CAPTURE_WATCHDOG_MS = 32000;
  * capture a function of wall-clock time, and the world is already paused, so
  * the extra frames cannot advance an animation.
  */
-// 256, not 128. The probe is the ONLY thing standing between the harness and a
-// frame that is still moving, and a 128-wide thumbnail of a 1920-wide page
-// averages 15 x 15 source pixels into one sample — which is a 225:1 low-pass
-// over exactly the high-frequency ink, hatch and grain the whole art direction
-// is made of. Measured on `command` and `village`, two captures of the same shot
-// taken at --wait 700 and --wait 2600 still differed by up to 21 and 30 LSB on
-// isolated pixels with the old probe reporting convergence: the difference was
-// real and the probe could not see it.
-const PIXEL_PROBE_W = 256;
-const PIXEL_STABLE_FRAMES = 30;
+const PIXEL_PROBE_W = 128;
+const PIXEL_STABLE_FRAMES = 24;
 const PIXEL_SETTLE_MAX = 900;
-/**
- * Mean absolute LSB difference between two probes that still counts as equal.
- *
- * 0.25 was two and a half times too loose: convergence here is asymptotic (the
- * grade, the wet-edge term and the overlay washes all creep toward a fixed
- * point), so the threshold IS the residual, and 0.25 LSB of thumbnail residual
- * is tenths of an LSB of full-frame residual with occasional 20-LSB outliers
- * where a band boundary happens to sit on a quantiser step. At 0.05 the loop
- * costs a few dozen extra render-only frames on a paused scene — nothing, since
- * `settlePixels` runs after the freeze — and buys a genuinely repeatable PNG.
- */
-const PIXEL_EPS = 0.05;
+/** Mean absolute LSB difference between two probes that still counts as equal. */
+const PIXEL_EPS = 0.25;
 
 const _focus = new THREE.Vector3();
 
@@ -453,15 +434,6 @@ function installSystems(S, updateTracers) {
   engine.add({ update: updateTracers });
   // 5. FX pools flush after everything that could have written to them.
   engine.add(fx);
-  // 5b. Contact pools, AFTER the animator has moved the feet and BEFORE the
-  //     shadow frustum is fitted — a pool is a decal on the terrain, so it has
-  //     to describe the pose this frame ends on, not the one it started with.
-  //     Measured before it existed: 76 of 154 footprints across the twelve
-  //     plates were darker than their own surround, and 24 were BRIGHTER.
-  S.contact = new ContactShadowField(S.scene, {
-    groundAt: (x, z) => world.groundHeightAt(x, z),
-  });
-  engine.add({ update: (dt) => S.contact.update(dt, battle.units) });
   // 6. shadow frustum follows the action.
   engine.add({ update: (dt) => updateLighting(S, dt) });
   // 7. audio listener rides the camera.
@@ -765,10 +737,6 @@ async function captureFlow(S) {
   if (typeof window !== 'undefined') {
     window.__VC__ = Object.assign(window.__VC__ || {}, {
       engine, scene, camera, renderer, pipeline, world, battle, fx, rig, hud, Bus, CFG,
-      // THREE itself, so a probe can raycast. Without it "is this soldier's sole
-      // actually VISIBLE?" is unanswerable from inside the page, and every
-      // contact-shadow measurement silently includes feet behind a sandbag.
-      THREE, contact: S.contact,
     });
   }
 

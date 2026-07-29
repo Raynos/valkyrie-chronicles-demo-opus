@@ -871,9 +871,6 @@ function css() {
 .vc-figure{
   width:44px; height:76px; transform-origin:50% 100%; z-index:0;
 }
-/* Armour uses the same anchor and the same states, at the AFV symbol's own
-   118 x 64 viewBox — see icons.js fieldVehicle. */
-.vc-figure.veh{ width:118px; height:64px; }
 .vc-figure svg{ display:block; width:100%; height:100%; overflow:visible; }
 .vc-figure.mirror svg{ transform:scaleX(-1); transform-origin:50% 50%; }
 /* Spent: the figure goes flat and pale, the way a used counter is turned over.

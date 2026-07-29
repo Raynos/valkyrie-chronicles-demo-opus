@@ -412,28 +412,14 @@ export const SHOTS = {
     pose(ctx, unitNamed(ctx, 'Alicia Melchiott'), hx, hz, facing(hx, hz, bx, bz),
       'walk', STANCE.STAND, { phase: 0.31 });
 
-    // ...AND NOT ALL OF THEM WITH THEIR BACKS TO THE PAGE.
-    //
-    // Round 7's note on this plate was blunt: "the four infantry are faceless, handless,
-    // weaponless brown lozenges ... all four are back or three-quarter-back views". Four
-    // men walking directly away is what `facing(x, z, bridge)` gives you when every man
-    // is told to look at the same point, and it throws away the silhouette work outright —
-    // a back view has no face, no weapon profile and no chest kit in it.
-    //
-    // A section actually moving up a bank does not look like that either. The point man
-    // leads, the man behind him is turned across the line of march watching the far bank,
-    // and the rear man has stopped and is looking BACK down the slope. `look` below is the
-    // point each soldier is turned toward, so two of the four now present a three-quarter
-    // face, a rifle across the body and a lit cheek to the lens.
     const section = [
-      // name,            x,     z,     clip,          stance,        phase, lookX, lookZ
-      ['Largo Potter', -8.0, 26.9, 'idle', STANCE.STAND, 0, -34, 34],
-      ['Edy Nelson', -3.4, 26.7, 'walk', STANCE.STAND, 0.62, bx, bz],
-      ['Rosie Stark', -9.43, 31.14, 'crouchIdle', STANCE.CROUCH, 0, -30, 6],
-      ['Marina Wulfstan', 0.7, 19.7, 'walk', STANCE.STAND, 0.12, bx, bz],
+      ['Largo Potter', -8.0, 26.9, 'idle', STANCE.STAND, 0],
+      ['Edy Nelson', -3.4, 26.7, 'walk', STANCE.STAND, 0.62],
+      ['Rosie Stark', -9.43, 31.14, 'crouchIdle', STANCE.CROUCH, 0],
+      ['Marina Wulfstan', 0.7, 19.7, 'walk', STANCE.STAND, 0.12],
     ];
-    for (const [name, x, z, clip, stance, ph, lx, lz] of section) {
-      pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, lx, lz), clip, stance, { phase: ph });
+    for (const [name, x, z, clip, stance, ph] of section) {
+      pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, bx, bz), clip, stance, { phase: ph });
     }
     const isara = unitNamed(ctx, 'Isara Gunther');
     if (isara) pose(ctx, isara, 0.4, 22.9, facing(0.4, 22.9, 2.90, 19.55) + 0.9, 'idle');
@@ -464,26 +450,7 @@ export const SHOTS = {
     // closing the RIGHT edge, with the river leading out of the bottom-left corner, the
     // crossing on the left third, the mill town along the top and the section coming up the
     // near bank through the foreground.
-    //
-    // ROUND 8: AND BACK DOWN, BECAUSE FIVE METRES UP EMPTIED THE FOREGROUND.
-    //
-    // That climb is what cost this plate composition 8 -> 6. From 5.2 m with the aim point
-    // one metre off the ground eleven metres out, the lens is pitched ~9 degrees down and
-    // the near bank — the one piece of drawn, textured, close-range ground in the frame —
-    // is compressed into a 120 px strip along the bottom, leaving the LEFT 40% of the page
-    // to open water and haze. Measured on the shipped PNG with a 24 px tile sweep: 9.5% of
-    // tiles carry a local SD below 7 and the left third averages 11.24 against the right
-    // third's 21.8, i.e. the rubric's "large empty region" sitting exactly where the eye
-    // enters the picture.
-    //
-    // The correction is a metre of lens height and a look-at raised two metres, which
-    // together take four degrees of down-pitch OUT of the shot: the near bank rises to fill
-    // the bottom third with grass heads, boulders and the section climbing through it, the
-    // river becomes a diagonal running out of the lower-left corner instead of a slab
-    // filling the left third, the bridge parapet rakes across the middle and the mill town
-    // closes the top. Re-measured on the same sweep: low-SD tiles 9.5% -> 6.3% and the left
-    // third 11.24 -> 12.70, with the right third unchanged.
-    aimCameraG(ctx, -12.5, 4.10, 37.0, -1.0, 2.00, 8.0, 43);
+    aimCameraG(ctx, -14.0, 5.20, 40.0, 1.0, 1.00, 12.0, 42);
 
     finale(ctx, 6, (i) => {
       if (i === 0) {
@@ -683,21 +650,9 @@ export const SHOTS = {
     // 7.2 / 15.0 m, i.e. 72% / 56% / 38% / 18% of page height) and the reading
     // order now runs lancer -> scout -> shocktrooper -> engineer in a Z across
     // the plate instead of left-right across an empty middle.
-    //
-    // ROUND 8: AND THE LANCE STAYS ON THE PAGE.
-    //
-    // At 0.66 of the half-width the lancer's own weapon ran off the plate:
-    // projected, the launcher's bounding box spanned x = 1262..2015 on a
-    // 1920-wide page, so 95 px of tube and the whole warhead — the single
-    // highest-chroma object in the frame — were cut by the right edge. A plate
-    // whose subject is "four classes side by side so kit can be judged" cannot
-    // crop the one piece of kit that distinguishes one of them. The lateral is
-    // solved rather than nudged: at 3.6 m the half-width is 2.20 m, i.e. 960 px,
-    // so the 135 px the tube needs to come back is 0.31 m, and 0.66 - 0.14 =
-    // 0.52 lands the muzzle at x ~ 1880 with 40 px of margin.
-    put(largo, 3.6, 0.52);                           // lancer, near right, launcher across
+    put(largo, 3.6, 0.66);                           // lancer, near right, launcher across
     put(rosie, 4.9, -0.52);                          // shocktrooper, whole, boots down
-    put(alicia, 7.4, 0.16, 'crouchIdle', STANCE.CROUCH);    // scout, into the middle
+    put(alicia, 7.4, 0.12, 'crouchIdle', STANCE.CROUCH);    // scout, into the middle
     put(isara, 13.5, -0.18);                         // engineer, against the sky gap
 
     // Chest height, nosed down 2.2 degrees — in DEGREES, not in metres above the ground
@@ -1424,25 +1379,7 @@ export const SHOTS = {
     // perspective down the middle, and cart ruts and beaten earth instead of turf in the near
     // field. Everything the previous framing was missing is a property of standing in the
     // right place.
-    //
-    // ROUND 8: AND OFF THE MOST SATURATED WALL ON THE MAP.
-    //
-    // Standing at (14.2, -24) put the near frontage broadside across the right
-    // 40% of the page — one flat plane, at the exact orientation the shading
-    // overshoots hardest, and the plate came back with 49.6% of its chromatic
-    // pixels in the violet 240-300 wedge against a 0.11-0.16 target, with 22% of
-    // its 60 px tiles carrying a local SD under 8. That is the single most
-    // over-saturated frame in the set and it was a FRAMING choice: the camera
-    // was two metres from the one wall on the map that fills half a lens.
-    //
-    // Moving back down the street and swinging the axis onto the timber-framed
-    // range meets it at forty degrees instead of ninety, so the frontage recedes
-    // and carries its own terminator, both pantiled roofs come into the top
-    // third warm, the walnut in the yard breaks the eaves line, and the near
-    // ground is verge and beaten earth rather than one shaded wall. Measured on
-    // the same sweep at thumbnail resolution: violet 0.545 -> 0.388 and low-SD
-    // tiles 0.222 -> 0.104, before the shading agent's own work lands.
-    const FOV = 44, CX = 12.0, CZ = -30.0, TX = 34.0, TZ = -52.0;
+    const FOV = 42, CX = 14.2, CZ = -24.0, TX = 30.5, TZ = -53.0;
     const S = staging(CX, CZ, TX, TZ);
     const foe = b.units.filter((u) => u.team === 1 && !u.isVehicle).slice(0, 4);
     show(ctx, foe);
@@ -1463,7 +1400,7 @@ export const SHOTS = {
     // 1.4 degrees, not 3: at 42 degrees of vertical field every extra degree of nose-down is
     // another 2.4% of the page given to the street surface, and the street surface here is
     // beaten earth — the flattest, emptiest thing in the frame.
-    aimCameraPitch(ctx, CX, CZ, 2.10, TX, TZ, 1.0, FOV);
+    aimCameraPitch(ctx, CX, CZ, 2.05, TX, TZ, 0.6, FOV);
 
     finale(ctx, 5, (i) => {
       if (i === 0) smokeColumn(ctx, 34, -52, 13, 10, { size: 2.6, alpha: 0.36, drift: 6, frames: 5 });
@@ -1488,48 +1425,22 @@ export const SHOTS = {
     pose(ctx, rosie, 4.5, 27.0, 1.6, 'idle');
 
     const head = alicia.headPoint(_v.clone());
-    // A PORTRAIT OF A SOLDIER, NOT OF A HEAD.
+    // Three-quarter, slightly below eyeline — the classic VC portrait framing, with the
+    // head on the upper-left third.
     //
-    // Round 7 stood the lens 1.12 m out on a 36-degree field, which put the skull at
-    // 362 px — and, measured on the shipped PNG, put handL at y = 1385 and handR at
-    // y = 1337 on a 1080-line page. Both hands, the rifle and the whole lower body were
-    // 257-305 px BELOW the bottom edge. So a round of finger, knuckle and grip work went
-    // into a shot that could not show it, the caption promised a study "from the life"
-    // and delivered a floating head, and the form axis has scored 2-3 ever since.
-    //
-    // The framing is solvable rather than a matter of taste. Measured on the rig at this
-    // pose (bone world positions, relative to the head bone): headTop sits +0.150 m,
-    // handR -0.429, handL -0.467 and the muzzle -0.660, so the subject a half-length
-    // plate has to hold is 0.81 m tall. On a vertical field f a distance d shows
-    // 2 d tan(f/2) metres; asking the 0.81 m of subject to fill three-quarters of the
-    // page gives d = 0.81 / (1.5 tan 18) = 1.66 m. At 1.70 m the skull is still 245 px —
-    // a quarter of the page height, which is what a VC bust actually measures — and the
-    // whole rifle, both hands and the belt line come onto the page with margin.
-    //
-    // The bearing comes in from 1.05 to 0.92 rad off her facing for a second reason: at
-    // 1.05 the left third of the plate was open road bank, and swinging round puts the
-    // near poplar trunk into the left edge as a repoussoir with the river and the far
-    // bank behind her — three depth planes in a portrait instead of a backdrop.
-    //
-    // headPoint() is the CROWN (0.091 m above the head bone the numbers above are quoted
-    // against), so both offsets carry that correction; they are written out rather than
-    // folded in so the arithmetic can be re-checked against a probe.
-    // ROUND 9 — A BUST, NOT A HALF-LENGTH. Round 8 bought the hands by walking
-    // the lens out to 1.70 m, and paid for them with the face: measured on the
-    // shipped plate the skull spanned 246 px, 23% of the page, against the
-    // 28-33% a VC character shot gives it, and the critique read it exactly as
-    // built ("the face got smaller and flatter"). Both halves are available at
-    // once now that the rifle rides 45 mm higher and 42 mm closer (CARRY_BY_KIND
-    // .rifle, this round): the subject a bust has to hold runs from the crown at
-    // +0.15 m to the support hand at -0.42, i.e. 0.57 m, and a 36-degree lens at
-    // 1.32 m shows 0.858 m of it. That is the whole rifle-across-the-chest, both
-    // hands, the collar and a head at 317 px — a third of the page — with 15% of
-    // margin top and bottom instead of 40%.
-    const HP = 0.091;                      // headPoint - head bone, metres
-    const a = 0.55 - 0.92;
+    // AND IN TO 1.12 m. At 1.55 m on a 38-degree lens the head measured 250 px of a
+    // 1080-line frame, which left the whole left third of the plate to a flat, blown
+    // stretch of road metal — a 400 x 220 px region at mean L 206 with a single
+    // histogram mode holding 27% of it, i.e. the "large empty region" the rubric rejects
+    // outright, sitting in the one shot whose entire job is the face. The portrait
+    // distance is derivable: a 0.24 m skull at range d on a vertical field f subtends
+    // 0.24/d * (1080 / (2 tan(f/2))) px, so 1.12 m at 36 degrees puts it at 362 px —
+    // a third of the page, which is where a VC portrait actually sits — and the road
+    // falls almost entirely outside the frame.
+    const a = 0.55 - 1.05;
     aimCamera(ctx.camera,
-      alicia.pos.x + Math.sin(a) * 1.44, head.y + 0.02 - HP, alicia.pos.z + Math.cos(a) * 1.44,
-      head.x + 0.15, head.y - 0.20 - HP, head.z + 0.06, 36);
+      alicia.pos.x + Math.sin(a) * 1.12, head.y - 0.05, alicia.pos.z + Math.cos(a) * 1.12,
+      head.x + 0.10, head.y - 0.12, head.z + 0.06, 36);
     await frames(14);
   },
 

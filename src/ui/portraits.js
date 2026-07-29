@@ -19,16 +19,6 @@ const HAIR = ['#3b2f25', '#241d19', '#6d4f2c', '#a8813f', '#d9c58e', '#8a4230',
   '#5d6a70', '#b9bcc2', '#4b3b52'];
 const EYES = ['#5b6e4a', '#46607a', '#6b4a34', '#3f4a52', '#7a5a3a', '#4a4a4a'];
 
-/**
- * Chin, as a multiple of the head's vertical radius. 1.02 gave a face that ran
- * out of jaw exactly where the mouth was; 1.14 leaves room for a lip line, a
- * mental prominence and an underplane between the mouth and the collar.
- */
-const CHIN_K = 1.14;
-/** Violet the jaw underplane is washed with — the shade hue the rest of the
- *  game's shadow ladder ends on, so a face agrees with a landscape. */
-const JAW_SHADE = '#6a5f86';
-
 // Uniform colours. Gallian militia read olive/khaki with a red tab; Imperial
 // forces read cold grey-blue with oxblood.
 const UNIFORM = [
@@ -55,38 +45,13 @@ export function seedFromName(name = '') {
 // Feature builders — each returns SVG path data in a 100 x 120 frame
 // --------------------------------------------------------------------------
 
-/**
- * AUTHOR FOR THE PIXEL SIZE IT IS ACTUALLY DRAWN AT.
- *
- * These portraits ship into ~44 px roster thumbnails, and round 7 decoded one:
- * "Alicia (face interior x79-96, y314-327): the skin is a SINGLE flat luminance
- * ... rows y=325, 326 and 327 — exactly where mouthY lands — contain ZERO pixels
- * below skin value, so the mouth stroke drawn at 1.5/100 of the viewBox is
- * 0.66 px at render size and is annihilated by the downsample. CHIN: the skin
- * width per row falls monotonically 22, 19, 18, 15, 15, 11, 12, 10, 8 px and
- * then terminates — a pure V-taper into the collar with no convex bulge, no jaw
- * underplane and no shadow under it."
- *
- * A feature that is drawn at sub-pixel width is not a subtle feature, it is an
- * absent one. Everything below is scaled so it survives the shipped downsample:
- * the mouth is a 3.4-wide stroke with a lower lip under it, the mandible is
- * pushed out past the cheek line so the width-per-row series has a bulge in it,
- * and a violet wedge is laid under the jaw so the chin has an underplane.
- */
 function headPath(rx, ry, jaw, cy) {
-  // 9.0 + 8.2, not 7.4 + 8.2: the jaw has to be wide enough that its widest
-  // point sits OUTSIDE the taper the cheek is already making, or the outline
-  // reads as a cone whatever the control points do.
-  const jw = 9.0 + jaw * 8.2;
-  const chin = cy + ry * CHIN_K;
-  // The jaw control point is pulled DOWN as well as out (chin - 3.6 rather than
-  // chin - 5.5), which is what puts the widest point of the mandible below the
-  // cheek instead of on the way to it — i.e. what makes the width-per-row series
-  // non-monotonic, which is the criterion the round-7 note set.
+  const jw = 7.4 + jaw * 8.2;
+  const chin = cy + ry * 1.02;
   return 'M' + (50 - rx) + ' ' + cy +
     ' C' + (50 - rx) + ' ' + (cy - ry * 1.16) + ' ' + (50 + rx) + ' ' + (cy - ry * 1.16) + ' ' + (50 + rx) + ' ' + cy +
-    ' C' + (50 + rx) + ' ' + (cy + ry * 0.58) + ' ' + (50 + jw) + ' ' + (chin - 3.6) + ' 50 ' + chin +
-    ' C' + (50 - jw) + ' ' + (chin - 3.6) + ' ' + (50 - rx) + ' ' + (cy + ry * 0.58) + ' ' + (50 - rx) + ' ' + cy + 'Z';
+    ' C' + (50 + rx) + ' ' + (cy + ry * 0.52) + ' ' + (50 + jw) + ' ' + (chin - 5.5) + ' 50 ' + chin +
+    ' C' + (50 - jw) + ' ' + (chin - 5.5) + ' ' + (50 - rx) + ' ' + (cy + ry * 0.52) + ' ' + (50 - rx) + ' ' + cy + 'Z';
 }
 
 function eyePath(cx, cy, w, h, tilt) {
@@ -272,12 +237,9 @@ export function portraitMarkup({
   const browY = eyeY - 6.2 - rng() * 1.4;
   const browTilt = mood === 'grim' || mood === 'hurt' ? 2.4 : mood === 'alert' ? -1.6 : 0.4;
   const noseY = cy + ry * 0.56;
-  // 0.74, not 0.82: at 0.82 the mouth stroke landed on the nose's own foot tick
-  // and the two merged into one 3 px smudge at roster size. 0.74 clears it by
-  // more than two pixels at 44 px render and still sits well above the chin.
-  const mouthY = cy + ry * 0.74;
+  const mouthY = cy + ry * 0.82;
   const mouthCurve = mood === 'grim' ? -1.6 : mood === 'hurt' ? -2.4 : mood === 'alert' ? 1.4 : 0.6;
-  const chin = cy + ry * CHIN_K;
+  const chin = cy + ry * 1.02;
 
   const head = headPath(rx, ry, jaw, cy);
   const shoulderY = 104;
@@ -386,19 +348,11 @@ export function portraitMarkup({
   }
   // nose — one hook line plus a nostril tick
   g += '<path d="M' + (50 - 1.2) + ' ' + (noseY - 6) + ' q-1.6 4.2 0.4 6 q1.4 1.2 3 0.4" fill="none" stroke-width="1.2" stroke-opacity="0.85"/>';
-  // MOUTH — authored for the shipped thumbnail, not for the viewBox.
-  // The lower lip is now drawn unconditionally rather than only on the hurt and
-  // alert moods: it is the mass that makes the mouth survive a downsample to
-  // 44 px, and a calm face with no lip has no mouth at all at roster size.
-  g += '<path d="M' + (50 - 4.6) + ' ' + (mouthY + 1.5) + ' q4.6 3.0 9.2 0 q-4.6 1.6 -9.2 0Z" fill="#8a4a44" ' +
-    'stroke="none" opacity="0.75"/>';
-  g += '<path d="M' + (50 - 5.6) + ' ' + mouthY + ' q5.6 ' + mouthCurve.toFixed(1) + ' 11.2 0" fill="none" stroke-width="3.4" stroke-opacity="0.92"/>';
-  // ...and the jaw gets an UNDERPLANE. Round 7: "no convex bulge, no jaw
-  // underplane, and no shadow under it". A 2 px violet wedge tucked under the
-  // mandible is what separates a chin from the collar behind it.
-  g += '<path d="M' + (50 - 9.5) + ' ' + (chin - 5.2) + ' Q50 ' + (chin + 1.6) + ' ' +
-    (50 + 9.5) + ' ' + (chin - 5.2) + ' Q50 ' + (chin - 3.0) + ' ' + (50 - 9.5) + ' ' +
-    (chin - 5.2) + 'Z" fill="' + JAW_SHADE + '" stroke="none" opacity="0.42"/>';
+  // mouth
+  g += '<path d="M' + (50 - 5.4) + ' ' + mouthY + ' q5.4 ' + mouthCurve.toFixed(1) + ' 10.8 0" fill="none" stroke-width="1.5"/>';
+  if (mood === 'hurt' || mood === 'alert') {
+    g += '<path d="M' + (50 - 4.2) + ' ' + (mouthY + 0.6) + ' q4.2 3.2 8.4 0" fill="#8a4a44" stroke="none" opacity="0.5"/>';
+  }
   g += '</g>';
 
   // ---- class flash on the collar ---------------------------------------

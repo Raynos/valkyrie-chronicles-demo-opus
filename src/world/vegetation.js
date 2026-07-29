@@ -1077,49 +1077,6 @@ export class Vegetation {
       tryPlace(x, z, rng() < 0.76 ? 'oak' : 'poplar');
     }
 
-    // 3b. THE VILLAGE IS NOT A CAR PARK.
-    //
-    // Steps 1-3 all bail out of the settlement (`villageMask > 0.25`), and 4
-    // rings the map edge, so the only vegetation inside the built-up area was
-    // the sward — which is why the `village` plate comes back as two rows of
-    // masonry standing on turf, with no vertical incident anywhere between the
-    // frontages and nothing green above knee height in a frame that measured
-    // 1.2% of its chromatic pixels in the 80-160 wedge. A Gallian village is
-    // gardens: a walnut over a yard wall, a pair of fruit trees behind every
-    // frontage, a lime by the well. They are also what breaks up the big flat
-    // wall planes the shading has been overshooting into lavender.
-    //
-    // They are placed BESIDE buildings rather than anywhere in the pad: a point
-    // is only taken if it is itself clear but a probe 3 m away lands inside an
-    // excluded footprint, which puts every one of them in the gap between two
-    // frontages or against a yard wall — where a village tree actually grows —
-    // instead of standing in the middle of the street.
-    const vil = this.layout.village;
-    if (vil) {
-      const nearBuilding = (x, z) => {
-        for (let k = 0; k < 6; k++) {
-          const a = (k / 6) * TAU + 0.4;
-          if (this.exclude(x + Math.cos(a) * 3.0, z + Math.sin(a) * 3.0)) return true;
-        }
-        return false;
-      };
-      let planted = 0;
-      for (let i = 0; i < 900 && planted < 11; i++) {
-        const a = rng() * TAU;
-        const rr = Math.sqrt(rng()) * (vil.r * 0.94);
-        const x = vil.x + Math.cos(a) * rr;
-        const z = vil.z + Math.sin(a) * rr;
-        if (this.layout.villageMask(x, z) < 0.12) continue;
-        if (!nearBuilding(x, z)) continue;
-        // `force` skips the road-width and bridge guards, but a tree in the
-        // middle of the carriageway still reads as a mistake — keep the
-        // metalled width clear by hand and let the verge take them.
-        const road = this.layout.roadSDF(x, z);
-        if (road.d < this.layout.roadHalfWidth(road.t) + 2.2) continue;
-        if (tryPlace(x, z, rng() < 0.62 ? 'oak' : 'poplar', true)) planted++;
-      }
-    }
-
     // 4. a shelter belt along the map edge, so the horizon is treed rather than
     //    a bare ridge line — this is what closes the composition at distance
     const edge = this.terrain.size * 0.5 - 8;
@@ -1305,8 +1262,12 @@ export class Vegetation {
 
     // scattered standalone bushes
     const half = this.terrain.size * 0.5 - 5;
-    const bush = (x, z, s) => {
+    for (let i = 0; i < 220; i++) {
+      const x = rngRange(rng, -half, half), z = rngRange(rng, -half, half);
+      if (rng() > this.grassDensity(x, z) * 0.35) continue;
+      if (this.layout.fieldAt(x, z)) continue;
       const y = this.terrain.heightAt(x, z);
+      const s = rngRange(rng, 0.9, 1.9);
       for (let c = 0; c < 3; c++) {
         cards.push({
           x: x + rngRange(rng, -0.4, 0.4) * s,
@@ -1321,52 +1282,6 @@ export class Vegetation {
         { x, y: y + s * 0.45, z }, { x: s * 0.7, y: s * 0.45, z: s * 0.7 }, 0,
         { cover: 0.35, conceal: 0.5, solid: false, blocksLos: false, tag: 'bush' }
       ));
-    };
-    for (let i = 0; i < 220; i++) {
-      const x = rngRange(rng, -half, half), z = rngRange(rng, -half, half);
-      if (rng() > this.grassDensity(x, z) * 0.35) continue;
-      if (this.layout.fieldAt(x, z)) continue;
-      bush(x, z, rngRange(rng, 0.9, 1.9));
-    }
-
-    // OVERGROWTH ALONG THE FRONTAGES.
-    //
-    // The scatter above is gated on `grassDensity`, which the settlement pad
-    // drives to zero, so a village street got between nought and two bushes on
-    // the whole map — and the `village` plate duly came back with the base of
-    // every wall meeting the ground on a hard, undressed line. A street that has
-    // been fought over is the opposite: nettle and bramble banked up the foot of
-    // the masonry, a currant bush gone wild in a yard, weed in the gutter. It is
-    // also the cheapest possible break-up of the big flat wall planes — twelve
-    // triangles a clump — and it puts green at the bottom of a frame the shading
-    // has been pushing to lavender.
-    //
-    // Same "beside a building, not in the road" test the village trees use, at a
-    // shorter probe so these hug the wall rather than filling the gaps.
-    const vil = this.layout.village;
-    if (vil) {
-      const againstWall = (x, z) => {
-        for (let k = 0; k < 8; k++) {
-          const a = (k / 8) * TAU;
-          if (this.exclude(x + Math.cos(a) * 1.35, z + Math.sin(a) * 1.35)) return true;
-        }
-        return false;
-      };
-      let n = 0;
-      for (let i = 0; i < 2200 && n < 74; i++) {
-        const a = rng() * TAU;
-        const rr = Math.sqrt(rng()) * vil.r;
-        const x = vil.x + Math.cos(a) * rr;
-        const z = vil.z + Math.sin(a) * rr;
-        if (this.layout.villageMask(x, z) < 0.10) continue;
-        if (this.exclude(x, z)) continue;
-        if (this.terrain.heightAt(x, z) < WATER_Y + 0.3) continue;
-        const road = this.layout.roadSDF(x, z);
-        if (road.d < this.layout.roadHalfWidth(road.t) + 0.6) continue;
-        if (!againstWall(x, z)) continue;
-        bush(x, z, rngRange(rng, 0.65, 1.35));
-        n++;
-      }
     }
 
     if (!cards.length) return;

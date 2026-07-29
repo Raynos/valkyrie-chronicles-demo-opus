@@ -196,8 +196,7 @@ vec3 vcHsv2Rgb(vec3 c) {
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
-// SHADE IS COOL — but shade is still the SAME PIGMENT, and the arc it travels
-// to get there MUST NOT PASS THROUGH RED.
+// SHADE IS COOL — but shade is still the SAME PIGMENT.
 //
 // Round 3 implemented "cool" as a channel floor: b = max(b, r * 1.46). On a
 // warm pigment that is a reasonable violet-brown, but the rule is stated in
@@ -208,33 +207,14 @@ vec3 vcHsv2Rgb(vec3 c) {
 //   * the Edelweiss's near-neutral sage armour (0xaeb5a6, saturation 0.08) has
 //     essentially no red to lead, so b = 1.46r turned a grey-green plate into
 //     saturated blue-violet and every tank in frame measured hue 240-260.
+// Both are the artefact commit 1cf9cbc removed, arriving by a different route.
 //
-// Rounds 4-7 replaced that with a bounded turn toward 235 deg ALONG THE SHORTER
-// ARC, and that is the defect round 7 measured as "the shadow hue ladder passes
-// through pure red on its way to violet". The arithmetic is one line: for a
-// straw pigment at hue 45 (0.125 turns) the signed shortest arc to 235 is
-//   dh = 0.6528 - 0.125 = 0.5278  ->  dh -= floor(dh + 0.5)  ->  -0.4722
-// i.e. BACKWARDS through 0. Clamped to the 21 deg budget that is exactly -21
-// deg, and 45 - 21 = 24. Measured on the round-7 closeup, the darkest quintile
-// of the terrain bank came back at hue 24.5. The prediction and the plate agree
-// to half a degree.
-//
-// This function is where that bill is paid twice over, because it is also what
-// the grade's CONTACT WASH is built out of (vcShadowColour -> canvasRenderPipeline
-// at uContactStrength 0.70). Every occluded pixel in the frame — which is to
-// say every pixel a critic quintiles as "the dark bands" — was being rotated 21
-// degrees into rust on its way out of the renderer, on top of whatever the
-// surface shader had already done. Hence helmet 50.1 -> 16.4, wall 36.0 -> 28.4,
-// bank 30.8 -> 24.5, and a crimson half-tone wedged into every material ladder.
-//
-// THE RULE, now identical to materials.js vcShadeTurn: MOVE TOWARD 265 DEG
-// WITHOUT EVER WRAPPING THROUGH 0. A warm pigment therefore climbs (straw 45 ->
-// 66, i.e. toward olive, which is what ultramarine glazed over yellow ochre
-// actually gives), a magenta one descends (320 -> 299), a green one is already
-// past the cap and does not move at all — and nothing can cross red in either
-// direction. The cap is the whole point of the bound: a shaded surface has to
-// land within ~40 deg of its own lit hue, which is what makes it read as the
-// same material in shadow instead of a different material painted next to it.
+// So the cool move is now a BOUNDED HUE TURN toward 235 deg along the shorter
+// arc, capped at VC_COOL_TURN, plus a small chroma drop; luminance is preserved
+// exactly, so cooling a wash still can never brighten it. The cap is the whole
+// point: a shaded surface has to land within ~40 deg of its own lit hue, which
+// is what makes it read as the same material in shadow instead of a different
+// material painted next to it.
 //
 // A near-NEUTRAL pigment has no hue to turn — a limestone parapet or a
 // grey-green hull would come out of the rotation unchanged — so those get the
@@ -244,25 +224,14 @@ vec3 vcHsv2Rgb(vec3 c) {
 // The amt argument is the blend, driven by band index at the call site so only
 // the bottom one or two washes are cooled.
 #define VC_COOL_TURN 0.058          // 21 degrees, the whole budget for one call
-#define VC_COOL_H    0.73611        // 265 deg, the skylight
-#define VC_COOL_CAP  0.37500        // 135 deg, the far edge of olive
 vec3 vcCoolShade(vec3 c, float amt) {
   amt = clamp(amt, 0.0, 1.0);
   if (amt <= 0.001) return c;
   float l = vcLum(c);
   vec3 hsv = vcRgb2Hsv(c);
-  float dh = VC_COOL_H - hsv.x;     // NOT wrapped — that is the fix
-  float h = min(hsv.x + clamp(dh, -VC_COOL_TURN, VC_COOL_TURN) * amt,
-                max(hsv.x, VC_COOL_CAP));
-  // ...and a pigment that is ALREADY inside the forbidden 340..30 window when
-  // it arrives here (a brick, a pantile, an ink-floored dark) is pushed out of
-  // it rather than parked in it: below 30 deg it climbs, above 340 it descends.
-  // A shade wash is allowed to be many things; a crimson half-tone is not one.
-  float lowFix = max(h, 0.09167);                        //  33 deg
-  float hiFix  = min(h, 0.93333);                        // 336 deg
-  h = h < 0.16667 ? mix(h, lowFix, amt)
-    : (h > 0.88889 ? mix(h, hiFix, amt) : h);
-  hsv.x = clamp(h, 0.0, 1.0);
+  float dh = 0.6528 - hsv.x;        // 235 deg: blue-violet, the skylight hue
+  dh -= floor(dh + 0.5);            // shortest signed arc, -0.5 .. 0.5
+  hsv.x = fract(hsv.x + clamp(dh, -VC_COOL_TURN, VC_COOL_TURN) * amt);
   hsv.y *= mix(1.0, 0.90, amt);     // pigment in shade reads LESS chromatic
   vec3 t = vcHsv2Rgb(hsv);
   float neutral = 1.0 - smoothstep(0.03, 0.14, hsv.y);
@@ -275,69 +244,52 @@ vec3 vcCoolShade(vec3 c, float amt) {
 // is the SAME pigment, darkened, lit only by the violet-blue sky — so it keeps
 // its own hue, cools, and is floored so nothing in frame hits black.
 //
-// THIS FUNCTION WAS THE "HUE 351 DILUTER". canvasRenderPipeline paints its
-// screen-space contact wash with it at uContactStrength 0.70, i.e. it repaints
-// every occluded pixel in the frame — which is exactly the population a critic
-// quintiles as "the shadow bands". Traced through the round-7 build with an
-// ochre albedo (0.20, 0.16, 0.10), hue 36 deg:
-//
-//   mix(albedo, grey, 0.22) * 0.36          -> (0.0692, 0.0579, 0.0411)  h 36
-//   *= mix(1, skylight/lum, 0.30)           -> (0.0689, 0.0570, 0.0481)  h 22
-//   += violet * 0.026                       -> (0.0708, 0.0589, 0.0512)  h 17
-//   floor lean 0.13 toward inkFloor         -> (0.0709, 0.0587, 0.0563)  h  9.9
-//   vcCoolShade(c, 0.85)  [old, wrong arc]  ->                           h -8
-//
-// Every one of those steps is a per-channel operation that raises BLUE against
-// GREEN, and on a red-dominant pigment that moves the HUE DOWN — the arithmetic
-// is stated three times elsewhere in this codebase and was implemented backwards
-// here. The wash a shaded ochre bank was being repainted with was RUST, and
-// because the pipeline blends it in at a quantised 0..1 weight, the half-weight
-// steps of that blend land in 340..30 by construction: an RGB lerp from a warm
-// pigment to a violet wash passes through magenta on its way.
-//
-// So the cooling is now a HUE ROTATION ALONG THE NON-WRAPPING ARC — the same
-// rule as materials.js vcShadeTurn — plus a hard chroma cut, and the skylight
-// is only ever a whisper on top. A warm pigment therefore lands on OLIVE-GREY
-// (ochre 36 -> 72), which is what ultramarine glazed over yellow ochre actually
-// gives; a pigment that is already violet stays violet; and because the wash
-// colour now sits on the same side of the wheel as the pigment it is blended
-// with, no intermediate weight of that blend can cross red.
-//
-// It is also the LEAST CHROMATIC wash on the sheet, which is the other half of
-// the rule ("saturation must fall into shadow"): 0.46 of the pigment's chroma,
-// pre-compensating for the grade's uSatGamma 0.73, which nearly doubles a low
-// chroma on its way to the screen.
-#define VC_SHADOW_TURN 0.08333       // 30 degrees
+// An early build rotated the hue all the way to 265 deg, and that is the single
+// worst thing you can do to a warm palette: the shortest arc from ochre (30
+// deg) to violet-blue runs BACKWARDS through red into magenta, so every ochre
+// field, every brick wall and every straw roof turned lavender in shade and the
+// whole frame went purple. What went wrong there was the SIZE of the rotation,
+// not the idea — vcCoolShade above now caps it at 21 deg, which lands ochre on
+// a burnt red-brown rather than on lavender. The bulk of the work is still done
+// by a MULTIPLY plus a small ADD, which gives the right answer for free:
+//   * a warm pigment lands on a low-chroma brown-violet,
+//   * a green/sage pigment lands on desaturated violet-grey,
+// which is exactly the two behaviours the CANVAS palette wants. vcCoolShade
+// then guarantees the last step the multiply cannot: blue ahead of red.
 vec3 vcShadowColour(vec3 albedo, vec3 violet, vec3 floorCol) {
   float l = vcLum(albedo);
+  vec3 tint = violet / max(vcLum(violet), 1e-4);   // unit-luminance skylight
 
-  vec3 hsv = vcRgb2Hsv(albedo);
-  float dh = VC_COOL_H - hsv.x;                       // NOT wrapped
-  hsv.x = clamp(min(hsv.x + clamp(dh, -VC_SHADOW_TURN, VC_SHADOW_TURN),
-                    max(hsv.x, VC_COOL_CAP)), 0.0, 1.0);
-  hsv.y *= 0.58;                                      // shade is the least chromatic wash
-  hsv.z *= 0.46;
-  vec3 c = vcHsv2Rgb(hsv);
-
+  // Value drop with only a LIGHT pull toward the pigment's own grey. Round 3
+  // mixed 40% to grey and then rotated the residue onto blue, so almost nothing
+  // that came out the far end was still the pigment: that is the arithmetic
+  // that turned a green field into a teal patch. 0.22 keeps the hue identifiable
+  // while still reading less chromatic than the lit wash, which is what shade
+  // actually does.
+  vec3 c = mix(albedo, vec3(l), 0.22) * 0.36;
+  // multiplicative skylight: cools without moving the hue much
+  c *= mix(vec3(1.0), tint, 0.30);
   // a whisper of ADDITIVE skylight, and a whisper is all it may be — additive
   // light does not respect the pigment's hue at all, so it is the term that
-  // replaces rather than shifts.
-  c += violet * 0.022 * (0.40 + 0.60 * l);
+  // replaces rather than shifts. Halved from round 3.
+  c += violet * 0.026 * (0.40 + 0.60 * l);
 
   // Never darker than the floor — but the floor may not REPLACE the pigment.
   // max(c, violetConstant) is a per-channel operation, so on anything dark it
   // simply becomes that violet: the Edelweiss's track-guard underside measured
   // hue 277 against sage-green paint at hue 90, and every deep shadow in frame
   // arrived at the same lavender whatever was in it. Lift the VALUE to the floor
-  // and lean the hue only a tenth of the way there.
+  // and lean the hue only an eighth of the way there.
   float fl = vcLum(floorCol) * (0.40 + 0.60 * l);
   c *= max(1.0, fl / max(vcLum(c), 1e-5));
   vec3 fTint = floorCol / max(vcLum(floorCol), 1e-4);
-  c = mix(c, vec3(vcLum(c)) * fTint, 0.10);
+  c = mix(c, vec3(vcLum(c)) * fTint, 0.13);
 
-  // ...and a last light cool turn, mostly for the RGB lean it gives a
-  // near-neutral pigment, which has no hue for the rotation above to move.
-  return vcCoolShade(c, 0.32);
+  // and finally the bounded cool turn. NOT at full strength: this colour is
+  // handed to the band ramp and then passed through vcCoolShade a second time
+  // on the composite, and two full turns is a 42 deg rotation, i.e. the
+  // replacement this function exists to avoid.
+  return vcCoolShade(c, 0.85);
 }
 
 // The other half of the rule. Lit pigment must stay the SAME pigment — brighter,

@@ -595,12 +595,6 @@ export class Tank {
 
     // ---- dimensions -------------------------------------------------------
     this.rideHeight = 0.60;
-    // Blend toward the static suspension datum whenever the hull is not moving.
-    // See update(): the sim's heave integrator parks at the TOP of its travel
-    // clamp, which floated the measured `tank` hull 240 mm and lifted every road
-    // wheel clear of the ground.
-    this._parked = 0;
-    this._wheelBias = 0;
     this.wheelRadius = 0.34;
     this.gauge = 2.42;                    // track centre-to-centre
     this.trackWidth = 0.42;
@@ -1120,46 +1114,6 @@ export class Tank {
           rivets.push([sx * 1.252, sideY + 0.10, z, 0]);
           rivets.push([sx * 1.252, sideY - 0.10, z, 0]);
         }
-      }
-    }
-
-    // ---- SPARE TRACK SHOES HUNG ON THE STARBOARD FLANK ---------------------
-    // The applique plate above breaks the flank into three panels; this breaks
-    // the largest of them again, and it does it with a REPEATED VERTICAL — six
-    // shoe-width bars standing 45 mm proud, each with its own outline and its
-    // own pair of band boundaries. Measured on `tank`, the 536 x 93 px run of
-    // sponson between the applique plate and the track guard was the largest
-    // single unbroken value in the plate; a row of stowed shoes is what an
-    // actual crew hangs there and it is worth more than any amount of texture.
-    {
-      const shoes = byQ([4, 6, 7]);
-      for (let i = 0; i < shoes; i++) {
-        const z = lerp(-0.20, 1.24, shoes === 1 ? 0 : i / (shoes - 1));
-        B.metal.push(placeS(new THREE.BoxGeometry(1, 1, 1), 1.268, sideY + 0.015, z,
-          0.045, 0.300, 0.115));
-        B.metal.push(placeS(new THREE.BoxGeometry(1, 1, 1), 1.292, sideY + 0.015, z,
-          0.030, 0.115, 0.075));
-      }
-      // The two rails they hang from — a horizontal above and below the row, so
-      // the shoes read as STOWAGE rather than as ribs cast into the armour.
-      for (const dy of [-0.175, 0.175]) {
-        B.metal.push(cylBetween(1.262, sideY + 0.015 + dy, -0.30, 1.262, sideY + 0.015 + dy, 1.34, 0.018, 5));
-      }
-    }
-
-    // ---- ROLLED TARPAULIN along the port sponson top -----------------------
-    // A soft, matte, non-metal mass with a slack silhouette. Everything else on
-    // this vehicle is a hard-edged steel box; one canvas roll and its lashings
-    // are what stop the flank reading as a machined part rather than a machine
-    // that has been lived in.
-    {
-      const rz = [-1.30, -0.55, 0.20, 0.95];
-      for (let i = 0; i < rz.length - 1; i++) {
-        const r = 0.115 + 0.018 * Math.sin(i * 2.1);
-        B.ochre.push(cylBetween(-1.235, fenderY + 0.20, rz[i], -1.235, fenderY + 0.20 + 0.012, rz[i + 1], r, byQ([5, 7, 9])));
-      }
-      for (const z of [-1.05, -0.25, 0.62]) {
-        B.metal.push(cylBetween(-1.36, fenderY + 0.20, z, -1.11, fenderY + 0.20, z, 0.016, 4));
       }
     }
 
@@ -2269,40 +2223,6 @@ export class Tank {
     if (this.physics) {
       if (!this._externalStep) this.physics.update(dt);
       this.physics.applyToRoot(this.root, this.chassis);
-      // A PARKED TANK SITS ON ITS SUSPENSION, NOT ON TOP OF IT.
-      //
-      // Measured on `tank` after the shot had fully settled: chassis.position.y
-      // = 0.84 against a designed rideHeight of 0.60 — the suspension pinned at
-      // the TOP of its +-maxTravel clamp, so the hull floated 240 mm high and
-      // every road wheel hung at -maxDroop (0.20) still 40 mm clear of the dirt.
-      // A tracked vehicle whose road wheels do not touch the ground is the
-      // "floating objects / feet not planted" automatic rejection, and it is why
-      // the running gear reads as a decal painted on the side of a box.
-      //
-      // The heave integrator is not this module's to fix, but the render pose
-      // is: once the hull is not actually moving, blend the whole running gear
-      // to its STATIC datum — chassis at rideHeight AND every wheel offset at
-      // zero, which by construction (axleY = -(rideHeight - wheelRadius)) puts
-      // the bottom of every road wheel exactly on y = 0, the ground plane the
-      // root is planted on. Blending both together is what keeps the track loop
-      // welded to the wheels: _buildTrackPath reads the same `_parked` blend.
-      // 3 Hz, so a tank that has just stopped settles rather than snapping.
-      const v = this.physics.vel;
-      const still = Math.hypot(v.x, v.z) < 0.35 && Math.abs(this.physics.heaveVel || 0) < 0.35;
-      this._parked = clamp(this._parked + (still ? 1 : -1) * dt * 3.0, 0, 1);
-      // Only the CONSTANT part of the suspension state is trimmed away: the
-      // per-wheel deviation from the mean is the terrain under that wheel and
-      // has to survive, or a tank parked across a ditch stands on stilts at one
-      // end. Removing the mean and putting the datum back at rideHeight is
-      // exactly "sit the vehicle down on its own springs".
-      const off = this.physics.wheelOffset;
-      let bias = 0;
-      if (off && off.length) { for (let i = 0; i < off.length; i++) bias += off[i]; bias /= off.length; }
-      this._wheelBias = bias * this._parked;
-      if (this._parked > 0) {
-        const c = this.chassis.position;
-        c.y += (this.rideHeight - c.y) * this._parked;
-      }
     }
 
     // ---- turret / gun slew ------------------------------------------------
@@ -2358,15 +2278,11 @@ export class Tank {
     const spin = p ? p.wheelSpin : [0, 0];
     const off = p ? p.wheelOffset : null;
 
-    const bias = this._wheelBias || 0;
     let k = 0;
     for (let s = 0; s < 2; s++) {
       const x = s === 0 ? -halfG : halfG;
       for (let i = 0; i < this.wheelCount; i++, k++) {
-        // See update(): a parked hull is eased to its static datum, so the
-        // wheels have to be eased to theirs in the same breath or they end up
-        // 200 mm inside the dirt.
-        const dy = (off ? off[s * this.wheelCount + i] : 0) - bias;
+        const dy = off ? off[s * this.wheelCount + i] : 0;
         _va.set(x, this.axleY + dy, this.wheelZ[i]);
         // Wheels spin about local X; positive spin walks the contact patch
         // rearward, which is what "driving forward" looks like.
@@ -2471,9 +2387,8 @@ export class Tank {
 
     // 1. Bottom run: idler bottom -> under each road wheel -> sprocket bottom.
     if (n < cap) { Z[n] = this.idlerZ; Y[n] = this.idlerY - this.idlerR; n++; }
-    const bias = this._wheelBias || 0;
     for (let i = 0; i < this.wheelCount && n < cap; i++) {
-      const dy = (off ? off[side * this.wheelCount + i] : 0) - bias;
+      const dy = off ? off[side * this.wheelCount + i] : 0;
       Z[n] = this.wheelZ[i]; Y[n] = this.axleY + dy - this.wheelRadius; n++;
     }
     if (n < cap) { Z[n] = this.sprocketZ; Y[n] = this.sprocketY - this.sprocketR; n++; }

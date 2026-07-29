@@ -12,7 +12,7 @@ import { makeRng } from '../core/rng.js';
 import { h, clear, svgEl } from './dom.js';
 import {
   captureRing, inkRule, inkGauge, damagePlate, wobblyPath, splatPath, hatchPath,
-  iconMarkup, roughCircle, fieldFigure, fieldVehicle,
+  iconMarkup, roughCircle, fieldFigure,
 } from './icons.js';
 import { deckleClip } from './style.js';
 
@@ -225,13 +225,6 @@ const CRIT_LIFE = 1.75;
 const FIG_GAIN = 1.75;
 const FIG_MIN = 40;
 const FIG_MAX = 88;
-// ...and the same window for ARMOUR, quoted as the symbol's drawn LENGTH.
-// The vehicle symbol is 118 x 64 in its own viewBox, so a 150 px counter stands
-// 81 px tall — about the height a 40 px infantry figure beside it reads at,
-// scaled by the real 3:1 difference between a man and a medium tank.
-const VEH_MIN = 104;
-const VEH_MAX = 210;
-const VEH_ASPECT = 64 / 118;
 
 export class WorldLabels {
   /**
@@ -352,35 +345,6 @@ export class WorldLabels {
     out.visible = this._p.z > -1 && this._p.z < 1 &&
       out.x > -220 && out.x < this.w + 220 && out.y > -160 && out.y < this.h + 160;
     return out;
-  }
-
-  /**
-   * How many pixels of page a vehicle's hull actually spans.
-   *
-   * Sizing armour off `(height / depth)` the way the infantry are sized is
-   * wrong twice over: a hull is nearly three times longer than it is tall, and
-   * under a map camera the foreshortening depends entirely on whether it is
-   * broadside or end-on. Project the four corners of the footprint and measure.
-   */
-  _vehicleScreenLength(unit) {
-    const cam = this.camera;
-    if (!cam) return 0;
-    const yaw = unit.yaw || 0;
-    const s = Math.sin(yaw), c = Math.cos(yaw);
-    const HL = 3.1, HW = 1.45, Y = 1.2;         // half-length, half-width, hull mid-height
-    let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
-    for (const [a, b] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-      this._pf.set(
-        unit.pos.x + s * HL * a + c * HW * b,
-        unit.pos.y + Y,
-        unit.pos.z + c * HL * a - s * HW * b,
-      );
-      const o = this.project(this._pf, this._vehOut ||
-        (this._vehOut = { x: 0, y: 0, depth: 0, visible: false }));
-      if (o.x < minX) minX = o.x; if (o.x > maxX) maxX = o.x;
-      if (o.y < minY) minY = o.y; if (o.y > maxY) maxY = o.y;
-    }
-    return Math.max(maxX - minX, maxY - minY);
   }
 
   // ------------------------------------------------------------- name tags
@@ -654,26 +618,10 @@ export class WorldLabels {
       // The slip is anchored by its BOTTOM edge, so it occupies [y - hgt, y].
       // The top guard is deliberately generous: a slip sliced by the frame rule
       // at the head of the page is worse than no slip at all.
-      // A MARKER MAY NOT COVER THE UNIT IT MARKS.
-      //
-      // Round 7: "the marker card at (1130-1215, 55-105) is drawn OVER its own
-      // soldier: the figure's helmet is visible above the card at y=40-55 and
-      // its legs below at y=145-165, with the entire torso hidden behind the
-      // card stock". The slip is anchored 2.05 m over the man's feet, and in
-      // command mode his counter is ALSO up there — two independent layouts
-      // competing for the same strip of page. Since the counter is the thing the
-      // survey is made of, the slip gives way to it: anchor the slip's bottom
-      // edge on the counter's top edge and the intersection is zero by
-      // construction. `_updateTokens` runs first for exactly this reason.
-      const ownTok = this.useTokens ? this.tokens.get(unit) : null;
-      let anchorY = out.y;
-      if (ownTok && ownTok.placedStamp === this._tokStamp) {
-        anchorY = Math.min(anchorY, ownTok.cy - ownTok.rowH * 0.5 - 5);
-      }
-      const ay = anchorY - this.screenLift * this.scale;
+      const ay = out.y - this.screenLift * this.scale;
       if (out.x < halfW + 14 || out.x > this.w - halfW - 14 ||
           ay - hgt < this.h * 0.055 || ay > this.h - 30) continue;
-      t.x = out.x; t.y = ay; t.depth = out.depth;
+      t.x = out.x; t.y = out.y - this.screenLift * this.scale; t.depth = out.depth;
       // Where the soldier's FEET are, so the leader hairline can be run all the
       // way down to him (or, in command mode, onto his counter) instead of
       // stopping in mid air a head above the anchor.
@@ -804,38 +752,8 @@ export class WorldLabels {
       // frame turns on: round 6 measured it at 24 px and the critic could not
       // find a soldier under sixteen of eighteen markers.
       const projH = Math.max(2, footY - hy);
-      // ARMOUR TAKES THE SAME PATH. Round 7 found the Edelweiss — the one object
-      // the mode exists to track — was the only unit still rendered as geometry,
-      // and at 100 px it came back as "a cream amoeba with NO ink outline". A
-      // vehicle is sized off its projected LENGTH rather than its height, since
-      // a hull seen end-on is 2.8 m tall and 6.2 m long and only the second
-      // number says how much of the page it owns.
-      // WHO DRAWS THIS UNIT — asked, not re-derived.
-      //
-      // CommandMode.syncFigureLod owns the decision: it hides the rig of
-      // anything too small to read and this layer draws the symbol in its
-      // place. The first cut had both sides computing their own screen-size
-      // test, which is a duplicated formula waiting to disagree — and it did,
-      // immediately: the infantry gate divides height by depth, the armour one
-      // has to project the footprint (a 6.2 m hull at 33 degrees of map pitch
-      // foreshortens to 118 px where height/depth predicts 195), so the tank
-      // fell down the gap between the two and shipped as neither. Reading
-      // `root.visible` instead makes the two agree by construction: a symbol is
-      // drawn exactly when there is no model to see. CommandMode.update() runs
-      // before the HUD in main.js's system order, so this is the same frame.
-      const drawSymbol = this.useFigures && !!unit.root && unit.root.visible === false;
-      t.figVeh = false;
-      if (drawSymbol && unit.isVehicle) {
-        t.figVeh = true;
-        // Sized off the real projected footprint: a hull seen end-on owns a
-        // third of the page a broadside one does.
-        const L = this._vehicleScreenLength(unit);
-        t.figW = Math.min(VEH_MAX, Math.max(VEH_MIN, L * 1.25));
-        t.figH = t.figW * VEH_ASPECT;
-      } else {
-        t.figH = drawSymbol
-          ? Math.min(FIG_MAX, Math.max(FIG_MIN, projH * FIG_GAIN)) : 0;
-      }
+      t.figH = this.useFigures && !unit.isVehicle
+        ? Math.min(FIG_MAX, Math.max(FIG_MIN, projH * FIG_GAIN)) : 0;
 
       if (!tok) {
         const el = h('div', { class: 'vc-wl vc-token' + (t.foe ? ' foe' : '') });
@@ -872,7 +790,6 @@ export class WorldLabels {
       tok.halfW = 27 * tok.sc; tok.rowH = 30 * tok.sc;
       tok.unit = unit; tok.foe = t.foe;
       tok.figH = t.figH; tok.figX = footX; tok.figY = footY;
-      tok.figVeh = !!t.figVeh;
       order.push(tok);
     }
 
@@ -899,7 +816,6 @@ export class WorldLabels {
       // running head ("SURVEY SHEET IV — Vasel Crossing") covers the one line
       // that says what the map IS, which is worse than a counter one lane low.
       k.cy = Math.max(this.h * 0.045 + k.rowH * 0.5, k.y - lane * (k.rowH * 0.80));
-      k.placedStamp = this._tokStamp;
       placed.push({ cx: k.x, cy: k.cy, halfW: k.halfW, rowH: k.rowH });
     }
 
@@ -978,20 +894,15 @@ export class WorldLabels {
     let fig = this.figures.get(unit);
     if (!fig) {
       const foe = (unit.team | 0) === 1;
-      const veh = !!k.figVeh;
-      const el = h('div', {
-        class: 'vc-wl vc-figure' + (foe ? ' foe' : '') + (veh ? ' veh' : ''),
-      });
-      el.appendChild(veh
-        ? fieldVehicle(foe ? 1 : 0, (hashStr(unit.name || 'x') & 0x3ff) + 29)
-        : fieldFigure(foe ? 1 : 0, String(unit.cls || 'scout').toLowerCase(),
-          (hashStr(unit.name || 'x') & 0x3ff) + 11));
+      const el = h('div', { class: 'vc-wl vc-figure' + (foe ? ' foe' : '') });
+      el.appendChild(fieldFigure(foe ? 1 : 0, String(unit.cls || 'scout').toLowerCase(),
+        (hashStr(unit.name || 'x') & 0x3ff) + 11));
       this.layer.appendChild(el);
-      fig = { el, flip: null, stamp: -1, veh };
+      fig = { el, flip: null, stamp: -1 };
       this.figures.set(unit, fig);
     }
     fig.stamp = this._tokStamp;
-    const sc = k.figH / (fig.veh ? 64 : 76);
+    const sc = k.figH / 76;
     // Facing: `k.ang` is the screen bearing of the man's own aim, 0 = up the page.
     const flip = Math.sin((k.ang || 0) * Math.PI / 180) < -0.12;
     if (flip !== fig.flip) { fig.flip = flip; fig.el.classList.toggle('mirror', flip); }
@@ -1011,12 +922,8 @@ export class WorldLabels {
     const s = this.scale;
     const out = this._out;
 
-    // TOKENS FIRST, then the slips. The name-slip layout has to know where each
-    // unit's own counter ended up so it can sit clear of it (see _updateTags);
-    // running the slips first is what let a marker card eclipse the soldier it
-    // was pointing at. _updateTokens reads nothing the slip pass writes.
-    this._updateTokens();
     this._updateTags(dt);
+    this._updateTokens();
 
     // --- damage numerals
     for (const d of this.dmg) {
