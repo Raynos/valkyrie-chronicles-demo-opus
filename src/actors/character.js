@@ -20,8 +20,9 @@ import { clamp, clamp01, lerp, smoothstep, TAU } from '../core/math.js';
 import {
   MeshBuilder, PALETTE, SKIN_TONES, HAIR_TONES, BODY_TYPES, BONE_GROUPS, ZONE,
   makeRig, buildBody, buildHead, createSkinnedBody, actorBodyMaterial,
-  actorGearMaterial, rgbLin, mixCol, seg, setDetail, getDetail,
+  actorGearMaterial, rgbLin, mixCol, seg, setDetail, getDetail, SOLE_DROP,
 } from './rig.js';
+import { ActorContactPool } from './contactShadow.js';
 
 /** True while a distance-LOD variant is being built; see setDetail in rig.js. */
 const SIMPLE = () => getDetail() < 0.8;
@@ -357,7 +358,11 @@ function gearWebbing(b, rig, o, cls) {
     const s = side > 0 ? 'L' : 'R';
     const ua = rig.restWorld['upperArm' + s].pos, cl = rig.restWorld['clavicle' + s].pos;
     const apexX = Math.abs(lerp(cl.x, ua.x, 0.50));
-    const apexY = ua.y + 0.086 * g;
+    // Follows the deltoid down. The acromion dropped 22 mm this round (see
+    // buildShoulders) so an apex at +0.086 now arches the strap through open air
+    // above the shoulder crest, and a 48 mm strap floating clear of the cloth
+    // reads at portrait distance as a rolled towel laid over the man.
+    const apexY = ua.y + 0.062 * g;
     const chestY = hy + 0.310;
     b.addTube([
       { p: [-side * 0.072 * g, beltY + 0.014, 0.100 * g], rx: 0.030, rz: 0.010 },
@@ -960,9 +965,15 @@ const CARRY_BY_KIND = {
   // the support shoulder against a 0.526 m elbow-limited reach — no headroom at
   // all, so the moment the torso-clearance push moved the gun the support hand
   // came off it. 0.250/-0.370 brings that to 0.478 m and leaves 48 mm of slack.
-  rifle: { yaw: CARRY_YAW, pitch: CARRY_PITCH, fwd: 0.250, down: -0.370, lat: CARRY_LAT },
-  smg: { yaw: 0.66, pitch: -0.42, fwd: 0.232, down: -0.348, lat: 0.010 },
-  sniper: { yaw: 0.56, pitch: -0.42, fwd: 0.258, down: -0.372, lat: 0.014 },
+  // ROUND 10: pulled in another 14%. The foregrip at (0.250 fwd, -0.370 down)
+  // sits 0.482 m from a support shoulder with a 0.526 m elbow-limited reach —
+  // 92% — and 92% of reach is a 135-degree elbow, i.e. a straight arm. At
+  // (0.215, -0.358) it is 0.452 m, 86%, and the joint comes back to 118 degrees:
+  // an elbow you can see. It also tucks the weapon in against the chest, which
+  // is where a soldier at low ready actually carries it.
+  rifle: { yaw: CARRY_YAW, pitch: CARRY_PITCH, fwd: 0.215, down: -0.358, lat: CARRY_LAT },
+  smg: { yaw: 0.66, pitch: -0.42, fwd: 0.200, down: -0.338, lat: 0.010 },
+  sniper: { yaw: 0.56, pitch: -0.42, fwd: 0.222, down: -0.360, lat: 0.014 },
   // Chest height, angled up 3.4 deg, and 0.14 m out to the firing side. Worked
   // through on paper before it was rendered: with a 0.52 m tail behind the grip
   // the rear of the tube lands 0.427 m from the spine axis (the trunk capsule is
@@ -1688,9 +1699,20 @@ export class Character {
     // butt plate, so `cf` blends between the two.
     // cf == 1 is fully CARRIED (elbow down, a little back, barely out);
     // cf == 0 is fully SHOULDERED (elbow up and out under the butt plate).
+    //
+    // ROUND 10 — AND "BARELY OUTBOARD" WAS TOO LITTLE. At cf = 1 the outboard
+    // term was -0.22 against a -0.92 down term, i.e. the humerus hung 13 degrees
+    // off vertical, which is inside its own sleeve radius: the upper arm lay flat
+    // against the ribcage with no wedge of background or shade between them, they
+    // share the tunic albedo, and the pair therefore drew NO ink line and no
+    // terminator. Projecting the skeleton onto the round-9 closeup showed the
+    // consequence exactly — the figure's left and right silhouette edges are the
+    // two SLEEVES, so the whole torso reads as one rectangular slab, which is the
+    // note that has stood since round 4. 0.46 puts the humerus 27 degrees out:
+    // still a tucked low-ready carry, but with daylight in the armpit.
     _cPole.copy(_cUp).multiplyScalar(0.30 - 1.22 * cf)
       .addScaledVector(_cFwd, -0.10 - 0.24 * cf)
-      .addScaledVector(_cLeft, -0.86 + 0.64 * cf).normalize();
+      .addScaledVector(_cLeft, -0.86 + 0.40 * cf).normalize();
 
     /** Roll the wrist until the bore sits on `_cBore`. Returns the angle used. */
     const align = () => {
@@ -1802,12 +1824,21 @@ export class Character {
     // Sampling the whole grippable span and keeping the best candidate cannot
     // do that: it is monotone in the thing we care about by construction.
     //
-    // 0.94 rather than "just reachable": the support arm has to still have a
-    // creasing elbow at the end of it, and a goal parked exactly on the reach
-    // shell puts the joint at the limit with nothing left over.
+    // 0.94 WAS NOT A CREASE, IT WAS A LOCKOUT. Probed on `squad`: support elbows
+    // at 134.6 / 126.7 / 140.7 / 152.0 degrees — the engineer's sitting exactly on
+    // ELBOW_MAX. An arm at 140 degrees of flexion has 8 mm of olecranon standing
+    // off a 0.52 m chord; it has no corner in silhouette, no cubital crease facing
+    // the light, and it is EXACTLY what four rounds of critique have called an
+    // "elbow-less garden-hose S-curve". The relationship is arithmetic — with
+    // l1 = l2 = l the chord is 2 l sin(theta/2), so a fraction f of full reach
+    // gives theta = 2 asin(f):
+    //     f 0.94 -> 140 deg     f 0.90 -> 128 deg
+    //     f 0.86 -> 118 deg     f 0.80 -> 106 deg
+    // 0.86 is a soldier's low-ready support arm: visibly hinged, olecranon
+    // 62 mm clear of the chord, and still comfortably short of the fold.
     const near = ud.holdNear !== undefined ? ud.holdNear : 0.10;
     const far = ud.holdFar !== undefined ? ud.holdFar : 0.25;
-    const good = reach * 0.94;
+    const good = reach * 0.86;
     let best = _cA.distanceTo(this._handTarget), bestSlide = 0;
     if (best > good && far > near) {
       const N = 10;
@@ -2302,12 +2333,51 @@ export class Character {
       }
     }
 
+    this._updateContactPool();
+
     // The animator already walked the graph — record that so the first
     // muzzlePoint()/headPoint() of the frame is free.
     const c = this._wSync, p = this.root.position, q = this.root.quaternion, s = this.root.scale;
     c.px = p.x; c.py = p.y; c.pz = p.z;
     c.qx = q.x; c.qy = q.y; c.qz = q.z; c.qw = q.w;
     c.sx = s.x; c.sy = s.y; c.sz = s.z;
+  }
+
+  /**
+   * THE MARK THAT PUTS A FIGURE ON THE GROUND.
+   *
+   * The world has real cast shadows now, and the key sits 45-60 degrees up, so a
+   * 1.75 m soldier throws his shadow 1.0-1.7 m sideways — correct, and useless
+   * for contact, because the pixel where the sole meets the dirt is exactly the
+   * pixel the sun's shadow has already left. Valkyria's plates carry a separate,
+   * small, very dark pool directly under each figure: the painter's occlusion
+   * mark, not the sun's shadow, and it is the single mark that stops a character
+   * reading as a sticker pasted onto a photograph.
+   *
+   * `contactShadow.js` has held the machinery for two rounds and NOTHING EVER
+   * CONSTRUCTED IT — which is the whole of the measured "only ~50% of character
+   * footprints are contact-darkened". It is wired here, on the actor, rather
+   * than on a battle-wide field, because the deploy screen, the briefing and
+   * every capture pose draw actors with no Battle in scope.
+   */
+  _updateContactPool() {
+    if (!this._groundAt || CFG.quality < 0) { this._contact?.hide(); return; }
+    const bm = this.rig.boneMap;
+    if (!bm.footL || !bm.footR) return;
+    if (!this._contact) {
+      this._contact = new ActorContactPool();
+      this._contactFeet = [new THREE.Vector3(), new THREE.Vector3()];
+    }
+    // A pool under an invisible actor is a dark disc lying on empty ground.
+    let vis = true;
+    for (let o = this.root; o; o = o.parent) { if (!o.visible) { vis = false; break; } }
+    if (!vis || !this.root.parent) { this._contact.hide(); return; }
+    const s = this.root.scale.y || 1;
+    const f = this._contactFeet;
+    f[0].setFromMatrixPosition(bm.footL.matrixWorld);
+    f[1].setFromMatrixPosition(bm.footR.matrixWorld);
+    const soleY = Math.min(f[0].y, f[1].y) - SOLE_DROP * s;
+    this._contact.update(this.root.parent, f, soleY, this._groundAt, s);
   }
 
   /** Recoil spring, bolt cycling and the reload magazine drop. */
@@ -2353,6 +2423,8 @@ export class Character {
       if (i >= 0) window.__CHARS__.splice(i, 1);
     }
     this.animator.dispose();
+    this._contact?.dispose();
+    this._contact = null;
     for (const c of this.cloth) { this.root.remove(c.mesh); c.dispose(); }
     this.cloth.length = 0;
     this.geometry.dispose();

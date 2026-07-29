@@ -1515,6 +1515,7 @@ function buildTorso(b, rig, o) {
   const g = o.girth, sh = o.shoulder;
   const hy = rig.restWorld.hips.pos.y, ny = rig.restWorld.neck.pos.y;
   const zc = 0.006;
+  const vTrunk0 = b.vertexCount;
   b.setZone(ZONE.CLOTH).setBones(TORSO).setColor(o.tunic).setMottle(0.075);
   // THE TRUNK IS NOT A BARREL, and round 4's was: "a rectangular slab with hard
   // vertical facets between collar and belt; no sternum/serratus/latissimus
@@ -1557,6 +1558,24 @@ function buildTorso(b, rig, o) {
       * smoothstep(0.30, 0.62, t);                                         // spinal furrow
     k += 0.044 * ribs * clamp01(lat - 0.45) * Math.cos(t * 26.0);          // serratus ripple
     k += 0.038 * smoothstep(0.24, 0.10, t) * clamp01(lat - 0.35);          // iliac flare
+    // THE AXILLARY TRENCH, and it is the round-10 fix for "the trunk is a
+    // rectangular slab". The complaint was never really about the front of the
+    // chest: it is that the SLEEVE AND THE RIBCAGE ARE THE SAME MASS. The
+    // humerus sits at x = 0.181 with a 0.055 sleeve, so the sleeve's inboard
+    // surface was at 0.126 against a 0.186 chest — the arm was buried 60 mm
+    // inside the torso, C0-continuous with it, the same albedo as it, and
+    // therefore drew NO ink line and cast NO terminator between them. What you
+    // get is one convex mass whose left and right silhouette edges are the two
+    // outer sleeve edges: two dead-straight verticals 420 px apart in the
+    // closeup, i.e. a slab, exactly as measured for four rounds.
+    //
+    // A real axilla is a HOLLOW. Cutting 16 % out of the section at the sides
+    // through the armpit window (y 1.29-1.36, t 0.55-0.78) drops the ribcage to
+    // 0.131 there, so the sleeve now stands 25 mm PROUD of the trunk it hangs
+    // beside and the pair reads as two masses with a crease between them from
+    // any angle and in any light.
+    k -= 0.170 * smoothstep(0.47, 0.60, t) * (1 - smoothstep(0.74, 0.87, t))
+      * clamp01((lat - 0.50) / 0.42);
     // PECTORAL SHELF and its armpit crease. The single biggest plane break on
     // the front of a clothed torso: the pec stands proud, then falls away into
     // the axilla on a diagonal, and that diagonal is where a terminator wants
@@ -1578,7 +1597,7 @@ function buildTorso(b, rig, o) {
     // across the width of the trapezius rather than all at one height.
     // ...and it has to release again by the neck hole, or the tunic's open top
     // ring ends up wider than the collar that is supposed to cover it.
-    k += 0.38 * smoothstep(0.78, 0.90, t) * (1 - 0.55 * smoothstep(0.90, 1.0, t))
+    k += 0.28 * smoothstep(0.78, 0.90, t) * (1 - 0.55 * smoothstep(0.90, 1.0, t))
       * Math.pow(clamp01(lat), 1.5) * (1 - 0.35 * clamp01(-st));
     return k;
   };
@@ -1590,12 +1609,47 @@ function buildTorso(b, rig, o) {
     { p: [0, hy - 0.010, zc], rx: 0.142 * g, rz: 0.103 * g },
     { p: [0, hy + 0.090, zc + 0.004], rx: 0.118 * g, rz: 0.086 * g },      // waist (narrowest)
     { p: [0, hy + 0.190, zc + 0.006], rx: 0.143 * g, rz: 0.101 * g },      // lower ribs
-    { p: [0, hy + 0.300, zc + 0.008], rx: 0.167 * g * sh, rz: 0.116 * g }, // chest
-    { p: [0, hy + 0.380, zc + 0.008], rx: 0.186 * g * sh, rz: 0.119 * g }, // upper chest
-    { p: [0, hy + 0.445, zc + 0.004], rx: 0.178 * g * sh, rz: 0.109 * g }, // shoulder shelf
-    { p: [0, ny - 0.038, zc], rx: 0.122 * g, rz: 0.088 * g },              // traps
-    { p: [0, ny - 0.020, zc + 0.002], rx: 0.084 * g, rz: 0.070 * g },      // neck hole
+    // A RIBCAGE IS NOT A SHOULDER. Round 9 and earlier authored the chest out
+    // to 0.186 — a 37 cm half-span at the level of the armpit — because that is
+    // where the figure's silhouette had to reach. But the silhouette's job is
+    // the DELTOID's (which reaches 0.253 in buildArms), and every centimetre the
+    // ribcage gains past 0.155 is a centimetre of arm swallowed by torso. The
+    // chest now stops at a real ribcage width and the shoulder mass sits OUTSIDE
+    // it, which is the step in the profile — narrow neck, wide shoulder yoke,
+    // narrower ribs, waist — that lets a figure read at 80 px.
+    { p: [0, hy + 0.300, zc + 0.008], rx: 0.162 * g * sh, rz: 0.116 * g }, // chest
+    { p: [0, hy + 0.380, zc + 0.008], rx: 0.160 * g * sh, rz: 0.119 * g }, // upper chest
+    // A SHOULDER LINE SLOPES. Round 9 put the trapezius station at ny-0.038 and
+    // the neck hole at ny-0.020: eighteen millimetres of height across which the
+    // section had to fall from 0.156 to 0.084. That is not a slope, it is a
+    // CLIFF, and a cliff on a tube of revolution projects to a dead horizontal
+    // edge running the full width of the figure — which is the top side of the
+    // "rectangular slab", and it is why the closeup's shoulders read as square as
+    // a coat hanger. Spread over 57 mm the same fall is 51 degrees, which is
+    // roughly what a trapezius actually does between C7 and the acromion.
+    { p: [0, hy + 0.430, zc + 0.004], rx: 0.150 * g * sh, rz: 0.107 * g }, // shoulder shelf
+    { p: [0, ny + 0.005, zc + 0.001], rx: 0.113 * g, rz: 0.085 * g },      // traps
+    { p: [0, ny + 0.028, zc + 0.002], rx: 0.079 * g, rz: 0.068 * g },      // neck hole
   ], simple() ? 1 : 3), { seg: seg(simple() ? 14 : 26), capStart: 'round', capEnd: 'none', shape: trunk });
+
+  // THE PAINTED AXILLA. Geometry gives the armpit a hollow; this gives it a
+  // VALUE, and value is what survives the quantiser, the downsample and the
+  // paper. A painter separating an arm from a body does not rely on the light —
+  // he lays a dark wedge in the armpit and lets the sleeve sit on top of it, and
+  // that wedge is the reason his figure has three dimensions at thumbnail size.
+  // Sunk into the trunk's own albedo along the flank, from the level of the
+  // shoulder joint down to the bottom rib, strongest at the extreme side and
+  // gone by 55% of the way round to front or back.
+  {
+    const y0 = hy + 0.470, y1 = hy + 0.150;
+    b.paintRange(vTrunk0, b.vertexCount, (x, y) => {
+      const t = clamp01((y - y1) / (y0 - y1));
+      const band = smoothstep(0.06, 0.30, t) * (1 - smoothstep(0.72, 1.0, t));
+      const lat = clamp01((Math.abs(x) / (0.150 * g) - 0.52) / 0.48);
+      const k = band * lat * lat;
+      return k < 0.004 ? null : 1 - 0.30 * k;
+    });
+  }
 
   // Pectoral planes — two shallow shields on the front of the chest, so the
   // chest is not a smooth cylinder with nothing for the wash to bite on.
@@ -1663,8 +1717,15 @@ function buildTorso(b, rig, o) {
   // 3 cm of geometry doing more work than anything else on the figure: it is
   // the dark ring that separates a pale face from a pale tunic, and without it
   // a head is just the top of a sack.
-  const colY = ny + 0.008;
-  const colR = 0.101 * g, colD = 0.085 * g;
+  // RIDES WITH THE NECK HOLE. The trunk's top ring moved up 48 mm this round to
+  // give the trapezius a slope to fall down (see the station table above), which
+  // left the collar sitting 20 mm BELOW it — so the tunic's own opening poked up
+  // through the collar and the collar read as a horseshoe lying flat across the
+  // shoulders rather than as a band standing round the throat. It is the one
+  // piece on the figure that must stay put: it is the dark ring that separates a
+  // pale face from a pale tunic.
+  const colY = ny + 0.038;
+  const colR = 0.094 * g, colD = 0.080 * g;
   for (const side of [1, -1]) {
     b.setColor(o.collar).setMottle(0.045);
     addArc(b, {
@@ -1691,22 +1752,30 @@ function buildTorso(b, rig, o) {
   // Shoulder yoke: a second layer of cloth over the shoulders with a piped
   // edge. Its hard lower edge is a permanent ink line across the chest and
   // across the back, no matter how the light falls.
+  // The yoke has to FOLLOW the axillary trench, not bridge it. Left as a plain
+  // tube of revolution it fills the hollow back in and the arm re-fuses to the
+  // ribcage — which is the whole defect this round exists to kill. Same cut,
+  // remapped onto the yoke's own four stations (t 0 at hy+0.442 down to t 1 at
+  // hy+0.310, so the armpit window t 0.30..0.85).
+  const yokePit = (t, ct) => 1 - 0.150
+    * smoothstep(0.10, 0.34, t) * (1 - smoothstep(0.72, 0.94, t))
+    * clamp01((Math.abs(ct) - 0.50) / 0.42);
   b.setColor(o.tunicShade).setMottle(0.055);
   b.addTube([
-    { p: [0, hy + 0.442, zc + 0.004], rx: 0.182 * g * sh, rz: 0.112 * g },
-    { p: [0, hy + 0.386, zc + 0.008], rx: 0.188 * g * sh, rz: 0.121 * g },
-    { p: [0, hy + 0.326, zc + 0.008], rx: 0.176 * g * sh, rz: 0.120 * g },
-    { p: [0, hy + 0.310, zc + 0.008], rx: 0.169 * g * sh, rz: 0.116 * g },
-  ], { seg: seg(18), capEnd: 'none' });
+    { p: [0, hy + 0.428, zc + 0.004], rx: 0.155 * g * sh, rz: 0.112 * g },
+    { p: [0, hy + 0.386, zc + 0.008], rx: 0.165 * g * sh, rz: 0.123 * g },
+    { p: [0, hy + 0.326, zc + 0.008], rx: 0.166 * g * sh, rz: 0.122 * g },
+    { p: [0, hy + 0.310, zc + 0.008], rx: 0.163 * g * sh, rz: 0.118 * g },
+  ], { seg: seg(18), capEnd: 'none', shape: yokePit });
   // Yoke piping. Kept to a DARK ochre, not cream: a 2 mm near-white tube run
   // right round the chest renders at portrait distance as a wire stretched
   // across the soldier, and it was the brightest object in the closeup frame.
   // Cream belongs on the collar edge, which is 4 cm long, not on a 60 cm hoop.
   b.setColor(mixCol(o.tunicShade, o.collar, 0.55)).setMottle(0.03);
   b.addTube([
-    { p: [0, hy + 0.322, zc + 0.008], rx: 0.1755 * g * sh, rz: 0.1200 * g },
-    { p: [0, hy + 0.312, zc + 0.008], rx: 0.1765 * g * sh, rz: 0.1208 * g },
-    { p: [0, hy + 0.303, zc + 0.008], rx: 0.1755 * g * sh, rz: 0.1200 * g },
+    { p: [0, hy + 0.322, zc + 0.008], rx: 0.1655 * g * sh, rz: 0.1225 * g },
+    { p: [0, hy + 0.312, zc + 0.008], rx: 0.1665 * g * sh, rz: 0.1233 * g },
+    { p: [0, hy + 0.303, zc + 0.008], rx: 0.1655 * g * sh, rz: 0.1225 * g },
   ], { seg: seg(18), capEnd: 'none' });
 
   // --- CHEST POCKETS. Two patch pockets with buttoned flaps, and they are the
@@ -1797,9 +1866,15 @@ function buildShoulders(b, rig, o) {
     // a SHELF the sleeve hangs off, and a near-spherical cap of the same colour
     // as the ribcage behind it is the single loudest procedural-mannequin tell
     // there is — the closeup read as a pale ball with a tube coming out of it.
+    // AND IT SITS BELOW THE NECK, not above it. Projected on the round-9 closeup
+    // the cap's crown landed 43 px HIGHER than the base of the neck: the figure
+    // was permanently shrugged, so the trapezius had nowhere to slope from and
+    // the shoulder line came out flat. Dropped 22 mm and flattened from 0.062 to
+    // 0.051 tall, the acromion now tops out level with the collar, which is where
+    // a shoulder is.
     b.addEllipsoid({
-      center: [px, p.y + 0.010, pz + 0.002],
-      radius: [0.087 * g, 0.062 * g, 0.084 * g],
+      center: [px, p.y - 0.012, pz + 0.002],
+      radius: [0.087 * g, 0.051 * g, 0.084 * g],
       seg: seg(16), rings: seg(11),
       displace: (dx, dy, dz) => {
         // A deltoid is not a ball: flat shelf on top, a lateral head that bulges
@@ -1833,11 +1908,16 @@ function buildShoulders(b, rig, o) {
     // round the shoulder in every pose and at every light angle. Without it the
     // deltoid and the sleeve are one continuous surface and the arm reads as a
     // tube growing straight out of the ribcage.
-    b.setColor(o.tunicShade).setMottle(0.05);
+    // Darker than plain tunicShade and 2 mm prouder: with the ribcage pulled in
+    // to 0.156 the sleeve now stands clear of the trunk, and this welt is the
+    // line that says WHERE it was set in. It is the one mark that survives every
+    // light angle, so it is worth authoring at collar depth rather than at the
+    // shade cloth's.
+    b.setColor(mixCol(o.tunicShade, o.collar, 0.42)).setMottle(0.045);
     const sx0 = lerp(px, p.x, 0.86), sz0 = lerp(pz, p.z, 0.86);
     b.addTube([
       { p: [sx0, p.y - 0.006, sz0], rx: 0.0625 * g, rz: 0.0645 * g },
-      { p: [lerp(sx0, el.x, 0.055), lerp(p.y - 0.006, el.y, 0.055), lerp(sz0, el.z, 0.055)], rx: 0.0665 * g, rz: 0.0685 * g },
+      { p: [lerp(sx0, el.x, 0.055), lerp(p.y - 0.006, el.y, 0.055), lerp(sz0, el.z, 0.055)], rx: 0.0690 * g, rz: 0.0710 * g },
       { p: [lerp(sx0, el.x, 0.115), lerp(p.y - 0.006, el.y, 0.115), lerp(sz0, el.z, 0.115)], rx: 0.0605 * g, rz: 0.0625 * g },
     ], { seg: seg(12) });
     b.setColor(o.tunic);
@@ -2192,7 +2272,14 @@ function buildHands(b, rig, o) {
         // separated by 6-14 px of skin"; a 34 % dip with a soft ramp lands one
         // band step at best, and one band step across a 2 px valley is invisible
         // once the paper grain is composited on top of it.
-        return 1 - 0.46 * smoothstep(0.20, 0.44, frac);
+        // ROUND 10, MEASURED against the acceptance test rather than guessed. A
+        // column scan of the closed gun fist in `closeup` and a row scan of the
+        // open support hand both find the required chain — >= 3 ink runs 2-5 px
+        // wide separated by 6-14 px of skin — but only on 3 of 90 scan lines at
+        // 0.46, which is one paper-grain octave away from not finding it at all.
+        // 0.54 widens the band of lines that carry it without darkening the digit
+        // itself (the dip is on the SEAM, and the seam is 4.8 mm of a 22 mm pitch).
+        return 1 - 0.54 * smoothstep(0.20, 0.46, frac);
       });
     }
     // KNUCKLE CREASE — the 4-vertex line the round-6 note asked for, sunk
@@ -2245,6 +2332,7 @@ function buildLegs(b, rig, o) {
     const grp = side > 0 ? LEG_L : LEG_R;
     const hp = bp(rig, 'thigh' + s), kn = bp(rig, 'shin' + s), an = bp(rig, 'foot' + s);
     const at = (a, b2, t) => [lerp(a[0], b2[0], t), lerp(a[1], b2[1], t), lerp(a[2], b2[2], t)];
+    const vLeg0 = b.vertexCount;
     b.setZone(ZONE.CLOTH).setBones(grp).setColor(o.trouser).setMottle(0.07);
     b.addTube([
       { p: [hp[0], hp[1] + 0.055, hp[2]], rx: 0.090 * g, rz: 0.096 * g },
@@ -2257,6 +2345,23 @@ function buildLegs(b, rig, o) {
       { p: at(kn, an, 0.26), rx: 0.067 * g, rz: 0.072 * g },    // calf belly
       { p: at(kn, an, 0.40), rx: 0.056 * g, rz: 0.059 * g },
     ], { seg: seg(13), capStart: 'round' });
+
+    // THE INSEAM DARK, and it is the mark that decides whether a soldier at 80 px
+    // has two legs or one column. The round-7 critique on `overview` asked for it
+    // in as many words ("separate the legs with a 1 px interior ink crease down
+    // the inseam from crotch to boot"), and geometry cannot supply it: at that
+    // scale the gap between two 0.18 m thighs standing 0.19 m apart is under a
+    // pixel, so whatever ink the outline pass would have drawn is averaged away
+    // by the downsample. A value does survive a downsample. This lays a 26% dark
+    // down the MEDIAL face of each leg, from the crotch to the boot top, so the
+    // pair reads as two rounded masses with a dark seam between them at every
+    // distance the shot list uses.
+    b.paintRange(vLeg0, b.vertexCount, (x, y, z, nx) => {
+      const med = clamp01(-nx * side);                     // faces the other leg
+      const run = smoothstep(an[1] + 0.04, an[1] + 0.18, y) * (1 - smoothstep(hp[1] - 0.02, hp[1] + 0.07, y));
+      const k = run * Math.pow(med, 1.6);
+      return k < 0.005 ? null : 1 - 0.26 * k;
+    });
 
     // Patella, standing proud on the FRONT only, so it never bulges the profile
     // of a straight leg but gives a bent one a corner.

@@ -170,83 +170,108 @@ class Pool {
 }
 
 /**
- * The field. Discovers its own targets from `battle.units` every frame, so a
- * unit that spawns, dies, hides or teleports is handled without any wiring on
- * the game side.
- *
- * opts:
- *   groundAt(x, z) -> y     the heightfield sampler (world.groundHeightAt)
- *   strength                overall multiplier, default 1
+ * The multiply material. One instance for the whole process — every pool in the
+ * game shares it, so the pools cost one draw call each and no uniform churn.
  */
-export class ContactShadowField {
-  constructor(scene, opts = {}) {
-    this.scene = scene;
-    this.groundAt = opts.groundAt || (() => 0);
-    this.group = new THREE.Group();
-    this.group.name = 'contactShadows';
-    this.group.matrixAutoUpdate = false;
-    scene.add(this.group);
+let _sharedMat = null;
+export function contactMaterial() {
+  if (_sharedMat) return _sharedMat;
+  _sharedMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTint: { value: new THREE.Color(0.50, 0.485, 0.765) },
+      uStrength: { value: 1 },
+    },
+    vertexShader: VERT,
+    fragmentShader: FRAG,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    // dst.rgb * src.rgb, spelled out. THREE.MultiplyBlending is NOT usable here:
+    // three r185 refuses it unless `material.premultipliedAlpha` is also set and
+    // then leaves the previous blend func in place, so the first build of this
+    // pool rendered as a SOLID PALE DISC over the ground — it did the exact
+    // opposite of its job.
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.ZeroFactor,
+    blendDst: THREE.SrcColorFactor,
+    blendEquationAlpha: THREE.AddEquation,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+    toneMapped: false,
+    name: 'vcContactShadow',
+  });
+  _sharedMat.userData.vcNoPrepass = true;
+  _sharedMat.userData.vcOutline = false;
+  return _sharedMat;
+}
 
-    this.material = new THREE.ShaderMaterial({
-      uniforms: {
-        uTint: { value: new THREE.Color(0.50, 0.485, 0.765) },
-        uStrength: { value: opts.strength ?? 1 },
-      },
-      vertexShader: VERT,
-      fragmentShader: FRAG,
-      transparent: true,
-      depthWrite: false,
-      depthTest: true,
-      // dst.rgb * src.rgb, spelled out. THREE.MultiplyBlending is NOT usable
-      // here: three r185 refuses it unless `premultipliedAlpha` is also set
-      // ("WebGLState: MultiplyBlending requires material.premultipliedAlpha =
-      // true") and then leaves the previous blend func in place, so the first
-      // build of this pool rendered as a SOLID PALE DISC over the ground —
-      // measured +8.5% of the overview frame changed and the footprint score
-      // went from 76/154 to 37/154, i.e. it did the exact opposite of its job.
-      blending: THREE.CustomBlending,
-      blendEquation: THREE.AddEquation,
-      blendSrc: THREE.ZeroFactor,
-      blendDst: THREE.SrcColorFactor,
-      blendEquationAlpha: THREE.AddEquation,
-      blendSrcAlpha: THREE.ZeroFactor,
-      blendDstAlpha: THREE.OneFactor,
-      side: THREE.DoubleSide,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-      toneMapped: false,
-      name: 'vcContactShadow',
-    });
-    this.material.userData.vcNoPrepass = true;
-    this.material.userData.vcOutline = false;
+export function setContactStrength(v) { contactMaterial().uniforms.uStrength.value = v; }
 
-    this.pools = [];
-    this._used = 0;
+/**
+ * ONE POOL, OWNED BY ONE ACTOR.
+ *
+ * The version of this file that shipped in rounds 8 and 9 exported a
+ * `ContactShadowField` that walked `battle.units` — and NOTHING IN THE TREE EVER
+ * CONSTRUCTED IT. `grep -rn ContactShadowField src/` returns one file: this one.
+ * So the measured defect ("only ~50% of character footprints are contact-
+ * darkened", "figures that do not ground look worse than ever now the world has
+ * real cast shadows") was never a tuning problem. There was no pool.
+ *
+ * A field keyed on the battle could not have fixed it everywhere either — the
+ * deploy screen, the briefing, the capture poses and the menu all draw actors
+ * with no Battle in scope. Grounding is a property of the ACTOR, so the actor
+ * owns it: Character constructs one of these, hands it its two foot bones and
+ * its ground sampler every frame, and it lays itself on the heightfield.
+ *
+ * The mesh parents to whatever the actor's root is parented to, so it lives in
+ * world space and does not inherit the character's yaw (a pool that rotates with
+ * the figure swims visibly as he turns).
+ */
+export class ActorContactPool {
+  constructor() {
+    this.pool = new Pool(contactMaterial());
+    this._parent = null;
+    this.enabled = true;
   }
 
-  _take() {
-    if (this._used < this.pools.length) return this.pools[this._used++];
-    const p = new Pool(this.material);
-    this.pools.push(p);
-    this.group.add(p.mesh);
-    this._used++;
-    return p;
+  get mesh() { return this.pool.mesh; }
+
+  /** Re-home the mesh whenever the actor's root changes parent. */
+  _attach(parent) {
+    if (parent === this._parent) return;
+    if (this._parent) this._parent.remove(this.pool.mesh);
+    this._parent = parent;
+    if (parent) parent.add(this.pool.mesh);
   }
+
+  hide() { this.pool.mesh.visible = false; }
 
   /**
-   * Lay a pool. `pts` are the world-space contact points (a sole, a track), each
-   * `{ x, z, w }` where `w` is that point's share of the darkness. `cx/cz` is the
-   * pool centre, `R` its radius in metres, `body` the weak broad term under the
-   * mass, `flatY` a support plane to use INSTEAD of the heightfield when the
-   * subject is standing on something the heightfield does not know about (a
-   * bridge deck, a roof), or null.
+   * `feet` are the two world-space foot bone positions, `soleY` the lowest sole,
+   * `groundAt(x,z)` the heightfield sampler, `scale` the actor's uniform scale.
    */
-  _lay(pool, cx, cz, R, pts, body, flatY, sigma) {
-    // Rebuilding is 91 heightfield samples and 91 gaussian evaluations per unit,
-    // and sixteen units standing still would pay it sixty times a second for a
-    // buffer that does not change. Re-lay only when something moved a centimetre
-    // — which is under a tenth of a pixel at the closest camera any shot uses.
+  update(parent, feet, soleY, groundAt, scale) {
+    if (!this.enabled || !parent || !groundAt) { this.hide(); return; }
+    this._attach(parent);
+    const cx = (feet[0].x + feet[1].x) * 0.5, cz = (feet[0].z + feet[1].z) * 0.5;
+    const spread = Math.hypot(feet[0].x - feet[1].x, feet[0].z - feet[1].z);
+    const R = Math.min(1.35, 0.50 + spread * 0.55) * scale;
+    // A support plane, for a figure standing on something the heightfield does
+    // not know about — a bridge deck, a roof, a wrecked hull.
+    const g0 = groundAt(cx, cz);
+    const flatY = Math.abs(soleY - g0) > 0.30 ? soleY : null;
+    this._lay(cx, cz, R, feet, 0.32, flatY, 0.30 * scale, groundAt);
+  }
+
+  _lay(cx, cz, R, pts, body, flatY, sigma, groundAt) {
+    const pool = this.pool;
+    // Re-laying is 91 heightfield samples and 91 gaussians; a soldier standing
+    // still would pay it sixty times a second for a buffer that does not change.
     let key = R.toFixed(2) + '|' + cx.toFixed(2) + ',' + cz.toFixed(2);
     for (let k = 0; k < pts.length; k++) key += '|' + pts[k].x.toFixed(2) + ',' + pts[k].z.toFixed(2);
     if (key === pool._key) { pool.mesh.visible = true; return; }
@@ -255,11 +280,11 @@ export class ContactShadowField {
     const occ = pool.geo.getAttribute('aOcc');
     const pa = pos.array, oa = occ.array;
     const src = discGeometry().getAttribute('position').array;
-    // TWO scales, because an occlusion pool is not one gaussian. The CORE is
-    // the sole itself — half a boot wide, opaque, and the only mark that says
-    // "this touches" — and the HALO is the light the ground loses to the mass
-    // standing over it. One wide gaussian gives a smudge with no contact; one
-    // narrow one gives a stamp with no weight.
+    // TWO scales, because an occlusion pool is not one gaussian. The CORE is the
+    // sole itself — half a boot wide, opaque, and the only mark that says "this
+    // touches" — and the HALO is the light the ground loses to the mass standing
+    // over it. One wide gaussian gives a smudge with no contact; one narrow one
+    // gives a stamp with no weight.
     const inv2 = 1 / (2 * sigma * 0.52 * sigma * 0.52);
     const invH = 1 / (2 * sigma * 1.30 * sigma * 1.30);
     const bodyR2 = 1 / (2 * (R * 0.62) * (R * 0.62));
@@ -267,10 +292,8 @@ export class ContactShadowField {
     for (let i = 0, n = oa.length; i < n; i++) {
       const lx = src[i * 3] * R, lz = src[i * 3 + 2] * R;
       const wx = cx + lx, wz = cz + lz;
-      const y = flatY != null ? flatY : this.groundAt(wx, wz);
-      pa[i * 3] = lx;
-      pa[i * 3 + 1] = y;
-      pa[i * 3 + 2] = lz;
+      const y = flatY != null ? flatY : groundAt(wx, wz);
+      pa[i * 3] = lx; pa[i * 3 + 1] = y; pa[i * 3 + 2] = lz;
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
       let a = 0;
@@ -278,111 +301,29 @@ export class ContactShadowField {
         const p = pts[k];
         const dx = wx - p.x, dz = wz - p.z;
         const d2 = dx * dx + dz * dz;
-        const g = p.w * Math.max(Math.exp(-d2 * inv2), 0.62 * Math.exp(-d2 * invH));
-        if (g > a) a = g;
+        const gg = Math.max(Math.exp(-d2 * inv2), 0.62 * Math.exp(-d2 * invH));
+        if (gg > a) a = gg;
       }
-      // Broad, weak term under the whole mass: an occlusion pool has a halo, and
-      // without it two feet read as two unrelated stamps.
       const bx = wx - cx, bz = wz - cz;
       a = Math.min(1, a + body * Math.exp(-(bx * bx + bz * bz) * bodyR2));
-      // Feather the last ring to zero so the disc never ends on a hard rim.
       const rr = Math.hypot(src[i * 3], src[i * 3 + 2]);
       if (rr > 0.78) a *= Math.max(0, 1 - (rr - 0.78) / 0.22);
       oa[i] = a;
     }
     pos.needsUpdate = true;
     occ.needsUpdate = true;
-    pool.geo.boundingSphere.center.set(0, (minY + maxY) * 0.5 - 0, 0);
+    pool.geo.boundingSphere.center.set(0, (minY + maxY) * 0.5, 0);
     pool.geo.boundingSphere.radius = R * 1.3 + (maxY - minY) * 0.5 + 0.2;
     pool.mesh.position.set(cx, LIFT, cz);
     pool.mesh.updateMatrix();
     pool.mesh.visible = true;
   }
 
-  /** True when the subject is standing on something the heightfield misses. */
-  _support(y0, x, z) {
-    const g = this.groundAt(x, z);
-    return Math.abs(y0 - g) > 0.30 ? y0 : null;
-  }
-
-  update(dt, units) {
-    this._used = 0;
-    if (!units || CFG.quality < 0) { this._hideRest(); return; }
-
-    for (let i = 0; i < units.length; i++) {
-      const u = units[i];
-      if (!u || u.alive === false) continue;
-
-      // ---- soldiers -----------------------------------------------------
-      const ch = u.character;
-      if (ch && ch.root) {
-        let vis = true;
-        for (let o = ch.root; o; o = o.parent) { if (!o.visible) { vis = false; break; } }
-        if (!vis) continue;
-        const bm = ch.rig && ch.rig.boneMap;
-        if (!bm || !bm.footL || !bm.footR) continue;
-        const s = ch.root.scale.y || 1;
-        const pts = [];
-        let cx = 0, cz = 0, soleY = Infinity;
-        for (const key of ['footL', 'footR']) {
-          const b = bm[key];
-          _v.setFromMatrixPosition(b.matrixWorld);
-          pts.push({ x: _v.x, z: _v.z, w: 1 });
-          cx += _v.x; cz += _v.z;
-          const sy = _v.y - SOLE_DROP * s;
-          if (sy < soleY) soleY = sy;
-        }
-        cx *= 0.5; cz *= 0.5;
-        // A prone or downed figure lies along its whole length, so the pool has
-        // to grow with the pose rather than staying a two-boot stamp.
-        const spread = Math.max(Math.hypot(pts[0].x - pts[1].x, pts[0].z - pts[1].z), 0);
-        const R = Math.min(1.35, (0.50 + spread * 0.55)) * s;
-        const pool = this._take();
-        this._lay(pool, cx, cz, R, pts, 0.32, this._support(soleY, cx, cz), 0.30 * s);
-        continue;
-      }
-
-      // ---- vehicles -----------------------------------------------------
-      const tk = u.tank;
-      const root = tk && (tk.root || tk.group);
-      if (root) {
-        let vis = true;
-        for (let o = root; o; o = o.parent) { if (!o.visible) { vis = false; break; } }
-        if (!vis) continue;
-        root.getWorldPosition(_v);
-        const cx = _v.x, cz = _v.z, y0 = _v.y;
-        root.getWorldQuaternion(_q);
-        const e = new THREE.Euler().setFromQuaternion(_q, 'YXZ');
-        const yaw = e.y;
-        // Two track lines, four contact points each: a tracked vehicle's dark is
-        // a pair of rails, not a circle.
-        const half = 1.28, len = 1.55;
-        const c = Math.cos(yaw), sn = Math.sin(yaw);
-        const pts = [];
-        for (const sx of [-half, half]) {
-          for (const sz of [-len, -len / 3, len / 3, len]) {
-            pts.push({ x: cx + sx * c + sz * sn, z: cz - sx * sn + sz * c, w: 1 });
-          }
-        }
-        const pool = this._take();
-        this._lay(pool, cx, cz, 2.5, pts, 0.34, this._support(y0, cx, cz), 0.42);
-      }
-    }
-    this._hideRest();
-  }
-
-  _hideRest() {
-    for (let i = this._used; i < this.pools.length; i++) this.pools[i].mesh.visible = false;
-  }
-
-  setStrength(v) { this.material.uniforms.uStrength.value = v; }
-
   dispose() {
-    for (const p of this.pools) { this.group.remove(p.mesh); p.dispose(); }
-    this.pools.length = 0;
-    this.material.dispose();
-    this.scene.remove(this.group);
+    if (this._parent) this._parent.remove(this.pool.mesh);
+    this._parent = null;
+    this.pool.dispose();
   }
 }
 
-export default ContactShadowField;
+export default ActorContactPool;

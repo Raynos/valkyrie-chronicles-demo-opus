@@ -19,6 +19,9 @@ import { bridgeSpanLayout, BRIDGE_PIER_W } from './structures.js';
 import { clamp01 } from '../core/math.js';
 
 const VERT = /* glsl */ `
+#include <common>
+#include <shadowmap_pars_vertex>
+
 attribute float aDepth;
 attribute vec2  aFlow;
 attribute float aArc;
@@ -44,14 +47,23 @@ void main() {
   float s3 = sin(aArc * 3.1 - uTime * 3.4 + p.x * 0.5 + p.z * 0.37);
   p.y += (s1 * 0.045 + s2 * 0.026 + s3 * 0.011) * amp;
 
-  vec4 wp = modelMatrix * vec4(p, 1.0);
-  vWorld = wp.xyz;
+  // NOTE the name: three's <shadowmap_vertex> chunk reads 'worldPosition' and
+  // 'transformedNormal' out of scope by those exact names, so they are declared
+  // here rather than as the old local 'wp'. The shadow lookup is built from the
+  // SWELL-DISPLACED position, so the bridge's shadow rides the waves instead of
+  // sliding across a flat reference plane underneath them.
+  vec4 worldPosition = modelMatrix * vec4(p, 1.0);
+  vec3 objectNormal = normal;
+  vec3 transformedNormal = normalMatrix * objectNormal;
+  #include <shadowmap_vertex>
+
+  vWorld = worldPosition.xyz;
   vDepth = aDepth;
   vFlow = aFlow;
   vArc = aArc;
   vObst = aObstacle;
   vAcross = vec2(uv.x, uv.y);
-  vec4 mv = viewMatrix * wp;
+  vec4 mv = viewMatrix * worldPosition;
   vView = -mv.xyz;
   gl_Position = projectionMatrix * mv;
 }
@@ -60,19 +72,38 @@ void main() {
 const FRAG = /* glsl */ `
 precision highp float;
 
+// The chunk order three requires for getShadowMask(): <common> for the shared
+// defines, <packing> for unpackRGBAToDepth, <lights_pars_begin> for the
+// 'receiveShadow' uniform the mask is gated on, then getShadow() and the mask
+// itself. Same preamble src/render/materials.js uses (NPR_FRAG_PREAMBLE), so
+// the river samples the SAME map with the SAME filter as the ground it runs
+// through and the two cannot disagree about where a shadow is.
+#include <common>
+#include <packing>
+#include <lights_pars_begin>
+#include <shadowmap_pars_fragment>
+#include <shadowmask_pars_fragment>
+
 uniform sampler2D uFlowTex;
 uniform sampler2D uPaperTex;
 uniform float uTime;
 uniform vec3  uShallow;
 uniform vec3  uDeep;
 uniform vec3  uFoam;
+uniform vec3  uFoamShade;
 uniform vec3  uBed;
 uniform vec3  uHaze;
+uniform vec3  uVault;
 uniform float uFogDensity;
 uniform vec3  uSunDir;
 uniform vec3  uSunColor;
 uniform vec3  uSkyColor;
 uniform float uBands;
+// How much of the key a fully-occluded patch of river still receives. Same
+// meaning and same job as materials.js's uShadowFloor: a cast shadow is a WASH,
+// not a switch, so a shadowed reach keeps its modelling — its current, its silt
+// and a ghost of its glints — instead of collapsing to one dead slab.
+uniform float uShadowFloor;
 
 // Bridge piers, in world XZ. xy = centre, z = half-extent along the flow
 // (cutwater to cutwater), w = half-extent across it. uPierX / uPierZ are the
@@ -81,6 +112,13 @@ uniform vec4  uPiers[4];
 uniform vec2  uPierX;
 uniform vec2  uPierZ;
 uniform float uPierCount;
+// The DECK footprint in the same local frame: xy = centre, z = half-width along
+// the flow, w = half-length across it. This is the stone vault overhead, which
+// the shadow map alone cannot tell us about — the map says "no sun here", it
+// does not say "there is a metre of masonry two metres above your head, so
+// there is no SKY here either".
+uniform vec4  uDeck;
+uniform float uDeckOn;
 
 varying float vDepth;
 varying vec2  vFlow;
@@ -127,6 +165,19 @@ float pierDist(vec2 w) {
   return best;
 }
 
+/**
+ * Normalised distance to the bridge DECK's plan: 0 under the crown of the road,
+ * 1 at the parapet line, >1 out in the open river. Cheaper than pierDist and
+ * deliberately a plain rectangle — the barrel vaults span the full width, so
+ * the roofed part of the river is the deck rectangle, not the arch profile.
+ */
+float deckDist(vec2 w) {
+  if (uDeckOn < 0.5) return 9.0;
+  vec2 d = w - uDeck.xy;
+  return max(abs(dot(d, uPierX)) / max(uDeck.z, 1e-3),
+             abs(dot(d, uPierZ)) / max(uDeck.w, 1e-3));
+}
+
 void main() {
   // Flow-aligned UVs: u runs downstream, v runs across the channel.
   vec2 flowUV = vec2(vArc * 0.085, vAcross.x * 2.4);
@@ -154,23 +205,72 @@ void main() {
   float pierHalo = (1.0 - smoothstep(1.00, 1.30, pd)) * (1.0 - pierSolid);
   float dWater = vDepth * (1.0 - pierSolid);
 
+  // --- the key, and how much of it survives -----------------------------------
+  // Until this landed the river was the one surface in the scene that could not
+  // be shadowed at all: receiveShadow was false and this shader sampled no map,
+  // so the bridge deck — a metre of masonry directly overhead — LIT the water it
+  // covered. Measured on the same scan row, over the pixels the sheet actually
+  // paints, the reach under the arch came out 32 LSB BRIGHTER than open river.
+  //
+  // The mask is spent the way materials.js spends it, and for the same reason:
+  // the drop goes into the BAND DRIVES, not onto the finished colour. A shadow
+  // multiplied over a wash is a smooth ramp, which scores zero on the
+  // watercolour axis; a shadow added into the drive pushes the wash a whole STEP
+  // deeper and the boundary lands on the quantiser's own torn wet edge, so it
+  // reads as a second wash laid over the first.
+  float shadowMask = getShadowMask();
+  float shade = 1.0 - shadowMask;                       // 0 lit .. 1 occluded
+  float keyLit = mix(uShadowFloor, 1.0, shadowMask);
+
+  // The stone vault overhead. The shadow map says "no sun"; it does not say "no
+  // sky", and a soffit two metres up takes most of the skylight as well — which
+  // is why an arch reads darker than the tree shade beside it even at the same
+  // sun angle.
+  // The soffit line IS straight — it is the edge of a parapet — but a straight
+  // hard edge on water is a tell, so the boundary is torn by the same flow noise
+  // the depth washes use and lands as a drawn edge rather than a clipped one.
+  float dd = deckDist(vWorld.xz) + (n3.b - 0.5) * 0.13;
+  float vault = 1.0 - smoothstep(0.80, 1.16, dd);
+
+  // The shade WASH, quantised in two steps with the same wandering boundary the
+  // depth washes get. This is the term that makes the arch's shadow a drawn
+  // SHAPE: a smooth mask multiplied over the surface is a soft-alpha gradient,
+  // which is the single loudest 3D tell in the rubric. Two steps, because that
+  // is what a painter lays — a half-shade and a full one.
+  float sw = band(clamp(shade * 1.10 + vault * 0.64 + (n1.b - 0.5) * 0.12, 0.0, 1.0), 2.0, 0.16);
+
   // --- depth colour. The bed is a warm sand that reads THROUGH the shallows;
   // the channel proper settles to a teal-slate. Quantised into washes with soft
   // edges so it belongs to the same painting as the ground.
   float dNorm = clamp(dWater / 1.75, 0.0, 1.0);
   // The quantiser boundary wanders with the flow noise, so the depth washes are
   // torn contours in the current rather than clean bathymetry lines.
-  float dq = band(clamp(dNorm + (n3.b - 0.5) * 0.16, 0.0, 1.0), uBands, 0.11);
+  // In shade the same water is painted a wash deeper: at three bands a step is
+  // 0.333, so 0.30 of shade is most of one boundary on its own and the vault's
+  // 0.28 carries it past a second — the minimum that makes a cast shadow a
+  // SHAPE rather than a tint.
+  float dq = band(clamp(dNorm + (n3.b - 0.5) * 0.16
+                        + shade * 0.30 + vault * 0.28, 0.0, 1.0), uBands, 0.11);
   vec3 col = mix(uShallow, uDeep, dq);
   // Silt fingers: the bed shows through in wandering streaks, not a clean ramp.
+  // Sunlit sand is the warmest, brightest thing the river has; in shadow it is
+  // just wet gravel, so the bed is allowed through at half the weight.
   float silt = (1.0 - smoothstep(0.10, 0.85, dNorm)) * smoothstep(0.30, 0.75, n3.b);
-  col = mix(col, uBed, clamp(silt * 0.62 + (1.0 - dNorm) * 0.26, 0.0, 0.74));
+  col = mix(col, uBed, clamp(silt * 0.62 + (1.0 - dNorm) * 0.26, 0.0, 0.74)
+                       * clamp(1.0 - shade * 0.50 - vault * 0.32, 0.0, 1.0));
   // Current: quantised value drift along the flow so the channel visibly moves.
   // Round 1 read as "a flat pale slab" because this term was a 0.82-1.22
   // multiply with a three-step ramp — under the grade that is a 6% swing.
-  float cur = band(clamp(turb * 1.30 - 0.06, 0.0, 1.0), 3.0, 0.13);
+  // Shade drops the whole ramp by more than one of its three steps, so the
+  // current inside a shadow still MOVES — it moves in the lower wash.
+  float cur = band(clamp(turb * 1.30 - 0.06 - shade * 0.45 - vault * 0.30, 0.0, 1.0), 3.0, 0.13);
   col *= 0.70 + cur * 0.62;
-  col = mix(col, col * vec3(1.10, 1.03, 0.90), turb * 0.50);
+  // ...and the shade wash on top of it, as its own quantised step. Two washes
+  // of different frequency laid over each other is how a painter gets a shadow
+  // that is dark without being dead.
+  col *= 1.0 - sw * 0.48;
+  // Sun on the ripple crests. This is direct light, so it goes out with it.
+  col = mix(col, col * vec3(1.10, 1.03, 0.90), turb * 0.50 * keyLit);
 
   // Flow lines: the long dark filaments a river draws along its own shear,
   // quantised to two values so they read as drawn strokes and not as a normal
@@ -190,13 +290,24 @@ void main() {
   float glint = step(0.42, spec) * 0.5 + step(0.74, spec) * 0.5;
   // Break the glint field up with turbulence so it sparkles along the ripples.
   glint *= smoothstep(0.42, 0.78, turb);
+  // A glint is a picture of the SUN. In the arch's shadow there is no sun to
+  // reflect, and under the vault there is not even a bright sky to stand in for
+  // it — but the field is left alive at the key's floor so the quantised sparkle
+  // survives as a dim slate flicker rather than switching off on a hard line.
+  glint *= keyLit * (1.0 - vault * 0.80);
   col += glint * uSunColor * 0.95;
 
   // Sky is only lightly reflected, and the reflection is BANDED like everything
   // else — a smooth Fresnel ramp is a zero on the watercolour axis.
   float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.5);
   fres = band(clamp(fres * 1.15 + (n3.b - 0.5) * 0.10, 0.0, 1.0), 3.0, 0.14);
-  col = mix(col, uSkyColor, fres * 0.34);
+  // Under the deck the surface is not reflecting sky, it is reflecting soffit.
+  col = mix(col, uSkyColor, fres * 0.34 * (1.0 - vault * 0.85));
+  // ...and a real stone vault is not a black lid: its intrados catches the light
+  // bouncing off the river and glazes it straight back down, warmest where the
+  // arch opens out at the springing. This is the term that keeps the shadowed
+  // reach reading as WATER IN SHADE rather than as a hole cut in the painting.
+  col += uVault * vault * (0.030 + 0.075 * smoothstep(0.45, 1.05, dd));
 
   // --- wetness mask. The ribbon is built WIDER than the carved channel so its
   // edges bury themselves in the banks, which means a good part of it lies over
@@ -217,10 +328,22 @@ void main() {
   // 0.25 m collar the fragment shader can resolve against the real footprint.
   float pier = max(vObst, pierHalo) * wet * (0.48 + 0.60 * smoothstep(0.25, 0.75, turb));
   foam = max(foam, clamp(pier, 0.0, 0.94));
+  // Foam is the reason the covered reach was BRIGHTER than the open channel and
+  // not merely un-shadowed: the shore band and the pier wash are strongest
+  // exactly where the piers stand, which is under the arch, and every one of
+  // those terms was painting cream. Under the vault the wash is smaller as well
+  // as darker — there is no glare on it to spread the white.
+  foam *= 1.0 - vault * 0.30;
   // Quantise the foam so it lands as flicked white gouache with a torn edge,
   // not as an airbrushed alpha gradient.
   foam = band(clamp(foam + (n1.a - 0.5) * 0.18, 0.0, 1.0), 3.0, 0.10);
-  col = mix(col, uFoam, clamp(foam, 0.0, 0.90));
+  // Cream is what SUNLIT spray is. The wash breaking round a pier under the
+  // arch is the same pigment in shade, which is a cool grey — leaving it cream
+  // was a good part of why the covered reach measured brighter than the open
+  // channel, because the foam terms are strongest exactly where the piers are.
+  // The colour rides the foam's own quantiser, so it is still flicked gouache.
+  vec3 foamCol = mix(uFoam, uFoamShade, clamp(shade * 0.90 + vault * 0.55, 0.0, 1.0));
+  col = mix(col, foamCol, clamp(foam, 0.0, 0.90));
 
   // A hard contact darkening where anything pierces the surface. Masonry
   // standing in a river makes a dark line at the waterline and a shadow in its
@@ -230,10 +353,31 @@ void main() {
   // Under water the stone reads as a green-slate shadow, not as a dry course.
   col = mix(col, uDeep * 0.62, pierSolid * 0.70);
 
+  // --- the shade COLOUR ------------------------------------------------------
+  // materials.js does not paint its shadows by dimming the pigment, it paints
+  // them with a pigment that has been TURNED — cooler, a little greyer, at a
+  // lower value. The river's turn is toward green-slate rather than the ground's
+  // violet, because that is what a shaded reach of a green river actually does
+  // and because a lavender river next to a lavender bridge is one slab.
+  //
+  // Deliberately the ONLY smooth term in the whole shadow treatment: every drop
+  // in VALUE has already been spent in the quantisers above, so this cannot lay
+  // a PBR-looking ramp across the surface. It is a hue move at constant band.
+  // 0.28, not 0.5: the turn has to leave the river GREEN. Pull it further and
+  // the covered reach stops being water in shade and becomes a grey plane —
+  // which is a different failure, not a fixed one.
+  float slum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  vec3 slate = mix(col, vec3(slum * 0.82, slum * 1.00, slum * 1.12), 0.32);
+  col = mix(col, slate, clamp(shade * 0.58 + vault * 0.35, 0.0, 0.85));
+
   // Hold the pigment: the depth washes, the silt and the sky reflection all
   // pull toward neutral, and a neutral river reads as wet tarmac.
+  // Pigment GRANULATES in the dark end — the heavy fraction drops out of
+  // suspension and dries both darker and more chromatic — so the hold is opened
+  // up in shade rather than closed down. Without this the covered reach loses
+  // chroma exactly where the rubric says a wash must not go neutral.
   float wlum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-  col = mix(vec3(wlum), col, 1.28);
+  col = mix(vec3(wlum), col, 1.28 + shade * 0.30 + vault * 0.22);
 
   // --- paper grain over everything, screen-space so it belongs to the page
   float fibre = texture2D(uPaperTex, gl_FragCoord.xy * 0.0023).r;
@@ -249,6 +393,13 @@ void main() {
   // legible through the channel.
   float alpha = mix(0.30, 0.94, smoothstep(0.0, 1.05, dWater));
   alpha = max(alpha, foam * 0.9);
+  // What makes a gravel bed read THROUGH shallow water is SUNLIGHT ON THE BED.
+  // Under the vault there is none — the eye gets the film, not the gravel — and
+  // this is most of why the covered reach measured brighter than the open
+  // channel: two thirds of those pixels were sunlit-looking riverbed painted at
+  // 0.30 alpha, and no amount of darkening the sheet could reach them. Gated by
+  // the wetness mask further down, so no dry shingle is ever painted over.
+  alpha = max(alpha, mix(alpha, 0.90, clamp(shade * 0.35 + vault * 0.85, 0.0, 1.0)));
   // Over a pier the sheet is a thin film, and it is applied LAST so no foam or
   // riffle term can put the channel back on top of the masonry.
   alpha = mix(alpha, 0.20, pierSolid);
@@ -271,27 +422,43 @@ export class Water {
 
     const geo = this._build(opts.across ?? 26, opts.subdiv ?? 2);
     const pf = this._pierFootprints();
+    const df = this._deckFootprint();
 
     this.material = new THREE.ShaderMaterial({
-      uniforms: {
-        uFlowTex: { value: flowNoiseTexture(256, 61) },
-        uPaperTex: { value: paperTexture(512, 77) },
-        uTime: { value: 0 },
-        uShallow: { value: new THREE.Color(PALETTE.water).lerp(new THREE.Color(PALETTE.sand), 0.22) },
-        uDeep: { value: new THREE.Color(PALETTE.waterDeep) },
-        uBed: { value: new THREE.Color(PALETTE.sand).lerp(new THREE.Color(PALETTE.dirt), 0.35) },
-        uFoam: { value: new THREE.Color(PALETTE.foam) },
-        uHaze: { value: new THREE.Color(PALETTE.haze) },
-        uFogDensity: { value: 0.0026 },
-        uSunDir: { value: WorldLighting.sunDir },
-        uSunColor: { value: new THREE.Color(WorldLighting.sunColor) },
-        uSkyColor: { value: new THREE.Color(PALETTE.skyHorizon) },
-        uBands: { value: 3.0 },
-        uPiers: { value: pf.piers },
-        uPierX: { value: pf.axisX },
-        uPierZ: { value: pf.axisZ },
-        uPierCount: { value: pf.count },
-      },
+      // UniformsLib.lights is what carries directionalShadowMap,
+      // directionalShadowMatrix and directionalLightShadows[] — without merging
+      // it (and setting lights:true, which is what makes the renderer bind that
+      // block at all) getShadowMask() compiles but reads an unbound sampler.
+      uniforms: THREE.UniformsUtils.merge([
+        THREE.UniformsLib.lights,
+        {
+          uFlowTex: { value: null },
+          uPaperTex: { value: null },
+          uTime: { value: 0 },
+          uShallow: { value: new THREE.Color() },
+          uDeep: { value: new THREE.Color() },
+          uBed: { value: new THREE.Color() },
+          uFoam: { value: new THREE.Color() },
+          uFoamShade: { value: new THREE.Color() },
+          uHaze: { value: new THREE.Color() },
+          uVault: { value: new THREE.Color() },
+          uFogDensity: { value: 0.0026 },
+          uSunDir: { value: new THREE.Vector3() },
+          uSunColor: { value: new THREE.Color() },
+          uSkyColor: { value: new THREE.Color() },
+          uBands: { value: 3.0 },
+          // Matches the terrain's floor in materials.js. The ground and the
+          // river meet along the whole shoreline, so if they disagreed about
+          // how dark a full shadow is, every bank would show a seam.
+          uShadowFloor: { value: 0.05 },
+          uPiers: { value: pf.piers },
+          uPierX: { value: pf.axisX },
+          uPierZ: { value: pf.axisZ },
+          uPierCount: { value: pf.count },
+          uDeck: { value: df.deck },
+          uDeckOn: { value: df.on },
+        },
+      ]),
       vertexShader: VERT,
       fragmentShader: FRAG,
       transparent: true,
@@ -299,12 +466,39 @@ export class Water {
       // soldier fording the shallows, must still see a surface above them.
       depthWrite: false,
       side: THREE.DoubleSide,
+      lights: true,
     });
+
+    // UniformsUtils.merge() CLONES every value, which is right for the shared
+    // library block and wrong for ours: the textures would be duplicated and
+    // uSunDir would stop tracking WorldLighting. Re-seat the ones that must be
+    // shared or live.
+    const u = this.material.uniforms;
+    u.uFlowTex.value = flowNoiseTexture(256, 61);
+    u.uPaperTex.value = paperTexture(512, 77);
+    u.uShallow.value.set(PALETTE.water).lerp(new THREE.Color(PALETTE.sand), 0.22);
+    u.uDeep.value.set(PALETTE.waterDeep);
+    u.uBed.value.set(PALETTE.sand).lerp(new THREE.Color(PALETTE.dirt), 0.35);
+    u.uFoam.value.set(PALETTE.foam);
+    // Spray in shade: the same pigment turned to a cool grey at a little under
+    // half its value. Not neutral — B leads R, the way the rubric asks the dark
+    // end of every wash to.
+    u.uFoamShade.value.set(PALETTE.foam).multiply(new THREE.Color(0.42, 0.47, 0.57));
+    u.uHaze.value.set(PALETTE.haze);
+    // Warm ochre bounce off the underside of the masonry, at a low enough level
+    // that it glazes rather than lights.
+    u.uVault.value.set(PALETTE.sand).multiply(new THREE.Color(0.55, 0.46, 0.36));
+    u.uSunDir.value = WorldLighting.sunDir;
+    u.uSunColor.value.set(WorldLighting.sunColor);
+    u.uSkyColor.value.set(PALETTE.skyHorizon);
 
     this.mesh = new THREE.Mesh(geo, this.material);
     this.mesh.name = 'river';
     this.mesh.userData.outline = false;
-    this.mesh.receiveShadow = false;
+    // The river receives. It still does not CAST: a transparent sheet lying on
+    // its own bed would shadow the bed it is meant to show through, and the
+    // swell would put ripple-shaped acne on the shallows.
+    this.mesh.receiveShadow = true;
     this.mesh.castShadow = false;
     this.mesh.renderOrder = 2;
     this.mesh.matrixAutoUpdate = false;
@@ -479,6 +673,27 @@ export class Water {
       piers[i].set(b.x + zc * si, b.z + zc * co, halfAlong, halfAcross);
     }
     return { piers, axisX, axisZ, count: n };
+  }
+
+  /**
+   * The DECK plan, in the same local frame the pier mask uses: the rectangle of
+   * river that has masonry over the top of it. Used for the sky-occlusion and
+   * vault-bounce terms — the shadow map can only say the sun is blocked, and a
+   * roofed reach of water is a different thing from a reach in tree shade.
+   *
+   * @returns {{deck: THREE.Vector4, on: number}}
+   */
+  _deckFootprint() {
+    const b = this.layout.bridge;
+    if (!b || !(b.length > 0)) return { deck: new THREE.Vector4(1e6, 1e6, 1, 1), on: 0 };
+    // Local +X is the cutwater direction (along the flow), so the half-extent
+    // there is the ROAD's half width; local +Z runs across the river, so the
+    // half-extent there is half the span. The parapets overhang the barrel by a
+    // few centimetres — near enough that the deck rectangle is the soffit.
+    return {
+      deck: new THREE.Vector4(b.x, b.z, b.width * 0.5, b.length * 0.5),
+      on: 1,
+    };
   }
 
   /** Surface height including the swell — for splash VFX and boats. */

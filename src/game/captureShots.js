@@ -1424,23 +1424,54 @@ export const SHOTS = {
     // has a background instead of a wall of grass.
     pose(ctx, rosie, 4.5, 27.0, 1.6, 'idle');
 
+    // SETTLE BEFORE MEASURING. `pose()` writes the Unit and calls syncActor(), which
+    // moves the actor ROOT — but the bone world matrices, and therefore headPoint(),
+    // are only rebuilt inside Character.update() on the next frame. Reading the head
+    // here without settling returns the head position from WHATEVER THE PREVIOUS SHOT
+    // LEFT ON THE SKELETON, which is why this plate framed differently under
+    // shootBatch (residual state) than under shoot.mjs (spawn state): cold-boot put
+    // the head 33% down the frame with the weapon entirely below the bottom edge,
+    // batch put it at 17% with the rifle in shot. Both were accidents. Three frames
+    // is enough for the pose to land and for the foot IK to plant.
+    await frames(3);
     const head = alicia.headPoint(_v.clone());
-    // Three-quarter, slightly below eyeline — the classic VC portrait framing, with the
-    // head on the upper-left third.
+
+    // THE FRAMING, SOLVED RATHER THAN NUDGED. The brief on this plate is exact: it
+    // must show the head large enough to read as a PORTRAIT and still contain the
+    // hands and the weapon. Those two demands fight, and hand-tuned numbers had
+    // been satisfying whichever one was measured last — the round-9 framing put
+    // the support hand 98 px BELOW the bottom edge (measured by projecting
+    // fingersL: screen y 1307 in a 1080-line frame), and the framing before that
+    // put the head at 250 px.
     //
-    // AND IN TO 1.12 m. At 1.55 m on a 38-degree lens the head measured 250 px of a
-    // 1080-line frame, which left the whole left third of the plate to a flat, blown
-    // stretch of road metal — a 400 x 220 px region at mean L 206 with a single
-    // histogram mode holding 27% of it, i.e. the "large empty region" the rubric rejects
-    // outright, sitting in the one shot whose entire job is the face. The portrait
-    // distance is derivable: a 0.24 m skull at range d on a vertical field f subtends
-    // 0.24/d * (1080 / (2 tan(f/2))) px, so 1.12 m at 36 degrees puts it at 362 px —
-    // a third of the page, which is where a VC portrait actually sits — and the road
-    // falls almost entirely outside the frame.
-    const a = 0.55 - 1.05;
+    // They are reconcilable, but only if the distance is derived from the subject
+    // instead of guessed. Let S be the world height from the crown to the
+    // fingertips; a vertical field f at range D covers 2 D tan(f/2), so asking for
+    // S to fill a fraction FILL of the page fixes D = S / (FILL * 2 tan(f/2)).
+    // Measured on this pose S = 0.70 m, so at FILL 0.76 on a 34-degree lens
+    // D = 1.51 m and the skull comes out at 0.24/1.51 * 1766 = 281 px, 26% of the
+    // page — portrait scale, with the whole weapon hold inside the frame.
+    //
+    // The look-at then goes at the MIDPOINT of that span rather than at a fixed
+    // offset below the head, which is what stops the framing sliding when the pose,
+    // the terrain height or the character's build changes.
+    const bm = alicia.character?.rig?.boneMap;
+    const grip = _t.set(head.x, head.y - 0.46, head.z);
+    if (bm?.fingersL) grip.setFromMatrixPosition(bm.fingersL.matrixWorld);
+    const FOV = 34, FILL = 0.76;
+    const top = head.y + 0.135, bot = Math.min(grip.y - 0.055, head.y - 0.30);
+    const D = Math.min(2.10, Math.max(1.15, (top - bot) / (FILL * 2 * Math.tan(FOV * 0.5 * Math.PI / 180))));
+    const midY = (top + bot) * 0.5;
+    // Three-quarter from her weapon side, and the lens a hand's breadth ABOVE the
+    // midpoint so it sits just under the eyeline — the classic VC character plate.
+    const a = 0.55 - 1.02;
     aimCamera(ctx.camera,
-      alicia.pos.x + Math.sin(a) * 1.12, head.y - 0.05, alicia.pos.z + Math.cos(a) * 1.12,
-      head.x + 0.10, head.y - 0.12, head.z + 0.06, 36);
+      alicia.pos.x + Math.sin(a) * D, midY + 0.075, alicia.pos.z + Math.cos(a) * D,
+      // ...and the aim goes 0.24 m past her rather than 0.09, which slides the
+      // figure LEFT in the frame. The left third of this plate was 460 px of flat
+      // road metal at one value — the "large empty region" the rubric rejects
+      // outright — and the subject is the only thing available to fill it.
+      head.x + 0.24, midY, head.z + 0.04, FOV);
     await frames(14);
   },
 
