@@ -81,6 +81,31 @@ The same caution applies elsewhere:
 If a metric and the picture disagree, the picture wins — say so plainly and explain what the
 metric was actually measuring.
 
+## Where the violet actually comes from (round 12 archaeology)
+
+Four rounds tried to fix "shade is violet / lavender stonework" by turning knobs that are not
+the cause. Measured, on `bridge`, shaded stone sits at **hue 259.4, sat 0.168, val 0.537** —
+a 219 degree rotation from its own albedo (`0xbdb09a`, hue ~40). Ruled out by direct test:
+
+- `SURFACE_PIGMENT.masonry.violet` (`world/worldMaterials.js`): moved 0.78 -> 0.34. Shaded stone
+  hue did **not** move (259.4 -> 259.4) although 5.23% of the frame changed. Not the cause.
+- `uShadeTurn` (`render/materials.js:1464`) is 34 degrees total, applied as `*0.30` and `*0.78`
+  in two places. It cannot produce a 219 degree rotation. Not the cause.
+- `uPaperWhite` is a correct cream (250,244,230). Not the cause.
+- The haze uniforms: `uHazeStart` 9 -> 20 and `uHazeMax` 0.70 -> 0.60 moved `bridge` sd only
+  30.66 -> 30.91. Not the cause of the flat value range either.
+
+The actual mechanism, which `materials.js:1168-1174` already describes: at low saturation the
+shaded hue is set by the **ambient**, not the albedo. The hemisphere sky fill is `0xa9c0cc`
+(hue ~200, blue-grey), and the pipeline's contact wash then "raises BLUE against green, which
+on a still-red-dominant pigment produces MAGENTA and on one whose green has already been
+brought up produces violet."
+
+So: to change the hue of shade, change the **ambient colour and the contact wash**, in
+`render/lighting.js`'s sky-fill ramp and the contact pass in `render/canvasRenderPipeline.js`.
+Per-material violet knobs only scale how much of that ambient reaches the deepest wash; they
+cannot change what colour it is.
+
 ## Output contract
 
 The critic returns strict JSON:
