@@ -2254,8 +2254,11 @@ export function makeTerrainMaterial(opts = {}) {
       uAlphaTest: { value: 0 },
       uShadowSoften: { value: 1 },
       // The ground is where a cast shadow has to read as a SHAPE, so it gives
-      // the key less of a floor than a modelled object does.
-      uShadowFloor: { value: 0.14 },
+      // the key less of a floor than a modelled object does. Measured at 0.14
+      // the bridge arch was still lighting the water it covered (-9.6 LSB, i.e.
+      // INVERTED against open water) and the tank laid only 18.9 LSB on the
+      // road. A cast shadow has to cross a band boundary to be a shape at all.
+      uShadowFloor: { value: 0.05 },
       uLightContrast: { value: 1.12 },
       uShadeCool: { value: 1 },
       uWetPx: { value: 18 },
