@@ -98,10 +98,19 @@ const main = async () => {
 
   const stats = await page.evaluate(() => window.__STATS__ || null).catch(() => null);
   await browser.close();
-  if (server) server.kill();
+  // Leave the dev server UP by default. Killing it here was costing ~13 s per
+  // invocation: vite transforms all 64 ES modules on first request, and a fresh
+  // server has a cold transform cache, so every shot re-paid a cost that a warm
+  // server serves from memory. Measured at 1920x1080:
+  //   cold server + cold browser   18.8 s   (goto 3.3 s, boot->__READY__ 13.1 s)
+  //   warm server                   6.0 s   (goto 2.6 s, boot->__READY__  3.1 s)
+  // The server is reused by the next invocation via portOpen(), so leaving it
+  // running is what makes the next shot fast. `--kill-server` opts out for CI
+  // or when you genuinely want a clean process tree.
+  if (server && has('kill-server')) server.kill();
 
   console.log(JSON.stringify({ shot, out: outPath, errors, stats }, null, 2));
   if (errors.length) process.exitCode = 2;
 };
 
-main().catch((e) => { console.error(e); if (server) server.kill(); process.exit(1); });
+main().catch((e) => { console.error(e); if (server && has("kill-server")) server.kill(); process.exit(1); });
