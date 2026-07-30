@@ -143,9 +143,28 @@ const SKY_RAMP = [
 // 242-290 slab; that is the "saturated purple-violet wall" and the 219 degree
 // rotation four rounds have been chasing.
 //
+// ROUND 13 GOT THE LAYER RIGHT AND ROUND 14 GOT THE MECHANISM RIGHT. Moving
+// the fix here was correct — this is the colour a low-saturation surface's
+// shade resolves to — but a POLE COLOUR IS NOT A KNOB YOU CAN TUNE. Sweeping
+// only this ramp's chroma at a constant 213 deg measured shaded masonry at
+// hue 99 / 163 / 192 for sat 0.09 / 0.24 / 0.36: the surface tracked the pole
+// rather than itself, at every setting, because vcShadeDeep was SUBSTITUTING
+// this colour's chromaticity for the pigment's at 48-69% weight and then
+// clamping the result into a 242..290 violet window. Both are gone. The pole is
+// now a DIRECTION, not a paint: the deepest wash turns toward its hue by a
+// bounded amount and drops chroma, so limestone stays a warm grey-buff, sward
+// stays a cooler sage and cloth stays a cooler tan — and this ramp's only
+// remaining job is to say which way "cool" is at this hour, which is exactly
+// what a rig should own. It still paints DIRECTLY on a pigment that has no
+// chroma left to turn (see vcShadeDeep's neutral term) and on fx.js particles.
+//
+// The colour below is unchanged from round 13, and no longer critical: with the
+// substitution removed, moving it now moves the DIRECTION of the cooling, not
+// the colour of the frame.
+//
 // A skylight that is a low-chroma GREY-BLUE lands the same glaze on the
 // pigment's own hue, darkened and turned a modest amount cool by the two
-// vcShadeTurn calls that surround it (+10 deg on the half-tone, +26 at the end
+// vcShadeTurn calls that surround it (+4 deg on the half-tone, +11 at the end
 // of the body), and — because the glazed hue stays under 180 — the violet clamp
 // never fires. Simulated through the real chain, band 0 goes:
 //

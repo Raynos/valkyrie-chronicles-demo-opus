@@ -1140,7 +1140,29 @@ void main() {
     // uInkBlack and the darkest passages stay the warm brown-violet the rubric
     // asks for. uFloorTint is how much of the pigment it carries.
     vec3 pig = clamp(c / max(l0, 1e-4), vec3(0.30), vec3(2.0));
-    vec3 ink = mix(uInkBlack, vec3(lumaOf(uInkBlack)) * pig, uFloorTint);
+    // ...at a FRACTION of its chroma, and only where there is a wash to carry.
+    //
+    // Round 13 held uFloorTint at 0.45 because at any higher setting the term
+    // did two things it should not. It repainted the passages that have no hue
+    // left — an outline, a hatch crossing, the bottom of a doorway — and those
+    // are exactly the ones the rubric wants left as a warm brown-violet; and it
+    // handed a shadow mass the pigment's FULL chromaticity, which put chroma
+    // UP into shade on a rubric that requires it to fall. Both are fixed here
+    // rather than by holding the number down: the floor takes 52% of the
+    // pigment's chroma — a floor is still the least chromatic thing in the
+    // wash, and taking all of it put saturation UP into shade — and it fades
+    // back to uInkBlack where the pixel has no chromaticity of its own left.
+    //
+    // The gate is on the PIGMENT'S CHROMA, not on the pixel's value. Value was
+    // tried and measured wrong: in a shadow mass the pre-floor luminance is
+    // 0.02-0.08, i.e. exactly the band a value gate has to treat as ink, so
+    // gating on it sent the shaded village facade straight back to hue 234.
+    // Chroma separates the two cases correctly — a wash that is still a pigment
+    // has 0.05-0.25 of it, an outline or a hatch crossing has ~0.
+    float pigC = max(max(pig.r, pig.g), pig.b) - min(min(pig.r, pig.g), pig.b);
+    vec3 pigT = mix(vec3(1.0), pig, 0.52);
+    vec3 ink = mix(uInkBlack, vec3(lumaOf(uInkBlack)) * pigT,
+                   uFloorTint * smoothstep(0.012, 0.085, pigC));
     // ...and GREEN MAY NOT BE THE LOWEST CHANNEL. A violet ink plus a warm
     // pigment is a magenta by definition, and that is the one place the darks may
     // not go: the tank plate measured 34.3% of every pixel below L=125 in
@@ -1709,14 +1731,17 @@ export class CanvasRenderPipeline {
         // in frame painted the same hue-253 violet), 1 would hand the floor the
         // pigment's full chromaticity.
         //
-        // 0.45 is chosen against the change footprint, not against the colour:
-        // this term reaches every pixel that has any floor under it, and measured
-        // on the twelve plates it costs 7% of the frame at 0.30, 17-22% at 0.45
-        // and 30-40% at 0.62 in pixels moving more than 8 LSB. At 0.45 the shaded
-        // stucco of village goes 257/0.30 -> 232/0.10 and the tank's shaded
-        // glacis 266/0.20 -> a near-neutral warm grey, which is most of the
-        // available correction for a third of the footprint of 0.62.
-        uFloorTint: { value: 0.45 },
+        // 0.45 was chosen against the CHANGE FOOTPRINT rather than against the
+        // colour, because ungated this term also repaints the hueless darks. It
+        // is now gated on the pigment's own chroma (see the floor block above),
+        // so the footprint it was being held down to avoid is gone and the
+        // number can do its job. It matters more than it looks: in a shadow mass
+        // pow(1-c, 2.6) is still ~0.88, so better than half of what those pixels
+        // finally are IS this constant, and at 0.45 that half was 55% hue-253
+        // violet whatever pigment it was lifting. Measured on the round-13
+        // build with the deep wash already fixed, the shaded village facade sat
+        // at hue 200 and its own cast shadow at 234 purely on this term.
+        uFloorTint: { value: 0.88 },
         uGreenLift: { value: 0.084 },        // +30 deg on the sage lobe
         uGreenChroma: { value: 0.22 },
         uSkySat: { value: 1.02 },

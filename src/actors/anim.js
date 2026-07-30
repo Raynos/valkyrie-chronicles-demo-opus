@@ -698,7 +698,20 @@ const ELBOW_CONE_HI = 34 * Math.PI / 180;
 //                      hanging hand the elbow stays at or under the shoulder;
 //                      by the time the hand is at shoulder height (a shouldered
 //                      rifle, a cheer) it is nearly free.
-const SHOULDER_EXT_MAX = 52 * Math.PI / 180;
+// ROUND 15 — 52 -> 45, MEASURED. A limit that a pose sits exactly ON is not a
+// limit, it is a pose: probed across `tank`, `squad` and `action`, EVERY lancer's
+// gun humerus came back at 49.9-52.0 degrees of extension — pinned to the bound
+// to three significant figures — while every other class sat at 20-35 and never
+// touched it. The solvers wanted the olecranon further astern still and this
+// number was the only thing in their way, which is precisely the state in which a
+// limit stops improving the drawing: it holds the arm at the worst shape it is
+// allowed to have. 45 degrees is inside a human shoulder's 50-60 of extension,
+// binds on nothing that was already legal (the next-highest reading in the whole
+// probe is 35.7), and puts the lancer's humerus back where the eye can see the V
+// between it and the ulna. The chord fix in character.js's `lance` row is the
+// other half: with the elbow opened from 86 to 105 degrees the olecranon circle
+// shrinks from 0.198 m to 0.163 m, so this bound is no longer load-bearing.
+const SHOULDER_EXT_MAX = 45 * Math.PI / 180;
 const ELBOW_LEAD_MAX = 0.060;
 const ELBOW_TRAIL_MAX = 0.150;
 const ELEV_LO = -4 * Math.PI / 180, ELEV_HI = 84 * Math.PI / 180;

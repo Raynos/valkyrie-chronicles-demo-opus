@@ -329,20 +329,34 @@ const NPR_BODY = /* glsl */ `
   //    rotates its shadow into red" in one expression.
   //  * the half-tone is a GLAZE (a mix), and the hue turn is bounded and never
   //    wraps through 0, so ochre climbs to olive rather than falling to maroon.
+  //
+  // Round 14 brought both halves back in step with materials.js: the turn is
+  // 14 deg, not 34 (the budget was compensating for a contact wash that used to
+  // drag the hue back down and no longer does), and the deepest wash TURNS
+  // toward the skylight instead of being mixed onto it. A 0.62 mix substituted
+  // the skylight's chromaticity for the pigment's, and the 242..290 clamp that
+  // followed then guaranteed the answer was violet whatever went in — measured
+  // on the sibling path, five different pigments all landed on 232-244.
   vec3 npHt = npRgb2Hsv(npBase);
-  npHt.x = clamp(npHt.x + clamp(0.73611 - npHt.x, -0.0944, 0.0944), 0.0, 1.0);
+  npHt.x = clamp(npHt.x + clamp(0.73611 - npHt.x, -0.0389, 0.0389), 0.0, 1.0);
   npHt.y *= 0.74;
   npHt.z *= 0.62;
   vec3 npHalfCol = npHsv2Rgb(npHt);
-  // the deepest wash: the half-tone glazed onto the skylight, then clamped into
-  // the 242..290 violet window so it can never dry to rose
+  // the deepest wash: the half-tone darkened, turned a bounded amount further
+  // toward the skylight's own hue, and left less chromatic
   float npL = max(dot(npHalfCol, vec3(0.2126, 0.7152, 0.0722)), 1e-5);
   vec3 npTint = uShadeTint / max(dot(uShadeTint, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-  vec3 npShadeCol = mix(npHalfCol * 0.66, vec3(npL * 0.66) * npTint, 0.62);
+  vec3 npShadeCol = npHalfCol * 0.66;
   vec3 npSh = npRgb2Hsv(npShadeCol);
-  npSh.x = npSh.x > 0.80556 ? 0.80556 : (npSh.x > 0.50 ? max(npSh.x, 0.67222) : npSh.x);
+  float npPoleH = npRgb2Hsv(npTint).x;
+  npSh.x = clamp(min(npSh.x + clamp(npPoleH - npSh.x, -0.0379, 0.0379),
+                     max(npSh.x, 0.375)), 0.0, 1.0);
   npSh.y *= 0.66;
   npShadeCol = npHsv2Rgb(npSh);
+  // a pigment with no hue left cannot be turned, so that is the one place the
+  // skylight is allowed to paint directly
+  float npNeutral = 1.0 - smoothstep(0.02, 0.12, npSh.y);
+  npShadeCol = mix(npShadeCol, vec3(npL * 0.66) * npTint, npNeutral * 0.62);
   vec3 npMidCol   = npBase * uMidTint;
   vec3 npLitCol   = npBase * uLitTint + vec3(0.045, 0.038, 0.022);
   vec3 npCol = mix(npShadeCol, npHalfCol, smoothstep(0.06, 0.26, npQ));

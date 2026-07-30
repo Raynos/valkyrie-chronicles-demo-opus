@@ -444,8 +444,12 @@ varying vec2 vAux;
 // maroon — and it is what makes a VC half-tone read as the same cloth in shade
 // rather than as a bruise painted next to it.
 #define VC_SHADE_H   0.73611      // 265 deg, the skylight
-#define VC_SHADE_LO  0.67222      // 242 deg \_ the window the DEEP wash must
-#define VC_SHADE_HI  0.80556      // 290 deg /  dry inside: never rose, never teal
+// (Round 14 deleted VC_SHADE_LO/VC_SHADE_HI, the 242..290 window vcShadeDeep
+// used to clamp the deepest wash into. See the note on vcShadeDeep: with a
+// grey-blue pole rather than a violet one, that clamp stopped being a guard
+// against magenta and became the frame's largest single source of violet — it
+// was pushing a 209-degree wash UP to 242. The direction rule below already
+// makes the magenta it was written for unreachable.)
 // ...and the ceiling the HALF-TONE may not climb past. The direction rule is
 // written for a warm pigment, which has 200 deg of wheel between it and the
 // skylight; a pigment that is ALREADY green has almost none, and turning it the
@@ -477,7 +481,12 @@ vec3 vcShadeTurnL( vec3 c, float amt, float turn ) {
   float d = VC_SHADE_H - hsv.x;
   hsv.x = clamp( min( hsv.x + clamp( d, -turn, turn ) * amt,
                       max( hsv.x, VC_SHADE_CAP ) ), 0.0, 1.0 );
-  hsv.y *= mix( 1.0, 0.80, amt );                  // pigment in shade reads less chromatic
+  // Pigment in shade reads less chromatic — and this is now the term that
+  // CARRIES that, because the deep wash no longer launders every dark into a
+  // low-chroma skylight grey. 0.80 -> 0.72 in round 14: it is gated on the same
+  // band ramp as the turn, so chroma falls WITH THE WASH rather than with the
+  // ink floor, which is what "saturation must fall into shadow" actually means.
+  hsv.y *= mix( 1.0, 0.72, amt );
   vec3 t = vcHsv2Rgb( hsv );
   return t * ( l / max( vcLum( t ), 1e-5 ) );
 }
@@ -493,27 +502,53 @@ vec3 vcShadeTurnL( vec3 c, float amt, float turn ) {
 // dried pigment, which is a MIX. Mixing the same ochre 62% toward a violet-grey
 // of its own luminance lands it at hue 285.
 //
-// Then the window. The frame's darks were not short of chroma, they were in the
-// WRONG SIXTH: on the tank plate, 34.3% of every pixel below L=125 sat in hue 300-360 —
-// rose — against 26.6% in 240-300, because multiplying a red-dominant pigment by
-// a violet tint leaves GREEN as the lowest channel, which is magenta by
-// definition. Clamping the deep wash into 242..290 moves that whole population
-// into the violet window and kills the "warm brown-red bruise" note at the same
-// time.
+// ...BUT THE GLAZE MAY NOT BE OPAQUE, AND ROUND 13 PROVED IT (round 14).
+//
+// mix( c, vec3(lum(c)) * skyTint, amt ) throws the pigment's chromaticity away
+// and substitutes the skylight's, weighted by amt — 0.48 on masonry, 0.69 on
+// terrain. At those weights it is not a glaze, it is a coat of paint: whatever
+// hue the pole is authored at, every pigment in the frame arrives at it. Round 13
+// swept the pole's chroma at a fixed 213 deg and measured shaded masonry at
+// hue 99 / 163 / 192 for sat 0.09 / 0.24 / 0.36 — the surface tracked the POLE,
+// not itself, which is why no pole colour was ever going to be right.
+//
+// The window made it worse, not better. With a grey-blue pole the mix lands a
+// warm buff at ~209 deg, and max( hsv.x, 242 deg ) then PUSHED IT UP to
+// 242 — the clamp that was written to stop a magenta had become the frame's
+// largest single manufacturer of violet. Measured on the round-13 build: shaded
+// bridge mortar 236.7 deg, shaded village stucco 232.5, the cast shadow across
+// the village road 237.3, the figure's shadow on the 'grass' sward 244 — five
+// different pigments, one hue, and that hue is the clamp's own lower edge.
+//
+// So the skylight COOLS the pigment instead of replacing it: the same bounded,
+// never-wrapping turn the half-tone uses, toward THE POLE'S OWN HUE (the rig
+// ramps it, so this cannot go stale when the hour changes), plus the chroma
+// drop that was always the useful half of the old amt. The window goes with
+// the substitution that needed it — a turn that only ever climbs cannot wrap a
+// warm pigment through 0 into magenta, which is the one thing the clamp was for.
+//
+// A pigment with NO chroma left has no hue to turn, and that is the one place
+// the pole is still allowed to paint: a limestone that has been washed out to a
+// near-neutral takes the skylight as a direct lean, exactly as vcCoolShade does.
+//
+// The whole function is LUMINANCE-EXACT by construction — the value it lands on
+// is computed before any hue work and restored at the end — so nothing here can
+// move a cast-shadow LSB delta, a hatch ratio or the frame's darkest pixel.
+#define VC_DEEP_TURN 0.0611       // 22 deg, the deepest wash's own hue budget
 vec3 vcShadeDeep( vec3 cool, vec3 violet, vec3 floorCol, float amt ) {
   float l = vcLum( cool );
   vec3 vTint = violet / max( vcLum( violet ), 1e-4 );     // unit-luminance skylight
   vec3 c = cool * 0.66;
-  c = mix( c, vec3( vcLum( c ) ) * vTint, amt );          // the glaze
-  // Never darker than the ink floor's value — but the floor may not REPLACE the
-  // pigment, so only the VALUE is lifted.
-  float fl = vcLum( floorCol ) * ( 0.42 + 0.58 * l );
-  c *= max( 1.0, fl / max( vcLum( c ), 1e-5 ) );
-  // ...and it may never dry to rose or to teal.
+  // The value this wash must end on: its own, floored by the ink floor. Never
+  // darker than the floor — but the floor may not REPLACE the pigment, so only
+  // the VALUE is taken from it.
+  float L = max( vcLum( c ), vcLum( floorCol ) * ( 0.42 + 0.58 * l ) );
+
   vec3 hsv = vcRgb2Hsv( c );
-  float hFix = hsv.x > VC_SHADE_HI ? VC_SHADE_HI
-             : ( hsv.x > 0.50 ? max( hsv.x, VC_SHADE_LO ) : hsv.x );
-  hsv.x = mix( hsv.x, hFix, clamp( amt * 3.0, 0.0, 1.0 ) );
+  float d = vcRgb2Hsv( vTint ).x - hsv.x;                 // NOT wrapped
+  float turn = VC_DEEP_TURN * amt;
+  hsv.x = clamp( min( hsv.x + clamp( d, -turn, turn ),
+                      max( hsv.x, VC_SHADE_CAP ) ), 0.0, 1.0 );
   // A violet-GREY, not a violet. The grade downstream restores chroma with a
   // gamma (uSatGamma 0.73, which nearly doubles a 0.05 wash) and adds another
   // 22% on the 60-110 deg lobe the turned half-tones now land in, so anything
@@ -523,14 +558,17 @@ vec3 vcShadeDeep( vec3 cool, vec3 violet, vec3 floorCol, float amt ) {
   // the LEAST chromatic wash on the sheet.
   //
   // 0.55, not 0.66: this is also the only lever that separates "the frame has a
-  // violet shade FAMILY" from "the frame is lavender". The village plate puts 57% of its
-  // pixels below L=125 and four fifths of those are one shaded facade and its
-  // cast shadow, so the number that decides whether that plate reads as a
-  // watercolour or as round 1's rejection is the CHROMA of this wash, not its
-  // hue — the hue is what the temperature axis is scored on and it stays.
+  // shade FAMILY" from "the frame is one colour". The village plate puts 57% of
+  // its pixels below L=125 and four fifths of those are one shaded facade and
+  // its cast shadow, so the number that decides whether that plate reads as a
+  // watercolour or as round 1's rejection is the CHROMA of this wash.
   hsv.y *= mix( 1.0, 0.55, amt );
   vec3 t = vcHsv2Rgb( hsv );
-  return t * ( vcLum( c ) / max( vcLum( t ), 1e-5 ) );
+  // ...and only where there is no pigment left to speak for itself does the
+  // skylight get to speak instead.
+  float neutral = 1.0 - smoothstep( 0.02, 0.12, hsv.y );
+  t = mix( t, vec3( vcLum( t ) ) * vTint, neutral * amt );
+  return t * ( L / max( vcLum( t ), 1e-5 ) );
 }
 
 // ---- the sage/olive finish -------------------------------------------------
@@ -1461,7 +1499,7 @@ function nprExtraUniforms() {
     uFillBoost:  { value: 1 },
     uVioletGain: { value: 1 },
     uCreamGain:  { value: 1 },
-    uShadeTurn:  { value: 34 / 360 },
+    uShadeTurn:  { value: 14 / 360 },
     uDriveRange: { value: new THREE.Vector2(0, 1) },
     uCurv:       { value: 0 },
     uPigQ:       { value: 0.75 },
@@ -1534,36 +1572,35 @@ function applyNprOpts(uniforms, o) {
   if (o.cream !== undefined) uniforms.uCreamGain.value = o.cream;
   // The half-tone's hue budget, in DEGREES OF SHADER-SIDE TURN.
   //
-  // The round-6 prescription names 34 deg for cloth/stone/earth and 18 for
-  // skin, MEASURED ON THE PLATE. These are larger because the surface shader is
-  // not the last thing that touches a shaded pixel: canvasRenderPipeline adds a
-  // warm bloom (uBloomTint 0xffe9cd at 0.52) over the whole frame and repaints
-  // occluded pixels with vcShadowColour through uContactStrength 0.70, and
-  // between them a little over half of a shaded pixel is theirs, not this
-  // shader's. Measured on the closeup jaw by sweeping this one number: a shader
-  // half-tone at hue 50 arrives on the plate at 19 and one at hue 90 arrives at
-  // 38, i.e. the plate is mix(hue 351, shaderHue, 0.475) — half of it is the
-  // contact wash, whose violet MULTIPLY drops a hue-50 pigment to hue 19
-  // because raising blue against green on a red-dominant colour moves the hue
-  // DOWN.
+  // 34 WAS A COMPENSATION FOR A PASS THAT NO LONGER EXISTS. It was set against
+  // the old contact wash, which ended in vcCoolShade's shorter-arc turn toward
+  // 235 and therefore dragged a warm pigment DOWNWARD: measured on the closeup
+  // jaw, a shader half-tone at hue 50 arrived on the plate at 19. Half the
+  // budget was being spent buying back a 31 degree drag. canvasRenderPipeline's
+  // vcContactWash replaced that rule: the wash now takes its hue from the
+  // surface and may only CLIMB, at most 12 degrees, i.e. it moves the same
+  // direction this does. The compensation is now double-counting, and the
+  // symptom is the one the old note predicted for an inflated budget — "the
+  // shaded masonry, which is a broad face with almost no occlusion on it, took
+  // the whole turn and rendered as sage-green ashlar with violet joints".
   //
-  // 34 is therefore the prescription's number, spent EXACTLY (the ramp takes
-  // 0.30 of it and the composite pass the other 0.70), and NOT inflated to
-  // out-shout that later pass. Inflating it was tried and measured: at a 52 deg
-  // shader turn the jaw came out right, because the jaw is heavily occluded and
-  // the contact wash ate half of it — and the shaded masonry, which is a broad
-  // face with almost no occlusion on it, took the whole 52 deg and rendered as
-  // sage-green ashlar with violet joints. A diluter that varies with occlusion
-  // cannot be compensated with a constant. 26 on skin, not 18, is the one place
-  // the number is raised, because skin is the surface the forbidden 340..30 band
-  // is actually about and it is also the most heavily occluded.
+  // Measured on the round-13 build: 34 deg is spent 0.30 in the ramp and 0.78
+  // on the composite, i.e. 36.7 deg of rotation, which walks limestone (albedo
+  // hue 33 linear) to ~70 — INSIDE the grade's sage lobe, where uGreenLift then
+  // adds another 26-30 and lands it at 95-107. The bridge spandrel measured
+  // hue 96.7 and read as moss. At 18 the same chain lands it in the 50s, which
+  // is a cool grey-buff, and — because the turn is bounded rather than
+  // convergent — stone, sward and cloth stay as far apart in shade as their
+  // albedos are, which is the whole point.
   //
-  // A caller that has already declared a low violet gain (rig.js's SKIN_BANDS
-  // asks for 0.30 against cloth's 0.82 and kit's 0.95) is declaring exactly the
-  // skin case, so the default reads that rather than making every caller in
-  // src/actors restate it.
+  // 16 on skin, not 18, for the same reason 26 was lower than 34: skin is the
+  // surface the forbidden 340..30 band is actually about. A caller that has
+  // already declared a low violet gain (rig.js's SKIN_BANDS asks for 0.30
+  // against cloth's 0.82 and kit's 0.95) is declaring exactly the skin case, so
+  // the default reads that rather than making every caller in src/actors
+  // restate it.
   uniforms.uShadeTurn.value =
-    (o.shadeTurn ?? (o.violet !== undefined && o.violet <= 0.45 ? 26 : 34)) / 360;
+    (o.shadeTurn ?? (o.violet !== undefined && o.violet <= 0.45 ? 11 : 14)) / 360;
   if (o.driveRange) uniforms.uDriveRange.value.set(o.driveRange[0], o.driveRange[1]);
   if (o.curvature !== undefined) uniforms.uCurv.value = o.curvature;
   if (o.pigQ !== undefined) uniforms.uPigQ.value = o.pigQ;

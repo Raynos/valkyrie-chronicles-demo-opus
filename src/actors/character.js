@@ -996,7 +996,40 @@ const CARRY_BY_KIND = {
   // the frame and pushed the warhead off the edge. A lance at rest is carried
   // muzzle-UP on the shoulder, which is both what the reference draws and what
   // keeps the warhead — the one piece of colour on the weapon — inside the frame.
-  lance: { yaw: 0.34, pitch: 0.34, fwd: 0.200, down: -0.260, lat: -0.140 },
+  //
+  // ROUND 15 — THE GRIP WAS 0.329 m FROM ITS OWN SHOULDER, AND THAT IS THE
+  // "STRETCHED, ELBOW-LESS ARM" THE CRITIQUE HAS NAMED FOR SIX ROUNDS.
+  //
+  // Measured, not guessed. The right shoulder sits 0.17 m outboard of the
+  // shoulder MIDPOINT this row is quoted against, so (fwd 0.200, down -0.260,
+  // lat -0.140) resolves to (+0.200, -0.260, +0.030) from the gun shoulder:
+  // 0.329 m on a 0.283 + 0.259 = 0.542 m arm, i.e. 61 % of reach and an
+  // 86-degree elbow. A joint that bent puts the olecranon on a circle of radius
+  // 0.198 m, and WHERE on that circle is then decided by the pole — which, at a
+  // chord running down-and-forward, projects almost entirely into "back". The
+  // consequence was measurable on every lancer in every plate: the gun humerus
+  // came out at 49.9-52.0 degrees of shoulder EXTENSION, i.e. pinned against
+  // SHOULDER_EXT_MAX, against 20-35 for every other class. A humerus that runs
+  // down-and-back on a man leaning forward projects along its own ulna from a
+  // rear three-quarter lens, the V collapses, and what reaches the page is one
+  // tapering bar from shoulder to hand.
+  //
+  // Solve the chord instead of fighting the pole. A 105-degree elbow needs
+  // sqrt(l1^2 + l2^2 - 2 l1 l2 cos 105) = 0.432 m of chord; (0.285, -0.315,
+  // -0.105) gives (+0.285, -0.315, +0.065) from the gun shoulder = 0.430 m,
+  // 79 % of reach, elbow 104.9 degrees, olecranon radius down to 0.163 m. The
+  // support hand's reach to the foregrip is unchanged in kind (the tube moves
+  // with the grip) and the tail clearance improves, because the whole hold has
+  // moved 85 mm FORWARD of the ribs rather than sideways past them.
+  lance: {
+    yaw: 0.34, pitch: 0.34, fwd: 0.285, down: -0.315, lat: -0.105,
+    // ...and the lance gets its own pole. The generic carry pole is
+    // (down 0.92, back 0.34, out 0.46); on a launch tube held at chest height
+    // the firing elbow hangs DOWN and out and barely trails at all — it is the
+    // support arm that reaches forward. Stated here rather than in the generic
+    // expression so no rifle pose moves.
+    pole: { up: -0.98, fwd: -0.06, out: 0.52 },
+  },
   pistol: { yaw: 0.30, pitch: -0.50, fwd: 0.240, down: -0.330, lat: -0.060 },
   thrown: { yaw: CARRY_YAW, pitch: CARRY_PITCH, fwd: CARRY_FWD, down: CARRY_DOWN, lat: CARRY_LAT },
   tool: { yaw: 0.40, pitch: -0.30, fwd: 0.240, down: -0.330, lat: 0.010 },
@@ -1725,9 +1758,22 @@ export class Character {
     // two SLEEVES, so the whole torso reads as one rectangular slab, which is the
     // note that has stood since round 4. 0.46 puts the humerus 27 degrees out:
     // still a tucked low-ready carry, but with daylight in the armpit.
-    _cPole.copy(_cUp).multiplyScalar(0.30 - 1.22 * cf)
-      .addScaledVector(_cFwd, -0.10 - 0.24 * cf)
-      .addScaledVector(_cLeft, -0.86 + 0.40 * cf).normalize();
+    //
+    // ROUND 15: a weapon kind may state its own CARRIED pole (see the lance row
+    // in CARRY_BY_KIND). `out` is signed toward the character's right, which is
+    // the firing side, so it enters through -_cLeft. The shouldered end of the
+    // blend is untouched — a shouldered weapon is a shouldered weapon whatever
+    // it is.
+    const KP = K.pole;
+    if (KP) {
+      _cPole.copy(_cUp).multiplyScalar(0.30 + (KP.up - 0.30) * cf)
+        .addScaledVector(_cFwd, -0.10 + (KP.fwd + 0.10) * cf)
+        .addScaledVector(_cLeft, -0.86 + (0.86 - KP.out) * cf).normalize();
+    } else {
+      _cPole.copy(_cUp).multiplyScalar(0.30 - 1.22 * cf)
+        .addScaledVector(_cFwd, -0.10 - 0.24 * cf)
+        .addScaledVector(_cLeft, -0.86 + 0.40 * cf).normalize();
+    }
 
     /** Roll the wrist until the bore sits on `_cBore`. Returns the angle used. */
     const align = () => {

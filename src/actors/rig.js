@@ -2869,20 +2869,61 @@ export function buildHead(b, rig, o, f) {
     // crest at 16 degrees each way — a 32-degree break held over 34 mm of cheek
     // above and below. That is the geometry the acceptance test needs; the
     // SKIN_BANDS contrast is what turns it into a step.
-    const zygY = FY(0.430);
-    const zyg = clamp01(1 - Math.abs(dy - zygY) / 0.255)
+    // ROUND 15 — THE CREST WAS LEVEL, AND A LEVEL CREST DRAWS A LEVEL
+    // TERMINATOR, WHICH A HORIZONTAL SCAN RUNS ALONG INSTEAD OF ACROSS.
+    //
+    // Round 14 built the tent and it works — the sun-azimuth test moves the
+    // cheek wash bodily (at azimuth 2.15 rows 303-307 read 130 / 148 / 172 with
+    // the boundary at x 745-752; swung to -0.15 those same rows are a flat 170
+    // with no boundary in them at all, i.e. the terminator is lit, not painted).
+    // What it did NOT do is put the boundary anywhere a horizontal scan can
+    // resolve: `zygY` was a constant, so the crest ran level round the head, the
+    // wash boundary came out level with it, and a scan across the cheek walked
+    // ALONG the edge picking up one grid level's worth of noise. Measured best
+    // in-cheek step: 20-23 LSB, against the 25 the acceptance asks for, with the
+    // only bigger numbers sitting on the nose silhouette.
+    //
+    // A malar crest is OBLIQUE. It starts low beside the nose — the malar
+    // tubercle sits about level with the alar base — and climbs back and up to
+    // the arch at the ear, which is level with the outer canthus. Sloping zygY
+    // with `ax` costs nothing and buys two things at once: the terminator now
+    // crosses a horizontal scan at 25-35 degrees instead of lying on it, and the
+    // cheek gains the diagonal that reads as a cheekbone rather than as a beard
+    // line. Face fraction runs 0.401 beside the nose to 0.468 at the ear.
+    const zygY = FY(0.398) + 0.150 * smoothstep(0.10, 0.92, ax);
+    // ...and the tent is SHARPER. The step a wash boundary can show is capped by
+    // the pipeline's 16-level quantiser at about one grid level (~20 LSB) unless
+    // the transition is narrow enough in SCREEN space for the drive to skip a
+    // level — which is geometry, not gain (SKIN_BANDS records contrast and
+    // lightBias sweeps as inert against that grid). Half-width 0.255 -> 0.215 at
+    // amplitude 0.190 -> 0.200 takes the radial slope from 0.745 to 0.930, i.e.
+    // 0.543 m/m after R[0]/R[1], so the normal leaves the crest at 28.5 degrees
+    // each way — a 57-degree break over 24 mm of cheek instead of 47 over 34.
+    // Prominence only moves 5%, so the cheekbone does not turn gaunt.
+    //
+    // SWEPT, and 0.215 is the optimum rather than a guess. Measured on the
+    // closeup cheek (rows 300-306, x 668-788, best horizontal step per row):
+    //     0.255 (round 14)   peak 26.4   mean 24.1
+    //     0.215              peak 28.5   mean 26.8
+    //     0.180              peak 27.0   mean 24.4  — and visibly noisier
+    // Sharper is not monotonically better: past a point the ridge is thinner
+    // than the washes either side of it need to be, so the plateaus shorten and
+    // the boundary between them breaks up instead of hardening.
+    const zyg = clamp01(1 - Math.abs(dy - zygY) / 0.215)
       * gauss(ax - 0.66, 0.300) * clamp01(dz + 0.42);
-    sx += zyg * 0.190 * f.cheek;
-    sz += zyg * 0.066 * f.cheek;
+    sx += zyg * 0.200 * f.cheek;
+    sz += zyg * 0.068 * f.cheek;
     // ...continued back to the ear as a real arch, which is what makes a
     // three-quarter view read as a skull rather than as a pear.
     sx += blob(dy - (zygY + 0.03), 0.11, dz + 0.10, 0.34) * clamp01(ax - 0.55) * 0.10 * f.cheek;
-    // Buccal hollow beneath it. Tightened in dy (0.155 -> 0.120) so it stops
-    // filling the bottom half of the tent back in: a dish immediately under the
-    // crest re-curves the very normal the crest just broke.
-    const hollow = blob(dy - FY(0.285), 0.120, ax - 0.52, 0.215) * front;
-    sx -= hollow * 0.052;
-    sz -= hollow * 0.044;
+    // Buccal hollow beneath it, and it now TRACKS the crest rather than sitting
+    // at a fixed height: a dish that stays level under an oblique ridge fills the
+    // tent back in at one end and misses it at the other. Held 0.235 below the
+    // crest in dy — far enough that it deepens the plane the crest just turned
+    // away instead of re-curving it.
+    const hollow = blob(dy - (zygY - 0.235), 0.115, ax - 0.55, 0.215) * front;
+    sx -= hollow * 0.060;
+    sz -= hollow * 0.052;
 
     // --- 4b. THE INFERIOR BORDER OF THE MANDIBLE ---------------------------
     // The second terminator on a head, and the one that makes a jaw OVERHANG a
