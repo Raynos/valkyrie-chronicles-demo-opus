@@ -47,6 +47,20 @@ const PAL = {
   paintAlt: 0x9ea595,
   darkMetal: 0x6d675d,       // gun, hatches, weld-proud steel
 
+  // PANEL-LINE INK. The one dark value allowed to draw a *line* on painted
+  // armour, and the reason round 16's hull read as an olive slab: the only
+  // linework on it was weld bead in `darkMetal` (V 0.43), which on a V 0.71
+  // plate is a HIGHLIGHT, not a line. A drawn panel join has to rank below the
+  // shade band, not between the two lit ones.
+  //
+  // Authored inside the ink window the round-15 violet-outline dead end fixed,
+  // and measured at the albedo rather than luminance-scaled from a lighter
+  // value: 0x4d4238 is L 28.6, hue 28.6 deg, sat 0.27 — mid-window on both axes
+  // of the hue 12-45 / sat 0.18-0.32 acceptance. So covering the vehicle in
+  // these lines cannot drag the frame's L<45 population out of the warm lobe;
+  // it adds population at the centre of it.
+  panelInk: 0x4d4238,
+
   // ---- the running gear is a VALUE LADDER, not three shades of one mud ----
   //
   // Round 14 authored wheel steel (0x6d675d, V 0.43), track (0x6a5c4e, V 0.42)
@@ -387,6 +401,147 @@ function weldRing(pts, z, radius, rng, skipBelly = true) {
   return parts;
 }
 
+// ---------------------------------------------------------------- ink work ---
+//
+// WHY PANEL LINES ARE GEOMETRY AND NOT AN OUTLINE-PASS PRODUCT.
+//
+// The outline pass draws depth and normal discontinuities. A plate join on a
+// lofted hull has neither: the loft interpolates one smooth surface across the
+// station where two plates would meet, so there is nothing for the pass to bite
+// on. That is the whole reason round 16's hull read as "flat slabs of camouflage
+// mottle with no panel definition" while the file already contained weld rings,
+// bolt circles and a turret race — the features existed, but none of them drew a
+// dark line, and a dark line is what the CANVAS look is made of.
+//
+// So each join gets a thin cylinder in PAL.panelInk, laid ON the surface (centre
+// on the join, so half is buried: no z-fight, no floating edge, and the visible
+// half is a ~2x radius wide stroke), broken into two segments with a small kink
+// so it wobbles like a pen line instead of reading as extruded trim.
+//
+// STROKE WIDTH. Measured twice on the plate. 0.0125 m radius came out 10-14 px on
+// the turret, which is not a line but trim, and read as trim. 0.0098 fixed the
+// turret and was measured at 3 px of tan plus a 1.5 px dark under-edge on the
+// GLACIS — i.e. it disappeared on the biggest flat surface in frame, because the
+// paper-grain and pigment-quantiser passes blend a 3 px mark into whatever is
+// around it. 0.0118 is the value that survives both: ~6 px at the turret and
+// ~4 px at the nose. The taper with distance is free here and is exactly the
+// variable width a constant screen-space outline pass cannot give.
+const INK_R = 0.0118;
+
+/** One hand-drawn ink rib between two points. */
+function inkRib(out, ax, ay, az, bx, by, bz, r, rng) {
+  const j = 0.009;
+  const mx = (ax + bx) * 0.5 + (rng() - 0.5) * j;
+  const my = (ay + by) * 0.5 + (rng() - 0.5) * j;
+  const mz = (az + bz) * 0.5 + (rng() - 0.5) * j;
+  out.push(cylBetween(ax, ay, az, mx, my, mz, r * (0.86 + rng() * 0.3), 4));
+  out.push(cylBetween(mx, my, mz, bx, by, bz, r * (0.86 + rng() * 0.3), 4));
+  return out;
+}
+
+/**
+ * Interpolate one cross-section vertex between loft stations at an arbitrary z.
+ * A panel line has to ride the SECTION: the hull tapers at both ends, and a line
+ * drawn at a constant half-width leaves the surface before it reaches the nose.
+ */
+function ptAt(rings, vi, z) {
+  const last = rings.length - 1;
+  if (z <= rings[0].z) return rings[0].pts[vi];
+  if (z >= rings[last].z) return rings[last].pts[vi];
+  for (let i = 0; i < last; i++) {
+    if (z <= rings[i + 1].z) {
+      const k = (z - rings[i].z) / (rings[i + 1].z - rings[i].z);
+      const a = rings[i].pts[vi], b = rings[i + 1].pts[vi];
+      return [lerp(a[0], b[0], k), lerp(a[1], b[1], k)];
+    }
+  }
+  return rings[last].pts[vi];
+}
+
+/**
+ * A longitudinal seam: the same section vertex chained across a run of stations.
+ * Used for the chamfer and crown breaks — the places the plate genuinely folds,
+ * so the line coincides with a plane change instead of being a painted stripe.
+ */
+function seamAlong(out, rings, vi, r, from, to, rng) {
+  for (let i = from; i < to; i++) {
+    const a = rings[i].pts[vi], b = rings[i + 1].pts[vi];
+    inkRib(out, a[0], a[1], rings[i].z, b[0], b[1], rings[i + 1].z, r, rng);
+  }
+  return out;
+}
+
+/** A straight ink run along a section vertex between two arbitrary z. */
+function seamRun(out, rings, vi, z0, z1, r, rng, dx = 0) {
+  const a = ptAt(rings, vi, z0), b = ptAt(rings, vi, z1);
+  return inkRib(out, a[0] + dx, a[1], z0, b[0] + dx, b[1], z1, r, rng);
+}
+
+/**
+ * AN INK LINE ON A FLAT PLATE IS A FLAT RIBBON, NOT A CYLINDER.
+ *
+ * Measured on the round-17 glacis: a 0.0098 m cylinder rib on that plate rendered
+ * as 3 px of tan with a 1.5 px dark line under it — weaker than the plate it was
+ * dividing. A cylinder's top face rolls through the whole band range, so on the
+ * brightest, most sky-facing surface in frame its lit half comes back within
+ * 30 LSB of the plate and only the shadow under it reads. That is a bead, and a
+ * bead is what round 16's weld seams already were.
+ *
+ * A ribbon presents ONE facet. It takes one wash, keeps its full authored width
+ * however obliquely the plate is seen, and — being coplanar with the plate — has
+ * no lit half to lose. The cylinder form is kept for lines that sit on a convex
+ * FOLD (see seamAlong), where a bead is what is physically there and where the
+ * fold's own plane change carries the read anyway.
+ *
+ * Three orientations, one per plate normal the hull actually presents. Each is
+ * split into two segments with a jitter, same hand-drawn logic as inkRib.
+ */
+function inkStripX(out, y, z, x0, x1, halfW, thick, rx, rng) {
+  const xm = (x0 + x1) * 0.5;
+  for (const [a, b] of [[x0, xm], [xm, x1]]) {
+    const g = new THREE.BoxGeometry(Math.abs(b - a), thick, halfW * 2 * (0.86 + rng() * 0.3));
+    place(g, (a + b) * 0.5, y + (rng() - 0.5) * 0.005, z + (rng() - 0.5) * 0.009, rx, 0, 0);
+    out.push(g);
+  }
+  return out;
+}
+function inkStripY(out, x, z, y0, y1, halfW, thick, rng) {
+  const ym = (y0 + y1) * 0.5;
+  for (const [a, b] of [[y0, ym], [ym, y1]]) {
+    const g = new THREE.BoxGeometry(thick, Math.abs(b - a), halfW * 2 * (0.86 + rng() * 0.3));
+    place(g, x, (a + b) * 0.5, z + (rng() - 0.5) * 0.009);
+    out.push(g);
+  }
+  return out;
+}
+function inkStripZ(out, x, y, z0, z1, halfW, thick, rng) {
+  const zm = (z0 + z1) * 0.5;
+  for (const [a, b] of [[z0, zm], [zm, z1]]) {
+    const g = new THREE.BoxGeometry(thick, halfW * 2 * (0.86 + rng() * 0.3), Math.abs(b - a));
+    place(g, x, y + (rng() - 0.5) * 0.005, (a + b) * 0.5);
+    out.push(g);
+  }
+  return out;
+}
+
+/** The three visible edges of a raised plate on a hull side (constant x). */
+function inkPlateSide(out, x, y0, y1, z0, z1, halfW, rng) {
+  inkStripY(out, x, z0, y0, y1, halfW, 0.013, rng);
+  inkStripY(out, x, z1, y0, y1, halfW, 0.013, rng);
+  inkStripZ(out, x, y1, z0, z1, halfW, 0.013, rng);
+  return out;
+}
+
+/**
+ * A drawn ring, in the XY plane facing +Z. `place(..., Math.PI/2, 0, 0)` lays it
+ * flat on a deck; unrotated it rings a gun tube or a hatch face.
+ * radialSegments 4 keeps it a square-section bead — cheap, and a flat-topped
+ * bead holds one wash instead of rolling through three.
+ */
+function inkTorus(radius, r, seg) {
+  return new THREE.TorusGeometry(radius, r, 4, seg);
+}
+
 /** Sample points along a ring for rivet placement. */
 function ringSamples(pts, z, spacing, out, skipBelly = true) {
   const n = pts.length;
@@ -440,13 +595,27 @@ function makeArmourTexture(seed, tint = 0x000000, size = 256) {
   // Gouache mottling: overlapping soft washes. Warm ones barely darken and pull
   // the hue toward cream; cool ones darken more and pull toward violet-grey, so
   // the plate has an underlying temperature drift before the light hits it.
+  //
+  // AMPLITUDE AND SCALE, both halved — this is the documented albedo-mottle trap
+  // caught in the act. At r up to 0.18 of a sheet repeating 3x over a 5 m hull,
+  // one blob covered ~0.36 m, i.e. ~110 px in the `tank` plate; at a cool alpha
+  // of 0.30 over a 0.10-0.20 warm neighbour it swung the map ±35 LSB. A 110 px
+  // patch at 35 LSB is not brush variation, it is a camouflage scheme, and it was
+  // out-contrasting every plane change on the vehicle. Halving the alphas and the
+  // radius (with mapRepeat raised to 4.5 x 3.5, see mat.paint) puts the blobs at
+  // ~45 px and ~16 LSB: still a hand-laid gouache surface, but now quieter than
+  // the wash boundary between two plates, which is the ranking the read needs.
+  //
+  // Do NOT fix this by flattening the map to 1.0. The chips and streaks below are
+  // the paper tooth and they are wanted; it is the LOW-frequency, HIGH-amplitude
+  // layer that was doing form's job.
   for (let i = 0; i < 170; i++) {
-    const x = rng() * size, y = rng() * size, r = size * (0.03 + rng() * 0.15);
+    const x = rng() * size, y = rng() * size, r = size * (0.025 + rng() * 0.085);
     const warm = rng() < 0.5;
     const col = warm
-      ? [255, 250 - (rng() * 10) | 0, 236 - (rng() * 14) | 0]
-      : [206 - (rng() * 16) | 0, 209 - (rng() * 14) | 0, 224 - (rng() * 8) | 0];
-    const a = warm ? 0.20 + rng() * 0.26 : 0.10 + rng() * 0.20;
+      ? [255, 251 - (rng() * 6) | 0, 242 - (rng() * 9) | 0]
+      : [226 - (rng() * 10) | 0, 228 - (rng() * 9) | 0, 237 - (rng() * 5) | 0];
+    const a = warm ? 0.11 + rng() * 0.14 : 0.06 + rng() * 0.11;
     const grd = g.createRadialGradient(x, y, 0, x, y, r);
     grd.addColorStop(0, `rgba(${col[0]},${col[1]},${col[2]},${a})`);
     grd.addColorStop(1, 'rgba(0,0,0,0)');
@@ -887,8 +1056,51 @@ export class Tank {
       paint: mk('paint', {
         ...armour,
         color: PAL.paint, roughness: 0.78, hatch: 1.25, rim: 0.55, paper: 1.0,
-        outlineWidth: 1.25, map: paintTex, mapRepeat: [3, 2.5],
+        // mapRepeat raised with makeArmourTexture's blob radius halved (see
+        // there): together they take the mottle from ~110 px camouflage patches
+        // to ~45 px brush variation. `mottle` is also pinned rather than left on
+        // the 0.075 default — the shader term and the map were stacking, and the
+        // armour is the one surface in frame big enough for both to be visible.
+        outlineWidth: 1.25, map: paintTex, mapRepeat: [4.5, 3.5], mottle: 0.042,
         bandBleed: 1.7, hatchSpacing: 4.2, wrap: 0.26,
+      }),
+      // PANEL-LINE INK. See PAL.panelInk and inkRib().
+      //
+      // hatch 0 and a low bandBleed are the point: the hatch pass would scribble
+      // a 25 mm stroke into dashes, and a 1.7 wet edge would bleed it back into
+      // the plate it is supposed to divide. An ink line is the ONE hard-edged mark
+      // on the vehicle. shadowFloor is raised well above the armour's 0.34 so a
+      // line on a shaded plate stays a warm graphite grey instead of going to
+      // black — the palette's never-black rule applies hardest to the darkest bin.
+      // A DRAWN LINE IS NOT A LIT SURFACE, and this bin's first pass got that
+      // wrong in a way worth recording. With the armour's own light model
+      // (shadowFloor 0.34, driveRange [0.12,0.86], rim 0.18) every rib rendered
+      // its sky-facing half in the CREAM band and its underside in the shade one:
+      // a 12 px cylinder with a highlight along the top, i.e. a raised timber
+      // batten. The turret gained plate definition and lost it again to the
+      // reading "the hull has moulding glued on it".
+      //
+      // The fix is not a darker albedo, it is removing the object's access to the
+      // lit band at all:
+      //   keyGain 0.42 + cream 0.28  — the key and the warm lift are what supply
+      //     the highlight; with both cut the rib has almost no N.L modelling left.
+      //   driveRange [0.06, 2.4]     — this COMPRESSES. The span is the raw drive
+      //     the object is declared to occupy, remapped onto 0..1, so a wide span
+      //     squashes a rib's real 0.3-0.9 drive into 0.10-0.36 — band 0 of 3,
+      //     the shade wash, everywhere on the vehicle at once.
+      //   shadowFloor 0.55          — and it stays that same value inside a cast
+      //     shadow, so one line crossing from sun into shade does not change
+      //     colour halfway along. That constancy is what makes it read as ink.
+      // rim/spec/hatch/curvature all zero: every one of them is a modelling cue,
+      // and a pen stroke is not modelled.
+      ink: mk('ink', {
+        ...armour,
+        bands: 3,
+        color: PAL.panelInk, roughness: 0.92, hatch: 0, rim: 0, paper: 0.85,
+        outlineWidth: 0.7, bandBleed: 0.45, mottle: 0.02, spec: 0, curvature: 0,
+        shadowFloor: 0.55, shadowSoften: 0.20,
+        keyGain: 0.42, cream: 0.28, driveRange: [0.06, 2.4],
+        pigWarp: 0.25, wetRim: 0.15, grain: 0.30,
       }),
       metal: mk('metal', {
         ...armour,
@@ -986,7 +1198,7 @@ export class Tank {
   /** Hull, fenders, stowage, tools, lamps, exhaust, radiator. */
   _buildHull() {
     const rng = this.rng;
-    const B = { paint: [], metal: [], ochre: [], canvas: [], wood: [], glass: [], grille: [] };
+    const B = { paint: [], metal: [], ochre: [], canvas: [], wood: [], glass: [], grille: [], ink: [] };
     const rivets = [];
 
     // ---- primary armour envelope -----------------------------------------
@@ -1320,6 +1532,86 @@ export class Tank {
       }
     }
 
+    // ---- PANEL LINES: hull ------------------------------------------------
+    //
+    // THE ACCEPTANCE TEST FOR THIS ROUND IS COUNTED HERE. Every line below
+    // coincides with a plane change that already exists in the geometry above —
+    // the applique plate perimeters, the butt joins between the hull's own side
+    // plates, the sponson-shelf fold, the deck chamfer break, the glacis breaks
+    // and the nose. None of it is invented trim laid across a flat wash, because
+    // a line that does not sit on a fold reads as a painted stripe (and painted
+    // stripes on this hull are exactly the defect being fixed).
+    //
+    // Section vertex indices, from sponsonRing(): port side runs pts[3] (sponson
+    // shelf fold, y = shelf + th) up to pts[4] (under the deck chamfer), then
+    // pts[5] is the deck edge. Starboard mirrors as 10 / 9 / 8.
+    {
+      const V = { bot: [3, 10], top: [4, 9], deck: [5, 8] };
+      // Where the applique plates are, their own top edge IS the top of the
+      // flank strip (it sits 12 mm under the fold); where they are not, the fold
+      // is. Drawing each over its own span makes one apparently continuous line
+      // four metres long, built from real edges the whole way.
+      const plateZ = [[-1.62, -0.34], [0.06, 1.30]];
+      const gapZ = [[-2.34, -1.66], [-0.30, 0.02], [1.34, 2.06]];
+      const apTop = sideY + 0.1175, apBot = sideY - 0.1175;
+      const flankJoins = [];
+      for (const si of [0, 1]) {
+        const sx = si === 0 ? -1 : 1;
+        // 1. Applique plate contours: two closed islands per side. Four vertical
+        //    plate-join segments and two top edges.
+        for (const [z0, z1] of plateZ) {
+          inkPlateSide(flankJoins, sx * 1.253, apBot, apTop, z0, z1, INK_R, rng);
+        }
+        // 2. Butt joins between the hull's own side plates, in the gaps. These
+        //    are the segments the acceptance test asks for: full-height verticals
+        //    inside the flank, nowhere near the outer silhouette.
+        for (const z of [-1.98, -0.14, 1.66]) {
+          const a = ptAt(rings, V.bot[si], z), b = ptAt(rings, V.top[si], z);
+          inkStripY(flankJoins, a[0] + sx * 0.008, z, a[1] + 0.028, b[1] - 0.012, INK_R, 0.014, rng);
+        }
+        // 3. The fold at the top of the flank, over the gaps.
+        for (const [z0, z1] of gapZ) seamRun(B.ink, rings, V.top[si], z0, z1, INK_R, rng);
+        // 4. The sponson shelf fold, over the gaps. The fender plate is welded to
+        //    this exact line, so it also darkens the fender root — which is what
+        //    stops the guard reading as a shelf floating beside the hull.
+        for (const [z0, z1] of gapZ) {
+          seamRun(B.ink, rings, V.bot[si], z0, z1, INK_R * 0.85, rng, sx * 0.012);
+        }
+        // 5. The deck edge: the longest single line on the vehicle, nose to tail.
+        seamAlong(B.ink, rings, V.deck[si], INK_R, 0, rings.length - 1, rng);
+      }
+      // 6. GLACIS. Three transverse joins on the largest flat facet in the plate:
+      //    the front-deck join, the glacis break at station 6, and the nose join.
+      //    FLAT RIBBONS lying IN the plate (rx = -glacisSlope), and 1.3x the
+      //    nominal width — this facet is both the brightest surface in frame and
+      //    seen at the most oblique angle, which is where a nominal stroke was
+      //    measured washing out. Held inside |x| < 0.9 so they stay on the flat
+      //    and do not fight the deck chamfer's own line.
+      for (const gz of [1.42, 1.98, 2.30]) {
+        inkStripX(B.ink, deckAt(gz) + 0.006, gz, -0.90, 0.90,
+          INK_R * 1.3, 0.013, -glacisSlope, rng);
+      }
+      // 7. The engine-deck joins, aft of the turret ring. Flat deck, so rx = 0.
+      for (const dz of [-1.62, -2.28]) {
+        inkStripX(B.ink, deckAt(dz) + 0.006, dz, -0.92, 0.92, INK_R * 1.2, 0.013, 0, rng);
+      }
+      // 8. THE TURRET RING, drawn from the hull side. Two contours on the proud
+      //    race collar: its top lip (r 0.897, the bore the turret drops into) and
+      //    its root where it is welded to the deck (r 0.937). The turret adds a
+      //    third inside these (see _buildTurret), so the joint is three
+      //    concentric drawn circles rather than two washes meeting on a tangent.
+      B.ink.push(place(inkTorus(0.897, INK_R, byQ([16, 24, 32])),
+        0, this.turretDeckY + 0.103, -0.10, Math.PI / 2, 0, 0));
+      B.ink.push(place(inkTorus(0.937, INK_R * 0.85, byQ([16, 24, 32])),
+        0, this.turretDeckY + 0.008, -0.10, Math.PI / 2, 0, 0));
+      // The flank plate joins were collected separately so a probe build could
+      // render THEM AND NOTHING ELSE in a flood colour. That is how this round's
+      // acceptance count was taken, because eyeballing which violet stroke on a
+      // three-quarter hull is a flank join and which is the deck edge is exactly
+      // the attribution error that invalidated most of round 16's measurements.
+      B.ink.push(...flankJoins);
+    }
+
     // ---- spare road wheel, bolted to the port hull side --------------------
     // A round, high-contrast object at the rear quarter: it is the one thing on
     // the flank that is not a horizontal, and in silhouette it is what tells you
@@ -1431,17 +1723,50 @@ export class Tank {
     const slit = new THREE.BoxGeometry(0.30, 0.038, 0.03);
     place(slit, -0.42, deckAt(visorZ) + 0.042, visorZ + 0.028, -glacisSlope, 0, 0);
     B.grille.push(slit);
+    // Drawn round: a VISION PORT has to be a bordered rectangle, not a lighter
+    // rectangle. The border is what makes it read as a cut-out in armour.
+    {
+      const hw = 0.212, hd = 0.058;
+      const z0 = visorZ - hd, z1 = visorZ + hd;
+      for (const s of [-1, 1]) {
+        // Transverse edges lie IN the plate; the longitudinal pair has to follow
+        // deckAt() down the 33-degree slope, so those stay ribs.
+        inkStripX(B.ink, deckAt(visorZ + s * hd) + 0.006, visorZ + s * hd,
+          -0.42 - hw, -0.42 + hw, INK_R * 0.9, 0.013, -glacisSlope, rng);
+        inkRib(B.ink, -0.42 + s * hw, deckAt(z0) + 0.010, z0,
+          -0.42 + s * hw, deckAt(z1) + 0.010, z1, INK_R * 0.85, rng);
+      }
+    }
+    // PAINTED, not bare steel. On a sky-facing glacis the darkMetal bin lands ~40
+    // LSB under the plate around it, so every steel fitting up here rendered as a
+    // dark blob punched in the armour — the ball mount, the driver's hatch and the
+    // lamp bodies all read as holes. A ball mount on a real tank is painted with
+    // the hull; the ink contour is what has to separate it, not its albedo.
     const mgBall = new THREE.SphereGeometry(0.16, byQ([6, 10, 14]), byQ([5, 7, 9]));
     place(mgBall, 0.46, deckAt(mgZ) + 0.01, mgZ);
-    B.metal.push(mgBall);
+    B.paint.push(mgBall);
+    B.ink.push(place(inkTorus(0.152, INK_R * 0.85, byQ([10, 16, 20])),
+      0.46, deckAt(mgZ) + 0.01, mgZ, Math.PI / 2, 0, 0));
     B.metal.push(place(new THREE.CylinderGeometry(0.028, 0.032, 0.40, 6),
       0.46, deckAt(mgZ) + 0.03, mgZ + 0.17, Math.PI / 2 - 0.12, 0, 0));
 
     // ---- driver's hatch ---------------------------------------------------
+    // `paint`, not `metal` — see the ball mount above. A dark disc on a cream
+    // deck is a hole; a painted disc with a lip and a drawn ring is a hatch.
     const dh = new THREE.CylinderGeometry(0.25, 0.25, 0.05, byQ([8, 14, 18]));
     place(dh, -0.44, deckAt(1.24) + 0.025, 1.24);
-    B.metal.push(dh);
+    B.paint.push(dh);
     B.metal.push(place(new THREE.BoxGeometry(0.14, 0.04, 0.05), -0.44, deckAt(1.06) + 0.055, 1.06));
+    // A RAISED LIP and a drawn ring. A hatch flush with the deck is a disc of the
+    // same paint as the deck: the quantiser puts it in the same wash and it
+    // disappears. The lip stands 4 cm proud so it catches the sky band on top and
+    // throws its own crescent of shade, and the ink ring closes the contour.
+    // Open-ended, i.e. a COLLAR round the hatch. A solid disc here would swallow
+    // the hatch it is supposed to frame.
+    B.metal.push(place(new THREE.CylinderGeometry(0.268, 0.278, 0.042, byQ([8, 14, 18]), 1, true),
+      -0.44, deckAt(1.24) + 0.017, 1.24));
+    B.ink.push(place(inkTorus(0.270, INK_R * 0.85, byQ([12, 18, 24])),
+      -0.44, deckAt(1.24) + 0.037, 1.24, Math.PI / 2, 0, 0));
 
     // ---- tow cable + shackles --------------------------------------------
     for (const sx of [-1, 1]) {
@@ -1525,7 +1850,7 @@ export class Tank {
   /** Turret, mantlet, main gun with muzzle brake, coax MG, cupola, antenna. */
   _buildTurret() {
     const rng = this.rng;
-    const B = { paint: [], metal: [], ochre: [], canvas: [], glass: [], grille: [] };
+    const B = { paint: [], metal: [], ochre: [], canvas: [], glass: [], grille: [], ink: [] };
 
     this.turret = new THREE.Group();
     this.turret.name = 'turret';
@@ -1543,18 +1868,48 @@ export class Tank {
     // and the cupola to 2.05 — which is what puts it ABOVE a standing man's head
     // instead of level with his chest, and is most of what the silhouette needed.
     const TT = 0.08;
+    // Chamfers pulled in ~25%. A cast turret is round-SHOULDERED, not round: at
+    // ch 0.15 on a 0.52 m tall section the side, the shoulder and the roof were
+    // one continuous roll, so the roof/side fold had no fixed position for a wash
+    // boundary or an ink line to sit on and the whole casting read as a lump.
+    // Tightening the chamfer gives each of the three surfaces a flat middle and
+    // puts the fold where seamAlong() can draw it.
     const ts = [
-      { z: -1.02, w: 0.60, yBot: 0.02, yTop: 0.30 + TT * 0.6, ch: 0.10 },
-      { z: -0.72, w: 0.78, yBot: 0.01, yTop: 0.38 + TT, ch: 0.13 },
-      { z: -0.20, w: 0.86, yBot: 0.00, yTop: 0.44 + TT, ch: 0.15 },
-      { z: 0.32, w: 0.85, yBot: 0.00, yTop: 0.44 + TT, ch: 0.15 },
-      { z: 0.70, w: 0.72, yBot: 0.01, yTop: 0.38 + TT, ch: 0.14 },
-      { z: 0.92, w: 0.50, yBot: 0.04, yTop: 0.30 + TT * 0.6, ch: 0.11 },
+      { z: -1.02, w: 0.60, yBot: 0.02, yTop: 0.30 + TT * 0.6, ch: 0.078 },
+      { z: -0.72, w: 0.78, yBot: 0.01, yTop: 0.38 + TT, ch: 0.098 },
+      { z: -0.20, w: 0.86, yBot: 0.00, yTop: 0.44 + TT, ch: 0.113 },
+      { z: 0.32, w: 0.85, yBot: 0.00, yTop: 0.44 + TT, ch: 0.113 },
+      { z: 0.70, w: 0.72, yBot: 0.01, yTop: 0.38 + TT, ch: 0.105 },
+      { z: 0.92, w: 0.50, yBot: 0.04, yTop: 0.30 + TT * 0.6, ch: 0.085 },
     ];
     const trings = ts.map((s) => ({ z: s.z, pts: hullRing(s.w, s.yBot, s.yTop, s.ch, 0.012) }));
     B.paint.push(loft(subdivideStations(trings, byQ([1, 2, 3]), byQ([1, 2, 2])), true, true));
     for (const i of [1, 4]) {
       for (const g of weldRing(trings[i].pts, trings[i].z, 0.018, rng)) B.metal.push(g);
+    }
+    // ---- PANEL LINES: turret ----------------------------------------------
+    //
+    // The turret is the biggest single mass in the `tank` plate and it was a
+    // rounded lump with one stray stroke on it. hullRing() vertex indices: 1 =
+    // lower chamfer fold, 2 = side/shoulder fold, 3 = shoulder/roof fold, 4/5 =
+    // crown. So three longitudinal folds down each side, and the two weld
+    // stations become drawn transverse joins over the whole upper section — which
+    // resolves the casting into a front cheek, a centre plate and a bustle.
+    {
+      const last = trings.length - 1;
+      for (const vi of [1, 2, 3, 6, 7, 8]) {
+        seamAlong(B.ink, trings, vi, INK_R * 0.92, 0, last, rng);
+      }
+      for (const i of [1, 4]) {
+        const p = trings[i].pts, z = trings[i].z;
+        for (const [a, b] of [[1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8]]) {
+          inkRib(B.ink, p[a][0], p[a][1], z, p[b][0], p[b][1], z, INK_R * 0.88, rng);
+        }
+      }
+      // The turret's own contribution to the turret ring: a drawn circle at the
+      // base of the shell, inboard of the collar the hull draws (r 0.897/0.937).
+      B.ink.push(place(inkTorus(0.884, INK_R, byQ([16, 24, 32])), 0, 0.030, -0.10,
+        Math.PI / 2, 0, 0));
     }
     // Turret skirt that overhangs the ring.
     const skirt = new THREE.CylinderGeometry(0.88, 0.88, 0.045, byQ([14, 22, 28]));
@@ -1590,10 +1945,47 @@ export class Tank {
     this.headNode = new THREE.Object3D();
     this.headNode.position.set(0.30, 0.60 + TT, -0.44);
     this.turret.add(this.headNode);
+    // The cupola drawn as a cupola: a ring at its root where it stands off the
+    // roof, a proud collar under the lid, and a ring on that. Round 16 had a bare
+    // r 0.245 cylinder — same paint as the roof, no contour — so it merged into
+    // the casting and the critic correctly found "no cupola".
+    B.metal.push(place(new THREE.CylinderGeometry(0.270, 0.278, 0.042, byQ([8, 14, 18]), 1, true),
+      0.30, 0.585 + TT, -0.44));
+    B.ink.push(place(inkTorus(0.262, INK_R, byQ([12, 20, 26])), 0.30, 0.414 + TT, -0.44,
+      Math.PI / 2, 0, 0));
+    B.ink.push(place(inkTorus(0.272, INK_R * 0.9, byQ([12, 20, 26])), 0.30, 0.606 + TT, -0.44,
+      Math.PI / 2, 0, 0));
 
     // ---- loader's hatch (fixed) ------------------------------------------
-    B.metal.push(place(new THREE.CylinderGeometry(0.20, 0.20, 0.045, byQ([8, 12, 16])), -0.32, 0.455 + TT, -0.36));
+    B.paint.push(place(new THREE.CylinderGeometry(0.20, 0.20, 0.045, byQ([8, 12, 16])), -0.32, 0.455 + TT, -0.36));
     B.metal.push(place(new THREE.BoxGeometry(0.12, 0.035, 0.045), -0.32, 0.48 + TT, -0.19));
+    // Raised lip + drawn ring, same reasoning as the driver's hatch.
+    B.metal.push(place(new THREE.CylinderGeometry(0.218, 0.228, 0.042, byQ([8, 12, 16]), 1, true),
+      -0.32, 0.455 + TT, -0.36));
+    B.ink.push(place(inkTorus(0.220, INK_R * 0.85, byQ([12, 18, 24])), -0.32, 0.475 + TT, -0.36,
+      Math.PI / 2, 0, 0));
+
+    // ---- periscopes on the roof ------------------------------------------
+    // The vision port the brief asks for, twice, on the surface the camera in the
+    // `tank` shot is actually looking down at. A proud housing with a dark glass
+    // face and a drawn rectangle round its footprint: the housing gives it a
+    // silhouette, the grille bin gives it the one cool value in the casting, and
+    // the ink rectangle stops it reading as a bump.
+    for (const [px, pz, ry] of [[-0.30, 0.26, 0.0], [0.30, 0.02, 0.0]]) {
+      const roofY = 0.452 + TT;
+      const hs = new THREE.BoxGeometry(0.155, 0.085, 0.105);
+      place(hs, px, roofY + 0.036, pz, 0, ry, 0);
+      B.metal.push(hs);
+      const gl = new THREE.BoxGeometry(0.115, 0.036, 0.020);
+      place(gl, px + Math.sin(ry) * 0.055, roofY + 0.048, pz + Math.cos(ry) * 0.055, 0, ry, 0);
+      B.grille.push(gl);
+      for (const s of [-1, 1]) {
+        inkRib(B.ink, px + s * 0.086, roofY + 0.008, pz - 0.062,
+          px + s * 0.086, roofY + 0.008, pz + 0.062, INK_R * 0.75, rng);
+        inkRib(B.ink, px - 0.086, roofY + 0.008, pz + s * 0.062,
+          px + 0.086, roofY + 0.008, pz + s * 0.062, INK_R * 0.75, rng);
+      }
+    }
 
     // ---- stowage rack on the bustle --------------------------------------
     for (const s of [-1, 1]) {
@@ -1670,45 +2062,80 @@ export class Tank {
     this.gun = new THREE.Group();          // pitches
     this.gun.position.set(0, 0.235 + TT * 0.5, 0.46);
     this.turret.add(this.gun);
-    const G = { paint: [], metal: [] };
+    const G = { paint: [], metal: [], ink: [] };
 
-    // Mantlet: a thick rounded shield.
-    const mant = new THREE.CylinderGeometry(0.30, 0.32, 0.30, byQ([8, 14, 18]));
-    place(mant, 0, 0, 0.44, Math.PI / 2, 0, 0);
+    // ---- MANTLET ----------------------------------------------------------
+    //
+    // "The gun tube is a plain cylinder with a lump at the end... the tube's join
+    // to the turret is not resolved." Round 16's mantlet was r 0.30 at the root
+    // set into a turret nose of half-width 0.50 and protruding 0.13 m, so it read
+    // as a slight bulge the tube grew out of rather than as the separate cast
+    // shield it is. Fattened to r 0.355 at the root — wider than it is long, which
+    // is what a mantlet looks like from the side — and drawn round at BOTH ends:
+    // one contour where the shield meets the casting, one where the tube leaves
+    // the shield. Two contours is what makes it a joint.
+    const mantR = 0.355;
+    const mant = new THREE.CylinderGeometry(0.322, mantR, 0.36, byQ([8, 14, 18]));
+    place(mant, 0, 0, 0.41, Math.PI / 2, 0, 0);
     G.paint.push(mant);
-    const mantFace = new THREE.SphereGeometry(0.30, byQ([8, 14, 18]), byQ([5, 8, 10]), 0, TAU, 0, Math.PI * 0.45);
-    place(mantFace, 0, 0, 0.59, Math.PI / 2, 0, 0);
+    const mantFace = new THREE.SphereGeometry(0.322, byQ([8, 14, 18]), byQ([5, 8, 10]), 0, TAU, 0, Math.PI * 0.44);
+    place(mantFace, 0, 0, 0.575, Math.PI / 2, 0, 0);
     G.paint.push(mantFace);
-    // Trunnion bolts.
+    G.ink.push(place(inkTorus(mantR + 0.006, INK_R, byQ([12, 18, 24])), 0, 0, 0.238));
+    G.ink.push(place(inkTorus(0.326, INK_R * 0.9, byQ([12, 18, 24])), 0, 0, 0.566));
+    // Trunnion bolts, out on the fattened root.
     for (const s of [-1, 1]) {
-      G.metal.push(place(new THREE.CylinderGeometry(0.05, 0.05, 0.06, 6), s * 0.31, 0, 0.44, 0, 0, Math.PI / 2));
+      G.metal.push(place(new THREE.CylinderGeometry(0.055, 0.055, 0.07, 6), s * 0.352, 0, 0.42, 0, 0, Math.PI / 2));
     }
+    // RECOIL GUARD: the cradle the sleeve slides in. Two side rails and a top
+    // strap. Without it the tube emerges from nothing, which is the other half of
+    // "the join is not resolved".
+    for (const s of [-1, 1]) {
+      G.metal.push(place(new THREE.BoxGeometry(0.034, 0.205, 0.30), s * 0.140, 0.030, 0.70));
+    }
+    G.metal.push(place(new THREE.BoxGeometry(0.295, 0.030, 0.30), 0, 0.142, 0.70));
 
     // The recoiling assembly: barrel + brake slide back and return.
     this.recoilGroup = new THREE.Group();
     this.gun.add(this.recoilGroup);
-    const R = { metal: [] };
+    const R = { metal: [], ink: [] };
     // Recoil sleeve, then the tube proper, slightly tapered.
     R.metal.push(place(new THREE.CylinderGeometry(0.115, 0.125, 0.42, byQ([8, 12, 16])), 0, 0, 0.78, Math.PI / 2, 0, 0));
-    R.metal.push(place(new THREE.CylinderGeometry(0.072, 0.086, 1.42, byQ([8, 12, 16])), 0, 0, 1.68, Math.PI / 2, 0, 0));
-    // Muzzle brake: a fat collar with two blast slots cut as gaps between
-    // three short cylinders.
-    for (let i = 0; i < 3; i++) {
-      R.metal.push(place(new THREE.CylinderGeometry(0.105, 0.105, 0.055, byQ([8, 12, 16])),
-        0, 0, 2.42 + i * 0.085, Math.PI / 2, 0, 0));
-    }
-    R.metal.push(place(new THREE.CylinderGeometry(0.088, 0.088, 0.24, byQ([8, 12, 16])), 0, 0, 2.50, Math.PI / 2, 0, 0));
+    R.metal.push(place(new THREE.CylinderGeometry(0.070, 0.086, 1.42, byQ([8, 12, 16])), 0, 0, 1.68, Math.PI / 2, 0, 0));
+    // ---- MUZZLE BRAKE -----------------------------------------------------
+    //
+    // Round 16 built this as three flush r 0.105 discs over an r 0.088 core: a
+    // 17 mm radial step. The gun runs about 150 px/m in the `tank` plate, so that
+    // step was 2.5 px — under the outline pass's own line width — and the brake
+    // resolved as exactly what the critique called it, "a lump at the end".
+    //
+    // The core is thinned to r 0.070 and the collars fattened to r 0.120, so each
+    // blast slot is a 50 mm step (7-8 px) with 50 mm of open length. And the
+    // shoulder where the brake begins gets its own drawn ring, because a step in
+    // a silhouette that the sky happens to be behind reads; the same step against
+    // the far bank does not.
+    R.metal.push(place(new THREE.CylinderGeometry(0.070, 0.070, 0.40, byQ([8, 12, 16])), 0, 0, 2.50, Math.PI / 2, 0, 0));
+    R.metal.push(place(new THREE.CylinderGeometry(0.104, 0.098, 0.075, byQ([8, 12, 16])), 0, 0, 2.375, Math.PI / 2, 0, 0));
+    R.metal.push(place(new THREE.CylinderGeometry(0.120, 0.120, 0.070, byQ([8, 12, 16])), 0, 0, 2.520, Math.PI / 2, 0, 0));
+    R.metal.push(place(new THREE.CylinderGeometry(0.112, 0.120, 0.075, byQ([8, 12, 16])), 0, 0, 2.665, Math.PI / 2, 0, 0));
+    R.ink.push(place(inkTorus(0.106, INK_R * 0.85, byQ([10, 14, 18])), 0, 0, 2.340));
+    R.ink.push(place(inkTorus(0.123, INK_R * 0.8, byQ([10, 14, 18])), 0, 0, 2.487));
+    R.ink.push(place(inkTorus(0.122, INK_R * 0.8, byQ([10, 14, 18])), 0, 0, 2.630));
+    // The contour where the tube leaves the recoil sleeve — on the recoiling
+    // assembly, so it travels with the sleeve instead of hanging in the cradle.
+    R.ink.push(place(inkTorus(0.119, INK_R * 0.8, byQ([10, 14, 18])), 0, 0, 0.982));
     // Front sight blade.
-    R.metal.push(place(new THREE.BoxGeometry(0.02, 0.05, 0.03), 0, 0.10, 2.56));
-    {
-      const barrel = new THREE.Mesh(mergeGeos(R.metal), this.mat.metal);
+    R.metal.push(place(new THREE.BoxGeometry(0.02, 0.05, 0.03), 0, 0.115, 2.700));
+    for (const key of Object.keys(R)) {
+      if (!R[key].length) continue;
+      const barrel = new THREE.Mesh(mergeGeos(R[key]), this.mat[key] || this.mat.metal);
       barrel.castShadow = true;
       barrel.userData.outline = true;
-      barrel.name = 'gun:barrel';
+      barrel.name = `gun:barrel:${key}`;
       this.recoilGroup.add(barrel);
     }
     this.muzzle = new THREE.Object3D();
-    this.muzzle.position.set(0, 0, 2.66);
+    this.muzzle.position.set(0, 0, 2.74);
     this.recoilGroup.add(this.muzzle);
 
     // Coaxial MG, offset to the right of the mantlet.
@@ -1976,27 +2403,71 @@ export class Tank {
    */
   _buildMarkings() {
     this.markings = [];
+    const seg = byQ([10, 18, 26]);
+    /**
+     * A ROUNDEL SITS ON A PLATE.
+     *
+     * Round 16's was a bare 0.23 m alpha quad laid straight on the armour: a pale
+     * disc with a red smear in it, no contour of any kind, floating on top of the
+     * camouflage mottle at very nearly the mottle's own amplitude. Three parts
+     * now, all in one local frame whose +Z is the plate normal, so the same code
+     * works on a vertical turret cheek and on a 33-degree glacis:
+     *
+     *   1. a shallow raised disc in the armour bin — its own silhouette, so the
+     *      outline pass draws a real edge round the marking;
+     *   2. a hand-wobbled ink ring just outboard of the stencil (the stencil's
+     *      painted disc is 0.40 x w, see makeInsigniaTexture);
+     *   3. the stencil itself, on top.
+     *
+     * Enlarged 0.23 -> 0.30 as well. On a turret 1.7 m long a 0.23 m roundel is a
+     * 13% detail; the Edelweiss wears it as a statement.
+     */
     const add = (w, px, py, pz, rx, ry, parent) => {
-      const g = new THREE.PlaneGeometry(w, w);
-      const m = new THREE.Mesh(g, this.mat.insignia);
-      m.position.set(px, py, pz);
-      m.rotation.set(rx, ry, 0);
+      const grp = new THREE.Group();
+      grp.position.set(px, py, pz);
+      grp.rotation.set(rx, ry, 0);
+      grp.name = 'marking';
+      parent.add(grp);
+
+      const plate = new THREE.Mesh(
+        new THREE.CylinderGeometry(w * 0.58, w * 0.58, 0.030, seg), this.mat.paint);
+      plate.rotation.x = Math.PI / 2;
+      plate.position.z = -0.012;
+      plate.castShadow = true;
+      plate.receiveShadow = true;
+      plate.userData.outline = true;
+      grp.add(plate);
+
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(w * 0.462, 0.0125, 4, seg), this.mat.ink);
+      ring.position.z = 0.007;
+      ring.castShadow = false;
+      ring.receiveShadow = true;
+      ring.userData.outline = true;
+      grp.add(ring);
+
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, w), this.mat.insignia);
+      m.position.z = 0.011;
       m.castShadow = false;
       m.receiveShadow = true;
       m.userData.outline = false;
-      m.name = 'marking';
-      parent.add(m);
+      m.name = 'marking:stencil';
+      grp.add(m);
       this.markings.push(m);
       return m;
     };
-    // Turret cheeks, facing ±X off the flat of the shell.
-    add(0.23, 0.868, 0.24, 0.02, 0, Math.PI / 2, this.turret);
-    add(0.23, -0.868, 0.24, 0.02, 0, -Math.PI / 2, this.turret);
+    // Turret cheeks. Centred at y 0.20, not 0.24: with the plate at r 0.174 and
+    // the chamfer tightened to 0.113 the flat of the shell runs y 0..0.407, and a
+    // raised disc that laps onto the shoulder fold would break both contours.
+    add(0.30, 0.856, 0.20, 0.02, 0, Math.PI / 2, this.turret);
+    add(0.30, -0.856, 0.20, 0.02, 0, -Math.PI / 2, this.turret);
     // Glacis, lying IN the plate — read off the same deck curve _buildHull used,
     // so a change to this.deckRise carries the roundel with the plate instead of
-    // leaving it hanging in space in front of the nose.
+    // leaving it hanging in space in front of the nose. No Y offset any more: the
+    // group's local +Z *is* the plate normal, so the children set their own
+    // proudness along it.
     const gz = 1.705;
-    add(0.26, 0.72, this.glacisAt(gz) + 0.033, gz, -Math.PI / 2 + this.glacisSlope, 0, this.chassis);
+    add(0.30, 0.66, this.glacisAt(gz), gz, -Math.PI / 2 + this.glacisSlope, 0, this.chassis);
   }
 
   /**

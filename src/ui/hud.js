@@ -309,19 +309,45 @@ export class HUD {
   /**
    * What the HUD shows while the screenshot harness is driving.
    *
-   * `plate` is the mode the world shots use: everything that reads as game UI
-   * goes away and the book's own furniture — the rule, the corner flourishes,
-   * the bookmark and a pencilled caption — stays. Round 3 ran those shots with
-   * the entire HUD host set to display:none, and five of the eight critiqued
-   * frames consequently scored the hud axis at ZERO, not because the HUD was
-   * bad but because there was none of it in the frame to judge. An empty axis
-   * is a thrown-away axis.
+   * `field` is the mode the world shots use: the REAL in-battle HUD — name and
+   * class plate, AP gauge, control strip, world name slips — over a third-person
+   * view of the valley, which is what Valkyria has on screen at all times.
    *
-   * @param {string} mode  'plate' | 'command' | 'action' | 'aim' | 'none'
+   * `plate` is its predecessor and is no longer used by any gameplay shot. It
+   * dressed the world shots in the book's furniture (outer rule, corner
+   * flourishes, chapter bookmark, running head, pencilled plate caption) to stop
+   * critics scoring the hud axis at zero on a HUD-less frame. That fixed a
+   * SCORING artifact by breaking the picture: a paper-bordered page with a
+   * handwritten caption is not a game screenshot, and it gives the frame away in
+   * a blind side-by-side inside a second. The mode is kept because the styling it
+   * drives is legitimate on the book screens; nothing calls it with 'plate'.
+   *
+   * @param {string} mode  'field' | 'command' | 'action' | 'aim' | 'plate' | 'none'
    * @param {{num?:string, text?:string}} [caption]
    */
   setCaptureMode(mode, caption) {
     this.root.classList.toggle('vc-plate', mode === 'plate');
+    // 'field' has to force the action layer up even though the battle sits in the
+    // command phase, and drive its readouts itself — see _updateField().
+    this._fieldMode = mode === 'field';
+    this.root.classList.toggle('vc-field', this._fieldMode);
+    // EVERY capture mode states its own control strip and label policy.
+    // It cannot be left to _setPhase(): that early-returns when the phase has not
+    // changed, and a world shot's phase is 'command' exactly like the survey
+    // shot's. The resident renderer therefore handed the command frame the
+    // ACTION keybind strip — "WASD Move / Sprint / Crouch" over a staff map —
+    // because the previous shot had set it and nothing put it back.
+    if (this._fieldMode) {
+      this.setControls('action');
+      this._applyLabelPolicy();
+      this._updateField();
+    } else if (mode === 'command') {
+      // Only 'command' needs restating: the action and aim shots really do enter
+      // the action phase, so _updateAction() re-asserts their strip and _setPhase()
+      // their label policy every frame. Nothing re-asserts the survey's.
+      this.setControls('command');
+      this._applyLabelPolicy();
+    }
     // The head of the page says what the page IS. On a plate it carries the
     // plate's own reference; on the survey it names the sheet and its scale,
     // which is the single line that turns a picture of terrain into a MAP.
@@ -607,6 +633,7 @@ export class HUD {
     nt.appendChild(this.unitClsEl);
     np.appendChild(nt);
     npP.content.appendChild(np);
+    this.namePanel = npP.root;
     L.appendChild(npP.root);
 
     // AP meter
@@ -1258,6 +1285,10 @@ export class HUD {
     if (this.phase === 'action') {
       this._updateAction(dt);
       this._updateTargeting(dt);
+    } else if (this._fieldMode) {
+      // A world shot: the battle is in the command phase but the frame carries
+      // the battle HUD, so its readouts have to be driven from here.
+      this._updateField();
     }
 
     // damage vignette decay
@@ -1508,8 +1539,9 @@ export class HUD {
 
   _syncSelection() {
     // In action mode the camera rides the selected soldier: his own slip would
-    // land on the back of his head.
-    this.labels.setSelf(this.phase === 'action' ? this.selected : null);
+    // land on the back of his head. Same on a field shot, where the subject is
+    // the nearest and largest figure in frame.
+    this.labels.setSelf(this.phase === 'action' || this._fieldMode ? this.selected : null);
     this._applyLabelPolicy();
     for (const [u, c] of this._rosterCards) {
       const sel = u === this.selected;
@@ -1523,7 +1555,9 @@ export class HUD {
     this.unitClsEl.textContent = CLASS_NAME[cls] || 'Scout';
     clear(this.badgeEl);
     this.badgeEl.appendChild(classBadge(cls, { size: 46, team: u.team | 0, seed: 5 }));
-    this.apShown = u.ap || 0;
+    // Clamped: a soldier under a movement order can carry more AP than his own
+    // maximum, and an unclamped meter then reads past the end of its own trough.
+    this.apShown = clamp(u.ap || 0, 0, u.maxAp || 1);
     this._ammo = u.ammo != null ? u.ammo : (u.weapon && u.weapon.ammo);
     this._mag = u.magSize != null ? u.magSize : (u.weapon && (u.weapon.mag || u.weapon.magSize));
     this._renderAmmo();
@@ -1644,11 +1678,20 @@ export class HUD {
 
   _updateAction(dt) {
     const u = this.selected;
+    // Field mode hides these when it has no subject; action mode always has one,
+    // so it has to put them back or a field shot rendered earlier keeps them off.
+    this.namePanel?.classList.toggle('vc-hidden', !u);
+    this.apPanel?.classList.toggle('vc-hidden', !u);
     if (!u) return;
     const maxAp = u.maxAp || 1;
     const ap = clamp(u.ap || 0, 0, maxAp);
-    // The meter drains smoothly even if the game steps AP in chunks.
-    this.apShown = damp(this.apShown, ap, 14, dt);
+    // The meter drains smoothly even if the game steps AP in chunks — but ONLY
+    // when time is running. The capture harness settles at dt = 0 (documented
+    // determinism contract), so an eased reading never converges and the plate
+    // photographs whatever the PREVIOUS shot left in the meter: the round-16
+    // `action` frame read "1062 / 900" — over its own maximum — because the
+    // number was inherited, not measured. At dt = 0 the meter snaps to the truth.
+    this.apShown = dt > 0 ? damp(this.apShown, ap, 14, dt) : ap;
     const low = ap / maxAp < 0.2;
     this.apGauge.set(clamp01(this.apShown / maxAp), low ? 'crit' : 'ap');
     this.apGhost.style.width = (clamp01(ap / maxAp) * 100).toFixed(2) + '%';
@@ -1671,6 +1714,75 @@ export class HUD {
 
     this._updateCompass();
     this.setControls(this.aiming ? 'aim' : 'action');
+  }
+
+  /**
+   * The in-battle HUD over a world shot ('field' capture mode).
+   *
+   * Two things stop this being `_updateAction` with a different guard:
+   *
+   *  - The subject has to be chosen HERE, every frame. A world shot sets
+   *    `battle.activeUnit = null` (a stale active unit drags the shadow frustum
+   *    off), and the resident renderer keeps one HUD alive across shots, so a
+   *    name plate left over from the previous pose would photograph the wrong
+   *    soldier. `_fieldSubject()` is a pure function of the unit list, so the
+   *    same shot always names the same man.
+   *  - It must not depend on dt. The harness settles at dt = 0 (documented
+   *    determinism contract), so `damp()` never converges — the AP reading is
+   *    SNAPPED to the true value rather than eased toward it.
+   */
+  _updateField() {
+    const u = this._fieldSubject();
+    // No subject means NO PANEL. `village` hides every Gallian and shows only
+    // foes, so there is nothing for a unit plate to be about; leaving the panels
+    // up printed a blank name over "ACTION POINTS 0 / 0" in 40px type, which is
+    // worse than the wrong-unit caption it replaced.
+    this.namePanel?.classList.toggle('vc-hidden', !u);
+    this.apPanel?.classList.toggle('vc-hidden', !u);
+    if (u && u !== this.selected) { this.selected = u; this._syncSelection(); }
+    // Restated every frame rather than left to _syncSelection: the resident
+    // renderer can hand this shot a HUD whose selection ALREADY equals the
+    // subject, in which case _syncSelection never fires and the subject would
+    // wear a name slip on top of the corner plate that already names him.
+    this.labels.setSelf(u || null);
+    if (u) {
+      const maxAp = u.maxAp || 1;
+      const ap = clamp(u.ap || 0, 0, maxAp);
+      const low = ap / maxAp < 0.2;
+      this.apShown = ap;
+      this.apGauge.set(clamp01(ap / maxAp), low ? 'crit' : 'ap');
+      this.apGhost.style.width = (clamp01(ap / maxAp) * 100).toFixed(2) + '%';
+      this.apNum.textContent = String(Math.round(ap));
+      this.apMaxEl.textContent = '/ ' + Math.round(maxAp);
+      this.apRangeEl.textContent = Math.round(ap / (u.apPerMetre || 1)) + ' m of march';
+      this._apLast = Math.round(ap);
+      this.apPanel.classList.toggle('low', low);
+    }
+    this._updateCompass();
+  }
+
+  /**
+   * Who the field HUD is about: the acting unit if the shot named one, else the
+   * first deployed Gallian soldier in list order, else any deployed Gallian
+   * (which picks up the tank on an armour shot), else the first Gallian at all.
+   * List order, never camera distance — this has to be identical on every render
+   * of a given shot.
+   */
+  _fieldSubject() {
+    const b = this.battle || {};
+    const us = Array.isArray(b.units) ? b.units : [];
+    const mine = (u) => u && (u.team | 0) === 0 && u.alive !== false;
+    // The acting unit, but only if it is OURS. Every other branch guards with
+    // mine(); this one did not, and resetShotState() does not clear activeUnit,
+    // so an Imperial left selected by `firefight`/`aim` could caption the panel.
+    const act = b.activeUnit || b.selected || b.selectedUnit;
+    if (mine(act) && act.deployed !== false) return act;
+    for (const u of us) if (mine(u) && u.deployed !== false && !u.isVehicle) return u;
+    for (const u of us) if (mine(u) && u.deployed !== false) return u;
+    // No Gallian is DEPLOYED — e.g. `village` hides all and shows only foes.
+    // Returning an undeployed unit here captioned that frame "Edelweiss / Tank"
+    // over a shot containing no tank and no Gallian. No subject means no panel.
+    return null;
   }
 
   _renderAmmo() {
@@ -1942,7 +2054,10 @@ export class HUD {
    * Action mode is an EYE: no counters, everything culled by line of sight.
    */
   _applyLabelPolicy() {
-    const cmd = this.phase === 'command' || this.phase === 'enemy';
+    // 'field' mode is an EYE too, whatever the battle phase says: a world shot is
+    // looking at the valley, not down at a staff map, so it takes the action
+    // policy — no map counters, everything culled by line of sight.
+    const cmd = (this.phase === 'command' || this.phase === 'enemy') && !this._fieldMode;
     if (cmd) {
       // The selected soldier and BOTH tanks get a name. One slip on a whole survey
       // says only "this one is chosen"; naming the armour as well is what a staff

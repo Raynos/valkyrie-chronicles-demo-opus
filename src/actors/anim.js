@@ -985,6 +985,25 @@ export class Animator {
 
   _clearOverride() { this._override = null; }
 
+  /**
+   * Rewind the locomotion cycle to its start.
+   *
+   * `phase` is advanced by every frame any shot renders, and `action.time` for
+   * the non-stride clips is a free-running accumulator, so the pose a shot
+   * photographs was a function of how many frames every EARLIER shot had run —
+   * i.e. of shot ORDER. On `closeup` that moved 144 px of the background soldier
+   * by up to 51 LSB across an intervening `aim` render. The capture harness's
+   * whole contract is "identical shot name => identical pixels", so the phase
+   * has to be rewound between shots, not merely left alone.
+   */
+  resetPhase() {
+    this.phase = 0;
+    this._overlay = null;
+    this._override = null;
+    for (const e of this._loco) if (e.action) e.action.time = 0;
+    return this;
+  }
+
   _rebuildLoco() {
     const set = LOCO_SETS[this.stance] || LOCO_SETS.stand;
     const keep = new Set(set.map((s) => s[0]));

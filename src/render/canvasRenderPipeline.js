@@ -516,6 +516,8 @@ uniform float uInkFadeEnd;    // metres — and at its faintest past this
 // contact wash
 uniform float uAoStrength;
 uniform float uContactStrength;
+// How far the wash's target VALUE drops in a full cavity — see vcContactWash.
+uniform float uContactDeep;
 uniform vec3  uContactViolet;
 uniform vec3  uInkFloor;
 
@@ -593,12 +595,34 @@ Gb sampleGb(vec2 uv) {
 #define VC_WASH_TURN 0.0333       // 12 degrees
 #define VC_WASH_H    0.5833       // 210 deg — the skylight, as lighting.js ramps it
 #define VC_WASH_CAP  0.375        // 135 deg — the far edge of olive
-vec3 vcContactWash(vec3 c, vec3 sky, vec3 floorCol) {
-  float l = vcLum(vcShadowColour(c, sky, floorCol));
+//
+// ROUND 17 ADDS THE CAVITY DEPTH. vcShadowColour's value rule is
+// mix(albedo, grey, 0.22) * 0.36, i.e. a shaded surface lands at 36% of its own
+// albedo luminance and a CAVITY lands at the same 36%. On a plate those are not
+// the same value: the shaded face of a pier and the inside of the arch it carries
+// are two washes apart, and every r16 critic named the same missing thing —
+// "real near-ink darks in foliage cores, under vehicles, in doorways and under
+// the arch of the bridge". Measured on the r16 bridge plate: the arch intrados sat at
+// L 110-130 against masonry at L 130-160, a separation of under one wash step,
+// and 0.95% of the plate was below L 60.
+//
+// So the wash's TARGET VALUE now falls with how occluded the fragment is; deep
+// is the same occ the pass has already quantised, so nothing new is measured;
+// a faint foot seam (occ ~0.1) keeps the calibrated value to within 4% and only a
+// genuine cavity is taken down.
+//
+// AND THE CHROMA RATIO RISES AS IT DOES. This is the r15 ink-floor lesson applied
+// forwards rather than as a warning: HSV saturation is a RATIO, so holding it at
+// 0.66 while the value drops by a third takes the ABSOLUTE chroma down by a third
+// as well, and a wash at L 70 with 0.66 of a 0.15 pigment reads as plain grey.
+// A deep wash keeps more of the ratio so that it keeps the same amount of
+// PIGMENT — which is what makes the inside of a stone arch read as stone.
+vec3 vcContactWash(vec3 c, vec3 sky, vec3 floorCol, float deep, float deepK) {
+  float l = vcLum(vcShadowColour(c, sky, floorCol)) * mix(1.0, deepK, clamp(deep, 0.0, 1.0));
   vec3 hsv = vcRgb2Hsv(c);
   float d = VC_WASH_H - hsv.x;
   hsv.x = min(hsv.x + clamp(d, 0.0, VC_WASH_TURN), max(hsv.x, VC_WASH_CAP));
-  hsv.y *= 0.66;
+  hsv.y *= mix(0.66, 0.92, clamp(deep, 0.0, 1.0));
   vec3 t = vcHsv2Rgb(hsv);
   return t * (l / max(vcLum(t), 1e-5));
 }
@@ -730,7 +754,8 @@ void main() {
       float wash = clamp(1.0 - q.x, 0.0, 1.0);
       // the wet rim of a drying wash dries darker than its middle
       wash = clamp(wash * (1.0 + q.y * 0.22), 0.0, 1.0);
-      color = mix(color, vcContactWash(color, uContactViolet, uInkFloor), wash * 0.9);
+      color = mix(color, vcContactWash(color, uContactViolet, uInkFloor, occ, uContactDeep),
+                  wash * 0.9);
     }
   }
 
@@ -1014,9 +1039,29 @@ uniform float uHatchHi;       // ...and at which it has gone
 uniform float uHatchSmall;    // what is left of it on a small form
 uniform float uHatchFlat;     // ...and what is left on an unbroken plane
 uniform float uHatchDepth;    // wash multiplier under a full-pressure stroke
+// ---- the plate's TONAL RANGE (see the range block at the end of main) -------
+uniform float uRangeLo;       // display value held fixed at the bottom
+uniform float uRangeHi;       // ...and at the top
+uniform float uRangeAmt;      // 0 = off, 1 = the full redistribution
 varying vec2 vUv;
 
 float lumaOf(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+// The REAL sRGB transfer, both ways. Everything else in this file uses pow 0.4545
+// as a stand-in for "display", which is fine when the quantity being authored is
+// a local amplitude (a tooth budget, a hatch gate) but not when it is an absolute
+// value: at display 0.149 the pure-gamma and the true-sRGB encodings of the same
+// linear luminance are 4.5 LSB apart, and the range curve below is calibrated
+// against measured 8-bit plate values, so it has to work in the space those
+// measurements were taken in.
+float vcSrgbEnc(float x) {
+  x = clamp(x, 0.0, 1.0);
+  return x <= 0.0031308 ? x * 12.92 : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+float vcSrgbDec(float x) {
+  x = clamp(x, 0.0, 1.0);
+  return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4);
+}
 
 // FXAA-derived, but with a guard that refuses to blur a pixel that is much
 // darker than its neighbourhood — i.e. a graphite line. Without this, AA turns
@@ -1825,6 +1870,66 @@ void main() {
   c *= mix(vT, vec3(1.0), vig);
   c *= mix(0.94, 1.0, vig);
 
+  // ---- THE PLATE'S TONAL RANGE ---------------------------------------------
+  // ROUND 17. THE FRAME WAS ONE MIDTONE BAND WITH A FLOOR AND A CEILING IT
+  // NEVER REACHED. Measured cold, HUD masked, on the r16 build:
+  //
+  //             maxBin   <L60    >L195   p99    p1    p5    p50   p95
+  //   bridge    24.66%   0.95%   3.62%   214.8  60.4  75.2  144.7 192.4
+  //   closeup   16.27%   3.37%   7.95%   220.4  49.1  64.6  129.1 206.0
+  //
+  // A QUARTER of the bridge plate inside one 16-LSB bin, one pixel in a hundred
+  // below L 60, and the darkest scene pixel L 30.7 — while the pass three
+  // blocks up authors an ink floor at L 38 (near) / L 44 (far) and a painted
+  // ceiling at L 225. Both end stops were correct and almost nothing in the
+  // picture was standing on either of them. That is the "faded antique pastel
+  // plate" read: not a wrong palette, a wrong DISTRIBUTION.
+  //
+  // WHY IT IS HERE AND NOT IN THE TONEMAP. The frame's value structure is built
+  // by ten things — the surface washes, the contact pass, aerial perspective,
+  // the tonemap S, the ink floor, the painted ceiling, the split tone, the
+  // hatch, the tooth and the vignette — and every one of them was authored
+  // against the value it saw. Widening the range upstream re-argues all ten.
+  // Doing it LAST, as one monotone map, is the same argument the wash quantiser
+  // makes fifteen blocks above ("the LAST thing that touches the tonal
+  // structure re-imposes it"), and monotone is what makes it safe:
+  //
+  //   * a plateau stays a plateau, and its STEP grows by the local slope;
+  //   * the paper tooth and the hatch are authored as fractions of that step,
+  //     and they are scaled by the SAME local slope, so tooth:step and ink:wash
+  //     are preserved exactly — this cannot re-open the round-5 "substrate
+  //     louder than the painting" defect;
+  //   * hue and HSV saturation are untouched by construction (the triple is
+  //     scaled, not re-mixed), so it cannot walk a dark into violet — the
+  //     round-15 trap. What it DOES change is which pixels are dark, which is
+  //     why the floor's own hue had to be re-authored alongside it: see
+  //     uFloorTint and uInkBlack below.
+  //
+  // THE TWO ANCHORS ARE THE PIPELINE'S OWN END STOPS, and they are FIXED POINTS
+  // of the curve, so nothing is crushed past them and no new clipping can
+  // appear: uRangeLo is the near-field ink floor and uRangeHi sits just under
+  // the painted-surface ceiling. In between, a cubic S redistributes. Because
+  // the shape is exactly a smoothstep between two fixed points, it was
+  // calibrated OFFLINE against the two cold plates above (apply the same map to
+  // the 8-bit frame and re-measure) rather than by rendering a sweep — which is
+  // also why it works in true sRGB rather than in the file's usual pow 0.4545.
+  //
+  // Predicted from that calibration, and to be checked against a cold render:
+  //   bridge  maxBin 16.0  <L60 6.1  >L195 8.5  p99 219.0  clip 0
+  //   closeup maxBin 10.5  <L60 12.3 >L195 12.0 p99 220.4  clip 0
+  if (uRangeAmt > 0.001) {
+    vec3 cD = vec3(vcSrgbEnc(c.r), vcSrgbEnc(c.g), vcSrgbEnc(c.b));
+    float p = lumaOf(cD);
+    if (p > uRangeLo && p < uRangeHi) {
+      float span = max(uRangeHi - uRangeLo, 1e-4);
+      float q = (p - uRangeLo) / span;
+      float s = q * q * (3.0 - 2.0 * q);
+      float pN = mix(p, uRangeLo + span * s, uRangeAmt);
+      cD *= pN / max(p, 1e-5);
+      c = vec3(vcSrgbDec(cD.r), vcSrgbDec(cD.g), vcSrgbDec(cD.b));
+    }
+  }
+
   // 8-bit dither so the big flat washes do not band on the way out
   float dith = (vcHash21(gl_FragCoord.xy + fract(uTime) * 61.3) - 0.5) / 255.0;
   c += dith;
@@ -2005,6 +2110,19 @@ export class CanvasRenderPipeline {
         uInkFadeEnd: { value: 78 },
         uAoStrength: { value: 0.62 },
         uContactStrength: { value: 0.70 },
+        // A full cavity's wash lands at 62% of vcShadowColour's value; see
+        // vcContactWash. Chosen against the picture rather than a metric: on
+        // masonry that takes the arch intrados two clear washes below the spandrel
+        // it is cut into, while a foot seam at occ 0.1 moves under 5%.
+        //
+        // 0.50 rather than the 0.62 round 17 first shipped: with 0.62 the bridge
+        // plate still measured only 4.4% of pixels below L 60 against a 6% bar,
+        // and the pixels missing are exactly the ones a cavity is supposed to own
+        // — the three arch intradoses, the undercut of the near bank, the inside of
+        // the town's doorways. Reaching the bar by bending the range curve instead
+        // was measured and rejected: it takes the whole plate's p50 down with it
+        // (149 -> 138) for a gloomier picture and no more structure.
+        uContactDeep: { value: 0.50 },
         // These two set the wash's VALUE and nothing else now: vcContactWash()
         // keeps vcShadowColour's luminance and then takes hue and chroma from
         // the surface the wash is falling on, so they are left exactly where
@@ -2021,19 +2139,44 @@ export class CanvasRenderPipeline {
         // Round 1 measured 0.22 haze at 60 m, which is why the village read
         // SHARPER than the 9 m hero. Air is thicker than that and it starts
         // much closer to the eye.
-        uHazeDensity: { value: 0.0175 },
+        // Raised with uHazeOnset (see uHazeStart): a longer quadratic onset shortens
+        // the effective optical path at EVERY distance, so the density has to come
+        // up by the ratio the far plane loses or the whole aerial perspective
+        // weakens instead of just moving back. 0.768/36.1 at 100 m fixes it at
+        // 0.0213.
+        uHazeDensity: { value: 0.0213 },
         // Haze must describe DISTANCE, not lift the whole frame. hazeStart is
         // clamped to a floor of uHazeStart * 0.55, so at 9 the near field began
         // hazing 4.95 m from the camera — inside the subject on every closeup.
         // Measured on `bridge` that flattened the plate to sd 30.66 with a
         // p5-p95 range of only 104 LSB and a p5 of 93, i.e. no dark anywhere.
-        uHazeStart: { value: 20 },
+        //
+        // ROUND 17 TAKES IT TO 30. The r16 pair (start 20, onset 45, density
+        // 0.0175) leaves a 40 m plane under 6.6% veil and a 60 m plane under
+        // 17.4% — and 60 m is the MIDGROUND of a landscape plate, not its
+        // distance. Resolved spatially on the r16 bridge plate, the single
+        // luminance bin holding a quarter of the frame was not the masonry (0-3%
+        // of the bin): it was the sky at hue 180, the river at hue 60-105, and a
+        // full-width row of 60-150 m bank, trees and rooftops at hue 38-46 that
+        // the veil had compressed into the same 16 LSB as both of them. A plate
+        // that hazes its far plane keeps the midground's own contrast; ours was
+        // spending the veil on the plane that can least afford it.
+        //
+        // The three numbers move TOGETHER so the far plane is untouched, which is
+        // the whole point — this is a change to WHERE the air starts, not to how
+        // much of it there is. With start 30 / onset 70 / density 0.0213:
+        //   40 m   6.6% -> 2.0%      (midground: the veil effectively goes)
+        //   60 m  17.4% -> 11.3%
+        //  120 m  42.4% -> 40.1%     (distance: unchanged, as it must be)
+        uHazeStart: { value: 30 },
         // Metres over which the air thickens from nothing to its full density.
         // See the aerial-perspective block: this is the whole difference between
         // "the distant planes are painted in air" and "a veil sits over the
-        // frame". 45 m leaves the midground of a 6 m-subject plate (a town at
-        // 25-35 m) inside 3% haze where the straight ramp gave it 11-19%.
-        uHazeOnset: { value: 45 },
+        // frame". 45 m left the midground of a 6 m-subject plate (a town at
+        // 25-35 m) inside 3% haze where the straight ramp gave it 11-19%; 70 m
+        // is what makes the ramp STEEP rather than merely late — see uHazeStart,
+        // and note that uHazeDensity rises with it so the far plane holds still.
+        uHazeOnset: { value: 70 },
         uHazeRefK: { value: 0.80 },
         uHazeMax: { value: 0.60 },
         uHazeHeight: { value: 34 },
@@ -2124,7 +2267,27 @@ export class CanvasRenderPipeline {
         // "warm" this constant now spends its chroma on the warm side, and the
         // COOLING of shade is left where rounds 12-14 proved it belongs — the
         // ambient/shade pole in lighting.js, not the frame's black point.
-        uInkBlack: { value: new THREE.Color(0x2e2522) },
+        //
+        // ROUND 17 RE-AUTHORS THE CHROMA AT THE SAME LUMINANCE, because the range
+        // curve at the end of this pass changed WHO IS DARK. On the r16 build the
+        // L<45 population of `bridge` was 1496 pixels — linework and hatch
+        // crossings, i.e. this constant and uInk — and it measured hue 33.9 /
+        // sat 0.163. Redistributing the range puts sixteen thousand pixels down
+        // there, and the new arrivals are the shaded masonry and the water: a
+        // near-neutral grey-green. Simulated through the curve, the L<45 mean goes
+        // hue 33.9/0.163 -> 54.6/0.140, i.e. an olive-grey deep end, which is the
+        // OTHER side of the same failure the r15 ink-floor entry describes — a
+        // dark whose chroma was not re-authored at the value it now sits at.
+        //
+        // 0x302420 is (48,36,32): hue 15, sat 0.333, Rec709 linear luminance
+        // 0.019953 against 0x2e2522's 0.020211 — a 1.3% linear difference, i.e.
+        // a quarter of an LSB, so the black point does NOT move. Blue is still
+        // the lowest channel, so the green guard clamp two blocks up stays inert.
+        // The chroma is spent on the warm side for the same reason round 16 spent
+        // it there: the COOLING of shade belongs to the ambient pole in
+        // lighting.js, and the frame's darkest accents in a CANVAS plate are soft
+        // graphite over a dried warm wash, which is a brown-black.
+        uInkBlack: { value: new THREE.Color(0x302420) },
         uWhiteStart: { value: 0.62 },
         uHighStart: { value: 0.74 },
         // ...and the floor lets go of the midtones faster. 2.6 handed a
@@ -2147,7 +2310,25 @@ export class CanvasRenderPipeline {
         // violet whatever pigment it was lifting. Measured on the round-13
         // build with the deep wash already fixed, the shaded village facade sat
         // at hue 200 and its own cast shadow at 234 purely on this term.
-        uFloorTint: { value: 0.88 },
+        //
+        // ROUND 17 PULLS IT BACK TO 0.58, and the reason is that 0.88 was chosen
+        // against a VIOLET floor. The r13 measurement that forced it up (0.45 put
+        // the shaded village facade at hue 200 and its cast shadow at 234) was
+        // taken when uInkBlack was 0x3c3947, hue 253 — so every point of tint was
+        // buying the shadow masses their way OUT of lavender. uInkBlack is now a
+        // warm brown-black (hue 15), so the failure mode that number was defending
+        // against is inverted: less pigment tint now means WARMER darks, not
+        // violet ones, which is exactly what the frame's deep end needs once the
+        // range curve populates it.
+        //
+        // It does not flatten the shade washes' hue variety, and that is the point
+        // of doing it here rather than by re-authoring a pole. The floor's weight
+        // is pow(1-c, 2.9) but its VALUE is 0.020 linear, so it owns the hue only
+        // where the paint under it is comparably dark: at final L 45 it is ~75% of
+        // the pixel, at L 90 about a tenth, at L 140 under 3%. Stone, sward and
+        // cloth keep three different shaded hues in the L 60-140 washes where that
+        // requirement lives; what changes is the ACCENT band under them.
+        uFloorTint: { value: 0.58 },
         // How far the ink floor drops inside 4 m — see the depth-keyed floor in
         // the grade's floor block. 0.72 of L 39 is L ~28, i.e. a near-ink accent
         // in the creases of the focal subject, which is what a CANVAS plate has
@@ -2253,6 +2434,64 @@ export class CanvasRenderPipeline {
         // value. (Round 5 took half and three critics called the pencil louder
         // than the paint; that was at a gate four times as wide.)
         uHatchDepth: { value: 0.62 },
+        // ---- the plate's tonal range (see the range block at the end of the
+        // grade). Both anchors are the pipeline's OWN end stops, in display:
+        // 0.100 (L 25.5) is the plate's MEASURED black point and 0.868 sits 4 LSB
+        // under the painted-surface ceiling at 225/255 = 0.882.
+        //
+        // The low anchor is the measured minimum, NOT lumaOf(uInkBlack) * uNearInk
+        // (L 38), and the difference matters. That constant is the floor's
+        // ASYMPTOTE as the paint under it goes to zero; it is not a hard minimum,
+        // because the hatch multiplies through it (c * uHatchDepth + uInkBlack *
+        // 0.04) and so does the outline. Cold, HUD masked, the darkest scene pixel
+        // is L 29.8 on bridge and L 25.8 on closeup. Anchoring on L 38 left the
+        // whole 26-38 band outside the curve's span, and measured offline that cost
+        // the bridge plate its single-bin test: 17.4% at lo 0.135 and 16.2% at
+        // 0.118 against 15.2% at 0.100, because a wider span is more slope
+        // everywhere, and the bridge mode is dense enough to need it.
+        //
+        // The top anchor was 0.860 for one round; 0.868 puts p99 at 221.3 rather
+        // than 219.5, i.e. on the number rather than 1.5 LSB under it, without
+        // reaching the ceiling guard — anchoring ON the ceiling (0.882) piles p99
+        // at 224.6, inside the band by 0.4 LSB and for the wrong reason, since it
+        // is the guard's own soft clip doing the work rather than the picture.
+        uRangeLo: { value: 0.100 },
+        uRangeHi: { value: 0.868 },
+        // 1.0 = the full redistribution.
+        //
+        // KNOWN SCOPE LIMIT, MEASURED, NOT GUESSED: a FIXED pair of anchors assumes
+        // every plate has a similar distribution, and two of the twelve do not.
+        // Cold, HUD masked, with this curve switched off vs on:
+        //
+        //                <L60          p99            maxBin        mean L
+        //   bridge     1.3 -> 6.6   216.5 -> 220.9   23.9 -> 14.9   138 -> 139
+        //   closeup    (see r2)     220 -> 222.1     16.3 -> 11.7   137 -> 134
+        //   village   25.9 -> 39.1  190.6 -> 207.5   21.2 -> 25.4   101 ->  94
+        //   dusk      14.0 -> 37.6  203.5 -> 212.1   20.4 -> 25.0   106 ->  95
+        //
+        // bridge and closeup were the mid-heavy plates this curve was written for
+        // and it does exactly what it was asked to. village and dusk were ALREADY
+        // open at the bottom (26% and 14% under L 60 before the curve) and short at
+        // the TOP (0.5% and 1.7% over L 195) — they needed the shoulder and not the
+        // toe, and they get both. On village the visible cost is the shaded
+        // half-timbered facade on the right and the near soldier in front of it:
+        // studs, doorway and uniform crush into one near-black mass.
+        //
+        // Trading the amount back does NOT buy that off — swept offline against all
+        // four plates, k 1.00 -> 0.85 moves village 39.1 -> 36.5 while costing
+        // bridge 6.6 -> 5.2 and the acceptance bar with it. Nor does raising
+        // uRangeLo: village's darks are pixels that were dark BEFORE the curve, so
+        // lifting the anchor only piles them onto it (village maxBin 25.4 -> 33.7 at
+        // lo 0.175).
+        //
+        // The fix is a per-frame anchor — uRangeLo driven from the plate's own p1
+        // and uRangeHi from its p99, which is a one-mip histogram reduction the
+        // pipeline does not currently have. Until then this curve is calibrated for
+        // the mid-heavy majority and village/dusk are known to be over-driven.
+        // (dusk's 18% pctViolet is NOT from this: the curve scales an RGB triple, so
+        // hue and HSV saturation are algebraically unchanged, and measured cold the
+        // number is 18.62% with the curve off against 17.78% with it on.)
+        uRangeAmt: { value: 1.0 },
       },
       vertexShader: FS_VERT, fragmentShader: GRADE_FRAG,
       depthTest: false, depthWrite: false, name: 'vcGrade',

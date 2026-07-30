@@ -307,25 +307,47 @@ function css() {
 .vc-body{ font-size:.86em; line-height:1.45; color:var(--ink-2); }
 
 /* ---------- book frame -------------------------------------------------- */
+/* THE BOOK'S FURNITURE IS NOT GAME UI, AND IT IS OFF BY DEFAULT.
+   The deckled outer rule, the four corner flourishes, the chapter bookmark and
+   the gummed running-head tape are the furniture of a PRINTED PAGE. Worn over
+   live gameplay they gave the frame away instantly: the project's success test
+   is a blind side-by-side against a real Valkyria Chronicles screenshot, and a
+   paper border with a handwritten plate caption is a mock-up of a book page, not
+   a game. Valkyria's own battle screens carry an in-battle HUD at ALL times and
+   no page frame whatsoever.
+   So every one of these pieces is "display:none" unless the root carries
+   ".vc-plate" — which no gameplay shot uses any more (see captureShots.js) and
+   which is kept solely so the styling survives for the book screens. The
+   briefing / chapter / journal pages in ui/screens.js keep their own cream
+   deckled stock, ink rules and serif type; nothing here touches them. */
 .vc-frame{ position:absolute; inset:0; }
+/* Gameplay keeps only a mild edge fall-off — enough to seat the picture, far
+   short of the printed-plate vignette, whose 62% corners read as a border. The
+   full-strength version is restored for ".vc-plate" below. */
 .vc-vignette{
   position:absolute; inset:0;
   background:
+    radial-gradient(132% 120% at 50% 48%, rgba(58,47,51,0) 60%, rgba(58,47,51,.10) 86%, rgba(46,36,40,.20) 100%),
+    linear-gradient(90deg, rgba(58,47,51,.12) 0%, rgba(58,47,51,0) 6%, rgba(58,47,51,0) 94%, rgba(58,47,51,.09) 100%);
+  mix-blend-mode:multiply;
+}
+.vc-plate .vc-vignette{
+  background:
     radial-gradient(126% 112% at 50% 46%, rgba(58,47,51,0) 52%, rgba(58,47,51,.30) 82%, rgba(46,36,40,.62) 100%),
     linear-gradient(90deg, rgba(58,47,51,.34) 0%, rgba(58,47,51,0) 9%, rgba(58,47,51,0) 91%, rgba(58,47,51,.26) 100%);
-  mix-blend-mode:multiply;
 }
 .vc-fibre{
   position:absolute; inset:0; opacity:.30; mix-blend-mode:multiply;
   background-image:var(--grain); background-size:160px 160px;
 }
-.vc-frame-rule{ position:absolute; inset:1.0em; opacity:.55; }
-.vc-corner{ position:absolute; width:5.2em; height:5.2em; opacity:.62; }
+.vc-frame-rule{ position:absolute; inset:1.0em; opacity:.55; display:none; }
+.vc-corner{ position:absolute; width:5.2em; height:5.2em; opacity:.62; display:none; }
 .vc-corner.tl{ top:.7em; left:.7em; }
 .vc-corner.tr{ top:.7em; right:.7em; transform:scaleX(-1); }
 .vc-corner.bl{ bottom:.7em; left:.7em; transform:scaleY(-1); }
 .vc-corner.br{ bottom:.7em; right:.7em; transform:scale(-1); }
-.vc-bookmark{ position:absolute; top:0; left:27em; width:2.4em; }
+.vc-bookmark{ position:absolute; top:0; left:27em; width:2.4em; display:none; }
+.vc-plate .vc-frame-rule, .vc-plate .vc-corner, .vc-plate .vc-bookmark{ display:block; }
 .vc-rule{ margin:.6em 0 .55em; }
 
 /* ---------- plate caption (capture mode 'plate') --------------------------
@@ -338,6 +360,20 @@ function css() {
 .vc-plate .vc-layer, .vc-plate .vc-legend, .vc-plate .vc-alert,
 .vc-plate .vc-toasts, .vc-plate .vc-dlg{ display:none !important; }
 .vc-plate .vc-world{ display:none; }
+
+/* ---------- capture mode 'field' ------------------------------------------
+   The in-battle HUD, over a world shot. Valkyria never takes its battle HUD
+   down: whatever the camera is looking at, the selected soldier's name and class
+   plate, his AP gauge and the control strip are on screen. The world shots'
+   battles sit in the "command" PHASE (nothing is acting in a landscape), so the
+   action layer would be "vc-hidden" by phase alone; this mode lifts it and takes
+   the survey furniture — roster, command-point sheet, tactical map, order hand,
+   targeting reticle — down instead, because none of that belongs over a
+   third-person view of the valley.
+   Specificity note: ".vc-hidden" is "display:none !important", so the override
+   has to be both !important AND longer. */
+.vc-field .vc-cmd, .vc-field .vc-tgt, .vc-field .vc-alert{ display:none !important; }
+.vc-field .vc-act, .vc-field .vc-act.vc-hidden{ display:block !important; }
 .vc-cap{ position:absolute; left:3.4em; bottom:2.6em; z-index:6;
   width:27em; padding:.5em .9em .55em; display:none; }
 .vc-plate .vc-cap{ display:block; }
@@ -357,7 +393,9 @@ function css() {
 .vc-runhead{
   position:absolute; top:.34em; left:50%; transform:translateX(-50%);
   z-index:6; padding:.18em 1.1em .24em; min-width:24em; pointer-events:none;
+  display:none;                       /* page furniture: book screens only */
 }
+.vc-plate .vc-runhead{ display:block; }
 .vc-runhead-row{ display:flex; align-items:baseline; gap:1.1em; white-space:nowrap; }
 .vc-runhead-l{
   font-variant:small-caps; letter-spacing:.24em; font-size:.66em; color:var(--ink-2);

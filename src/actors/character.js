@@ -180,6 +180,19 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
     // 25 mm clear of any hairline. Two fixes: they are now placed on the
     // DISPLACED surface (the same one the skin uses, via head.disp), and they sit
     // at dz -0.06 -> +0.02, which is the ear's own meridian, not the cheek's.
+    //
+    // ROUND 17 — IT IS STILL A BAR, and the arithmetic says why. The cap's band at
+    // the SIDE bottoms out at phi capEdge+0.030 = 0.425, i.e. dy 0.233; the tube
+    // ran dy 0.46 -> 0.00 at a near-constant 12 mm width, so the part of it that
+    // is not under the cap is a 26 x 13 mm rectangle with a rounded bottom — a
+    // bar, exactly as measured, regardless of which meridian it sits on. Moving it
+    // in round 5 could not fix a SHAPE problem.
+    //
+    // A sideburn is a WEDGE: broad where it leaves the mass under the cap, then
+    // tapering to a point. Two of them, the second shorter and darker and set
+    // behind the first, which gives the value break between clumps the critique
+    // asks for — one lock is a shape, two overlapping locks of different value
+    // are hair.
     for (const side of (SIMPLE() ? [] : [1, -1])) {
       const on = (dx, dy, dz, lift) => {
         const l = Math.hypot(dx, dy, dz) || 1;
@@ -187,11 +200,25 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
         const k = D(dx, dy, dz);
         return [C[0] + dx * (R[0] * k[0] + lift), C[1] + dy * (R[1] * k[1] + lift), C[2] + dz * (R[2] * k[2] + lift)];
       };
+      // Tips at dy 0.14 / 0.17, not 0.00 / 0.06. The band bottoms out at dy 0.233,
+      // so a lock ending at dy 0.00 hangs 26 mm of tapered hair down a bare cheek
+      // and the plate showed three of them as DARK PRONGS off the cap edge — the
+      // bar defect again in a pointier form. Ending at 0.14 leaves 10 mm showing,
+      // which is a sideburn; the width at the root is what makes it a mass.
+      b.setColor(hc);
       b.addTube([
-        { p: on(side * 0.94, 0.46, -0.02, 0.001), rx: 0.0062, rz: 0.0058 },
-        { p: on(side * 0.99, 0.20, -0.04, 0.001), rx: 0.0056, rz: 0.0052 },
-        { p: on(side * 0.97, 0.00, -0.06, 0.001), rx: 0.0034, rz: 0.0031 },
+        { p: on(side * 0.92, 0.56, 0.02, 0.0012), rx: 0.0110, rz: 0.0076 },
+        { p: on(side * 0.97, 0.34, -0.02, 0.0012), rx: 0.0100, rz: 0.0068 },
+        { p: on(side * 0.98, 0.20, -0.05, 0.0012), rx: 0.0064, rz: 0.0048 },
+        { p: on(side * 0.97, 0.14, -0.06, 0.0012), rx: 0.0014, rz: 0.0014 },
+      ], { seg: seg(7), capStart: 'flat', capEnd: 'round' });
+      b.setColor(mixCol(hc, [0.020, 0.016, 0.014], 0.34));
+      b.addTube([
+        { p: on(side * 0.90, 0.52, -0.20, 0.0016), rx: 0.0092, rz: 0.0064 },
+        { p: on(side * 0.95, 0.30, -0.22, 0.0016), rx: 0.0074, rz: 0.0052 },
+        { p: on(side * 0.95, 0.17, -0.23, 0.0016), rx: 0.0013, rz: 0.0013 },
       ], { seg: seg(6), capStart: 'flat', capEnd: 'round' });
+      b.setColor(hc);
     }
   };
 
@@ -231,6 +258,43 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
         });
       }
       b.addTube(arc, { seg: seg(7), capStart: 'round', capEnd: 'round' });
+    }
+    // --- FRINGE LOCKS ---------------------------------------------------------
+    // ROUND 17. The band above is the HAIRLINE and it is entirely invisible on a
+    // capped soldier, which is why the closeup critique reads "under the helmet
+    // there is no hair at all". Measured against the head's canon on the shot's
+    // hero: the band sits at t 0.75-0.78, and the scout cap's turn-up bottoms out
+    // at phi capEdge+0.030, i.e. t 0.716 at the front before the -0.10 rad cant
+    // takes it lower still. The band is 7-13 mm UNDER the cap. It has never once
+    // been in frame.
+    //
+    // So: four locks whose ROOTS are up under the band at t 0.762 and whose TIPS
+    // come to a point at t 0.686, i.e. 6-9 mm clear of the cap edge. Two things
+    // make them hair rather than the "three dark bars painted on a forehead" that
+    // round 5 correctly deleted — neither of which was true of that pass:
+    //   * they OVERLAP. Four 19 mm locks across a 70 mm forehead arc is a
+    //     continuous mass with a scalloped, pointed lower edge. The round-5
+    //     strands were isolated, which is what made each one read as a scar.
+    //   * they are two ALTERNATING VALUES, so the mass has breaks between clumps
+    //     instead of being one flat silhouette.
+    // And they start under the cap, so no lock has a root hanging in open skin.
+    if (!SIMPLE()) {
+      const NL = 4;
+      for (let i = 0; i < NL; i++) {
+        const a = (i / (NL - 1) - 0.5) * 1.30 + 0.06;
+        const sx = Math.sin(a), sz = Math.cos(a);
+        // Tips at alternating depths, so the lower edge is a zig-zag of points.
+        const tip = HL - 0.104 - 0.026 * (i % 2);
+        const lean = 0.10 * Math.sin(a);
+        b.setColor(i % 2 ? mixCol(hc, [0.022, 0.017, 0.015], 0.30) : hc);
+        b.addTube([
+          { p: [sx * R[0] * 0.74, C[1] + R[1] * FY(HL - 0.028), sz * R[2] * 0.82], rx: 0.0098, rz: 0.0074 },
+          { p: [(sx + lean) * R[0] * 0.86, C[1] + R[1] * FY(HL - 0.062), sz * R[2] * 0.93], rx: 0.0092, rz: 0.0070 },
+          { p: [(sx + lean * 1.6) * R[0] * 0.90, C[1] + R[1] * FY(tip + 0.020), sz * R[2] * 0.96], rx: 0.0056, rz: 0.0044 },
+          { p: [(sx + lean * 2.0) * R[0] * 0.91, C[1] + R[1] * FY(tip), sz * R[2] * 0.96], rx: 0.0012, rz: 0.0012 },
+        ], { seg: seg(7), capStart: 'flat', capEnd: 'round' });
+      }
+      b.setColor(hc);
     }
     return;
   }
@@ -410,7 +474,74 @@ function faceMasses(b, rig, o, head, f) {
     return [ax, t, Math.sqrt(Math.max(0.04, 1 - ax * ax - dy * dy)), lift, rx, flat];
   }));
 
+  // Landmark heights in metres above the eye line, so the orbital stack below can
+  // be reasoned about in millimetres instead of in face fractions. One unit of t
+  // is 1.896 * R[1] of head; on a medium build that is 208 mm.
+  const MM = 1.896 * R[1];
+  const tOf = (mAboveEye) => 0.500 + mAboveEye / MM;
+
   for (const side of [1, -1]) {
+    // --- A2. THE UPPER LID / BROW-RIDGE SHELF ------------------------------
+    // ROUND 17. The standing critique is "the eye is a faint darker smudge; no
+    // brow line, no eyelid; the profile is one continuous curve from crown to
+    // chin". The eye assembly rig.js builds is not missing — it is BURIED, and
+    // the arithmetic says so. Measured against the landmark canon on this build
+    // (R[1] = 0.110 m, so one t is 208 mm):
+    //
+    //   rig lash margin   spine 6.3 mm above the eye line, radius 2.5  -> 3.8..8.8
+    //   rig lid crease    spine 12.0 mm,                   radius 2.3  -> 9.7..14.3
+    //   rig brow tube     spine  9.4 mm (T_BROW 0.545),    radius 3.0  -> 6.4..12.4
+    //
+    // All three OVERLAP. There is no lit skin anywhere between the lash and the
+    // brow because there is no skin between them at all — the three marks stack
+    // into one 3-px double stroke, which is exactly what the plate shows at 9x.
+    // rig.js is another agent's file this round, so the fix is additive: a proud
+    // LIT mass that occupies 6.5..14.3 mm and stands 8.6 mm off the skull, which
+    // occludes the crease and the whole brow tube and the top of the lash, and
+    // then a NEW brow drawn at 20 mm where an anime brow actually sits. What is
+    // left underneath is a 6.5 mm dark lid line with 4.0 mm of lit shelf above it
+    // and a separate brow stroke above that.
+    //
+    // It is not paint: it is a ridge whose upper plane faces the sky and whose
+    // lower flank overhangs the orbit, so it is a light-over-dark pair that moves
+    // when the sun does, and it is the brow ridge the critique asks for in
+    // profile — the crown-to-chin curve now has a corner in it.
+    // Starts at ax 0.21, not 0.10. At 0.10 the shelf reached the glabella and the
+    // outline pass inked its lower flank as one 40 mm line running from the eye
+    // clear across to the nose root — a 28 mm eye under a 40 mm crease reads as a
+    // fold in the face, not as a lid. It stops at the inner canthus now.
+    frontBorder(side, [
+      [0.210, tOf(0.0090), 0.0020, 0.0018, 1.05],
+      [0.300, tOf(0.0104), 0.0046, 0.0032, 1.18],
+      [0.410, tOf(0.0108), 0.0052, 0.0034, 1.16],
+      [0.580, tOf(0.0102), 0.0046, 0.0031, 1.12],
+      [0.720, tOf(0.0074), 0.0018, 0.0017, 1.02],
+    ]);
+
+    // --- A3. THE BROW, REDRAWN CLEAR OF THE LID ----------------------------
+    // 20.4 mm above the eye line at its crest — high, the way CANVAS draws a
+    // brow, and 4.0 mm of lit shelf below it before the lid starts. Thin in
+    // section (flat < 1) so it stays a STROKE: round 4's near-circular brow tube
+    // was measured as "a caterpillar glued to the forehead" and rig.js's own note
+    // says a brow is 5-7 mm of hair, not 11.
+    //
+    // Coloured off the hair, not off the skin, and darkened toward a WARM brown
+    // rather than toward neutral — the round-15 ink-floor entry in the rubric is
+    // explicit that dropping luminance without re-authoring hue and chroma turned
+    // every outline on this hero violet. 0x2b211a is hue 27 deg, sat 0.40 as
+    // authored, which lands inside the 12-45 deg / 0.18-0.32 acceptance band once
+    // the shade glaze has been through it.
+    const browInk = mixCol(f.hairColor, rgbLin(0x2b211a), 0.66);
+    b.setColor(browInk).setMottle(0.030);
+    frontBorder(side, [
+      [0.130, tOf(0.0170), 0.0040, 0.0011, 0.95],
+      [0.260, tOf(0.0196), 0.0058, 0.0021, 0.92],
+      [0.430, tOf(0.0204), 0.0060, 0.0022, 0.92],
+      [0.590, tOf(0.0192), 0.0054, 0.0019, 0.92],
+      [0.710, tOf(0.0152), 0.0034, 0.0011, 0.88],
+    ]);
+    b.setColor(o.skin).setMottle(0.024);
+
     // --- A. SUPRAORBITAL SHELF ---------------------------------------------
     // Crest at face fraction 0.575, i.e. 6 mm above the brow hair and 19 mm
     // above the palpebral fissure, running from the glabella out to the brow
@@ -474,6 +605,19 @@ function faceMasses(b, rig, o, head, f) {
       [0.60, 0.115, 0.40, 0.0019, 0.0038, 1.4],
       [0.42, 0.090, 0.66, 0.0016, 0.0032, 1.4],
       [0.22, 0.072, 0.84, 0.0004, 0.0013, 1.4],
+    ]);
+
+    // --- C2. THE GONIAL ANGLE ----------------------------------------------
+    // The posterior border of the ramus, running UP from the jaw angle toward
+    // the ear. C above gives the jaw a lower edge; without this it has no back
+    // edge, so the mandible fairs smoothly into the neck and the profile is the
+    // single unbroken crown-to-chin curve the critique names. A corner needs two
+    // borders meeting, and this is the second one.
+    if (!SIMPLE()) border(side, [
+      [0.780, 0.330, -0.36, 0.0003, 0.0012, 1.3],
+      [0.860, 0.268, -0.28, 0.0015, 0.0026, 1.2],
+      [0.880, 0.212, -0.22, 0.0019, 0.0031, 1.1],
+      [0.830, 0.176, -0.10, 0.0011, 0.0020, 1.2],
     ]);
 
     // --- D. INFRAORBITAL RIM -----------------------------------------------
@@ -545,6 +689,213 @@ function faceMasses(b, rig, o, head, f) {
     return k;
   });
   b.setMottle(0.06);
+}
+
+
+/**
+ * THE EYE, MADE TO READ — the dark almond, the light sclera, the catchlight.
+ *
+ * ROUND 17. rig.js builds a complete eye: an almond sclera, an iris, a limbal
+ * ring, a pupil, a lash margin, a lid crease, a lower lid and a tear duct. On the
+ * `closeup` plate that assembly measures as a low-contrast smudge, and there are
+ * exactly three reasons, all measurable and none of them "the geometry is
+ * missing":
+ *
+ *  1  THE IRIS FILLS THE FISSURE. rig's iris is 12.8 x 13.4 mm inside a
+ *     28.4 x 12.6 mm palpebral opening, riding 0.9 mm high. There is no sclera
+ *     visible either side of it, so the eye has no light-against-dark at all — it
+ *     reads as one grey lens. VC's eye is roughly a third iris, two thirds white.
+ *  2  NOTHING IS DARK. The lash is mix(hairColor, near-black, 0.30) — only 30 %
+ *     of the way to ink from a mid-brown — and it is 2.5 mm thick. Sampled at 9x
+ *     the whole eye lives inside about 25 LSB.
+ *  3  THERE IS NO CATCHLIGHT ANYWHERE IN THE BUILD. Not a dim one; none. A
+ *     CANVAS eye is unmistakable because of a 2 mm near-white dot sitting on a
+ *     near-black iris, and that single 150-LSB step is what stops a head reading
+ *     as a mannequin.
+ *
+ * rig.js belongs to another agent this round, so this is built as an OVERLAY: the
+ * same eye frame, re-derived, with every mark at a greater stand-off so it wins
+ * the depth test against the layer underneath. Depths along the face normal, in
+ * millimetres, front-most surface in brackets — rig's front-most eye surface is
+ * its lash at 6.4:
+ *
+ *   sclera wedges 4.4 (+1.6 = 6.0)   iris 5.2 (6.8)   pupil 6.0 (7.1)
+ *   catchlight    6.6 (7.6)          lash 6.4..7.4 (9.6)   lower lid 4.6
+ *
+ * and it is deliberately built AFTER the AO bakes. A 2 mm disc at the bottom of a
+ * modelled orbit is fully occluded to a 44 mm AO probe; baked, the catchlight
+ * comes out 26 % darker, which is most of the step it exists to make.
+ */
+function eyeInk(b, rig, o, head, f) {
+  const S = head.surf, FY = head.FY;
+  if (!S || !FY) return;
+  const face = (dx, dy, lift = 0) => S(dx, dy, Math.sqrt(Math.max(0.04, 1 - dx * dx - dy * dy)), lift);
+
+  // rig.js's own eye canon, re-derived rather than guessed: any drift between
+  // these and rig's puts the overlay off the eye it is overlaying.
+  const eDX = 0.405, eDY = FY(head.T_EYE !== undefined ? head.T_EYE : 0.500);
+  const eyeS = 1.0 + (f.eye - 1.0) * 1.25;
+  const eW = 0.0142 * eyeS, eH = 0.0060 * eyeS;
+
+  // Sclera. NOT rig's PALETTE.eyeWhite (0xcfc6b6) plus a lot — rig's note that a
+  // brighter white "blooms into a pair of glowing dots where the eyes should be"
+  // is about a two-eyed front view at 40 px, and it is right. +13 sRGB is as far
+  // as this goes; the contrast comes from the iris and the lash being genuinely
+  // dark, not from the white being bright.
+  // Measured on the round-17 cycle-2 plate: at 0xd0c7b6 the slivers came out 201
+  // and 180 LSB against a lit forehead of 188-192, i.e. the whites were the
+  // brightest thing on the head and the eye read as two pale blobs. rig.js's
+  // warning about glowing dots is a real effect and this is where it bites. Two
+  // steps down puts them just under the forehead, which is where sclera belongs —
+  // it is a wet grey surface in a shadowed socket, not a highlight.
+  const sclera = rgbLin(0xc6bcab);
+  // Iris and pupil, darkened toward a WARM near-ink rather than toward neutral —
+  // the rubric's round-15 entry is explicit that dropping luminance without
+  // re-authoring hue and chroma is what turned this hero's outlines violet.
+  const iris = mixCol(f.eyeColor, rgbLin(0x2a211c), 0.62);
+  const pupil = mixCol(iris, rgbLin(0x1b1613), 0.72);
+  const lashInk = mixCol(f.hairColor, rgbLin(0x271e18), 0.74);
+  const catch1 = rgbLin(0xf4eee2);
+
+  b.setZone(ZONE.SKIN).setBones(BONE_GROUPS.HEAD);
+
+  for (const side of [1, -1]) {
+    const p = face(side * eDX, eDY, 0);
+    const fwd = new THREE.Vector3(side * 0.33, -0.07, 0.94).normalize();
+    const upv = new THREE.Vector3(0, 1, 0);
+    const rgt = new THREE.Vector3().crossVectors(upv, fwd).normalize();
+    upv.crossVectors(fwd, rgt);
+    // Local frame: +x TEMPORAL (outboard) on both sides, +y up, +z out of the
+    // face. Note this is where rig.js's eye code has a latent sign slip — it
+    // builds the basis from rgt*side and then also multiplies its centre offsets
+    // by side, so its iris shifts nasally on one eye and temporally on the other.
+    // Nothing here multiplies twice.
+    const q = new THREE.Quaternion().setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(rgt.clone().multiplyScalar(side), upv, fwd));
+    const at = (z) => new THREE.Matrix4().compose(
+      new THREE.Vector3(p[0] + fwd.x * z, p[1] + fwd.y * z, p[2] + fwd.z * z),
+      q, new THREE.Vector3(1, 1, 1));
+    const E = (lx, ly, lz) => [
+      p[0] + rgt.x * lx * side + upv.x * ly + fwd.x * lz,
+      p[1] + rgt.y * lx * side + upv.y * ly + fwd.y * lz,
+      p[2] + rgt.z * lx * side + upv.z * ly + fwd.z * lz,
+    ];
+
+    // --- SCLERA, AS TWO WEDGES ----------------------------------------------
+    // Two triangles either side of the iris rather than one lens behind it,
+    // because the layer underneath is a full-width iris: a lens drawn behind that
+    // iris is invisible and a lens drawn in front of it erases the eye. The
+    // wedges are what actually needs to exist — the white either side of a dark
+    // pupil is the whole reason an eye reads as a direction of gaze.
+    if (!SIMPLE()) {
+      b.setColor(sclera).setMottle(0.008);
+      b.setTransform(at(0.0044));
+      // FIRST PASS PUT THESE AT +-0.62 eW BY 0.40 eW AND IT WAS WRONG IN THE
+      // PICTURE, WHICH IS THE ONLY PLACE IT COULD HAVE BEEN CHECKED. Two 12 mm
+      // wedges either side of an 11 mm iris makes the eye MOSTLY WHITE, and the
+      // frame came out as a pair of bright vertical blobs with a dark sliver
+      // between them — an eye rolled back, not an eye. They are corner slivers now
+      // (8 mm, half the height) and the iris below is 53 % of the fissure, which
+      // is the proportion CANVAS actually draws.
+      for (const [cx, hw] of [[-eW * 0.78, eW * 0.25], [eW * 0.76, eW * 0.27]]) {
+        b.addEllipsoid({
+          center: [cx, -eH * 0.16, 0], radius: [hw, eH * 0.56, 0.0016],
+          seg: seg(9), rings: seg(6),
+          // Pinched to a point at the canthus end, full height at the iris end.
+          displace: (dx) => [1, Math.pow(clamp01(1 - dx * dx * 0.72), 0.55), 1],
+        });
+      }
+    }
+
+    // --- IRIS ----------------------------------------------------------------
+    // 11.4 x 13.7 mm and drawn OVER rig's 12.8 mm iris, so the eye comes out
+    // roughly a third iris. Taller than wide on purpose: the lash clips its top
+    // and the lower lid clips its bottom, which is what makes an iris read as a
+    // sphere behind lids instead of a disc on a cheek.
+    b.setColor(iris).setMottle(0.018);
+    b.setTransform(at(0.0052));
+    b.addEllipsoid({
+      center: [0, eH * 0.10, 0], radius: [0.0075 * eyeS, 0.0074 * eyeS, 0.0016],
+      seg: seg(11), rings: seg(7),
+      displace: (dx, dy, dz) => [1, 1, 0.34 + 0.66 * clamp01(dz)],
+    });
+    b.setColor(pupil).setMottle(0.010);
+    b.setTransform(at(0.0060));
+    b.addEllipsoid({
+      center: [0, eH * 0.10, 0], radius: [0.0033 * eyeS, 0.0036 * eyeS, 0.0011],
+      seg: seg(9), rings: seg(6),
+    });
+
+    // --- CATCHLIGHT ----------------------------------------------------------
+    // 3.4 x 3.0 mm, near-white, 1.2 mm in front of the pupil. At the closeup's
+    // 1.17 px/mm vertical (0.77 horizontal, this head is at a ~40 deg yaw) that is
+    // a 3 px dot; it is the smallest thing on the figure and the largest single
+    // value step on the head.
+    //
+    // THE FIRST TWO PASSES PUT IT AT ly = 0.34 eH AND IT DID NOT RENDER AT ALL,
+    // which is the whole reason for spelling the geometry out here. The lash spine
+    // sits at 0.70 eH with a 2.7 mm radius, so the lash occupies 1.7..7.1 mm above
+    // the eye line and its front face is at 8.9 mm — in front of the catchlight's
+    // 7.5. A 2.4 mm dot centred at 2.1 mm is therefore two thirds inside the lash
+    // and the third that is left is behind it. Measured on the plate: the brightest
+    // pixel in the eye box was 201 at the NASAL SCLERA SLIVER, and the predicted
+    // catchlight pixel read 83-86, i.e. iris. It is now below the lash's lower
+    // margin with 1 mm of clearance, on the iris, where a lid cannot eat it.
+    if (!SIMPLE()) {
+      b.setColor(catch1).setMottle(0);
+      // AND IT HAS TO BE BIG ENOUGH TO SURVIVE THE OUTLINE PASS. Cycle 3 moved it
+      // clear of the lash at 3.4 x 3.0 mm and it still did not appear: the eye box
+      // showed no bright pixel anywhere on the temporal half of the iris. At this
+      // head size that disc is 2.6 x 3.5 px, and a bright island that small inside
+      // a dark iris is entirely consumed by the ink the outline pass lays round its
+      // own silhouette — which is also why the pupil (4.2 x 7 px) and the sclera
+      // slivers do render. 5.2 x 4.4 mm is 4.0 x 5.1 px and has an interior.
+      b.setTransform(at(0.0074));
+      b.addEllipsoid({
+        center: [eW * 0.20, -eH * 0.14, 0], radius: [0.0026 * eyeS, 0.0022 * eyeS, 0.0011],
+        seg: seg(9), rings: seg(6),
+      });
+    }
+    b.setTransform(null);
+
+    // --- LASH MARGIN ---------------------------------------------------------
+    // The heavy one. Spine 4.4 mm above the eye line with a 2.6 mm radius, so the
+    // dark occupies 1.8..7.0 mm — and the lid shelf built in faceMasses starts at
+    // 6.5 mm, so the two abut and what the frame carries is one continuous
+    // 6.5 mm dark lid line with lit skin immediately above it. Tapered to a point
+    // at both canthi and heaviest over the outer third, the way a drawn lash is.
+    b.setColor(lashInk).setMottle(0.012);
+    b.addTube([
+      { p: E(-eW * 0.98, eH * 0.10, 0.0040), rx: 0.0008, rz: 0.0008 },
+      { p: E(-eW * 0.60, eH * 0.56, 0.0058), rx: 0.0021, rz: 0.0017 },
+      { p: E(-eW * 0.12, eH * 0.72, 0.0066), rx: 0.0026, rz: 0.0020 },
+      { p: E(eW * 0.34, eH * 0.70, 0.0068), rx: 0.0027, rz: 0.0021 },
+      { p: E(eW * 0.74, eH * 0.44, 0.0062), rx: 0.0022, rz: 0.0017 },
+      { p: E(eW * 0.98, eH * 0.02, 0.0044), rx: 0.0009, rz: 0.0008 },
+    ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
+
+    // Outer canthus: the corner is a DARK notch on a real eye, and it is what
+    // stops the almond looking symmetrical and therefore stuck-on.
+    if (!SIMPLE()) {
+      b.setColor(mixCol(lashInk, o.skin, 0.30)).setMottle(0);
+      b.addEllipsoid({
+        center: E(eW * 1.00, -eH * 0.10, 0.0038), radius: [0.0022, 0.0021, 0.0014],
+        seg: seg(7), rings: seg(4),
+      });
+    }
+
+    // Lower lid: a thin LIT ridge, brighter than rig's 12 %-toward-white version,
+    // because it is the mark that gives the eye a floor. Without it the iris runs
+    // straight into the cheek wash and the socket has no bottom.
+    b.setColor(mixCol(o.skin, rgbLin(0xf2e8d6), 0.34)).setMottle(0.010);
+    b.addTube([
+      { p: E(-eW * 0.88, -eH * 0.90, 0.0034), rx: 0.0009, rz: 0.0008 },
+      { p: E(-eW * 0.30, -eH * 1.14, 0.0044), rx: 0.0015, rz: 0.0011 },
+      { p: E(eW * 0.34, -eH * 1.10, 0.0044), rx: 0.0015, rz: 0.0011 },
+      { p: E(eW * 0.88, -eH * 0.84, 0.0034), rx: 0.0009, rz: 0.0008 },
+    ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
+  }
+  b.setColor(o.skin).setMottle(0.028);
 }
 
 
@@ -855,6 +1206,69 @@ function gearHead(b, rig, o, head, cls) {
         });
       }
       b.addTube(edge, { seg: seg(5) });
+    }
+    // --- THE BAND'S TOP SEAM, LIT ---------------------------------------------
+    // ROUND 17. The critique on this head is "a featureless green dome with one
+    // chinstrap line: no brim edge, no rim highlight, no shell crease". The cream
+    // welt above draws where the cap ENDS, at the bottom of the band; nothing
+    // draws where the band MEETS THE CROWN. One line is an edge, two lines 11 mm
+    // apart are a STRIP OF PRESSED CLOTH with thickness — that is the whole
+    // difference between a painted dome and a made object, and it costs one tube.
+    //
+    // Lit rather than dark on purpose: the band stands 1 % prouder than the crown,
+    // so its upper seam is a convex edge turned toward the sky. A dark line there
+    // would be drawing a shadow onto the one surface up there facing the key.
+    if (!SIMPLE()) {
+      b.setColor(mixCol(o.cap, o.trim, 0.34));
+      const N = seg(20), seam = [];
+      for (let i = 0; i <= N; i++) {
+        const u = i / N, a = u * TAU;
+        const ph = (capEdge(u) - 0.062) * Math.PI;
+        const sp = Math.sin(ph), cp = Math.cos(ph);
+        const d = [sp * Math.sin(a), cp, sp * Math.cos(a)];
+        const k = shell(1.172)(d[0], d[1], d[2]);
+        seam.push({
+          p: [d[0] * R[0] * k[0], 0.008 + d[1] * R[1] * k[1], -0.004 + d[2] * R[2] * k[2]],
+          // Wobbled: the rubric asks for lines with tooth, and a seam that is
+          // smooth to four decimal places gives the outline pass nothing.
+          rx: 0.0028 + 0.0007 * Math.sin(u * TAU * 3.0 + 0.7), rz: 0.0026,
+        });
+      }
+      b.addTube(seam, { seg: seg(5) });
+    }
+    // --- SHELL CREASE ---------------------------------------------------------
+    // The fold where the crown collapses onto the band. On a real garrison cap
+    // this is the hardest line on the object after the band itself, and it is the
+    // only thing that breaks the crown into two planes: without it the crown is
+    // one 90 x 70 px flat green mass, which is what "featureless dome" means.
+    // Two per side, running down and back from the crest.
+    if (!SIMPLE()) {
+      b.setColor(mixCol(o.capShade, o.cap, 0.35));
+      for (const sd of [1, -1]) {
+        for (const [zf, drop] of [[0.52, 0.0], [-0.10, 0.06]]) {
+          const st = (t) => {
+            // t 0 partway down the crown, 1 at the band. FIRST PASS RAN THIS FROM
+            // THE CREST ITSELF and the plate showed the result exactly: two long
+            // near-straight dark lines converging at the top of the dome, reading
+            // as cracks in the shell — an object with a fault, not a folded cap.
+            // A garrison cap's fold is a SHORT line low on the crown; starting at
+            // 0.68 instead of 1.02 keeps it in the bottom third where the crown
+            // actually collapses onto the band.
+            const dyv = lerp(0.68, 0.40 - drop, t);
+            const dxv = sd * lerp(0.34, 0.86, Math.pow(t, 0.78));
+            const dzv = zf * lerp(1.00, 0.72, t);
+            const l = Math.hypot(dxv, dyv, dzv) || 1;
+            const d = [dxv / l, dyv / l, dzv / l];
+            const k = shell(1.128, (ax, ay) => [
+              1 - 0.22 * clamp01(ay) * clamp01(ay), 1 + 0.20 * clamp01(ay), 1 + 0.16 * clamp01(ay),
+            ])(d[0], d[1], d[2]);
+            return [d[0] * R[0] * k[0], 0.012 + d[1] * R[1] * k[1], -0.004 + d[2] * R[2] * k[2]];
+          };
+          b.addTube([0, 0.34, 0.68, 1.0].map((t, i) => ({
+            p: st(t), rx: [0.0011, 0.0022, 0.0023, 0.0014][i], rz: 0.0017,
+          })), { seg: seg(6), capStart: 'round', capEnd: 'round' });
+        }
+      }
     }
     // Cap badge on the left front of the band.
     b.setColor(o.brass);
@@ -1825,6 +2239,13 @@ export class Character {
     // albedo down to sRGB 143 from a 216 base — before the shader had shaded
     // anything. A face is the one surface in the frame that must stay light.
     b.bakeAO({ res: CFG.quality >= 2 ? 44 : 32, strength: 0.26, radius: 0.044, skipBelow: throatY });
+    // AFTER THE BAKES, AND THAT IS THE POINT. The eye overlay's catchlight is a
+    // 2 mm disc at the bottom of a modelled orbit bounded above by an 8.6 mm brow
+    // shelf: to a 44 mm AO probe it is fully enclosed, and baked it came out
+    // 26 % darker — most of the value step it exists to make. Nothing else in
+    // eyeInk wants the bake either; a socket already carries the orbital dark from
+    // the skull's own paint map.
+    eyeInk(b, this.rig, opts, head, app.face);
     this.geometry = b.finish(this.rig);
     this.mesh = createSkinnedBody(this.geometry, this.rig, actorBodyMaterial());
     this.root.add(this.mesh);

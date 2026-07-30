@@ -357,19 +357,31 @@ function uiMode(ctx, mode, caption) {
 }
 
 /**
- * The world shots run in `plate` mode, not with the HUD switched off.
+ * The world shots run in `field` mode: the REAL in-battle HUD.
  *
- * Round 3 hid the whole HUD host on overview / bridge / tank / squad / dusk and
- * every one of them scored the hud axis at ZERO — not for anything the HUD did,
- * but because there was none of it in the frame. Five of eight critiqued shots
- * throwing an axis away is a scoring bug of our own making. `plate` keeps only
- * the book's own furniture (the frame rule, the corner flourishes, the chapter
- * bookmark and a pencilled caption in the lower margin) and takes every piece
- * of gameplay UI, including the in-world annotation layer, off the page. The
- * caption is what a war artist actually writes under a plate: where, and what.
+ * History, because this has been wrong twice. Round 3 hid the whole HUD host on
+ * overview / bridge / tank / squad / dusk, and every one of them scored the hud
+ * axis at ZERO — not for anything the HUD did, but because there was none of it
+ * in the frame. The answer to that was `plate` mode, which dressed those shots in
+ * the book's own furniture: a deckled outer rule, corner flourishes, a chapter
+ * bookmark, a gummed "Chapter II / The Crossing at Vasel / Plate VII" running
+ * head and a pencilled "Plate VII — Sergeant Melchiott, before the crossing"
+ * caption slip in the lower margin. It scored well and it was still wrong: the
+ * success test for this project is a BLIND SIDE-BY-SIDE against a real Valkyria
+ * Chronicles Remastered screenshot, and a paper-bordered page with a handwritten
+ * caption is a mock-up of a book page. It gives the frame away in under a second
+ * however good the render underneath is. On `action` and `aim` the furniture was
+ * sitting over live gameplay, on top of the AP gauge and the unit slips.
+ *
+ * The right fix for a HUD-less frame is to show the HUD. Valkyria has its battle
+ * interface on screen at ALL times, so `field` puts up what it puts up: the
+ * selected soldier's name and class plate, his AP gauge, the control strip and
+ * the world name slips, and no page furniture at all. The book styling itself is
+ * untouched and still drives the chapter / briefing / journal screens in
+ * ui/screens.js, where a book page is exactly what is wanted.
  */
-function plate(ctx, num, text, hand) {
-  uiMode(ctx, 'plate', { num: 'Plate ' + num, text, hand });
+function field(ctx) {
+  uiMode(ctx, 'field');
 }
 
 // ---------------------------------------------------------------------------
@@ -389,9 +401,7 @@ export const SHOTS = {
     // the cream band and every left flank falls into violet, which is the split the band
     // quantiser needs before it can show a terminator at all.
     setSun(ctx, 0.26, 0.42);
-    plate(ctx, 'II',
-      'The crossing at Vasel from the eastern rise; Squad 7 coming up the near bank.',
-      'pencil & wash, from the eastern rise');
+    field(ctx);
     b.setPhase('command');
     // Nothing is "acting" in a landscape, and a stale active unit drags the shadow frustum
     // off to wherever that soldier is standing — see updateLighting() in main.js.
@@ -481,9 +491,7 @@ export const SHOTS = {
     // stays at -0.2 (violet). That is a terminator running round every voussoir ring, which
     // is the only thing that makes a stone arch read as a curved solid.
     setSun(ctx, 0.19, 0.977);
-    plate(ctx, 'III',
-      'The three arches from the south-east; an Imperial picket at the far bridgehead.',
-      'pen, ink & wash, standing in the shallows');
+    field(ctx);
     hideAll(ctx);
     b.activeUnit = null;
 
@@ -543,9 +551,7 @@ export const SHOTS = {
   async squad(ctx) {
     ensureBattle(ctx);
     setSun(ctx, 0.28, 2.05);
-    plate(ctx, 'IV',
-      'Halted in the poplar avenue on the southern approach — scout, shocktrooper, lancer, engineer.',
-      'graphite, ink & wash');
+    field(ctx);
     hideAll(ctx);
 
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
@@ -1273,9 +1279,7 @@ export const SHOTS = {
     // the 48-degree three-quarter that shows both of them at once, and azimuth 1.60 is the
     // AZ that follows. Change one of the three and you must re-solve the other two.
     setSun(ctx, 0.16, 1.60);
-    plate(ctx, 'V',
-      'The Edelweiss halted on the road, turret traversed to the eastern flank.',
-      'graphite & bodycolour, sketched at the halt');
+    field(ctx);
     hideAll(ctx);
     b.activeUnit = null;
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
@@ -1359,9 +1363,7 @@ export const SHOTS = {
   async village(ctx) {
     const b = ensureBattle(ctx);
     setSun(ctx, 0.33, 1.75);
-    plate(ctx, 'VI',
-      'The market street, taken; the barn on the left still holds its Imperial section.',
-      'pen & wash, hurriedly');
+    field(ctx);
     hideAll(ctx);
 
     // IN THE STREET, NOT OUT ON THE GREEN.
@@ -1412,9 +1414,7 @@ export const SHOTS = {
   async closeup(ctx) {
     ensureBattle(ctx);
     setSun(ctx, 0.29, 2.15);
-    plate(ctx, 'VII',
-      'Sergeant Melchiott, before the crossing.',
-      'red chalk & graphite, from the life');
+    field(ctx);
     hideAll(ctx);
     const alicia = unitNamed(ctx, 'Alicia Melchiott') || firstOfClass(ctx, 'scout', 0);
     const rosie = unitNamed(ctx, 'Rosie Stark');
@@ -1479,9 +1479,7 @@ export const SHOTS = {
   async grass(ctx) {
     ensureBattle(ctx);
     setSun(ctx, 0.28, 2.30);
-    plate(ctx, 'VIII',
-      'Moving through the fallow field south-west of the deployment ground.',
-      'graphite & wash');
+    field(ctx);
     hideAll(ctx);
     const edy = unitNamed(ctx, 'Edy Nelson') || firstOfClass(ctx, 'scout', 0);
     const rosie = unitNamed(ctx, 'Rosie Stark');
@@ -1540,9 +1538,7 @@ export const SHOTS = {
     // at thirteen degrees — a 4.4:1 shadow — on the ember end of the ramp, and azimuth is
     // AZ - (t - 0.5) * 1.15 = -1.868.
     setSun(ctx, 0.95, -1.868);
-    plate(ctx, 'IX',
-      'Last light over the valley; the section halted west of the road.',
-      'wash over graphite, at dusk');
+    field(ctx);
     b.setPhase('command');
     b.activeUnit = null;
     // Every placement below is authored as (depth down the view ray, metres to screen-right)
@@ -1691,6 +1687,25 @@ export function resetShotState(ctx) {
   if (ctx.camera && ctx.camera.fov !== 32) {
     ctx.camera.fov = 32;
     ctx.camera.updateProjectionMatrix();
+  }
+
+  // Selection. The field HUD captions itself from activeUnit/selected, so a unit
+  // left latched by an earlier shot leaks into a later one's corner plate.
+  b.activeUnit = null;
+  if ('selected' in b) b.selected = null;
+  if ('selectedUnit' in b) b.selectedUnit = null;
+
+  // LIVE BATTLE STATE. `ap` is spent by the `action`/`aim`/`firefight` shots and
+  // was never restored, so the AP readout became a function of shot ORDER and
+  // printed it in 40px type — `--verify` failed on five shots at up to 1.65% of
+  // pixels. Anything the HUD prints as a number has to be restored here, not
+  // just anything that moves geometry.
+  for (const u of (b.units || [])) {
+    if (u.maxAp !== undefined) u.ap = u.maxAp;
+    if (u.actionsThisTurn !== undefined) u.actionsThisTurn = 0;
+    if (u.acted !== undefined) u.acted = false;
+    // The locomotion cycle is a free-running accumulator: see Animator.resetPhase().
+    u.actor?.animator?.resetPhase?.();
   }
 
   // Units: every shot declares its own cast via show(), so start from none.

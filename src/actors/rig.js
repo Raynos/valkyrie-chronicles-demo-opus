@@ -1727,7 +1727,15 @@ function buildTorso(b, rig, o) {
     { p: [0, hy - 0.075, zc - 0.002], rx: 0.152 * g, rz: 0.114 * g },      // hip shelf
     { p: [0, hy - 0.010, zc], rx: 0.142 * g, rz: 0.103 * g },
     { p: [0, hy + 0.090, zc + 0.004], rx: 0.118 * g, rz: 0.086 * g },      // waist (narrowest)
-    { p: [0, hy + 0.190, zc + 0.006], rx: 0.143 * g, rz: 0.101 * g },      // lower ribs
+    // ROUND 17 — THE RIBS-TO-WAIST TAPER WAS 1:5.7 AND THAT IS NOT A WAIST.
+    // 0.162 at hy+0.300 to 0.143 at hy+0.190 is nineteen millimetres over 110 mm
+    // of height; projected on the closeup (940 px/m) that is 18 px of narrowing
+    // over 103 rows, i.e. a line the eye cannot tell from vertical. The yoke sits
+    // at 0.166 immediately above it, so the whole run from the armpit to the belt
+    // reads as one straight side. 0.130 here doubles the slope over the SAME
+    // window (34 mm / 103 rows) and leaves the waist station below it as the
+    // narrowest point, so the profile is chest -> in -> waist -> belt -> flare.
+    { p: [0, hy + 0.190, zc + 0.006], rx: 0.130 * g, rz: 0.096 * g },      // lower ribs
     // A RIBCAGE IS NOT A SHOULDER. Round 9 and earlier authored the chest out
     // to 0.186 — a 37 cm half-span at the level of the armpit — because that is
     // where the figure's silhouette had to reach. But the silhouette's job is
@@ -1813,12 +1821,22 @@ function buildTorso(b, rig, o) {
   // that edge is worth more at 40 m than every seam above it put together.
   const v0 = b.vertexCount;
   b.setColor(o.tunic).setMottle(0.07);
+  // ROUND 17 — THE SKIRT WAS UNDOING THE WAIST. Its top ring was 0.130 at
+  // hy+0.055, i.e. 12 mm PROUD of the trunk's waist and starting 35 mm below it,
+  // so the narrowest section on the figure was bridged by the very piece that is
+  // supposed to hang off it, and the hem (0.163) came out level with the chest
+  // (0.162) — a straight-sided tube with a belt drawn on it. The top ring now sits
+  // AT the belt line (character.js puts the belt at hy+0.070) and is TUCKED to
+  // 0.121, 11 mm inside the belt, so the belt is the widest thing in that band and
+  // reads as a cinch; the hem opens to 0.172, which makes the skirt an A-line with
+  // 51 mm of flare instead of 33 and puts the widest point of the torso at the HIP
+  // rather than the chest.
   b.addTube([
-    { p: [0, hy + 0.055, zc + 0.002], rx: 0.130 * g, rz: 0.094 * g },
-    { p: [0, hy - 0.035, zc - 0.002], rx: 0.160 * g, rz: 0.118 * g },
-    { p: [0, hy - 0.120, zc - 0.006], rx: 0.163 * g, rz: 0.120 * g },
-    { p: [0, hy - 0.168, zc - 0.008], rx: 0.162 * g, rz: 0.119 * g },
-    { p: [0, hy - 0.182, zc - 0.008], rx: 0.152 * g, rz: 0.112 * g },
+    { p: [0, hy + 0.072, zc + 0.002], rx: 0.121 * g, rz: 0.089 * g },
+    { p: [0, hy - 0.035, zc - 0.002], rx: 0.166 * g, rz: 0.122 * g },
+    { p: [0, hy - 0.120, zc - 0.006], rx: 0.172 * g, rz: 0.127 * g },
+    { p: [0, hy - 0.168, zc - 0.008], rx: 0.171 * g, rz: 0.126 * g },
+    { p: [0, hy - 0.182, zc - 0.008], rx: 0.160 * g, rz: 0.118 * g },
   ], { seg: seg(18), capEnd: 'none' });
   b.tintRange(v0, b.vertexCount, 0.985);
   // Four vertical drape folds in the skirt. Each is 5 mm of geometry and a
@@ -1829,9 +1847,11 @@ function buildTorso(b, rig, o) {
     const a = (i / 6) * TAU + 0.4;
     const sx = Math.sin(a), sz = Math.cos(a);
     b.addTube([
-      { p: [sx * 0.128 * g, hy + 0.035, zc + sz * 0.092 * g], rx: 0.007, rz: 0.005 },
-      { p: [sx * 0.166 * g, hy - 0.090, zc + sz * 0.122 * g], rx: 0.009, rz: 0.006 },
-      { p: [sx * 0.176 * g, hy - 0.172, zc + sz * 0.130 * g], rx: 0.007, rz: 0.005 },
+      // Stations track the new (tucked, flared) skirt profile — at the old 0.128
+      // the top of every fold was buried 9 mm inside the cloth it decorates.
+      { p: [sx * 0.135 * g, hy + 0.035, zc + sz * 0.099 * g], rx: 0.007, rz: 0.005 },
+      { p: [sx * 0.172 * g, hy - 0.090, zc + sz * 0.127 * g], rx: 0.009, rz: 0.006 },
+      { p: [sx * 0.181 * g, hy - 0.172, zc + sz * 0.134 * g], rx: 0.007, rz: 0.005 },
     ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
   }
 
@@ -2040,8 +2060,18 @@ function buildShoulders(b, rig, o) {
         // the cap where the light is turning, which is precisely where a band
         // boundary wants something to catch on.
         const seam = 0.030 * lat * (Math.cos(Math.atan2(dz, dx * side) * 3.0) * 0.5 + 0.5);
+        // ROUND 17 — A SHOULDER POINT IS A CORNER, AND up*up IS A DOME.
+        // With the lateral radius falling off as up^2 the cap loses 20 % of its
+        // width by dy = 1 and 9 % by dy = 0.66, so the outboard contour is a
+        // continuous circular arc from the sleeve to the pole: measured on the r16
+        // closeup the shoulder is a soft round lump with no acromion anywhere in
+        // it. up^3 holds the full width out to dy ~= 0.7 and then drops it fast,
+        // which is what an acromion does — a flat shelf that ENDS. The lateral
+        // gain also goes 0.10 -> 0.17, putting the cap's equator at x 0.240
+        // against the sleeve's 0.234, so the corner is the OUTERMOST thing on the
+        // shoulder instead of 2 mm inside the sleeve that hangs off it.
         return [
-          1 - up * up * 0.20 + lat * 0.10 - seam,
+          1 - Math.pow(up, 3.0) * 0.30 + lat * 0.17 - seam,
           1 - up * up * 0.26 - dn * dn * 0.16,
           1 - up * up * 0.14 - clamp01(-dz) * 0.06 - seam * 0.6,
         ];
@@ -2150,8 +2180,26 @@ function buildArms(b, rig, o) {
       // 0.30, ramped in from t 0.12 and released only in the last 14% (where the
       // epicondyles legitimately step back out), closes the edge ~14 mm — 6 px at
       // this camera — over the same run.
-      const splay = 0.30 * Math.pow(out, 1.25)
-        * smoothstep(0.12, 0.70, t) * (1 - smoothstep(0.86, 1.0, t));
+      // ROUND 17 — MEASURED THE WHOLE ARM'S OUTBOARD SILHOUETTE INSTEAD OF ONE
+      // STATION, AND THE TAPER WAS NEGATIVE. Evaluating this function at out = 1
+      // against the bone table gives outer x, shoulder to wrist:
+      //   0.215 0.231 0.236 0.237 0.236 0.227 0.219 0.221 | 0.247 0.252 0.255 0.250
+      //   | roll 0.253 0.261 0.260 0.253 | 0.252 0.248 0.245 0.244 0.244
+      // The FOREARM AND THE WRIST ARE THE WIDEST PART OF THE ARM — the wrist
+      // (0.2436) is 7 mm outboard of the deltoid belly (0.2359), and the sleeve
+      // roll (0.2608) is 25 mm outboard of it. That is the critique's "smooth tube,
+      // no elbow break, the forearm continues the upper arm's line, no wrist
+      // narrowing" as a number, and it is not a radius problem: the humerus walks
+      // 22 mm outboard, the forearm another 17 mm, so 39 mm of bone travel eats
+      // every millimetre the radii give up. r15/r16 fixed this for the humerus only
+      // and then released the trim at t 0.86, i.e. exactly across the supracondylar
+      // pinch that is supposed to be the narrowest point above the joint.
+      // 0.30 -> 0.52 and the release window 0.86..1.0 -> 0.94..1.0 gives
+      //   0.215 0.231 0.234 0.233 0.229 0.218 0.215 0.217 | elbow 0.232
+      // i.e. 20 mm of genuine taper from the deltoid to a pinch, and the epicondyle
+      // (now owned by the forearm's first station, below) steps 17 mm back out.
+      const splay = 0.52 * Math.pow(out, 1.25)
+        * smoothstep(0.12, 0.70, t) * (1 - smoothstep(0.94, 1.0, t));
       // AND A STRAIGHT EDGE IS A TELL EVEN WHEN IT TAPERS. A hanging serge sleeve
       // bunches: its outboard contour is non-monotonic at a scale of a few
       // centimetres. This is a deterministic (t-keyed, no RNG, so the frame stays
@@ -2206,7 +2254,13 @@ function buildArms(b, rig, o) {
       // above, take the outer edge to 0.2245 / 0.2355 and leave the forearm to own
       // the joint's contour.
       { p: at(sh, el, 0.955), rx: 0.0296 * g, rz: 0.0386 * g },
-      { p: el, rx: 0.0398 * g, rz: 0.0452 * g },                  // elbow
+      // r17: 0.0398 -> 0.0265. The epicondyle flare belongs to the FOREARM's first
+      // station, which is coincident with this one and 15 mm wider — leaving the
+      // flare here as well put the humerus's end ring outside the sleeve that
+      // covers it, which is the exposed-rim defect the r15 note above catalogues
+      // three of. The joint is also narrow side-to-side and deep front-to-back, so
+      // rz stays at 0.0430 while rx halves: an elbow, not a ball.
+      { p: el, rx: 0.0265 * g, rz: 0.0430 * g },                  // elbow
     ], simple() ? 1 : 3), { seg: seg(simple() ? 12 : 16), capStart: 'round', shape: delt });
 
     // ARMSCYE WELT, AS A CLOSED RING ROUND THE LIMB.
@@ -2278,10 +2332,16 @@ function buildArms(b, rig, o) {
         const k = delt(t0, ct, st);
         ring.push({
           p: [A[0] + (rx0 * k + lift) * ct, A[1] + dy, A[2] - (rz0 * k + lift) * st],
-          rx: 0.0031, rz: 0.0031,
+          // r17: 0.0031 -> 0.0042 and one value darker. The brief asks for a
+          // sleeve-head seam that makes the arm's mass "visibly start somewhere";
+          // a 6.2 mm tube at a 0.38 mix is a 4 px mark two LSB off the cloth once
+          // the paper grain is composited, which is why the r16 closeup's shoulder
+          // card still measured as one smooth lump. 8.4 mm at 0.55 is the hairline
+          // the reference draws there, and it is the only interior mark on the card.
+          rx: 0.0042, rz: 0.0042,
         });
       }
-      b.setColor(mixCol(o.tunicShade, o.collar, 0.38)).setMottle(0.03);
+      b.setColor(mixCol(o.tunicShade, o.collar, 0.55)).setMottle(0.03);
       b.addTube(ring, { seg: seg(6), capStart: 'round', capEnd: 'round' });
       b.setColor(o.tunic).setMottle(0.07);
     }
@@ -2337,7 +2397,24 @@ function buildArms(b, rig, o) {
       seg: seg(simple() ? 12 : 14),
       // Same drape as the upper sleeve, half the amplitude: the lower sleeve is
       // stretched over the forearm rather than hanging off it.
-      shape: (t, ct, st) => 1 + 0.018 * Math.cos(Math.atan2(st, ct * side) * 3.0 - t * 2.0 + 1.2) * smoothstep(0.10, 0.32, t),
+      //
+      // ULNAR TRIM (r17) — the same medial walk the humerus has had since r15,
+      // finally applied to the piece that was actually drawing the arm's widest
+      // edge. The ulna walks 17 mm outboard from elbow to wrist, so an untrimmed
+      // sleeve on it measured 0.247 / 0.252 / 0.255 / 0.250 — WIDER than the
+      // deltoid belly at 0.236 and monotonically widening away from the joint.
+      // The ramp is authored per station rather than as one constant: 0.118 at the
+      // elbow (leaving this ring 10 mm proud of the humerus end it has to cover, so
+      // the epicondyle flare is here and no rim shows), rising to 0.553 at the cuff.
+      // That yields 0.242 / 0.240 / 0.235 / 0.228 — the epicondyle is a 17 mm step
+      // OUT of the supracondylar pinch and the shaft then narrows 14 mm into the
+      // cuff, which is a joint with a corner on both sides of it. `t` is the
+      // resampled station fraction, so it is 0/1/3/2/3/1 at the four authored rows.
+      // pow(out, 1.25) keeps the trim on the extreme lateral point and off the front
+      // and back, i.e. it SHIFTS the section medially rather than denting it.
+      shape: (t, ct, st) => 1
+        + 0.018 * Math.cos(Math.atan2(st, ct * side) * 3.0 - t * 2.0 + 1.2) * smoothstep(0.10, 0.32, t)
+        - (0.118 + 0.435 * t) * Math.pow(clamp01(ct * side), 1.25),
     });
     // CUBITAL CREASE. The elbow's own ink line: a 3 mm ring in the shade cloth
     // sunk into the joint, on the FRONT of the arm where the sleeve gathers when
@@ -2356,18 +2433,34 @@ function buildArms(b, rig, o) {
         seg: seg(12),
         // Deeper on the flexor side, where the sleeve gathers when the joint
         // closes; a welt of even thickness all the way round is a bracelet.
-        shape: (t, ct, st) => 1 + 0.055 * clamp01(-st) - 0.020 * clamp01(st),
+        // r17: it carries the sleeve's ulnar trim too. Untrimmed it measured
+        // 0.242-0.249 outboard, i.e. it would poke straight through the trimmed
+        // sleeve and BE the elbow's silhouette — a bracelet again, and this time
+        // one that undoes the joint it is meant to describe.
+        shape: (t, ct, st) => 1 + 0.055 * clamp01(-st) - 0.020 * clamp01(st)
+          - 0.34 * Math.pow(clamp01(ct * side), 1.25),
       });
       b.setColor(o.tunic).setMottle(0.07);
     }
     // The roll itself: a thicker band of doubled cloth.
+    // r17 — AND IT WAS THE WIDEST OBJECT ON THE ARM. Untrimmed, the roll's four
+    // rings measured 0.253 / 0.261 / 0.260 / 0.253 outboard against a deltoid belly
+    // of 0.236: the cuff, not the shoulder, was drawing the arm's outer edge, which
+    // is why no amount of taper above it produced a tapering arm. Trimmed to
+    // 0.238 / 0.240 / 0.239 / 0.234 it is still 10 mm proud of the sleeve shaft it
+    // sits on (0.228) — a hard horizontal cuff ring — but it is now INSIDE the
+    // epicondyle above it and OUTSIDE the wrist below it, so the arm reads
+    // elbow / shaft / cuff / wrist as four masses.
     b.setColor(mixCol(o.tunicShade, o.collar, 0.45));
     b.addTube([
       { p: at(el, wr, rollT - 0.04), rx: 0.043 * g, rz: 0.045 * g },
       { p: at(el, wr, rollT + 0.02), rx: 0.050 * g, rz: 0.052 * g },
       { p: at(el, wr, rollT + 0.09), rx: 0.048 * g, rz: 0.050 * g },
       { p: at(el, wr, rollT + 0.12), rx: 0.040 * g, rz: 0.042 * g },
-    ], { seg: seg(12), capEnd: 'flat' });
+    ], {
+      seg: seg(12), capEnd: 'flat',
+      shape: (t, ct) => 1 - (0.344 + 0.118 * t) * Math.pow(clamp01(ct * side), 1.25),
+    });
 
     // Bare forearm + wrist. The taper is now 44% (0.041 -> 0.023) instead of
     // 29%, and the wrist is flattened (rz well under rx): a wrist is an oval
@@ -2375,19 +2468,40 @@ function buildArms(b, rig, o) {
     // most of what stops the limb reading as one extruded pipe. The narrow wrist
     // is also what makes the HAND read — a mitt on the end of a tube of the same
     // width is not a hand, it is a blunt end.
+    // ROUND 17 — THE WRIST WAS FLATTENED NINETY DEGREES OFF THE HAND.
+    // The old table read rz well under rx and called that "a wrist is an oval laid
+    // the other way to the upper arm" — but this tube's rx is world X (lateral) and
+    // its rz is world Z (fore-and-aft), and the palm box below it is 29 mm in
+    // lateral X by 76 mm in Z. So the wrist was 47 mm wide laterally feeding a hand
+    // 29 mm thick laterally: the arm got THINNER at the hand, in the one direction
+    // the camera sees in `closeup`, `squad` and `action`. That is most of "a mitt on
+    // the end of a tube", and it is also why nothing could make the wrist narrow —
+    // the ulna walks 17 mm outboard and the old rx handed back the rest.
+    // The section now ROTATES down the forearm, 70x79 mm at the cuff to 30x51 mm at
+    // the wrist, so the blade of the wrist is continuous with the plane of the hand.
+    // With the ulnar trim and a small medial walk the outboard edge runs
+    //   0.236 0.229 0.225 0.222 0.222
+    // against a cuff roll at 0.240 and a palm at 0.237: a 14 mm pinch between the
+    // sleeve and the fist, which is what a wrist is in silhouette.
     b.setZone(ZONE.SKIN).setBones(side > 0 ? HAND_L : HAND_R).setColor(o.skin).setMottle(0.035);
+    const wrTrim = (t, ct) => 1 - 0.30 * Math.pow(clamp01(ct * side), 1.25);
     b.addTube([
-      { p: at(el, wr, rollT + 0.04), rx: 0.0405, rz: 0.0400 },
-      { p: at(el, wr, 0.62), rx: 0.0340, rz: 0.0320 },
-      { p: at(el, wr, 0.84), rx: 0.0275, rz: 0.0245 },
-      { p: at(el, wr, 0.96), rx: 0.0245, rz: 0.0208 },
-      { p: wr, rx: 0.0236, rz: 0.0200 },                       // wrist: flat oval
-    ], { seg: seg(11) });
+      { p: at(el, wr, rollT + 0.04), rx: 0.0350, rz: 0.0395 },
+      { p: [at(el, wr, 0.62)[0] - side * 0.003, at(el, wr, 0.62)[1], at(el, wr, 0.62)[2]], rx: 0.0270, rz: 0.0330 },
+      { p: [at(el, wr, 0.84)[0] - side * 0.006, at(el, wr, 0.84)[1], at(el, wr, 0.84)[2]], rx: 0.0190, rz: 0.0290 },
+      { p: [at(el, wr, 0.96)[0] - side * 0.008, at(el, wr, 0.96)[1], at(el, wr, 0.96)[2]], rx: 0.0158, rz: 0.0262 },
+      { p: [wr[0] - side * 0.008, wr[1], wr[2]], rx: 0.0150, rz: 0.0255 },   // wrist: blade, edge-on
+    ], { seg: seg(11), shape: wrTrim });
     // Ulnar styloid — the knob on the little-finger side of the wrist. Tiny, but
     // it is the landmark that separates forearm from hand in silhouette.
+    // r17: it was at wr + side*0.017 with a 0.0105 lateral radius, i.e. outer x
+    // 0.2475 — 25 mm OUTBOARD of the trimmed wrist and 4 mm outboard of the cuff
+    // roll. It was not a landmark on the wrist, it was the wrist's silhouette. Now
+    // on the ulnar (little-finger, -z) side where the ulna actually is, thin
+    // laterally so it makes its bump in the fore-aft profile and not in the outline.
     b.addEllipsoid({
-      center: [wr[0] + side * 0.017, wr[1] + 0.010, wr[2] - 0.004],
-      radius: [0.0105, 0.0125, 0.0100], seg: seg(8), rings: seg(5),
+      center: [wr[0] - side * 0.005, wr[1] + 0.010, wr[2] - 0.020],
+      radius: [0.0080, 0.0120, 0.0105], seg: seg(8), rings: seg(5),
     });
   }
 }
@@ -2419,11 +2533,28 @@ function buildHands(b, rig, o) {
     // 92 x 82 mm was a slab: with the fingers now curling into it the hand read
     // palm-heavy, all mass and no digit. 80 x 76 leaves the four fingers (70 mm
     // across the knuckle line) covered and gives the curled tips somewhere to go.
-    b.addRoundedBox({ size: [0.0146, 0.040, 0.0380], bevel: 0.0120, div: 3 });
+    // ROUND 17 — A 12 MM BEVEL ON A 29 MM-THICK BOX IS NOT A BEVEL, IT IS A
+    // CAPSULE. The bevel exceeded the half-thickness (14.6 mm), so every edge of
+    // the palm was fully rounded away and what rendered was a lozenge: measured on
+    // the r16 closeup the trigger hand is a tan rounded brick with four incised
+    // lines on it and no corner anywhere in its outline. A fist has FOUR corners —
+    // the two ends of the knuckle line and the two ends of the heel — and they are
+    // what tells it from a mitten at any distance. 5.6 mm leaves flat faces with a
+    // hard round-over.
+    b.addRoundedBox({ size: [0.0152, 0.042, 0.0400], bevel: 0.0056, div: 3 });
     // Thenar pad — the muscle at the base of the thumb. Small, but it is the
     // difference between a hand and a paddle in silhouette.
     b.addEllipsoid({
-      center: [0, 0.006, side > 0 ? 0.031 : 0.031], radius: [0.0135, 0.028, 0.017],
+      center: [0, 0.004, 0.032], radius: [0.0138, 0.029, 0.018],
+      seg: seg(9), rings: seg(6),
+    });
+    // HYPOTHENAR — the heel of the hand, on the little-finger side (local -Z).
+    // Without it the palm is symmetric about its own long axis, and a symmetric
+    // palm reads as a paddle whichever way round it is: the thumb becomes the only
+    // thing telling the eye which edge is which, and in `closeup` the thumb is
+    // behind the stock. This is the mass that makes the fist's outline lopsided.
+    b.addEllipsoid({
+      center: [0, -0.006, -0.029], radius: [0.0122, 0.026, 0.016],
       seg: seg(9), rings: seg(6),
     });
     b.setTransform(null);
@@ -2514,7 +2645,14 @@ function buildHands(b, rig, o) {
       // "one smooth mitten lozenge with a single ink outline". 0.0092 at 0.0232
       // is a 4.8 mm gap: five pixels at closeup, one at twelve metres, and a
       // painted dark in it (below) for every distance past that.
-      const lat = simple() ? (f - 0.5) * 0.032 : (f - 1.5) * FPITCH;
+      // ROUND 17 — THE THUMB WAS ON THE LITTLE-FINGER SIDE. `lat` ran (f-1.5)*pitch
+      // with FLEN ordered index..little, so f = 0 (index) landed at world z -0.011
+      // and f = 3 (little) at +0.055 — while the thumb bone sits at z +0.046. The
+      // hand was built with its thumb opposed to its LITTLE finger, which is why
+      // no amount of work on the thumb produced opposition or a web: there was
+      // nothing for it to oppose. Reversing the spread puts the index at +0.055,
+      // 9 mm from the thumb, and the length gradient the right way round with it.
+      const lat = simple() ? (0.5 - f) * 0.032 : (1.5 - f) * FPITCH;
       const len = FLEN[f], r0 = FRAD[f];
       const px = fg.x + side * lat * 0.22, pz = fg.z + lat * 0.98;
       const y0 = fg.y + 0.026;
@@ -2656,13 +2794,17 @@ function buildHands(b, rig, o) {
     // that tells a fist from a mitten when the fingers themselves are only
     // eight pixels across.
     if (!simple()) {
-      b.setColor(mixCol(col, [0.038, 0.026, 0.026], 0.62)).setMottle(0.006);
+      // r17: 0.62 -> 0.76 and 20 % thicker. This crease and the knuckle bar are the
+      // only two marks that separate a fist from a mitten when the digits are eight
+      // pixels across, and the r16 trigger hand rendered with neither of them
+      // visible against the back of the hand.
+      b.setColor(mixCol(col, [0.038, 0.026, 0.026], 0.76)).setMottle(0.006);
       const kz = fg.z, ky = fg.y + 0.0155;
       b.addTube([
-        { p: [fg.x - side * 0.0175, ky + 0.0016, kz - 0.0330], rx: 0.0026, rz: 0.0020 },
-        { p: [fg.x - side * 0.0205, ky, kz - 0.0110], rx: 0.0032, rz: 0.0024 },
-        { p: [fg.x - side * 0.0205, ky, kz + 0.0110], rx: 0.0032, rz: 0.0024 },
-        { p: [fg.x - side * 0.0175, ky + 0.0016, kz + 0.0320], rx: 0.0026, rz: 0.0020 },
+        { p: [fg.x - side * 0.0175, ky + 0.0016, kz - 0.0330], rx: 0.0031, rz: 0.0024 },
+        { p: [fg.x - side * 0.0205, ky, kz - 0.0110], rx: 0.0038, rz: 0.0029 },
+        { p: [fg.x - side * 0.0205, ky, kz + 0.0110], rx: 0.0038, rz: 0.0029 },
+        { p: [fg.x - side * 0.0175, ky + 0.0016, kz + 0.0320], rx: 0.0031, rz: 0.0024 },
       ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
       b.setColor(col);
     }
@@ -2672,11 +2814,33 @@ function buildHands(b, rig, o) {
     // scan counted ("four fingers and a thumb, hanging free").
     b.setBones([`thumb${s}`, `hand${s}`]);
     const th = rig.restWorld['thumb' + s];
+    // ROUND 17 — A THUMB WITH NO KNUCKLE IS A FIFTH FINGER. Three stations at
+    // 12.4 / 10.6 / 8.4 mm is a smooth cone, so the digit that is supposed to be
+    // the loudest landmark on the hand rendered as a tapered sausage with no joint
+    // in it. Five stations: a thick metacarpal, the MCP knob, a WAIST at the
+    // interphalangeal joint, the distal pad (which is FATTER than the waist — that
+    // reversal is the whole read of a thumb) and a tip laid across the fingers.
     b.addTube([
-      { p: [th.pos.x, th.pos.y + 0.004, th.pos.z], rx: 0.0124, rz: 0.0114 },
-      { p: [lerp(th.pos.x, th.tail.x, 0.55) - side * 0.010, lerp(th.pos.y, th.tail.y, 0.65), lerp(th.pos.z, th.tail.z, 0.60) + 0.004], rx: 0.0106, rz: 0.0098 },
-      { p: [th.tail.x - side * 0.026, th.tail.y - 0.014, th.tail.z - 0.004], rx: 0.0084, rz: 0.0079 },
-    ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
+      { p: [th.pos.x, th.pos.y + 0.006, th.pos.z - 0.002], rx: 0.0148, rz: 0.0136 },
+      { p: [th.pos.x - side * 0.003, th.pos.y - 0.005, th.pos.z + 0.007], rx: 0.0128, rz: 0.0118 },
+      { p: [lerp(th.pos.x, th.tail.x, 0.60) - side * 0.012, lerp(th.pos.y, th.tail.y, 0.70), lerp(th.pos.z, th.tail.z, 0.62) + 0.004], rx: 0.0094, rz: 0.0088 },
+      { p: [th.tail.x - side * 0.024, th.tail.y - 0.012, th.tail.z - 0.002], rx: 0.0102, rz: 0.0094 },
+      { p: [th.tail.x - side * 0.033, th.tail.y - 0.019, th.tail.z - 0.007], rx: 0.0070, rz: 0.0066 },
+    ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
+
+    // THE WEB — the first commissure, and the piece the critique named by its
+    // absence ("no web between thumb and index"). Anatomically it is the adductor
+    // pollicis filling the V between the two metacarpals; visually it is the thing
+    // that makes the thumb belong to the hand instead of being glued on beside it.
+    // It can only be built now that the index is on the same side as the thumb (see
+    // the `lat` note above) — before this round the V was 66 mm wide and had the
+    // ring and little fingers in it.
+    const ix = fg.x + side * (1.5 * FPITCH) * 0.22, iz = fg.z + (1.5 * FPITCH) * 0.98;
+    b.addTube([
+      { p: [th.pos.x + side * 0.004, th.pos.y + 0.007, th.pos.z - 0.005], rx: 0.0130, rz: 0.0118 },
+      { p: [lerp(th.pos.x, ix, 0.52) + side * 0.004, lerp(th.pos.y, fg.y + 0.021, 0.46), lerp(th.pos.z, iz, 0.52) - 0.002], rx: 0.0116, rz: 0.0104 },
+      { p: [ix + side * 0.003, fg.y + 0.020, iz - 0.002], rx: 0.0104, rz: 0.0094 },
+    ], { seg: seg(8), capStart: 'none', capEnd: 'none' });
   }
 }
 
