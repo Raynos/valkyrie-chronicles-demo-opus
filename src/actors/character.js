@@ -981,7 +981,22 @@ const CARRY_BY_KIND = {
   // z = +0.10 sits 0.483 m from the left shoulder against a 0.494 m working
   // reach. Both constraints clear, which the round-5 numbers (0.208 m from the
   // spine, support hand 0.129 m off the tube) did not.
-  lance: { yaw: 0.34, pitch: 0.06, fwd: 0.200, down: -0.260, lat: -0.140 },
+  // ROUND 14 — pitch 0.06 -> 0.34, AND IT IS NOT A COSMETIC CHANGE.
+  //
+  // Until this round nothing ever reached this number. `_solveWeaponHold.align()`
+  // put the bore here and then `_limitArms` — which runs last, and which fires on
+  // a lancer every frame — rotated the humerus and the ulna and carried the hand
+  // round with them, dragging the weapon off the bore it had just been given.
+  // Measured on `tank`: the authored bore is (-0.951, 0.060, -0.305) and what
+  // actually reached the screen was (-0.048, 0.283, -0.958), i.e. 78 degrees off,
+  // pointing away from the lens. Pinning the hand's world orientation across the
+  // limit solve (see anim.js _limitArms) closed that loop — and immediately
+  // showed that the authored pitch is wrong: a LEVEL bore draws a 1.16 m tube
+  // dead horizontal across the plate, which on `squad` bisected the right half of
+  // the frame and pushed the warhead off the edge. A lance at rest is carried
+  // muzzle-UP on the shoulder, which is both what the reference draws and what
+  // keeps the warhead — the one piece of colour on the weapon — inside the frame.
+  lance: { yaw: 0.34, pitch: 0.34, fwd: 0.200, down: -0.260, lat: -0.140 },
   pistol: { yaw: 0.30, pitch: -0.50, fwd: 0.240, down: -0.330, lat: -0.060 },
   thrown: { yaw: CARRY_YAW, pitch: CARRY_PITCH, fwd: CARRY_FWD, down: CARRY_DOWN, lat: CARRY_LAT },
   tool: { yaw: 0.40, pitch: -0.30, fwd: 0.240, down: -0.330, lat: 0.010 },

@@ -94,12 +94,82 @@ const SUN_RAMP = [
   { t: 1.00, c: 0xc0906f, i: 0.32 },
 ];
 
+// Skylight, as a LIGHT. A clear-sky zenith really is this blue, but the number
+// that matters here is its CHROMA, not its hue: `ambientCol` reaches the
+// surface shaders as a normalised tint (materials.js multiplies the dark end of
+// every wash by it), so every point of saturation in this ramp is a point of
+// saturation added to shade on a surface that has almost none of its own.
+// Daylight poles taken from sRGB sat 0.20/0.17 to 0.12/0.11 at the same hue and
+// the same luminance: still plainly a blue-grey sky, no longer a blue filter.
+// (Measured contribution, `bridge` shaded spandrel: neutralising this ramp
+// entirely moved the hue 285 -> 291, i.e. the sky fill was never the cause of
+// violet masonry — see SHADE_RAMP below, which is.)
 const SKY_RAMP = [
   { t: 0.00, c: 0x4b5a75, i: 0.30 },
-  { t: 0.16, c: 0x8fa3b4, i: 0.55 },
-  { t: 0.50, c: 0xa9c0cc, i: 0.78 },
-  { t: 0.84, c: 0x9fadbe, i: 0.56 },
+  { t: 0.16, c: 0x97a2ab, i: 0.55 },
+  { t: 0.50, c: 0xafbfc7, i: 0.78 },
+  { t: 0.84, c: 0xa3acb9, i: 0.56 },
   { t: 1.00, c: 0x4f5673, i: 0.28 },
+];
+
+// ------------------------------------------------------- the shade pigment
+//
+// THE COLOUR SHADE IS PAINTED WITH — published to `uViolet`, which
+// materials.js's vcShadeDeep() glazes the deepest wash onto and which
+// src/render/fx.js uses for the shaded side of a particle. It is a LIGHT
+// COLOUR (its own comment in materials.js calls it "unit-luminance skylight"),
+// so it belongs on the rig's time-of-day ramp next to the key and the sky fill,
+// not frozen in a palette table — and the rig is the only module that knows
+// what hour it is.
+//
+// WHY IT MOVED, measured on `bridge` at 1920x1080. Shaded masonry sat at
+// hue 285/sat 0.07 against its own 0xbdb09a albedo at hue 40. Knocking out one
+// candidate at a time, luminance preserved so only hue could move:
+//
+//   contact wash off  ........ 285 -> 286   (not the cause)
+//   contact violet neutral ... 285 -> 285   (not the cause)
+//   sky fill neutral ......... 285 -> 291   (not the cause)
+//   ambient light neutral .... 285 -> 283   (not the cause)
+//   grade ink floor neutral .. 285 -> 342   (a contributor, and MAGENTA-ward)
+//   split tone neutral ....... 285 -> 320   (a contributor)
+//   *** uViolet neutral ...... 285 ->  42   (THE cause)
+//
+// The mechanism is vcShadeDeep(): it mixes `amt` (0.48 on masonry) of the deep
+// wash toward lum(pigment) * uViolet/lum(uViolet), and then CLAMPS the result
+// into 242..290 degrees unless it is already below 180. At 0x5d5080 that tint
+// is (1.14, 0.83, 2.24) — 63% chroma in linear — so the glaze does not tint the
+// pigment, it REPLACES it, and the clamp then guarantees the answer is violet
+// whatever went in. Ochre, sage, brick and limestone all arrive at the same
+// 242-290 slab; that is the "saturated purple-violet wall" and the 219 degree
+// rotation four rounds have been chasing.
+//
+// A skylight that is a low-chroma GREY-BLUE lands the same glaze on the
+// pigment's own hue, darkened and turned a modest amount cool by the two
+// vcShadeTurn calls that surround it (+10 deg on the half-tone, +26 at the end
+// of the body), and — because the glazed hue stays under 180 — the violet clamp
+// never fires. Simulated through the real chain, band 0 goes:
+//
+//   masonry 0xbdb09a  265 -> 76      grass 0x74804a  177 -> 119
+//   stucco  0xd8cbae  265 -> 81      olive 0x6f7a4e  200 -> 122
+//   tile    0x9a6250  307 -> 45      tunic 0x9c8b63  297 ->  77
+//   timber  0x7a5a3a  315 -> 60      sage armour     244 -> 135
+//
+// i.e. the shade family becomes cool grey-buff / cool grey-green, which is what
+// a CANVAS plate does, instead of one lavender slab.
+//
+// The daylight pole is 0x54585c: hue 210, sRGB saturation 0.09, and the SAME
+// luminance as the old 0x5d5080 so nothing that uses this colour additively
+// (fx.js's particle shade) changes value. The twilight poles stay chromatic on
+// purpose — at dusk the sky IS the only light in the picture and shade really is
+// blue-violet — and land on 0x453a72, the pole src/world/worldMaterials.js
+// authored for its own dusk blend, so the `dusk` plate keeps its ember.
+const SHADE_RAMP = [
+  { t: 0.00, c: 0x453a72, i: 1 },   // pre-dawn: nothing but sky
+  { t: 0.10, c: 0x53565f, i: 1 },
+  { t: 0.16, c: 0x54585c, i: 1 },   // daylight: a slate grey-blue. The eleven
+  { t: 0.50, c: 0x54585c, i: 1 },   // daylight plates all sit in 0.16..0.33, so
+  { t: 0.84, c: 0x53565f, i: 1 },   // they get this pigment exactly.
+  { t: 1.00, c: 0x453a72, i: 1 },   // dusk: the sky's own blue-violet again
 ];
 
 const GROUND_RAMP = [
@@ -333,6 +403,10 @@ export function createLightRig(scene, opts = {}) {
   if (!existingAmb) scene.add(ambient);
 
   // ------------------------------------------------------------------ state
+  // The rig's own copy of the shade pigment. Published by reference into the
+  // shared uniform block (see applyBandGains) so every surface, actor and
+  // particle glazes its deepest wash onto the same skylight.
+  const shadePigment = new THREE.Color();
   const focus = new THREE.Vector3();
   const focusTarget = new THREE.Vector3();
   let tod = o.timeOfDay;
@@ -509,15 +583,24 @@ export function createLightRig(scene, opts = {}) {
   }
 
   /**
-   * Push the elevation-solved key/fill split into the shared NPR uniforms.
-   * MUST run after MaterialRegistry.update(), which writes both from the key
-   * light's raw intensity — see the bandGains() comment block above.
+   * Push the elevation-solved key/fill split AND the shade pigment into the
+   * shared NPR uniforms. MUST run after MaterialRegistry.update(), which writes
+   * both gains from the key light's raw intensity — see the bandGains() comment
+   * block above.
+   *
+   * The pigment is re-asserted every frame rather than written once, for the
+   * same reason the gains are: src/world/worldMaterials.js REPLACES
+   * `uViolet.value` with a colour of its own the first time it blends toward
+   * dusk, and a value written once at construction would silently stop being the
+   * one the shaders read. Only the reference is swapped here too — mutating the
+   * object in place would repaint src/render/materials.js's exported palette.
    */
   function applyBandGains() {
     const g = bandGains(sunElevation());
     const u = MaterialRegistry.uniforms;
     u.uKeyGain.value = g.key;
     u.uFillGain.value = g.fill;
+    u.uViolet.value = shadePigment;
     return g;
   }
 
@@ -532,6 +615,13 @@ export function createLightRig(scene, opts = {}) {
 
     rampColor(GROUND_RAMP, tod, _rampOut);
     hemi.groundColor.copy(_rampOut.color);
+
+    // ...and the pigment shade is painted with, on the same clock. Published in
+    // applyBandGains(); set here as well so a rig that is constructed and read
+    // before the first frame is never handed a black one.
+    rampColor(SHADE_RAMP, tod, _rampOut);
+    shadePigment.copy(_rampOut.color);
+    MaterialRegistry.uniforms.uViolet.value = shadePigment;
 
     // the bounce takes its colour from the ground it is bouncing off, warmed.
     // `groundColor` is the up-facing (from below) half of a hemisphere light.

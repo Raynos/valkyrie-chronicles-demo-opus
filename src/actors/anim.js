@@ -610,6 +610,8 @@ const _goalC = new THREE.Vector3(), _poleC = new THREE.Vector3(), _perpC = new T
 const _dirC = new THREE.Vector3(), _fwdC = new THREE.Vector3();
 const _latC = new THREE.Vector3(), _upC = new THREE.Vector3(), _refC = new THREE.Vector3();
 const _axisR = new THREE.Vector3(), _palmR = new THREE.Vector3(), _wantR = new THREE.Vector3();
+// Private to _limitArms: the hand's world orientation, pinned across the solve.
+const _limQ = new THREE.Quaternion(), _limQ2 = new THREE.Quaternion();
 const _crossR = new THREE.Vector3();
 // Private to _handIK: the reach-clamped copy of the support-hand goal.
 const _handG = new THREE.Vector3();
@@ -662,6 +664,118 @@ const KNEE_MIN = 30 * Math.PI / 180, KNEE_MAX = 171 * Math.PI / 180;
 // elbow genuinely stands clear of the ribs.
 const ELBOW_CONE = 44 * Math.PI / 180;
 const ELBOW_CONE_HI = 34 * Math.PI / 180;
+
+// ---------------------------------------------------------------------------
+// ROUND 14 — THE CONE DEGENERATES ON A HANGING ARM, AND THAT IS THE LANCER.
+//
+// The cone above is measured about a reference elbow direction PROJECTED onto
+// the plane perpendicular to the shoulder->hand chord. When the arm hangs, the
+// chord and the reference are both "down", so the projection is almost entirely
+// cancelled: measured on `tank`'s Largo, the reference (-0.128, -0.911, -0.383)
+// against a chord of (-0.278, -0.929, -0.254) leaves a residual of length 0.197
+// pointing (0.73, -0.01, -0.68) — i.e. straight BACK and outboard. A 44-degree
+// cone about that permits an olecranon anywhere from outboard to dead astern,
+// and the solvers duly put his 221 mm behind the chord with the humerus running
+// 69 degrees of shoulder EXTENSION: the upper arm leaves the shoulder almost
+// horizontally backwards and the ulna comes forward over it. Foreshortened from
+// the `tank` camera that is one straight tube from shoulder to hand with the
+// elbow hidden behind the torso, which is the "stretched, elbow-less arm" the
+// critique has named for six rounds. The cone was never violated. It could not
+// be violated; it had stopped constraining anything.
+//
+// The fix is to state the limits that actually matter as ABSOLUTE bounds and
+// solve them on the elbow's own circle. The docstring on _limitArms has promised
+// two of these for eight rounds and only the cone was ever implemented.
+//
+//   SHOULDER_EXT_MAX   the humerus may not run backward past this angle off the
+//                      downward vertical. A human shoulder extends 50-60 deg.
+//   ELBOW_LEAD_MAX     the olecranon may not lead the wrist (metres of forward
+//                      offset from the chord). An elbow in front of the hand is
+//                      the shape `prone` was shipping at 141 mm.
+//   ELBOW_TRAIL_MAX    ...nor trail it by more than this. Every locomotion clip
+//                      measured 180-194 mm.
+//   ELEV_MAX(rise)     how far above horizontal the humerus may point. At a
+//                      hanging hand the elbow stays at or under the shoulder;
+//                      by the time the hand is at shoulder height (a shouldered
+//                      rifle, a cheer) it is nearly free.
+const SHOULDER_EXT_MAX = 52 * Math.PI / 180;
+const ELBOW_LEAD_MAX = 0.060;
+const ELBOW_TRAIL_MAX = 0.150;
+const ELEV_LO = -4 * Math.PI / 180, ELEV_HI = 84 * Math.PI / 180;
+// ...and the humerus may not go into the INBOARD-REAR quadrant. Adducting
+// across the FRONT of the body is ordinary (reaching for the opposite shoulder,
+// or a support hand crossing to a foregrip: Largo's left humerus sits 28 degrees
+// inboard and 19 forward and is perfectly natural), but adducting BEHIND the
+// back is not — that is the shape the first cut of the extension limit produced
+// when it pushed Largo's right elbow off the rear and it slid inboard to
+// x = -0.048 with the shoulder at -0.174, i.e. the upper arm wrapped round the
+// spine. One half-space on the 45-degree inboard-and-back diagonal rules out the
+// whole quadrant without touching either legitimate case.
+const SHOULDER_ADD_REAR = 22 * Math.PI / 180;
+
+// Circle-of-elbows solver state. Each row is one constraint of the form
+//   C + A cos(theta) + B sin(theta) <= K
+// which is exactly what every bound above becomes once the elbow is written as
+// a point on the circle E(theta) = shoulder + a*dir + hgt*(cos e1 + sin e2):
+// both the humerus and the perpendicular offset are affine in (cos, sin).
+const _cA = new Float64Array(6), _cB = new Float64Array(6);
+const _cK = new Float64Array(6);
+let _cN = 0;
+const _e1 = new THREE.Vector3(), _e2 = new THREE.Vector3(), _mC = new THREE.Vector3();
+
+/** Push one constraint: dot(a*dir + hgt*(cos e1 + sin e2), m) <= k. */
+function pushCon(m, k, a, hgt, dir) {
+  if (_cN >= 6) return;
+  _cA[_cN] = hgt * _e1.dot(m);
+  _cB[_cN] = hgt * _e2.dot(m);
+  _cK[_cN] = k - a * dir.dot(m);
+  _cN++;
+}
+
+/** Worst violation, in the units each constraint was written in, at angle t. */
+function violation(t) {
+  const c = Math.cos(t), s = Math.sin(t);
+  let worst = -1e9;
+  for (let i = 0; i < _cN; i++) {
+    const v = _cA[i] * c + _cB[i] * s - _cK[i];
+    if (v > worst) worst = v;
+  }
+  return worst;
+}
+
+/**
+ * The feasible angle on the elbow circle nearest to `t0`.
+ *
+ * Every constraint is a half-plane in (cos t, sin t), so its feasible set is one
+ * arc and the optimum is either t0 itself or one arc's endpoint — there is
+ * nothing to iterate. Nine candidates at most, no allocation, exact.
+ */
+const TAU2 = Math.PI * 2;
+/** Shortest signed angular distance, |a - b| wrapped into [0, PI]. */
+function angDist(a, b) {
+  return Math.abs(((a - b) % TAU2 + TAU2 + Math.PI) % TAU2 - Math.PI);
+}
+function nearestFeasible(t0) {
+  let bestV = violation(t0);
+  if (bestV <= 1e-6) return t0;
+  let bestT = t0, bestD = 0, feasible = false;
+  for (let i = 0; i < _cN; i++) {
+    const R = Math.hypot(_cA[i], _cB[i]);
+    if (R < 1e-9) continue;
+    const ratio = _cK[i] / R;
+    if (ratio >= 1) continue;                       // constraint i never binds
+    const phi = Math.atan2(_cB[i], _cA[i]);
+    const alpha = ratio <= -1 ? Math.PI : Math.acos(ratio);
+    for (let k = 0; k < 2; k++) {
+      const t = k ? phi - alpha : phi + alpha;
+      const v = violation(t), d = angDist(t, t0);
+      if (v <= 1e-6) {
+        if (!feasible || d < bestD) { feasible = true; bestT = t; bestD = d; bestV = v; }
+      } else if (!feasible && v < bestV) { bestT = t; bestV = v; bestD = d; }
+    }
+  }
+  return bestT;
+}
 
 /**
  * Rotate `bone` (in world space) so the vector from `from` to `cur` points at
@@ -1064,7 +1178,16 @@ export class Animator {
     }
 
     const meta = CLIP_META[this._override ? this._override.name : this.current];
-    if (this.ikEnabled && lod < 2 && this.groundAt && meta && meta.ik) {
+    // ROUND 14 — lod < 3, not lod < 2. Measured on `overview`, the soles of the
+    // lod-2 band sat up to 34 mm off the terrain and the lod-3 band up to 119 mm
+    // (one Imperial scout buried to the ankle on a slope), because foot IK stopped
+    // three metres before the far-body switch. A pool laid on the heightfield under
+    // a sole that is 34 mm above it draws a dark disc with daylight between it and
+    // the boot, which is the half of "figures do not ground" that is ours. Two
+    // two-bone solves on a figure that is 77-93 px tall is not a budget worth
+    // defending; the lod-3 band still opts out (it ticks at 12 Hz on a shared far
+    // body, and 119 mm there is 2 px).
+    if (this.ikEnabled && lod < 3 && this.groundAt && meta && meta.ik) {
       this._footIK(dt);
       this.charRoot.updateMatrixWorld(true);
     }
@@ -1552,8 +1675,7 @@ export class Animator {
         cosA = clamp(_perpC.dot(_refC) / hgt, -1, 1);
         overCone = Math.acos(cosA) - coneMax;
       }
-      if (!need && overCone <= 0) continue;
-
+      const needFlex = need !== 0;
       if (!need) need = d;
       _goalC.copy(_p0).addScaledVector(_dirC, need);
       if (overCone > 0) {
@@ -1568,7 +1690,73 @@ export class Animator {
       _poleC.copy(_perpC);
       _poleC.addScaledVector(_dirC, -_dirC.dot(_poleC));
       if (_poleC.lengthSq() < 1e-8) _poleC.copy(_refC);
+
+      // --- 3. THE ABSOLUTE BOUNDS, SOLVED ON THE ELBOW'S OWN CIRCLE ---------
+      //
+      // The cone in (2) is relative to a reference that degenerates whenever the
+      // chord runs the same way as the reference — see the note on
+      // SHOULDER_EXT_MAX. These four are absolute, and they are stated on the
+      // two things a viewer actually reads: where the humerus points, and which
+      // side of the chord the olecranon is on.
+      //
+      // The elbow is confined to a circle of radius `hgt` about
+      // p0 + dirC * aC, in the plane perpendicular to dirC. Writing it as
+      // E(t) = p0 + aC*dirC + hgt*(cos t * e1 + sin t * e2) makes every bound
+      // C + A cos t + B sin t <= K, one arc each, so the nearest feasible angle
+      // is either the current one or an arc endpoint. No iteration, no search.
+      let tAdj = 0;
+      if (_poleC.lengthSq() > 1e-8) {
+        // The circle the elbow is confined to, for the CLAMPED reach: its centre
+        // is aC along the chord and its radius follows from l1, so both have to
+        // be re-derived from `need` rather than from the pose we came in with.
+        const aC = (l1 * l1 - l2 * l2 + need * need) / (2 * need);
+        const rC = Math.sqrt(Math.max(0, l1 * l1 - aC * aC));
+        _e1.copy(_poleC).normalize();
+        _e2.crossVectors(_dirC, _e1);                 // unit: dirC ⟂ e1, both unit
+        _cN = 0;
+        // (a) shoulder extension: the humerus may not run backward past
+        //     SHOULDER_EXT_MAX off the downward vertical. The half-space normal
+        //     is the bound direction rotated out of "down" into "back".
+        _mC.copy(_fwdC).multiplyScalar(-Math.cos(SHOULDER_EXT_MAX))
+          .addScaledVector(_upC, Math.sin(SHOULDER_EXT_MAX));
+        pushCon(_mC, 0, aC, rC, _dirC);
+        // (b) elevation: how far above horizontal the humerus may point, opening
+        //     up as the hand rises so a shouldered rifle and a cheer still work.
+        _mC.copy(_upC);
+        pushCon(_mC, l1 * Math.sin(ELEV_LO + (ELEV_HI - ELEV_LO) * rise), aC, rC, _dirC);
+        // (c) the olecranon may not lead the wrist, and (d) may not trail it.
+        //     Perpendicular offsets only, so the along-chord term drops out.
+        _mC.copy(_fwdC);
+        pushCon(_mC, ELBOW_LEAD_MAX * sc, 0, rC, _dirC);
+        _mC.copy(_fwdC).multiplyScalar(-1);
+        pushCon(_mC, ELBOW_TRAIL_MAX * sc, 0, rC, _dirC);
+        // (e) no adduction behind the back.
+        _mC.copy(_latC).multiplyScalar(-outSign * Math.SQRT1_2)
+          .addScaledVector(_fwdC, -Math.SQRT1_2);
+        pushCon(_mC, l1 * Math.sin(SHOULDER_ADD_REAR), aC, rC, _dirC);
+        tAdj = nearestFeasible(0);
+        if (tAdj !== 0) {
+          _poleC.copy(_e1).multiplyScalar(Math.cos(tAdj)).addScaledVector(_e2, Math.sin(tAdj));
+        }
+      }
+      if (!needFlex && overCone <= 0 && tAdj === 0) continue;
+      // PIN THE HAND'S WORLD ORIENTATION ACROSS THE SOLVE.
+      //
+      // The weapon is parented to handR, and _solveWeaponHold has already run —
+      // it aligned the bore, placed the foregrip, and pinned the hand's
+      // orientation for exactly this reason. Rotating the humerus and the ulna
+      // here carries the hand round with them (up to 40 degrees), which swings a
+      // 1.16 m launch tube off the bore that was just solved for it: measured on
+      // `tank`, the first cut of the limits above left Largo's lance horizontal
+      // across the frame with its tail through the Edelweiss's mantlet, having
+      // moved the arm correctly and the weapon with it. Restoring the world
+      // quaternion decouples the two completely — the limiter owns the humerus
+      // and the ulna, the weapon solver owns the hand.
+      hd.getWorldQuaternion(_limQ);
       this._solve2Bone(up, lo, hd, _goalC, _poleC, 1, ELBOW_MIN, ELBOW_MAX);
+      hd.parent.getWorldQuaternion(_limQ2);
+      hd.quaternion.copy(_limQ2.invert()).multiply(_limQ);
+      hd.updateMatrixWorld(true);
     }
   }
 

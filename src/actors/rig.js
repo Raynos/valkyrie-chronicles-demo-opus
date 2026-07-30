@@ -181,8 +181,20 @@ export const PALETTE = {
 // neck came out (177,132,98), hue 25, sat 0.443: the most saturated thing on the
 // whole soldier, brighter than his uniform, and reading as a stripe of paint
 // rather than as skin. VC's lit skin is a pale cream-peach.
+// ROUND 14 — NO SKIN TONE MAY BE AUTHORED ABOVE THE LIT WASH'S CLIP POINT.
+// vcLitColour (shaderLib.js) ends in `hsv.z = min(1.0, hsv.z * 1.36 + 0.10)`, so
+// any albedo above linear value 0.662 has its TOP wash saturated at white. Two
+// tones here were: 0xe6c6a4 sits at 0.791 and 0xd8b493 at 0.687. The consequence
+// is not a clipped highlight, it is a face with no terminator: the two washes a
+// lit cheek actually lands on are band 4 (mix 0.90 toward litCol) and band 3
+// (mix 0.28), and with litCol pinned at 1.0 and midCol at 0.98v those two come
+// out 18 LSB apart at v = 0.79 against 24 LSB at v = 0.70 — and only 5 LSB once
+// the face paint map's old 1.150 lift had taken v to 0.909. Ceilinged at the
+// clip point the LIT wash does not move at all (it was already saturated) and
+// the plane below it drops away from it, which is the whole of a modelled cheek.
+// The five darker tones are untouched: they were already under the clip.
 export const SKIN_TONES = [
-  rgbLin(0xe6c6a4), rgbLin(0xd8b493), rgbLin(0xc8a180),
+  rgbLin(0xdabb9b), rgbLin(0xd4b190), rgbLin(0xc8a180),
   rgbLin(0xb38d6d), rgbLin(0x977155), rgbLin(0x77573f), rgbLin(0x5a412e),
 ];
 
@@ -1274,8 +1286,54 @@ const SKIN_BANDS = {
   // what is left of the cool as a TURN in an ochre rather than as a hue of its
   // own. Every shot in the set looks at a back-lit soldier, so this is the
   // single most-exercised number in the file.
+  // ROUND 14 — CONTRAST 1.20 -> 1.42, LIGHT BIAS 0.40 -> 0.365.
+  //
+  // The two numbers are one change and they are the arithmetic behind "the face
+  // is drawn but not modelled". A band boundary can only fall on a cheek if the
+  // drive MOVES more than one band's width across it, and one band here is 0.20
+  // of final drive (uBands = 5). Measured on the built surface: the round-14
+  // zygomatic ridge swings the normal 32 degrees over the crest, which moves
+  // skyView 0.675 -> 0.325 and therefore ambTerm 0.676 -> 0.387. At fillGain
+  // 2.55 against the world's uFillGain of 0.25 that is 0.289 * 0.6375 = 0.184
+  // of RAW drive, and at contrast 1.20 only 0.221 of final — 1.1 bands, so the
+  // boundary lands on the cheek in some lights and misses in others. At 1.42 it
+  // is 0.261, comfortably over, and it MOVES with the key because keyN rides on
+  // the same normal.
+  //
+  // lightBias then has to come down or the extra contrast is spent pushing the
+  // lit half into the clip. It is solved on the case that matters, the fully
+  // back-lit head: a down-facing facet there sits at raw 0.050 (keyN 0, skyView
+  // 0.05 -> ambTerm 0.217, minus driveRange.x, minus a little curvature), so
+  // final = (0.050 - 0.46) * 1.42 + 0.46 + 0.365 = 0.243 — still band 1, which
+  // is the one invariant this window exists to protect (at band 0 the shader's
+  // ramp is 100% shade colour and a face measures hue 268 whatever else is done
+  // to it). Verified by the sun-azimuth test, not by this comment.
   wrap: 0.72, keyGain: 0.99, fillGain: 2.55,
-  driveRange: [0.068, 1.068], contrast: 1.20, lightBias: 0.40,
+  driveRange: [0.068, 1.068], contrast: 1.42, lightBias: 0.40,
+  // A CEILING WORTH KNOWING ABOUT, measured this round: the largest step ANY
+  // two adjacent washes on a face can show is about 20-25 LSB, and it is not set
+  // here. canvasRenderPipeline.js's frame-wide grade ends in a 16-LEVEL WASH
+  // QUANTISER, so every plateau on the figure snaps onto the same ~20 LSB grid
+  // — measured on the round-14 cheek as 108 / 130 / 148 / 171 / 192 in every
+  // configuration tried. Swept and confirmed inert against that grid:
+  //   contrast   1.42 -> 1.58   max cheek step 25.1 -> 24.3
+  //   lightBias  0.40 -> 0.30   25.1 -> 25.0 (and the jaw plane went muddy)
+  //   lightBias  0.40 -> 0.22   25.1 -> 24.8 (whole face a wash darker)
+  //   pigLevels  9 -> 6         under 2 LSB, and it cost the neck its turn
+  // So a bigger step has to come from the terminator skipping a grid level,
+  // which means a NARROWER transition in screen space — geometry, not gain. The
+  // tent half-width in skull() section 4 is the live lever; anything that only
+  // scales the drive is spent budget.
+  //
+  // MEASURED AND REJECTED — FOUR BANDS ON SKIN, which the ramp arithmetic says should widen the step a
+  // lit cheek lands on from 24 to 29 LSB, does not: the plateau VALUES on a face
+  // are set by the frame-wide 16-level wash quantiser in
+  // canvasRenderPipeline.js, not by uBands, so bands 4 and bands 5 both resolve
+  // the cheek onto the same ~20 LSB grid (measured 130/150/172/192 either way)
+  // and all uBands decides is WHERE the boundary falls. Four bands also pushed
+  // more of the face into the top wash and cost the jaw plane its darkness, so
+  // the picture went backwards while the metric stood still. Five stays; the
+  // step is bought with contrast and with geometry instead.
   // 0.09, not 0.72. shadeCool is applied to the COMPOSITED wash at band index 0
   // and 1, and skin is the one surface in the game that must not take it: a
   // shaded cheek is a darker, slightly cooler SKIN TONE, never a violet one.
@@ -1302,7 +1360,21 @@ const SKIN_BANDS = {
   // VC hatches its terrain and its masonry. It does not scribble graphite across
   // a face.
   hatch: 0.10, rim: 0.24, subsurface: 0.090, weave: false,
-  wetPx: 9, pigLevels: 9, pigQ: 0.85, blotch: 0.20, hatchSpacing: 7.4,
+  // ROUND 14 — ONE WOBBLY EDGE, NOT A FRINGE. wetBands scales as
+  // fwidth(drive) * uWetPx * uBandBleed, so at the inherited 0.85 x 9 px the
+  // skin's band boundary wandered up to 9 screen pixels — and a cheek is only
+  // 110 px across at the closeup, so the terminator arrived as a broken mottle
+  // rather than as the single hard pigment line the reference draws under the
+  // zygomatic. The world uses 0.13-0.14 on masonry for exactly this reason. A
+  // face wants a WET edge, not a soaked one: 0.46 x 7 px still swings the
+  // boundary 3 px off the iso-line (so it never reads as a computed contour)
+  // while keeping it one continuous edge.
+  bandBleed: 0.46,
+  // MEASURED AND REJECTED, recorded so the next round does not spend its budget
+  // here: pigLevels 9 -> 6 (the composite-luminance quantiser) moved the cheek
+  // step by under 2 LSB and cost the neck its smooth turn. The step size on a
+  // face is set by the BAND ramp, not by the pigment grid — see `bands` above.
+  wetPx: 7, pigLevels: 9, pigQ: 0.85, blotch: 0.20, hatchSpacing: 7.4,
 };
 
 // --- CLOTH ------------------------------------------------------------------
@@ -1328,6 +1400,15 @@ const CLOTH_BANDS = {
   cream: 0.92,
   shadowSoften: 0.58, curvature: 0.20,
   hatch: 0.44, rim: 0.30, subsurface: 0.03, weave: true,
+  // MEASURED AND REJECTED this round: bandBleed 0.85 -> 0.54 with wetPx 8 -> 7,
+  // on the theory that a 7-SCREEN-PIXEL boundary wander is ruinous on an
+  // `overview` torso only 50 px wide. It tightens the edge as predicted and moved
+  // the plateau count on the nearest figure's tunic by ZERO (0-2 plateaus of >= 8
+  // samples before and after, best step 17.8 -> 17.1 LSB), so it is not what is
+  // stopping that figure banding — the competing signal there is the KIT
+  // geometry crossing the tunic (pack, pouches, yoke, webbing), not the wet edge.
+  // Reverted rather than kept, because an unproven change is a wider diff for
+  // nothing. The overview banding note is NOT fixed this round; see the report.
   wetPx: 8, pigLevels: 10, pigQ: 0.86, blotch: 0.28, hatchSpacing: 6.4,
 };
 
@@ -2524,12 +2605,20 @@ function buildNeck(b, rig, o) {
   b.setZone(ZONE.SKIN).setBones(NECK).setColor(o.skin).setMottle(0.03);
   // The column. `zc` walks BACKWARD going up: the throat leans back under the
   // chin instead of running vertically into it.
+  // ROUND 14 — the column comes in 7%. It is not that 83 mm across the throat
+  // was wrong on its own; it is that the skull came down 3.4% this round and a
+  // neck that does not follow reads THICKER than it did before. The two numbers
+  // are one proportion: measured on the built surface the bizygomatic width is
+  // 0.150 m and the throat was 0.083, i.e. 55% of the face — against about 46%
+  // on a life head, which is the "neck too thick" note. 0.0386 takes it to 51%,
+  // and the trapezius wedges below are left alone so the SLOPE off the shoulders
+  // is unchanged (they are what stop a head reading as screwed on).
   b.addTube([
-    { p: [0, ny - 0.048, -0.002], rx: 0.062, rz: 0.058 },  // base, inside the traps
-    { p: [0, ny - 0.012, -0.004], rx: 0.050, rz: 0.048 },
-    { p: [0, ny + 0.032, -0.010], rx: 0.0435, rz: 0.0425 },
-    { p: [0, hy - 0.012, -0.016], rx: 0.0415, rz: 0.0415 }, // narrowest — under the jaw
-    { p: [0, hy + 0.030, -0.020], rx: 0.0455, rz: 0.0455 }, // into the skull base
+    { p: [0, ny - 0.048, -0.002], rx: 0.0577, rz: 0.0539 },  // base, inside the traps
+    { p: [0, ny - 0.012, -0.004], rx: 0.0465, rz: 0.0446 },
+    { p: [0, ny + 0.032, -0.010], rx: 0.0405, rz: 0.0395 },
+    { p: [0, hy - 0.012, -0.016], rx: 0.0386, rz: 0.0386 }, // narrowest — under the jaw
+    { p: [0, hy + 0.030, -0.020], rx: 0.0423, rz: 0.0423 }, // into the skull base
   ], { seg: seg(12) });
 
   // Sternocleidomastoid. Origin behind the ear (mastoid), insertion at the
@@ -2649,7 +2738,25 @@ export function buildHead(b, rig, o, f) {
   // character.js shells this same radius, so the helmet comes with it: 0.895
   // lands head+helmet at ~0.137 of standing, 7.3 heads, which is the brief's
   // target and the proportion VC actually draws.
-  const SKULL = 0.880;
+  // ROUND 14, MEASURED PROPERLY AT LAST — 0.880 -> 0.850.
+  //
+  // Every previous round measured this against the BARE SKULL and against a
+  // head-weight filter that cannot reach the chin: the gnathion vertex sits
+  // axially inside the neck bone's span and radially 4 mm off its axis, so it
+  // gets ~100% neck weight and a "vertices with head weight >= 0.5" bbox stops
+  // at the jawline. That is how a head measuring 6.9 of standing height came to
+  // be recorded as 7.3. Measured instead against buildHead's own calibration of
+  // the built surface (crown at dy +0.936, gnathion at dy -0.960, so bare head
+  // = 1.896 * R[1]) and against the mesh's true bbox top, over all sixteen
+  // soldiers in `squad`:
+  //     head+headgear / standing   0.1394 mean   (0.127 .. 0.148)
+  //     heads tall, with headgear  7.19  mean    (6.76 .. 7.87)
+  // and every HELMETED figure — which is the hero in `closeup` and most of the
+  // squad — sat at 6.76-7.00. That is the bobblehead the critics keep naming.
+  // 0.850 is a 3.4% reduction and the headgear in character.js shells this same
+  // radius, so it comes with it: head+gear 0.2383 m on a 1.756 m soldier,
+  // i.e. 0.136 of standing and 7.37 heads mean with the worst case at 7.24.
+  const SKULL = 0.850;
   const R = [0.0756 * f.width * hs * SKULL, 0.1294 * f.length * hs * SKULL, 0.0950 * f.depth * hs * SKULL];
 
   const gauss = (v, w) => Math.exp(-(v / w) * (v / w));
@@ -2695,6 +2802,13 @@ export function buildHead(b, rig, o, f) {
     // to the ear. It is the plane that catches a different value from the
     // forehead and the cheek, and without it the side of the head is one wash.
     sx -= blob(dy - 0.34, 0.26, ax - 0.82, 0.28) * smoothstep(-0.70, 0.45, dz) * 0.075;
+    // ...and it needs an ANTERIOR BORDER — the temporal crest, the vertical
+    // corner where the frontal plane turns into the temple. Without it the two
+    // are one continuous curve and neither can hold a wash of its own. A tight
+    // dip along the crest line gives the outline pass a crease and the
+    // quantiser a place to break, in every yaw.
+    sx -= gauss(ax - 0.585, 0.075) * smoothstep(0.10, 0.60, dz)
+      * smoothstep(-0.02, 0.32, dy) * 0.038;
 
     // --- 2. THE FACE MASK --------------------------------------------------
     // The front of a head is not a sphere. It is a frontal plane above the
@@ -2703,7 +2817,13 @@ export function buildHead(b, rig, o, f) {
     // so the band boundary has somewhere to land — a sphere shades as one
     // continuous gradient, which is what the round-2 critique measured on the
     // cheek at 1 LSB per pixel.
-    const maskX = 1 - smoothstep(0.44, 0.94, ax);
+    // ROUND 14: the roll-off was 0.44 -> 0.94 of ax, i.e. the front plane took
+    // half the width of the head to become the side plane. That is not an edge,
+    // it is a fillet, and it is the other half of why the head shades as one
+    // mask: the whole cheek lives inside the transition. 0.50 -> 0.82 keeps the
+    // same flat frontal plane but corners it, which is what puts a vertical
+    // value break down the side of a three-quarter face.
+    const maskX = 1 - smoothstep(0.50, 0.82, ax);
     const mask = maskX * smoothstep(0.16, 0.72, dz);
     sz -= mask * 0.074;
     // ...and the two planes are not parallel. The forehead slopes back, the
@@ -2725,17 +2845,57 @@ export function buildHead(b, rig, o, f) {
     // --- 4. ZYGOMATIC ARCH and the hollow under it -------------------------
     // This pair is the terminator VC draws under every face: a lit plane above,
     // a flat wash below, one wobbling pigment edge between them.
+    //
+    // ROUND 14 — AND A GAUSSIAN CANNOT DRAW THAT EDGE. Rounds 4-13 built the
+    // arch as blob(dy - zygY, 0.165, ...): a bell that rises and falls over
+    // 0.66 of dy, i.e. 75 mm on a 228 mm head. A radius that varies that
+    // smoothly has a normal that turns just as smoothly, so the quantiser lays
+    // a GRADIENT down the cheek and the face renders as a flat mask with the
+    // features inked onto it — which is the standing critique. Measured on the
+    // round-13 closeup, a horizontal scan across the cheek (row 300, x 655-800,
+    // every sample inside the SKIN zone and inside one albedo) ran 168-175 over
+    // 110 px: a 7 LSB ramp, with no step anywhere on the cheek.
+    //
+    // A cheekbone is a RIDGE, and a ridge is a slope DISCONTINUITY. The malar
+    // eminence is the most prominent point of the mid-face; the surface recedes
+    // going up to the orbital rim and going down to the maxilla, so the plane
+    // above the crest faces up-and-out and catches the sky while the plane
+    // below faces down-and-out and turns away. Two planes, one corner. The way
+    // to build that is a TENT in dy — |dy - zygY| — not a bell: the tent has a
+    // genuine kink at the apex where the bell has a smooth maximum.
+    //
+    // At amplitude 0.150 over a half-width of 0.30 the radial slope is
+    // 0.150/0.300 * R[0]/R[1] = 0.292 m/m either side, so the normal leaves the
+    // crest at 16 degrees each way — a 32-degree break held over 34 mm of cheek
+    // above and below. That is the geometry the acceptance test needs; the
+    // SKIN_BANDS contrast is what turns it into a step.
     const zygY = FY(0.430);
-    const zyg = blob(dy - zygY, 0.165, ax - 0.68, 0.255) * clamp01(dz + 0.42);
-    sx += zyg * 0.115 * f.cheek;
-    sz += zyg * 0.044 * f.cheek;
+    const zyg = clamp01(1 - Math.abs(dy - zygY) / 0.255)
+      * gauss(ax - 0.66, 0.300) * clamp01(dz + 0.42);
+    sx += zyg * 0.190 * f.cheek;
+    sz += zyg * 0.066 * f.cheek;
     // ...continued back to the ear as a real arch, which is what makes a
     // three-quarter view read as a skull rather than as a pear.
     sx += blob(dy - (zygY + 0.03), 0.11, dz + 0.10, 0.34) * clamp01(ax - 0.55) * 0.10 * f.cheek;
-    // Buccal hollow beneath it.
-    const hollow = blob(dy - FY(0.295), 0.155, ax - 0.52, 0.215) * front;
+    // Buccal hollow beneath it. Tightened in dy (0.155 -> 0.120) so it stops
+    // filling the bottom half of the tent back in: a dish immediately under the
+    // crest re-curves the very normal the crest just broke.
+    const hollow = blob(dy - FY(0.285), 0.120, ax - 0.52, 0.215) * front;
     sx -= hollow * 0.052;
     sz -= hollow * 0.044;
+
+    // --- 4b. THE INFERIOR BORDER OF THE MANDIBLE ---------------------------
+    // The second terminator on a head, and the one that makes a jaw OVERHANG a
+    // neck instead of melting into it. Same construction as the crest above and
+    // for the same reason: above the border the masseter plane faces out, below
+    // it the submandibular plane in (8) tucks up under the throat, and the two
+    // meet at a line. Built as a tent so that line is a corner; gated off the
+    // midline so the chin button in (7) still owns the front.
+    const jawY = FY(0.135);
+    const border = clamp01(1 - Math.abs(dy - jawY) / 0.245)
+      * smoothstep(0.16, 0.44, ax) * (1 - smoothstep(0.76, 1.04, ax));
+    sx += border * 0.062 * (0.55 + f.jaw * 0.50);
+    sz += border * 0.026 * clamp01(dz + 0.30);
 
     // --- 5. MAXILLA / muzzle ----------------------------------------------
     // The block of bone carrying the top teeth. It stands forward of the plane
@@ -3413,7 +3573,36 @@ export function buildHead(b, rig, o, f) {
       // had it, and the rendered face then landed 60 LSB under the lit ground
       // where the rubric's bar is 45. The marks above are what carry the face;
       // the field they sit in has to stay light enough for them to be marks.
-      k *= 1.150 - 0.150 * smoothstep(FY(0.560), FY(0.300), dy) * (0.45 + 0.55 * front);
+      //
+      // ROUND 14 — AND THE 1.150 LIFT WAS CRUSHING THE TOP TWO WASHES INTO ONE.
+      //
+      // vcLitColour ends in `hsv.z = min(1.0, hsv.z * 1.36 + 0.10)`. Base skin
+      // is authored at linear value 0.791, so litCol saturates at 1.0 for any
+      // albedo above 0.662 — and this term multiplied the whole face by 1.150 on
+      // top, putting the forehead and the malar plane at 0.909. Work the ramp
+      // out at that value: midCol = 0.98v = 0.891, litCol = 1.0, and the two
+      // washes the quantiser hands a LIT cheek (band 4 at mix 0.90 toward litCol,
+      // band 3 at mix 0.28) come out 0.952 and 0.910 linear — sRGB 254 and 249.
+      // FIVE LSB apart. The face could not step across its own terminator
+      // however well it was modelled or however hard the drive was pushed,
+      // because the top of the ramp had nowhere left to go. At v = 0.70 the same
+      // pair is 251 and 228 — a 24 LSB step — and the LIT wash does not move,
+      // because it was already clipped. So this is a contrast gain, not a
+      // darkening: the highlight stays exactly where it was and the plane below
+      // it drops away from it. 1.005 puts every skin tone in SKIN_TONES at or
+      // under the clip point once the AO bake and the marks below have had it.
+      k *= 1.005 / 1.150;
+
+      // ROUND 14: the DIVISION drops 0.150 -> 0.072. This term is a painted
+      // value step standing exactly where the lit terminator belongs, and while
+      // it was carrying the cheek the lighting had nothing left to say — a
+      // painted step does not move when the sun does, which is the whole test.
+      // Now that section 4 builds a real zygomatic ridge and SKIN_BANDS has the
+      // contrast to quantise across it, this is back to what it should always
+      // have been: a whisper of local colour under the cheekbone, not the
+      // cheekbone. The overall 1.150 lift is unchanged, so the face's mean
+      // albedo does not move.
+      k *= 1.150 - 0.072 * smoothstep(FY(0.560), FY(0.300), dy) * (0.45 + 0.55 * front);
       // ...and the side planes of the head turn away from the sky as well.
       k *= 1.0 - 0.085 * smoothstep(0.35, 0.92, ax);
 

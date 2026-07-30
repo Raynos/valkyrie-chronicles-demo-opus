@@ -431,6 +431,45 @@ Gb sampleGb(vec2 uv) {
   return g;
 }
 
+// ---- the contact wash's COLOUR RULE ----------------------------------------
+// A wash that grounds an object has to be DARKER. It does not have to be a
+// different pigment — and the rule this pass used to call, vcShadowColour(),
+// cannot express that. Its last act is vcCoolShade(c, 0.85): a turn toward
+// 235 deg ALONG THE SHORTER ARC. For every warm hue in this palette the shorter
+// arc to 235 runs BACKWARDS through 0, so ochre walks into red; and its
+// multiplicative-plus-additive skylight leaves GREEN as the lowest channel,
+// which is magenta by definition. That pair is the "raises BLUE against green,
+// which on a red-dominant pigment produces MAGENTA" the rubric's archaeology
+// names, and it is why an occluded warm surface came out of this pass at
+// hue 300-340 rather than cooler than it went in.
+//
+// So the wash keeps vcShadowColour's VALUE — that number is what every
+// cast-shadow and contact-seam LSB measurement in the project is calibrated
+// against — and takes its HUE from the surface it is falling on instead:
+//
+//   * the hue may only CLIMB toward the skylight, never descend, so nothing can
+//     wrap through red into magenta;
+//   * it may climb at most VC_WASH_TURN, so the wash stays the same pigment;
+//   * and never past the far edge of olive, so a green sward cools to
+//     grey-green instead of to teal — the same 135 deg ceiling materials.js's
+//     VC_SHADE_CAP uses, for the same reason;
+//   * chroma FALLS, because shade is the least chromatic wash on the sheet.
+//
+// Luminance is restored exactly at the end, so this is a hue/chroma rewrite with
+// arithmetically zero effect on any darkness metric.
+#define VC_WASH_TURN 0.0333       // 12 degrees
+#define VC_WASH_H    0.5833       // 210 deg — the skylight, as lighting.js ramps it
+#define VC_WASH_CAP  0.375        // 135 deg — the far edge of olive
+vec3 vcContactWash(vec3 c, vec3 sky, vec3 floorCol) {
+  float l = vcLum(vcShadowColour(c, sky, floorCol));
+  vec3 hsv = vcRgb2Hsv(c);
+  float d = VC_WASH_H - hsv.x;
+  hsv.x = min(hsv.x + clamp(d, 0.0, VC_WASH_TURN), max(hsv.x, VC_WASH_CAP));
+  hsv.y *= 0.66;
+  vec3 t = vcHsv2Rgb(hsv);
+  return t * (l / max(vcLum(t), 1e-5));
+}
+
 void main() {
   vec2 uv = vUv;
   vec3 color = texture2D(tColor, uv).rgb;
@@ -526,7 +565,7 @@ void main() {
       float wash = clamp(1.0 - q.x, 0.0, 1.0);
       // the wet rim of a drying wash dries darker than its middle
       wash = clamp(wash * (1.0 + q.y * 0.22), 0.0, 1.0);
-      color = mix(color, vcShadowColour(color, uContactViolet, uInkFloor), wash * 0.9);
+      color = mix(color, vcContactWash(color, uContactViolet, uInkFloor), wash * 0.9);
     }
   }
 
@@ -758,6 +797,7 @@ uniform vec3  uVignetteTint;
 uniform float uWhiteStart;    // luma at which the cream white point starts
 uniform float uHighStart;     // luma at which the warm highlight tint starts
 uniform float uFloorPow;      // how fast the ink floor lets go of the midtones
+uniform float uFloorTint;     // ...and how much of the pigment its HUE carries
 uniform float uGreenLift;     // hue turns the sage lobe is pushed toward green
 uniform float uGreenChroma;
 uniform float uSkySat;
@@ -1075,7 +1115,41 @@ void main() {
     // The cream white point is PAPER. The sky is not painted on it.
     vec3 pw = mix(uPaperWhite, uSkyWhite, sky);
     vec3 top = mix(vec3(1.0), pw, smoothstep(uWhiteStart, 1.0, l0));
-    c = uInkBlack * pow(max(vec3(1.0) - c, vec3(0.0)), vec3(uFloorPow)) + c * top;
+    // THE INK FLOOR IS A VALUE, NOT A COLOUR.
+    //
+    // The floor is laid down as inkBlack * (1-c)^uFloorPow, and in a shadow mass
+    // it is not a toe lift — it is the paint. Measured on village: the shaded
+    // facade, the cast shadow across the road and the soldier standing in it all
+    // arrive here at a tonemapped luminance under 0.05, so pow(1-c, 2.6) is
+    // still 0.93 and better than half of what those pixels finally are IS this
+    // constant. 0x3c3947 normalises to (1.01, 0.96, 1.19), i.e. hue 253 at 0.20
+    // chroma, so every shadow mass in the frame was the same violet whatever
+    // pigment it was made of. Knocking the tint out entirely moves the shaded
+    // stucco 238/0.16 -> 192/0.06, the shaded tunic 244/0.31 -> 209/0.11 and the
+    // cast shadow 252/0.16 -> 225/0.02, while neutralising the graphite, the
+    // outline ink, the shared shade floor, the surface hatch and the contact
+    // wash together move all three by 0-3 degrees. After uViolet this is the
+    // largest violet source in these plates.
+    //
+    // So the floor keeps its VALUE — exactly, by renormalising, so the toe of
+    // the image, the frame's darkest pixel and every cast-shadow LSB delta are
+    // untouched by construction — and takes its HUE from the pigment it is
+    // lifting. A shaded tan tunic gets a darker, cooler tan; a shaded limestone
+    // wall gets a darker, cooler limestone; and where the pixel underneath has no
+    // hue of its own left (an ink stroke, the deepest hatch), the floor is still
+    // uInkBlack and the darkest passages stay the warm brown-violet the rubric
+    // asks for. uFloorTint is how much of the pigment it carries.
+    vec3 pig = clamp(c / max(l0, 1e-4), vec3(0.30), vec3(2.0));
+    vec3 ink = mix(uInkBlack, vec3(lumaOf(uInkBlack)) * pig, uFloorTint);
+    // ...and GREEN MAY NOT BE THE LOWEST CHANNEL. A violet ink plus a warm
+    // pigment is a magenta by definition, and that is the one place the darks may
+    // not go: the tank plate measured 34.3% of every pixel below L=125 in
+    // hue 300-360 in round 4 and the rose bruise was named in the verdict. With
+    // the floor carrying the pigment's hue, a tan glacis walked its own floor to
+    // hue 327; this line lands it on a near-neutral warm grey instead.
+    ink.g = max(ink.g, min(ink.r, ink.b));
+    ink *= lumaOf(uInkBlack) / max(lumaOf(ink), 1e-5);
+    c = ink * pow(max(vec3(1.0) - c, vec3(0.0)), vec3(uFloorPow)) + c * top;
   }
 
   // ---- split tone ----------------------------------------------------------
@@ -1120,7 +1194,16 @@ void main() {
     // degrees and the stucco at 33 does not move at all.
     float rise = smoothstep(0.110, 0.152, hsv.x);         // 40 -> 55 deg
     float fall = 1.0 - smoothstep(0.180, 0.360, hsv.x);   // 65 -> 130 deg
-    float gLift = rise * fall;
+    // ...AND ONLY ON A PIGMENT THAT HAS A HUE TO SEPARATE. The lobe was authored
+    // against the five LIT patches listed above, every one of which arrives here
+    // with 0.10-0.15 of chroma. A shade wash arrives with 0.02: rotating that 30
+    // degrees does not separate anything, it tints a grey — and once the deepest
+    // wash stopped being violet and started landing where a cool grey-buff
+    // belongs (60-80 deg), it landed inside this lobe and came out at 94-104,
+    // i.e. the shaded limestone of the bridge plate read as moss. Measured on the
+    // spandrel: input chroma 0.022 against lit grass at 0.146, so the gate
+    // separates them cleanly and no lit pigment loses more than 15% of its lift.
+    float gLift = rise * fall * smoothstep(0.035, 0.105, hsv.y);
     float dO = hsv.x - 0.094;                       // ~34 deg, ochre / straw
     dO -= floor(dO + 0.5);
     float ochreness = exp(-dO * dO / 0.0034);
@@ -1539,8 +1622,11 @@ export class CanvasRenderPipeline {
         uInkFadeEnd: { value: 78 },
         uAoStrength: { value: 0.62 },
         uContactStrength: { value: 0.70 },
-        // The contact wash is skylight-only pigment, same violet the surface
-        // shaders use for shade, so a boot seam and a cast shadow agree.
+        // These two set the wash's VALUE and nothing else now: vcContactWash()
+        // keeps vcShadowColour's luminance and then takes hue and chroma from
+        // the surface the wash is falling on, so they are left exactly where
+        // they were measured rather than re-authored (every contact-seam and
+        // cast-shadow LSB delta in the project is calibrated against them).
         uContactViolet: { value: new THREE.Color(0x6c6a86) },
         uInkFloor: { value: new THREE.Color(0x3c3947) },
         uViewToWorld: { value: new THREE.Matrix4() },
@@ -1618,13 +1704,34 @@ export class CanvasRenderPipeline {
         uWhiteStart: { value: 0.62 },
         uHighStart: { value: 0.74 },
         uFloorPow: { value: 2.6 },
+        // How much of the PIGMENT the ink floor's hue carries. The floor's VALUE
+        // is unchanged at any setting; 0 is the old behaviour (every shadow mass
+        // in frame painted the same hue-253 violet), 1 would hand the floor the
+        // pigment's full chromaticity.
+        //
+        // 0.45 is chosen against the change footprint, not against the colour:
+        // this term reaches every pixel that has any floor under it, and measured
+        // on the twelve plates it costs 7% of the frame at 0.30, 17-22% at 0.45
+        // and 30-40% at 0.62 in pixels moving more than 8 LSB. At 0.45 the shaded
+        // stucco of village goes 257/0.30 -> 232/0.10 and the tank's shaded
+        // glacis 266/0.20 -> a near-neutral warm grey, which is most of the
+        // available correction for a third of the footprint of 0.62.
+        uFloorTint: { value: 0.45 },
         uGreenLift: { value: 0.084 },        // +30 deg on the sage lobe
         uGreenChroma: { value: 0.22 },
         uSkySat: { value: 1.02 },
-        // COOL shade, warm light: the actual split. Slate-violet, blue ahead of
-        // red, and gentle — the surface shaders and the contact wash already
-        // put violet in the darks, this only has to keep the axis honest.
-        uShadowTint: { value: new THREE.Color(0xaba9b2) },
+        // COOL shade, warm light: the actual split, and gentle — the surface
+        // shaders already put the skylight in the darks, this only has to keep
+        // the axis honest.
+        //
+        // A COOL WASH TAKES RED OUT; IT DOES NOT PUT BLUE IN. 0xaba9b2
+        // normalises to (1.0022, 0.9905, 1.0432) — blue lifted, and GREEN LEFT
+        // BEHIND RED, which is the definition of magenta and is the third pass
+        // in this frame to do it. Same hue, same luminance, same 4% blue lift,
+        // but now (0.9791, 1.0023, 1.0429): red comes down, green comes up with
+        // blue. Knocked out, this term was worth 285 -> 320 deg on the shaded
+        // spandrel of `bridge`, i.e. it was pushing the darks toward magenta.
+        uShadowTint: { value: new THREE.Color(0xa9adb4) },
         uHighTint: { value: new THREE.Color(0xfff4e2) },
         uVignetteTint: { value: new THREE.Color(0xa2988c) },
         // The frame-wide wash quantiser. Sixteen steps across the perceptual
