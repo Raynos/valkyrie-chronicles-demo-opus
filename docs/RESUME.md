@@ -90,11 +90,57 @@ cat ~/.claude/projects/-Users-raynos-*/*/subagents/workflows/wf_*/journal.jsonl 
 Read that before assuming an agent accomplished nothing — the file edits it made are already
 on disk even if it never returned a report.
 
+## After a REBOOT specifically
+
+A reboot kills three things that are not on disk:
+
+1. **The warm vite dev server on port 5173.** Restart it before any rendering, or every
+   screenshot silently costs ~13 s extra:
+   ```bash
+   cd /Users/raynos/projects/game-demos/valkyrie-chronicles-demo-opus
+   npx vite --host 127.0.0.1 --port 5173 --strictPort &
+   ```
+2. **Any headless Chromium** left over from the harness. They die cleanly; nothing to do.
+3. **Any running workflow.** Its agents are gone. Files they had already written survive —
+   `git status` will show them.
+
+Then the standard checks: `git status --short`, `npx vite build`,
+`find src -name '*.js' | xargs -n1 node --check`, and one render to confirm the game still boots:
+```bash
+node tools/shoot.mjs bridge shots/bridge.png
+```
+
+## Where the visual loop currently stands (round 14)
+
+**Playable and rendering:** 36.5k lines, full BLiTZ battle system, 12 deterministic capture shots
+at 72–189 fps, zero console errors. `docs/HARNESS.md` explains the ~3× render speedup and why
+frames are now byte-deterministic (which is what makes regression diffs meaningful).
+
+**Verified working:** cast shadows (under-arch water 67 LSB below open water, from an *inverted*
+−9.6 several commits ago), the lit tank, hatching in shadowed masses, hands with legible fingers,
+a tunic that reads as cloth rather than camouflage, composition 7–8, palette 7–8.
+
+**The open defect, precisely located.** Shade hue is dominated by the ambient "pole" colour in
+`render/lighting.js`, so every surface shades to roughly the same tint regardless of its albedo.
+Sweeping the pole's chroma gives moss green (99°) → teal grey (163°) → blue-violet (192°); none is
+right, because the fix is to reduce **how much** the pole glazes over albedo, not to pick a better
+pole colour. The acceptance test is that stone, grass and cloth must shade to three *different*
+hues. Full detail in `docs/CRITIQUE_RUBRIC.md`'s last three sections.
+
+**Also open:** the face is drawn but not modelled (no zygomatic arch for a terminator to fall
+under); the lancer's arm in `tank`; characters don't band at `overview` scale; ~half of character
+footprints lack contact darkening.
+
+**Read `docs/CRITIQUE_RUBRIC.md` before measuring anything.** Its last three sections record how
+these metrics have been gamed and how they have misled — including five dead ends already ruled
+out by measurement, so no round re-tests them.
+
 ## Build phase order (so you know where to pick up)
 
 1. ~~Core scaffold + contracts~~ — done, committed
 2. ~~Subsystem build (7 parallel agents, 59 modules)~~ — done, committed `043c624`
-3. Integration: `main.js` + defects S1–S15, then the boot doctor — *in progress*
-4. Visual critique loop: shoot → harsh critic → fix → re-shoot, per `docs/CRITIQUE_RUBRIC.md`,
-   until every shot passes all 12 axes
-5. Playtest / balance / performance pass
+3. ~~Integration: `main.js` + defects S1–S15, then the boot doctor~~ — done
+4. ~~Harness performance + determinism~~ — done, `docs/HARNESS.md`
+5. Visual critique loop: shoot → harsh critic → fix → re-shoot, per `docs/CRITIQUE_RUBRIC.md` —
+   *in progress, round 14*
+6. Playtest / balance / performance pass — not started
