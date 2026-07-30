@@ -106,6 +106,38 @@ So: to change the hue of shade, change the **ambient colour and the contact wash
 Per-material violet knobs only scale how much of that ambient reaches the deepest wash; they
 cannot change what colour it is.
 
+## The shade pole, and why picking its hue does not work (round 13)
+
+Round 13 correctly moved the fix to the right layer: the shade "pole" colour in
+`render/lighting.js`, which is what a low-saturation surface's shaded hue actually resolves to.
+Swapping the violet pole `0x5d5080` for a slate `0x54585c` took shaded masonry from **hue 259.4
+(violet) to 99.0 (moss green)** while leaving lit surfaces untouched (lit bank hue 43.6 -> 51.2,
+value unchanged) and preserving the cast shadows (under-arch water 71.16 -> 63.92 LSB below open
+water, open water itself unmoved). That is the right mechanism and it should stay.
+
+But **choosing a better pole hue does not solve it.** Measured, sweeping only the pole's chroma at
+a constant ~213 degrees:
+
+| pole | measured shaded-stone hue | reads as |
+|---|---|---|
+| `0x54585c` (sat 0.09) | 99.0 | moss green |
+| `0x4c5766` (sat 0.24) | 162.9 | teal grey |
+| `0x44536b` (sat 0.36) | 192.0 | **blue-violet blockwork** — back near the original defect |
+
+Two lessons:
+
+1. **The metric misleads here.** At `0x44536b` the median shaded hue reads 192, nominally a
+   respectable grey-blue, but the frame shows blue-violet brickwork: the median is averaging dark
+   mortar lines with the block faces, and the blocks are well off it. Sample block faces
+   specifically, and always confirm against the picture.
+2. **The pole DOMINATES the albedo, and that is the actual defect.** Weathered limestone in shade
+   should be its own warm grey-buff, cooled a little. Instead the shaded hue tracks the pole
+   almost regardless of what the surface is made of, which is why every pole choice yields a
+   uniformly-tinted frame in some hue or other. The fix is to reduce **how much** the pole glazes
+   over the albedo in the deepest washes — so the surface keeps its identity and the skylight only
+   cools it — not to keep hunting for a pole colour that happens to look acceptable on stone.
+   Settled at `0x4c5766` (hue 162.9) as the least objectionable of the three pending that work.
+
 ## Output contract
 
 The critic returns strict JSON:

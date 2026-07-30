@@ -166,8 +166,8 @@ const SKY_RAMP = [
 const SHADE_RAMP = [
   { t: 0.00, c: 0x453a72, i: 1 },   // pre-dawn: nothing but sky
   { t: 0.10, c: 0x53565f, i: 1 },
-  { t: 0.16, c: 0x54585c, i: 1 },   // daylight: a slate grey-blue. The eleven
-  { t: 0.50, c: 0x54585c, i: 1 },   // daylight plates all sit in 0.16..0.33, so
+  { t: 0.16, c: 0x4c5766, i: 1 },   // daylight: a slate grey-blue. The eleven
+  { t: 0.50, c: 0x4c5766, i: 1 },   // daylight plates all sit in 0.16..0.33, so
   { t: 0.84, c: 0x53565f, i: 1 },   // they get this pigment exactly.
   { t: 1.00, c: 0x453a72, i: 1 },   // dusk: the sky's own blue-violet again
 ];
