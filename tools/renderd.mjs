@@ -48,8 +48,9 @@
 // eight agents each booting their own chromium is 8x7 s of boot and 8x the VRAM.
 
 import { chromium } from 'playwright';
-import { mkdirSync, existsSync, writeFileSync, unlinkSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, existsSync, writeFileSync, unlinkSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, resolve, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
@@ -196,6 +197,27 @@ const IN_PAGE_RUN = async ({ name, margin, settle }) => {
     if (converged < 0 && n >= 14 && stable >= margin) converged = n;
   }
 
+  // RUN THE FINALE. This was missing, and it silently cost seven of the twelve
+  // shots every piece of VFX they were written around.
+  //
+  // A shot's `finale` is the one or two frames of scripted VFX that must still be
+  // burning when the shutter opens — a muzzle flash lives ~0.07 s, a tracer less,
+  // so neither can survive the settle loop. main.js runs it AFTER the settle and
+  // before the freeze (see its own finale block), and the resident path simply
+  // never did: `ctx.finale` was initialised to null above and nothing ever called
+  // it. So `firefight`, `action`, `aim`, `tank`, `dusk` and the rest rendered on
+  // the fast path with no flash, no tracer and no impact — and every agent that
+  // iterated on those shots was looking at a frame the shot's author never
+  // intended, while `--cold` (which goes through main.js) showed the real thing.
+  // That is a whole class of "the fix did not land" report explained.
+  const fin = ctx.finale;
+  if (fin) {
+    for (let i = 0; i < fin.frames; i++) {
+      try { fin.fn(i); } catch (e) { console.warn('[renderd] finale frame', i, e); }
+      await raf();
+    }
+  }
+
   // Restore the frozen-shutter state main.js leaves behind, so a screenshot taken
   // now is the same draw every time and nothing advances between requests.
   v.engine.clock.getDelta = () => 0;
@@ -210,6 +232,34 @@ const IN_PAGE_RUN = async ({ name, margin, settle }) => {
   });
   return window.__STATS__;
 };
+
+// ---------------------------------------------------------------- staleness
+/**
+ * A cheap content digest of everything the page could have imported.
+ *
+ * mtime+size rather than file contents: this runs before every render and the
+ * point is to be free. It cannot miss an edit made by a normal editor or by an
+ * agent's Write/Edit, because both change size or mtime. It would miss a
+ * same-size same-mtime rewrite, which nothing in this project does.
+ */
+function sourceDigest(root = resolve('src')) {
+  const h = createHash('sha1');
+  const walk = (dir) => {
+    let ents;
+    try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!/\.(js|mjs|glsl|json|css|html)$/.test(e.name)) continue;
+      try { const s = statSync(p); h.update(`${p}:${s.size}:${s.mtimeMs}\n`); } catch {}
+    }
+  };
+  walk(root);
+  for (const f of ['index.html', 'vite.config.js']) {
+    try { const s = statSync(resolve(f)); h.update(`${f}:${s.size}:${s.mtimeMs}\n`); } catch {}
+  }
+  return h.digest('hex');
+}
 
 // ---------------------------------------------------------------- daemon
 const main = async () => {
@@ -238,10 +288,61 @@ const main = async () => {
   const queue = (fn) => (chain = chain.then(fn, fn));
 
   let served = 0;
+  let srcDigest = sourceDigest();
+  let reloads = 0;
+
+  /**
+   * RELOAD THE PAGE WHEN src/ HAS CHANGED SINCE THE FRAME WE ARE SERVING.
+   *
+   * This daemon booted the page ONCE, and `main.js`'s pinModulesForCapture()
+   * deliberately vetoes vite's full reload under ?capture (a mid-render reload
+   * once wrote a garbage frame over a good one). Both decisions are individually
+   * defensible and together they made the fast path serve THE CODE AS OF DAEMON
+   * BOOT, FOREVER.
+   *
+   * The cost was invisible and large: an agent that edits a material, re-renders
+   * on the fast path and looks at the result is looking at its own PRE-EDIT
+   * output. It then reports "the fix did not land" — correctly, about a frame
+   * that never contained the fix. Only `--cold` (a fresh browser) and an explicit
+   * `--stop` were ever telling the truth. Rounds 16-18 iterated this way.
+   *
+   * The veto stays: reloading mid-render is the bug it was written for. Instead we
+   * reload BETWEEN requests, inside the same serialising queue, when and only when
+   * the source has actually changed. A recursive mtime+size digest over src/ costs
+   * a few ms against a 1.6 s render, so it is free.
+   */
+  async function reloadIfStale() {
+    const d = sourceDigest();
+    if (d === srcDigest) return false;
+    srcDigest = d;
+    reloads++;
+
+    // TEAR THE OLD DOCUMENT DOWN FIRST. `waitForFunction('window.__READY__ ===
+    // true')` is satisfied INSTANTLY by the outgoing page, which still has
+    // __READY__ = true from its own boot, so a naive goto+wait can return before
+    // the new document has finished evaluating and we screenshot a half-built
+    // world. Measured while building this: after reverting a magenta-skin test
+    // edit, the "reloaded" frame still sat 11.9% away from the correct frame and
+    // 84% away from the pre-edit one — a partial reload passed off as a fresh one.
+    // about:blank guarantees __READY__ is undefined before we start waiting.
+    await page.goto('about:blank');
+
+    // Cache-bust the URL as well: an identical URL lets the browser reuse the
+    // document, which is the other half of the same trap.
+    await page.goto(`http://127.0.0.1:${vitePort}/?capture&shot=overview&_r=${reloads}`,
+      { waitUntil: 'load' });
+    await page.waitForFunction('window.__READY__ === true', { timeout: 90000 });
+    return true;
+  }
 
   async function doShoot({ shot, out }) {
     const t = Date.now();
     errors = [];
+    const reloaded = await reloadIfStale();
+    // A reload re-pays world generation and shader compilation, so it is the one
+    // request that is not ~1.6 s. Report it rather than let a caller conclude the
+    // daemon got slow.
+    if (reloaded) errors = [];
     const stats = await page.evaluate(IN_PAGE_RUN, { name: shot, margin: MARGIN, settle: SETTLE });
     const outPath = resolve(out || `shots/${shot}.png`);
     if (!existsSync(dirname(outPath))) mkdirSync(dirname(outPath), { recursive: true });
@@ -251,7 +352,7 @@ const main = async () => {
       shot, out: outPath, ms: Date.now() - t,
       drawCalls: stats?.drawCalls, triangles: stats?.triangles,
       convergedAt: stats?.convergedAt, settleFrames: stats?.settleFrames,
-      poseMs: stats?.poseMs, errors: errors.slice(),
+      poseMs: stats?.poseMs, reloaded, errors: errors.slice(),
     };
   }
 
