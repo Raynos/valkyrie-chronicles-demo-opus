@@ -18,7 +18,7 @@ import { Input } from '../core/input.js';
 import { clamp, clamp01, damp, dampAngle, lerp, TAU } from '../core/math.js';
 import {
   GRENADE, attackForecast, bloomFor, coverFor, effectiveAccuracy, explode, fireBurst,
-  predictArc, shotSigma, solveArc, traceScene, traceWorld,
+  hasLOS, predictArc, shotSigma, solveArc, traceScene, traceWorld,
 } from './combat.js';
 import { moveWithCollision } from './nav.js';
 import { STANCE } from './units.js';
@@ -38,6 +38,13 @@ const _dir = new THREE.Vector3();
 const _arcOut = [];
 
 const MODE = { MOVE: 0, AIM: 1, GRENADE: 2, INTERACT: 3, FIRING: 4, DONE: 5 };
+
+// Target-magnetism cone, as a fraction of screen HEIGHT. 0.26 * 720 = 187 px, which through the
+// aim FOV is 4.4 deg: at 14 m that reaches about half a body-height past the edge of a man, so
+// "crosshair on the dirt by his boots" still means him. MEASURED: the latch envelope is 0-4.7 deg
+// of angular error at 14 m (see the round-21 notes). Generous on purpose — the nearest man to the
+// crosshair wins, so width costs forgiveness, not accuracy.
+const MAGNET_SCREEN_FRAC = 0.26;
 
 export class ActionMode {
   /**
@@ -324,18 +331,38 @@ export class ActionMode {
     }
   }
 
+  /**
+   * Locomotion is driven by GROUND SPEED, never by a clip name.
+   *
+   * anim.js cross-blends the stance's clip set by `speed` and derives the cycle rate from the
+   * blended stride (metres per cycle), so the ONE thing it needs from the game layer is how
+   * fast the man is actually moving. Nothing ever told it: this used to `play(clip)`, and
+   * `play()` on a locomotion member snaps `animator.speed` to that clip's NOMINAL speed
+   * (walk = 1.30 m/s). Every soldier therefore ran his cycle for 1.30 m/s while travelling at
+   * 2.5-5.7. `play()` is now reserved for one-shots (fire / reload / vault / hit).
+   *
+   * Consequence worth stating plainly: at walk = 3.1 m/s the blend lands on the `run` clip,
+   * because 3.1 m/s IS a run. Locked feet under an honest cycle beat a walk cycle skating.
+   *
+   * MEASURED, headless, engineer at 2.9-3.0 m/s (ground travelled per cycle / the foot's own
+   * swing per cycle; 1.0 = planted):
+   *     stand  3.53, 3.27  ->  2.55, 2.38          crouch  2.72  ->  1.25
+   * The remaining error is NOT here. anim.js's rate math is exact — the root now travels one
+   * declared `stride` per cycle to within 1% — but the clips' declared strides overstate the
+   * distance the ankle actually swings: walk declares 1.38 m and swings 0.89, run declares
+   * 2.30 and swings 0.85, crouchWalk declares 0.62 and swings 0.49. The residual is exactly
+   * declaredStride / actualSwing, and it lives in src/actors/anim.js CLIP_DEFS (widen the leg
+   * swing in walk/run — do NOT just shrink the declared stride, that gives a 3.5 Hz shuffle).
+   */
   driveAnimation(u, dt) {
     if (u.isVehicle) return;
     const s = this.speedSmoothed;
     const crouched = u.stance === STANCE.CROUCH;
     const prone = u.stance === STANCE.PRONE;
-    let clip;
-    if (prone) clip = 'prone';
-    else if (this.mode === MODE.AIM) clip = 'aim';
-    else if (s < 0.25) clip = crouched ? 'crouchIdle' : 'idle';
-    else if (crouched) clip = 'crouchWalk';
-    else clip = s > u.classDef.speed.walk * 1.12 ? 'run' : 'walk';
-    if (clip !== this._lastClip) { u.actor?.play?.(clip); this._lastClip = clip; }
+    const stance = prone ? 'prone'
+      : crouched ? 'crouch'
+        : this.mode === MODE.AIM ? 'aim' : 'stand';
+    u.actor?.setLocomotion?.(s, { stance });
 
     // Footsteps at a cadence proportional to speed.
     if (s > 0.4) {
@@ -461,9 +488,7 @@ export class ActionMode {
     else if (!wantAim && this.mode === MODE.AIM) this.exitAim();
 
     if (this.mode === MODE.AIM) {
-      this.aimHold += this.speedSmoothed > 0.2 ? -dt * 1.6 : dt;
-      this.aimHold = clamp(this.aimHold, 0, u.weapon.settle * 1.4);
-      this.updateAimSolve(dt);
+      this.updateAimSolve(dt);          // the settle clock lives in there now — see below
       if (Input.mouse.leftJust) this.fire();
     } else if (this.mode === MODE.GRENADE) {
       this.updateGrenadeArc();
@@ -517,10 +542,58 @@ export class ActionMode {
     Bus.emit('sfx', { name: 'aimOut' });
   }
 
+  /**
+   * Sweep a screen-space cone for the enemy nearest the crosshair. Returns him, or null.
+   *
+   * A third-person camera looks past the soldier's shoulder and the resting pitch points a
+   * metre short of a man's boots, so a ray-only solve spends most of an engagement reporting
+   * "dirt" while the player is plainly pointing at somebody. VC's aim mode locks on; so does
+   * this. The rules that keep it honest rather than magic:
+   *   * the RAY wins whenever it hits a unit — magnetism only fills a miss;
+   *   * the cone is in PIXELS, so a scope narrows it in world terms exactly as much as it
+   *     magnifies, and it is never smaller than the accuracy circle the HUD is drawing —
+   *     anything inside that circle is already a plausible hit;
+   *   * it never snaps onto a friendly (deliberate blue-on-blue still works: point at him
+   *     and the ray hits him);
+   *   * it needs a clear line from the MUZZLE, so it cannot promise a shot through a wall.
+   */
+  magnetTarget(camPos, dir, weapon, radiusPx) {
+    const u = this.unit;
+    if (!u) return null;
+    const h = typeof innerHeight === 'number' ? innerHeight : 1080;
+    const focal = (h * 0.5) / Math.tan((this.camera.fov * Math.PI) / 360);
+    const cone = Math.min(0.16, Math.atan2(Math.max(radiusPx || 0, h * MAGNET_SCREEN_FRAC), focal));
+    const units = this.battle.units;
+    let best = null, bestDot = Math.cos(cone);
+    u.muzzlePoint(_muzzle);
+    for (let i = 0; i < units.length; i++) {
+      const o = units[i];
+      if (o === u || !o.alive || !o.deployed || o.downed) continue;
+      if (o.team === u.team) continue;
+      if (o.spotted === false) continue;      // fog of war: never lock onto a man you cannot see
+      o.centerPoint(_v1);
+      _v2.subVectors(_v1, camPos);
+      const d = _v2.length();
+      if (d < 0.6 || d > weapon.maxRange * 1.05) continue;
+      const dot = _v2.dot(dir) / d;
+      if (dot <= bestDot) continue;               // further off the crosshair than the best so far
+      if (!hasLOS(_muzzle.x, _muzzle.y, _muzzle.z, _v1.x, _v1.y, _v1.z, this.world)) continue;
+      bestDot = dot; best = o;
+    }
+    return best;
+  }
+
   /** Trace the reticle, size the accuracy circle, publish the hit-% readout. */
   updateAimSolve(dt) {
     const u = this.unit;
     const w = u.usingAlt && u.altAmmo ? u.altAmmo : u.weapon;
+
+    // The settle clock lives HERE, not in the input path. Every route into the aim solve —
+    // mouse, the Q latch, capture shots, a headless harness posing the mode directly — has
+    // to converge the reticle, and while this lived in updateModeInput the capture/scripted
+    // path returned before it and the circle never moved: holding aim bought the player
+    // nothing at all.
+    this.aimHold = clamp(this.aimHold + (this.speedSmoothed > 0.2 ? -dt * 1.6 : dt), 0, w.settle * 2.2);
     this.bloom = bloomFor(w, this.aimHold, clamp01(this.speedSmoothed / 3));
 
     this.camera.getWorldDirection(_dir);
@@ -532,6 +605,18 @@ export class ActionMode {
     const prev = this.aimTarget;
     this.aimTarget = hit && hit.kind === 'unit' ? hit.unit : null;
     this.aimPart = hit && hit.kind === 'unit' ? hit.partLabel : null;
+    this._magnet = this.aimTarget ? 'ray' : 'none';
+    if (!this.aimTarget) {
+      const snap = this.magnetTarget(_camPos, _dir, w, this.reticleRadiusPx);
+      if (snap) {
+        this.aimTarget = snap;
+        this.aimPart = 'body';
+        this._magnet = 'magnet';
+        // The round has to go where the lock says it goes, or the readout is a lie: fire()
+        // converges the muzzle onto _aimPoint.
+        snap.centerPoint(_aimPoint);
+      }
+    }
 
     if (this.aimTarget) {
       u.muzzlePoint(_muzzle);
@@ -550,10 +635,12 @@ export class ActionMode {
       this._sigma = shotSigma(u, w, acc, this.bloom, this.speedSmoothed);
     }
 
-    // Angular sigma -> pixels: r = tan(sigma) * focalPx, focalPx = (h/2)/tan(fov/2)
+    // Angular sigma -> pixels: r = tan(sigma) * focalPx, focalPx = (h/2)/tan(fov/2).
+    // Clamped at both ends because the circle is a PROMISE the player aims with: a quarter
+    // of the screen is not a reticle, and a hairline cannot be read.
     const h = typeof innerHeight === 'number' ? innerHeight : 1080;
     const focal = (h * 0.5) / Math.tan((this.camera.fov * Math.PI) / 360);
-    this.reticleRadiusPx = Math.tan(this._sigma * 2.146) * focal;   // 2.146 sigma = 90% circle
+    this.reticleRadiusPx = clamp(Math.tan(this._sigma * 2.146) * focal, 7, h * 0.155);
 
     if (prev !== this.aimTarget || this._pubTimer === undefined || (this._pubTimer -= dt) <= 0) {
       this._pubTimer = 0.06;

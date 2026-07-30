@@ -955,16 +955,44 @@ function css() {
 
 /* ---------- screens ------------------------------------------------------ */
 .vc-screens{ position:absolute; inset:0; }
-.vc-screen{ position:absolute; inset:0; display:grid; place-items:center; }
+.vc-screen{ position:absolute; inset:0; display:grid; place-items:center; perspective:2400px; }
 .vc-scrim{ position:absolute; inset:0; background:rgba(38,29,26,.62); backdrop-filter:blur(2px) saturate(.8); }
 .vc-page{ position:relative; width:min(74em, 88vw); max-height:88vh; }
 .vc-page-in{ padding:2.0em 2.4em 2.2em; }
 
+/* Every full-screen spread is a PAGE TURN, not a web modal: the sheet swings in
+   about its left edge while the scrim inks up behind it, and swings out the
+   other way. .in / .out are put on by screens.js; the JS exit timeout must stay
+   in step with the .35s below (see PAGE_OUT_MS there). */
+.vc-screen .vc-page{ transform-origin:left center; will-change:transform, opacity; }
+.vc-screen.in .vc-page{ animation:vc-page-in .45s cubic-bezier(.22,.9,.26,1) both; }
+.vc-screen.out .vc-page{ animation:vc-page-out .35s cubic-bezier(.5,0,.72,.3) both; }
+.vc-screen.in .vc-scrim{ animation:vc-fade-in .26s ease both; }
+.vc-screen.out .vc-scrim{ animation:vc-fade-out .35s ease both; }
+/* A leaving page is scenery — it must not eat the click that dismissed it. */
+.vc-screen.out{ pointer-events:none; }
+/* The title card is built in main.js and carries no .in class, so it gets the
+   same opening turn from here: the book opens, it does not pop. */
+.vc-titlecard > .vc-panel{ transform-origin:left center;
+  animation:vc-page-in .6s cubic-bezier(.22,.9,.26,1) both; }
+.vc-titlecard > .vc-scrim{ animation:vc-fade-in .45s ease both; }
+
+/* A spread closes the book on the battle HUD behind it: fading the live
+   gameplay chrome out is what makes the sheet read as a page rather than a
+   dialog floating over a running game. Hidden layers stay hidden (vc-hidden is
+   display:none), so this only touches what was actually on screen.
+   The alert banner and the toasts are excluded from the TRANSITION (not from the
+   hiding): both are keyframe-animated callouts and a .26s opacity transition
+   would smear their exits. */
+.vc-root > *:not(.vc-alert):not(.vc-toasts){ transition:opacity .26s ease; }
+.vc-root.vc-spread > *:not(.vc-screens){ opacity:0; pointer-events:none; }
+
 .vc-chapter{ position:absolute; inset:0; display:grid; place-items:center; perspective:2200px; }
-.vc-chapter .vc-scrim{ animation:vc-fade-in .5s ease both; background:rgba(38,29,26,.55); }
+.vc-chapter .vc-scrim{ animation:vc-fade-in .34s ease both; background:rgba(38,29,26,.55); }
 .vc-chapter .vc-page{ width:min(50em,78vw); transform-origin:left center; }
-.vc-chapter.in .vc-page{ animation:vc-page-in .95s cubic-bezier(.22,.9,.26,1) both; }
-.vc-chapter.out .vc-page{ animation:vc-page-out .78s cubic-bezier(.5,0,.72,.3) both; }
+.vc-chapter.in .vc-page{ animation:vc-page-in .52s cubic-bezier(.22,.9,.26,1) both; }
+.vc-chapter.out .vc-page{ animation:vc-page-out .38s cubic-bezier(.5,0,.72,.3) both; }
+.vc-chapter.out .vc-scrim{ animation:vc-fade-out .38s ease both; }
 .vc-chapter-in{ padding:2.4em 3.0em 2.6em; text-align:center; }
 .vc-chapter-num{ font-variant:small-caps; letter-spacing:.42em; font-size:.82em; color:var(--red); }
 .vc-chapter-ill{ width:100%; max-width:34em; margin:1.1em auto .5em; }
@@ -1130,6 +1158,7 @@ function css() {
   100%{ opacity:0; transform:translateY(-.5em) rotate(var(--tilt,0deg)); }
 }
 @keyframes vc-fade-in{ from{opacity:0} to{opacity:1} }
+@keyframes vc-fade-out{ from{opacity:1} to{opacity:0} }
 
 /* ---------- responsive --------------------------------------------------- */
 @media (max-aspect-ratio:5/4){
@@ -1159,6 +1188,9 @@ function css() {
     transition-duration:.09s !important;
   }
   .vc-chapter.in .vc-page, .vc-chapter.out .vc-page{ animation:vc-fade-in .2s both; }
+  /* No page swing when motion is reduced — the sheet just inks in. */
+  .vc-screen.in .vc-page{ animation:vc-fade-in .12s both; }
+  .vc-screen.out .vc-page{ animation:vc-fade-out .12s both; }
   .vc-result-rank.slam{ animation:vc-fade-in .2s both; transform:rotate(-5.6deg); }
   .vc-alert.on{ animation:vc-fade-in .2s both; opacity:1; }
 }

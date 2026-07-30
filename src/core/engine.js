@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CFG } from './config.js';
+import { CFG, pixelRatio } from './config.js';
 import { Input } from './input.js';
 
 export class Engine {
@@ -12,10 +12,12 @@ export class Engine {
       stencil: false,
       alpha: false,
     });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, CFG.render.maxPixelRatio));
+    this.renderer.setPixelRatio(pixelRatio());
     this.renderer.setSize(innerWidth, innerHeight, false);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // PCFSoftShadowMap is deprecated in three r185 and silently falls back to
+    // PCFShadowMap, so ask for what we were already getting.
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.NoToneMapping;   // handled in the grade pass
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.autoClear = true;
@@ -48,9 +50,33 @@ export class Engine {
     const w = innerWidth, h = innerHeight;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, CFG.render.maxPixelRatio));
+    this.renderer.setPixelRatio(pixelRatio());
     this.renderer.setSize(w, h, false);
     this.pipeline?.setSize(w, h);
+  }
+
+  /**
+   * Turn the resolution down (or back up) and re-derive everything that depends
+   * on it. Returns true only if the renderer's pixel ratio actually MOVED, so a
+   * caller can stop stepping when the floor is reached; a no-op is rolled back.
+   *
+   * This is the ONLY dynamic-quality lever the game pulls now. Measured, the
+   * shader-quality tiers were the wrong knob: ultra -> low saved 10.9 ms of a
+   * 58.4 ms frame and cost 38 fresh shader compiles (a multi-second stall, which
+   * is itself what tripped the ratchet again), while the resolution knob saved
+   * 24.8 ms with zero recompiles and no change to the art direction — same ink,
+   * same wash steps, same paper, fewer samples of it.
+   */
+  setDynScale(scale) {
+    const prevScale = CFG.render.dynScale;
+    const prevRatio = this.renderer.getPixelRatio();
+    CFG.render.dynScale = Math.max(0.25, Math.min(1, scale));
+    if (Math.abs(pixelRatio() - prevRatio) < 1e-3) {
+      CFG.render.dynScale = prevScale;
+      return false;
+    }
+    this.onResize();
+    return true;
   }
 
   start() {

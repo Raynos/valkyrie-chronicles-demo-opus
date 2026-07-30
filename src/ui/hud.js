@@ -32,6 +32,7 @@ import {
   unitBlip, keyCap, inkGauge, marchLine, rankChevrons, marginBracket, contourMap,
   dialGauge, compassPip, compassTick, viewWedge,
 } from './icons.js';
+import { AudioEngine } from '../audio/engine.js';
 import { portraitFor } from './portraits.js';
 import { WorldLabels } from './worldLabels.js';
 import {
@@ -117,6 +118,42 @@ const TAPE_DEG = 1080;
 const TAG_FOE_RANGE = 30;      // a spotted Imperial inside engagement range
 const TAG_ARMOUR_RANGE = 34;   // our tank, while it is in the same fight
 const TAG_ALLY_RANGE = 12;     // an ally close enough that his state matters
+
+// ---------------------------------------------------------------------------
+// Audio option bridge
+//
+// The pause menu's Music and Effects rows have emitted `ui:option` into an empty
+// room since they were written: nothing anywhere in the tree listened, so the
+// game shipped with NO volume or mute control at all. The tidy home for this
+// wiring is playFlow() in src/main.js, which already holds the AudioEngine — one
+// `Bus.on('ui:option')` there and the HUD would not need to know audio exists.
+// main.js was owned by another agent this round, so the bridge lives here and
+// finds the live engine itself: every AudioEngine wires itself to the Bus from
+// its own constructor, so tapping the two methods that constructor/boot path
+// always calls hands us the instance without a global or an import cycle.
+//
+// If main.js ever adopts this, delete the tap and pass `{ audio }` into `new HUD`
+// (or listen for the `audio:volume` event this still emits) — `_applyOption`
+// prefers `opts.audio` when it is there.
+const AUDIO_TAPS = new Set();
+if (AudioEngine && AudioEngine.prototype && !AudioEngine.__vcHudTap) {
+  AudioEngine.__vcHudTap = true;
+  for (const m of ['_wire', 'init']) {
+    const orig = AudioEngine.prototype[m];
+    if (typeof orig !== 'function') continue;
+    AudioEngine.prototype[m] = function vcTapped(...a) {
+      AUDIO_TAPS.add(this);
+      return orig.apply(this, a);
+    };
+  }
+}
+
+// Four labels -> four gains. `Normal` reproduces the AudioEngine's own defaults
+// (0.62 music, 1 sfx, 0.72 ambience) so opening the menu and closing it again
+// cannot move the mix.
+const MUSIC_GAIN = { Off: 0, Quiet: 0.28, Normal: 0.62, Loud: 0.95 };
+const SFX_GAIN = { Off: 0, Quiet: 0.45, Normal: 1, Loud: 1.45 };
+const AMBIENCE_GAIN = { Off: 0, Quiet: 0.34, Normal: 0.72, Loud: 0.92 };
 
 const LEGENDS = {
   command: [
@@ -234,8 +271,45 @@ export class HUD {
     this._onResize = () => { this.labels.resize(); this._mapW = 0; this._compassW = 0; };
     addEventListener('resize', this._onResize);
 
+    // ESCAPE OUT OF THE PAUSE MENU.
+    //
+    // Every other key in this HUD is POLLED from Input inside update(), and
+    // update() is an engine system: `Bus.on('ui:pause')` sets `engine.paused`,
+    // the engine then skips every system, and `Input.update()` still clears
+    // justDown at the end of each frame — so while the menu is up the polled key
+    // path is dead and the keypress is thrown away. Measured headless: the menu
+    // opened on Escape and would not close on Escape, five presses running. The
+    // only way out was the mouse, while the legend on screen says `Esc Pause`.
+    // A direct listener, active ONLY while the menu is up, is the whole fix.
+    // The guard is not optional. Unpausing restarts the systems, and the frame
+    // that follows polls the SAME keypress out of Input — measured: the menu
+    // closed and reopened on one Escape. The poll ignores Escape for a beat after
+    // this listener has already spent it.
+    this._onEscape = (e) => {
+      if (e.key !== 'Escape' || !this.handleKeys) return;
+      if (!this.pause.visible) return;         // unpaused: the polled path owns Esc
+      this._escAt = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      this._setPaused(false);
+    };
+    addEventListener('keydown', this._onEscape);
+
     if (this.mission.chapter != null && opts.autoChapter !== false) {
       this.showChapter(this.mission);
+    }
+
+    // PLAY-MODE MEASUREMENT HANDLE.
+    //
+    // `window.__VC__` was assigned only by captureFlow(), so a PLAYED build had
+    // no handle on anything and the only way to drive the game from a headless
+    // test was synthetic input into an unobservable box. Round 19 could not check
+    // a single readout it complained about. The HUD publishes itself (and the Bus,
+    // and whatever AudioEngine has wired itself up) on the same object capture
+    // mode extends, so `hud.battle`, `hud.camera` and the audio buses are all
+    // reachable from a test without the game having to expose them.
+    if (typeof window !== 'undefined') {
+      window.__VC__ = Object.assign(window.__VC__ || {}, {
+        hud: this, Bus, audioTaps: AUDIO_TAPS,
+      });
     }
   }
 
@@ -434,6 +508,13 @@ export class HUD {
     const mP = panel({ seed: 814, cls: 'vc-map', tilt: -0.3, under: true });
     const mt = h('div', { class: 'vc-map-title' });
     mt.appendChild(label('Tactical Survey'));
+    // "Music Off" / "Effects Off" — the only place a muted mix is visible, so a
+    // player who muted three sessions ago is not left thinking audio is broken.
+    this.muteMark = h('div', {
+      class: 'vc-label vc-tight vc-hidden',
+      style: 'color:var(--red)', text: '',
+    });
+    mt.appendChild(this.muteMark);
     this.mapScaleEl = h('div', { class: 'vc-label vc-tight', text: this.mapExtent + ' m' });
     mt.appendChild(this.mapScaleEl);
     mP.content.appendChild(mt);
@@ -454,6 +535,15 @@ export class HUD {
     bar.appendChild(this.mapBarLabel);
     this.mapIn.appendChild(bar);
     mP.content.appendChild(this.mapIn);
+    // Base-camp ledger. The camps already had a world-space ring, which is
+    // invisible whenever the camp is off screen or behind a hill — i.e. exactly
+    // when you need to know that the one you are pushing on has gone CONTESTED.
+    // A two-line strip under the survey is always on screen and always legible.
+    this.campStrip = h('div', {
+      class: 'vc-camp-strip',
+      style: 'margin-top:.3em; display:flex; flex-direction:column; gap:.12em',
+    });
+    mP.content.appendChild(this.campStrip);
     L.appendChild(mP.root);
 
     // --- end turn ----------------------------------------------------------
@@ -971,6 +1061,11 @@ export class HUD {
       this.orders = (p && p.orders) || DEFAULT_ORDERS;
       this._renderOrders();
     });
+    // The pause menu reaches _applyOption through its `onOption` callback, so
+    // this listener is for everyone ELSE — the documented `ui:option` channel was
+    // write-only until now. Applying an option twice is a no-op, so the menu
+    // firing both paths costs nothing.
+    this._on('ui:option', (p) => { if (p && p.key) this._applyOption(p.key, p.value); });
     this._on('ui:legend', (p) => this.setControls(typeof p === 'string' ? p : p?.mode));
     this._on('ui:pause', (p) => this._applyPause(p ? p.paused !== false : true));
 
@@ -1020,6 +1115,22 @@ export class HUD {
       if (!c) return;
       this.toast(((c.name || 'CAMP') + (p.by?.team === 0 ? ' secured' : ' lost')).toUpperCase());
       if (c.pos) this.labels.banner(c.pos, p.by?.team === 0 ? 'CAMP SECURED' : 'CAMP LOST', { life: 2.2 });
+      this._campEvent?.delete(c.id);
+      this._campAlert = false;
+      this._updateCamps();
+    });
+    // The camp standoff. `battle.camps[i].contested` is the truth and the strip
+    // polls it directly, so this listener is PURELY a latch for an announcement
+    // that would otherwise fall between two polls — the HUD does not depend on
+    // it existing. Payload: { camp } or { campId } (+ optional `contested:false`
+    // to clear early).
+    this._on('camp:contested', (p) => {
+      const id = p?.camp?.id ?? p?.campId ?? p?.id;
+      if (id == null) return;
+      if (!this._campEvent) this._campEvent = new Map();
+      if (p.contested === false) this._campEvent.delete(id);
+      else this._campEvent.set(id, this._time + 4);
+      this._updateCamps();
     });
 
     // --- deployment --------------------------------------------------------
@@ -1098,16 +1209,78 @@ export class HUD {
   _updateCamps() {
     const camps = this.battle.camps;
     if (!Array.isArray(camps) || !camps.length) return;
+    let contested = false;
     for (const c of camps) {
       if (!c.pos) continue;
       const owned = c.owner === 0 || c.owner === 1;
+      const busy = this._campContested(c);
+      if (busy) contested = true;
       // Contested camps breathe rather than sit — it reads as pressure.
-      const p = c.contested ? 0.5 + 0.42 * Math.sin(this._time * 4.2)
+      const p = busy ? 0.5 + 0.42 * Math.sin(this._time * 4.2)
         : owned ? 1 : 0.22;
       this.labels.capture(c.id, c.pos, {
         progress: p, team: c.owner === 1 ? 1 : 0,
-        label: c.contested ? 'CONTESTED' : (c.name ? c.name.split(' ')[0] : ''),
+        label: busy ? 'CONTESTED' : (c.name ? c.name.split(' ')[0] : ''),
       });
+    }
+    this._renderCampStrip(camps, contested);
+  }
+
+  /**
+   * Is this camp being fought over?
+   *
+   * `battle.updateCamps()` sets `camp.contested` when both sides have a soldier
+   * in the ring. The mission-completion work landing in this same round may
+   * instead report the standoff over the Bus (`camp:contested`), so BOTH are
+   * honoured: the flag is read live, and an event overrides it for a few seconds
+   * so a one-shot announcement is not lost between two 6-frame polls.
+   */
+  _campContested(c) {
+    if (c.contested) return true;
+    const until = this._campEvent && this._campEvent.get(c.id);
+    return until != null && this._time < until;
+  }
+
+  /**
+   * The base-camp ledger under the survey: one row per camp, its holder, and
+   * CONTESTED in red the moment the ring is being fought over. Text, because a
+   * line of text is legible at any size and cannot half-render.
+   */
+  _renderCampStrip(camps, anyContested) {
+    if (!this.campStrip) return;
+    if (!this._campRows) this._campRows = new Map();
+    for (const c of camps) {
+      let row = this._campRows.get(c.id);
+      if (!row) {
+        const root = h('div', {
+          class: 'vc-label vc-tight',
+          style: 'display:flex; gap:.4em; align-items:baseline; justify-content:space-between',
+        });
+        const nm = h('span', { text: c.name || c.id || 'Camp' });
+        const st = h('b', { text: '' });
+        root.appendChild(nm);
+        root.appendChild(st);
+        this.campStrip.appendChild(root);
+        row = { root, st, key: null };
+        this._campRows.set(c.id, row);
+      }
+      const busy = this._campContested(c);
+      const state = busy ? 'contested' : c.owner === 0 ? 'held' : c.owner === 1 ? 'imperial' : 'neutral';
+      // Blink the word rather than tint the panel: one moving thing, and it is
+      // the word that carries the meaning.
+      const blink = busy && (Math.sin(this._time * 5.2) > -0.2);
+      const key = state + (blink ? '1' : '0');
+      if (row.key === key) continue;
+      row.key = key;
+      row.st.textContent = busy ? 'CONTESTED'
+        : state === 'held' ? 'Held' : state === 'imperial' ? 'Imperial' : 'Neutral';
+      row.st.style.color = busy ? 'var(--red)'
+        : state === 'held' ? 'var(--ally)' : state === 'imperial' ? 'var(--enemy)' : 'var(--ink-3)';
+      row.st.style.opacity = busy && !blink ? '0.35' : '1';
+    }
+    if (anyContested !== this._campAlert) {
+      this._campAlert = anyContested;
+      if (anyContested) this.toast('Base camp contested');
     }
   }
 
@@ -1254,7 +1427,7 @@ export class HUD {
   setAmmo({ ammo = null, mag = null, reloading = false }) {
     this._ammo = ammo != null ? ammo : this._ammo;
     this._mag = mag != null ? mag : this._mag;
-    this.reloadEl.classList.toggle('vc-hidden', !reloading);
+    this._reloading = !!reloading;
     this._renderAmmo();
   }
 
@@ -1283,6 +1456,13 @@ export class HUD {
     }
 
     if (this.handleKeys) this._keys();
+
+    // An AudioEngine that appeared after the volume rows were replayed (see
+    // _applyVolume) inherits the player's saved choice. One integer compare.
+    if (AUDIO_TAPS.size !== this._audioTapN) {
+      this._audioTapN = AUDIO_TAPS.size;
+      for (const k of Object.keys(this._volOpt || {})) this._applyVolume(k, this._volOpt[k]);
+    }
 
     // Keep world-space name tags bound to the live unit list. Cheap enough to
     // re-diff a squad-sized array a few times a second.
@@ -1318,7 +1498,9 @@ export class HUD {
   }
 
   _keys() {
-    if (Input.pressed('escape')) {
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const escSpent = this._escAt != null && now - this._escAt < 300;
+    if (Input.pressed('escape') && !escSpent) {
       if (this.ordersOpen) this._toggleOrders(false);
       else if (this.dialogue.visible) this.dialogue.hide();
       else if (this.briefing.visible || this.deployment.visible) { /* modal screens own Esc */ }
@@ -1571,9 +1753,35 @@ export class HUD {
     // Clamped: a soldier under a movement order can carry more AP than his own
     // maximum, and an unclamped meter then reads past the end of its own trough.
     this.apShown = clamp(u.ap || 0, 0, u.maxAp || 1);
-    this._ammo = u.ammo != null ? u.ammo : (u.weapon && u.weapon.ammo);
-    this._mag = u.magSize != null ? u.magSize : (u.weapon && (u.weapon.mag || u.weapon.magSize));
+    this._readAmmo(u);
     this._renderAmmo();
+  }
+
+  /**
+   * Resolve a soldier's magazine into `_ammo` / `_mag`.
+   *
+   * THE FIELD NAMES ARE THE WHOLE BUG. This asked for `magSize` / `weapon.mag` /
+   * `weapon.magSize`, and a Unit carries neither: units.js sets `ammo` and
+   * `maxAmmo` from the class's `ammoAttacks`. So `_mag` was permanently
+   * undefined, `_renderAmmo()` took its hide branch on every frame of every
+   * session, and the ammunition panel was never once on screen — a scout could
+   * be walked from five attacks down to zero with nothing changing, and every
+   * trigger pull after that was a silent dry fire.
+   *
+   * `maxAmmo` counts ATTACKS, not loose rounds (a scout has 5, a lancer 2), so
+   * this is a magazine of attacks and the pip strip is one pip per attack.
+   */
+  _readAmmo(u) {
+    if (!u) { this._ammo = null; this._mag = null; return; }
+    const w = u.weapon || null;
+    const a = u.ammo != null ? u.ammo : (w && w.ammo != null ? w.ammo : null);
+    let m = u.maxAmmo != null ? u.maxAmmo
+      : u.magSize != null ? u.magSize
+        : (w && (w.mag != null ? w.mag : (w.magSize != null ? w.magSize : null)));
+    // A max we could not find is not a reason to hide the count the player needs.
+    if (m == null && a != null) m = Math.max(1, a | 0);
+    this._ammo = a;
+    this._mag = m;
   }
 
   _flashSelected() {
@@ -1638,13 +1846,31 @@ export class HUD {
       box.appendChild(b);
       this._blips.push(b);
     }
+    const turn = this.battle.turn || 1;
     for (let i = 0; i < this._blips.length; i++) {
       const b = this._blips[i];
       const u = units[i];
-      if (!u || !u.pos || u.alive === false) { b.style.display = 'none'; continue; }
+      if (!u || !u.pos || u.alive === false || u.deployed === false) { b.style.display = 'none'; continue; }
       const foe = (u.team | 0) === 1;
+      // FOG OF WAR. The survey drew every Imperial from turn 1 regardless of
+      // `u.spotted`, which handed the player the whole enemy order of battle
+      // before a shot was fired AND made the 2 CP "Enemy Recon" order a purchase
+      // of information you already had. battle.js:refreshFog maintains `spotted`
+      // truthfully; all this had to do was read it.
+      //
+      // An unspotted foe seen within the last turn keeps a FADED mark at his last
+      // known position — the ghost VC leaves behind — so intelligence decays
+      // instead of blinking out of existence. Older than that and he is gone.
+      let pos = u.pos;
+      let ghost = false;
+      if (foe && u.spotted === false) {
+        const fresh = u.lastKnown && (u.lastKnownTurn | 0) >= turn - 1;
+        if (!fresh) { b.style.display = 'none'; continue; }
+        pos = u.lastKnown;
+        ghost = true;
+      }
       b.style.display = '';
-      b.style.transform = 'translate(' + toX(u.pos.x).toFixed(1) + 'px,' + toY(u.pos.z).toFixed(1) + 'px)';
+      b.style.transform = 'translate(' + toX(pos.x).toFixed(1) + 'px,' + toY(pos.z).toFixed(1) + 'px)';
       const wrap = b.firstChild;
       const variant = foe ? 2 : (u === this.selected ? 1 : 0);
       if (b._variant !== variant) {
@@ -1656,7 +1882,7 @@ export class HUD {
       // rotation that aims it along yaw is (180 - yaw).
       wrap.style.transform = 'rotate(' + (180 - (u.yaw || 0) * 180 / Math.PI).toFixed(1) + 'deg) scale(' +
         (u === this.selected ? 1.45 : 1) + ')';
-      wrap.style.opacity = u.downed ? '0.35' : '1';
+      wrap.style.opacity = ghost ? '0.32' : u.downed ? '0.35' : '1';
     }
 
     // camera wedge — the field-of-view cone drawn on the survey
@@ -1721,9 +1947,9 @@ export class HUD {
     this.apPanel.classList.toggle('low', low);
 
     // ammo can be driven by the unit directly if the game does not emit ui:ammo
-    const a = u.ammo != null ? u.ammo : (u.weapon && u.weapon.ammo);
-    const m = u.magSize != null ? u.magSize : (u.weapon && (u.weapon.mag || u.weapon.magSize));
-    if (a !== this._ammo || m !== this._mag) { this._ammo = a; this._mag = m; this._renderAmmo(); }
+    const wasA = this._ammo, wasM = this._mag;
+    this._readAmmo(u);
+    if (this._ammo !== wasA || this._mag !== wasM) this._renderAmmo();
 
     this._updateCompass();
     this.setControls(this.aiming ? 'aim' : 'action');
@@ -1802,16 +2028,29 @@ export class HUD {
     const a = this._ammo, m = this._mag;
     if (a == null || m == null) { this.ammoPanel.classList.add('vc-hidden'); return; }
     this.ammoPanel.classList.remove('vc-hidden');
-    this.ammoNum.firstChild.textContent = String(Math.max(0, a | 0));
+    const n = Math.max(0, a | 0);
+    const dry = n <= 0;
+    this.ammoNum.firstChild.textContent = String(n);
     this.ammoNum.lastChild.textContent = ' / ' + (m | 0);
     const want = Math.min(20, m | 0);
     if (this.ammoPips.childElementCount !== want) {
       clear(this.ammoPips);
       for (let i = 0; i < want; i++) this.ammoPips.appendChild(ammoPip({ spent: false }));
     }
-    const live = Math.round((a / Math.max(1, m)) * want);
+    // Ceil, not round: with a magazine of five attacks a round() drops the last
+    // pip while the soldier still has a shot in him.
+    const live = dry ? 0 : Math.max(1, Math.ceil((a / Math.max(1, m)) * want));
     let i = 0;
     for (const pip of this.ammoPips.children) { pip.classList.toggle('spent', i >= live); i++; }
+    // An empty soldier still pulls the trigger and nothing happens, so EMPTY has
+    // to be a state the player can see, not an absence of a number. The count
+    // goes red and throbs on the same keyframes the low-AP plate uses, and the
+    // red slug under the pips says it in words.
+    this.ammoNum.style.color = dry ? 'var(--red)' : '';
+    this.ammoNum.style.animation = dry ? 'vc-throb 1.05s ease-in-out infinite' : '';
+    const slug = dry ? 'Out of Ammo' : (this._reloading ? 'Reloading' : '');
+    this.reloadEl.textContent = slug;
+    this.reloadEl.classList.toggle('vc-hidden', !slug);
   }
 
   // World convention (src/world/layout.js): +X is east, **-Z is north**. The
@@ -2152,6 +2391,63 @@ export class HUD {
       this.root.style.setProperty('--vc-motion', value === 'Reduced' ? '0' : '1');
       this.root.classList.toggle('vc-nomotion', value === 'Reduced');
     }
+    if (key === 'music' || key === 'sfx') this._applyVolume(key, value);
+  }
+
+  /**
+   * Music / Effects -> real gains on every live AudioEngine.
+   *
+   * Both are set as FIELDS as well as through the setters, because the setters
+   * only ramp a node when the context exists: the audio context is created on
+   * the first user gesture, so a volume chosen at the title screen has to
+   * survive until `init()` copies `musicVolume`/`ambienceVolume` into the buses.
+   * `sfxVolume` is not a node at all — `play()` multiplies by it per voice — so
+   * it is only ever a field.
+   */
+  _applyVolume(key, value) {
+    // Remembered so a choice made BEFORE the AudioEngine exists still lands.
+    // The pause menu persists its rows to disk and replays them from its own
+    // constructor — which runs inside `new HUD(...)`, and main.js builds the HUD
+    // BEFORE the AudioEngine, so at replay time there is nothing to set. A saved
+    // "Music Off" was therefore forgotten on every subsequent session.
+    if (!this._volOpt) this._volOpt = {};
+    this._volOpt[key] = value;
+    const targets = new Set(AUDIO_TAPS);
+    if (this.opts.audio) targets.add(this.opts.audio);
+    const music = MUSIC_GAIN[value];
+    const sfx = SFX_GAIN[value];
+    const amb = AMBIENCE_GAIN[value];
+    for (const ae of targets) {
+      if (!ae) continue;
+      if (key === 'music') {
+        ae.musicVolume = music != null ? music : 0.62;
+        ae.setMusicVolume?.(ae.musicVolume);
+      } else {
+        ae.sfxVolume = sfx != null ? sfx : 1;
+        ae.ambienceVolume = amb != null ? amb : 0.72;
+        ae.setAmbienceVolume?.(ae.ambienceVolume);
+      }
+    }
+    // Announced as well as applied, so the wiring can move to main.js later
+    // without the menu going dead again in the meantime.
+    Bus.emit('audio:volume', {
+      key, value,
+      gain: key === 'music' ? (music != null ? music : 0.62) : (sfx != null ? sfx : 1),
+      ambience: key === 'sfx' ? (amb != null ? amb : 0.72) : undefined,
+    });
+    // A muted mix has to be visible somewhere or the player cannot tell the
+    // difference between "off" and "broken".
+    if (key === 'music') this._mutedMusic = value === 'Off';
+    else this._mutedSfx = value === 'Off';
+    this._renderMuteMark();
+  }
+
+  _renderMuteMark() {
+    if (!this.muteMark) return;
+    const m = this._mutedMusic, s = this._mutedSfx;
+    const txt = m && s ? 'Sound Off' : s ? 'Effects Off' : m ? 'Music Off' : '';
+    this.muteMark.textContent = txt;
+    this.muteMark.classList.toggle('vc-hidden', !txt);
   }
 
   _onBriefingDone() { this.setControls('command'); }
@@ -2163,6 +2459,7 @@ export class HUD {
     for (const off of this._unsubs) off();
     this._unsubs.length = 0;
     removeEventListener('resize', this._onResize);
+    removeEventListener('keydown', this._onEscape);
     this.labels.dispose();
     this.chapterCard.dispose();
     this.briefing.dispose();

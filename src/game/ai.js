@@ -12,7 +12,7 @@
 import * as THREE from 'three';
 import { Bus } from '../core/bus.js';
 import { CFG } from '../core/config.js';
-import { clamp01, dampAngle, lerp, shortestAngle } from '../core/math.js';
+import { clamp01, damp, dampAngle, lerp, shortestAngle } from '../core/math.js';
 import {
   CombatFlags, GRENADE, attackForecast, explode, fireBurst, hasLOS, solveArc, unitsHaveLOS,
 } from './combat.js';
@@ -268,15 +268,25 @@ export class EnemyAI {
       }
     } else this._stuck = 0;
 
-    this._speed = dt > 1e-5 ? moved / dt : 0;
+    // Smoothed, because this now drives the animation cycle rate as well as the combat
+    // model: raw moved/dt jitters every time the collision slide clips a step, and a
+    // jittering cycle rate strobes the feet.
+    const inst = dt > 1e-5 ? moved / dt : 0;
+    this._speed = damp(this._speed, inst, 12, dt);
     u.speed = this._speed;
     u.velocity.set(_v0.x * u.speed, 0, _v0.z * u.speed);
     u.yaw = dampAngle(u.yaw, Math.atan2(_v0.x, _v0.z), 9, dt);
     u.aimYaw = u.yaw;
     if (this.nav) u.pos.y = this.nav.heightAt(u.pos.x, u.pos.z);
 
-    const clip = u.isVehicle ? null : (p.crouch ? 'crouchWalk' : (this._speed > cls.speed.walk * 1.1 ? 'run' : 'walk'));
-    if (clip && clip !== this._lastClip) { u.actor?.play?.(clip); this._lastClip = clip; }
+    // Drive the animator from GROUND SPEED, not from a clip name. `play('walk')` pins the
+    // cycle to the clip's nominal 1.30 m/s while the soldier is crossing ground at 2.5-5.7,
+    // which is why every Imperial glided; setLocomotion blends the stance's clip set by real
+    // speed and takes the cycle rate from the blended stride, so the feet stay planted.
+    if (!u.isVehicle) {
+      u.actor?.setLocomotion?.(this._speed, { stance: p.crouch ? 'crouch' : 'stand' });
+      this._lastClip = null;
+    }
     u.syncActor?.();
 
     // Opportunistic: if we planned no attack and something wandered into point-blank range,

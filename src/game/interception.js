@@ -12,7 +12,8 @@ import { Bus } from '../core/bus.js';
 import { CFG } from '../core/config.js';
 import { clamp, clamp01, dampAngle, lerp, shortestAngle } from '../core/math.js';
 import {
-  Ctx, coverFor, effectiveAccuracy, fireRound, jitterDirection, shotSigma, unitsHaveLOS,
+  Ctx, coverFor, effectiveAccuracy, fireRound, friendlyInLine, jitterDirection, shotSigma,
+  unitsHaveLOS,
 } from './combat.js';
 
 const _muzzle = new THREE.Vector3();
@@ -189,6 +190,12 @@ export class InterceptionSystem {
     // Firing a burst
     if (st.roundsLeft > 0) {
       if (this.time >= st.nextRoundAt) {
+        // A squadmate has walked into the lane mid-burst: stop, do not stitch through him.
+        if (this._blocked(e, m)) {
+          st.roundsLeft = 0;
+          st.nextBurstAt = this.time + 0.4;
+          return;
+        }
         this._fireOne(e, m, st);
         st.roundsLeft--;
         st.nextRoundAt = this.time + 60 / Math.max(60, e.weapon.rpm);
@@ -208,10 +215,23 @@ export class InterceptionSystem {
       if (cov > 0.6 && this.rng() > 0.25) { st.nextBurstAt = this.time + 1.2; return; }
     }
 
+    // HOLD FIRE THROUGH A SQUADMATE. Interception is the one place in the game where a
+    // shooter never chose its own line: the mover picks the geometry. A soldier who opens
+    // up with a friendly 3 m in front of him reads as broken even now that the rounds pass
+    // harmlessly through, so he waits for the lane instead.
+    if (this._blocked(e, m)) { st.nextBurstAt = this.time + 0.35; return; }
+
     const w = e.isVehicle && e.secondary ? e.secondary : e.weapon;
     st.roundsLeft = Math.max(1, Math.round(interceptBurstSize(w) * (targetMoving ? 1 : 0.6)));
     st.nextRoundAt = this.time;
     Bus.emit('interception', { shooter: e, target: m, first: false });
+  }
+
+  /** Is one of `e`'s own side between its muzzle and the mover? */
+  _blocked(e, m) {
+    e.muzzlePoint(_muzzle);
+    m.centerPoint(_aim);
+    return !!friendlyInLine(e, _muzzle, _aim, this.battle.units);
   }
 
   _fireOne(e, m, st) {
@@ -240,6 +260,9 @@ export class InterceptionSystem {
     jitterDirection(_dir, sigma, this.rng, _jit);
     const res = fireRound(e, _muzzle, _jit, {
       weapon: w, rng: this.rng, aimed: false,
+      // Explicit even though fireRound now defaults to it: interception is the call site
+      // that shipped the friendly-fire kills, and the intent should be readable here.
+      ignoreTeam: e.team,
       units: this.battle.units, world: this.battle.world, battle: this.battle,
       maxDist: w.maxRange * 1.2, tracerForce: this.rng() < 0.5,
     });

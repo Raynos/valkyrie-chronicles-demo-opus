@@ -453,6 +453,44 @@ export function unitsHaveLOS(a, b, world = Ctx.world) {
   return hasLOS(_a.x, _a.y, _a.z, _b.x, _b.y, _b.z, world);
 }
 
+/**
+ * Is one of `shooter`'s own side standing in the shot? Cheap capsule-free test: project each
+ * friendly onto the ray and compare the perpendicular miss distance against its body radius.
+ *
+ * Rounds no longer DAMAGE a friendly (see fireRound), but a tracer stitching through your
+ * own sergeant's head still reads as broken, so the shooter should hold fire instead. This is
+ * the check for "do I have a lane", not a damage check.
+ *
+ * @param {Unit} shooter
+ * @param {THREE.Vector3} origin  muzzle
+ * @param {THREE.Vector3} aimPoint  where the shot is going
+ * @param {Unit[]} units
+ * @param {number} pad extra clearance in metres
+ * @returns {Unit|null} the friendly in the way, nearest first, or null
+ */
+export function friendlyInLine(shooter, origin, aimPoint, units = Ctx.units, pad = 0.45) {
+  _dir.subVectors(aimPoint, origin);
+  const dist = _dir.length();
+  if (dist < 0.2) return null;
+  _dir.multiplyScalar(1 / dist);
+  let best = null, bestT = Infinity;
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    if (u === shooter || u.team !== shooter.team) continue;
+    if (!u.alive || !u.deployed || u.downed) continue;
+    u.centerPoint(_a);
+    _b.subVectors(_a, origin);
+    const t = _b.dot(_dir);
+    // Behind the muzzle, or further away than the thing being shot at: not in the way.
+    if (t < 0.5 || t > dist - 0.3) continue;
+    const perp2 = _b.lengthSq() - t * t;
+    const r = (u.targetRadius ? u.targetRadius() : 0.45) + pad;
+    if (perp2 > r * r) continue;
+    if (t < bestT) { bestT = t; best = u; }
+  }
+  return best;
+}
+
 /** Can `observer` detect `target` right now? Distance + LOS; no vision cone (VC is 360°). */
 export function canSee(observer, target, world = Ctx.world) {
   if (!observer.active || !target.alive || !target.deployed) return false;
@@ -673,8 +711,20 @@ export function fireRound(shooter, origin, dir, opts = {}) {
   });
   Bus.emit('sfx', { name: weapon.sfx, pos: origin });
 
+  // FRIENDLY FIRE IS NOT A FEATURE. No caller of this function has ever wanted a bullet
+  // to stop on a squadmate: not the player's aimed fire, not the AI's, and least of all
+  // interception, where a scout walking between his own shocktrooper and an Imperial got
+  // hosed with the burst meant for the Imperial (Round 19: Rosie Stark put 66 HP into Edy
+  // Nelson and downed her, and it was scored as an enemy routed).
+  //
+  // The trace has supported `ignoreTeam` for a long time — nobody passed it, and this
+  // function did not forward it either, so passing it from the caller alone would still
+  // have hit the squadmate. Default it to the shooter's own team, and let a caller opt
+  // back in with `friendlyFire: true` if the game ever grows a reason to.
+  const ignoreTeam = opts.ignoreTeam !== undefined ? opts.ignoreTeam
+    : (opts.friendlyFire === true ? undefined : shooter.team);
   const h = traceScene(origin, dir, maxDist, {
-    ignore: shooter, units: opts.units || Ctx.units, world: opts.world || Ctx.world,
+    ignore: shooter, ignoreTeam, units: opts.units || Ctx.units, world: opts.world || Ctx.world,
   });
   if (!h) return _shotRes;
 

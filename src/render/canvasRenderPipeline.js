@@ -70,7 +70,6 @@
 
 import * as THREE from 'three';
 import { CFG } from '../core/config.js';
-import { Bus } from '../core/bus.js';
 import { GLSL_HASH, GLSL_NOISE, GLSL_COLOR, GLSL_BANDS, GLSL_HATCH, GLSL_TONEMAP, FS_VERT } from './shaderLib.js';
 import { getPaperTexture, getGrainTexture, getNoiseTexture } from './textures.js';
 import { MaterialRegistry, getGenericPrepassMaterial, PALETTE } from './materials.js';
@@ -441,54 +440,24 @@ void main() {
 }
 `;
 
-// ---- depth of field ---------------------------------------------------------
-const DOF_FRAG = /* glsl */`
-${COMMON}
-uniform sampler2D tColor;
-uniform sampler2D tND;
-uniform vec2 uTexel;
-uniform float uFar;
-uniform float uFocus;       // metres
-uniform float uRange;       // metres of acceptable sharpness either side
-uniform float uMaxCoC;      // pixels
-varying vec2 vUv;
-
-float cocAt(vec2 uv) {
-  float z = texture2D(tND, uv).a * uFar;
-  if (z <= 0.0001) z = uFar;                       // sky
-  float d = (z - uFocus) / max(uRange, 0.01);
-  // asymmetric: foreground goes soft faster than background, as a long lens does
-  d = d < 0.0 ? d * 1.7 : d;
-  return clamp(abs(d), 0.0, 1.0) * uMaxCoC;
-}
-
-void main() {
-  float coc = cocAt(vUv);
-  vec3 sum = texture2D(tColor, vUv).rgb;
-  float wsum = 1.0;
-  if (coc > 0.6) {
-    // golden-angle spiral: 16 taps give a clean circular bokeh with no rings
-    const float GA = 2.39996323;
-    for (int i = 0; i < 16; i++) {
-      float fi = float(i) + 0.5;
-      float r = sqrt(fi / 16.0);
-      float a = fi * GA;
-      vec2 off = vec2(cos(a), sin(a)) * r * coc * uTexel;
-      vec3 s = texture2D(tColor, vUv + off).rgb;
-      float sc = cocAt(vUv + off);
-      // scatter-as-gather: a sharp foreground pixel must not be smeared by a
-      // blurry background tap, but a blurry tap may bleed onto a blurry centre
-      float w = clamp((sc - r * coc) * 2.0 + 1.0, 0.03, 1.0);
-      sum += s * w;
-      wsum += w;
-    }
-  }
-  // Alpha is the sky mask the composite wrote; the grade downstream needs it,
-  // so it has to survive the blur. Taken from the centre tap, not gathered:
-  // a half-sky/half-hill bokeh disc must not turn a hillside into sky.
-  gl_FragColor = vec4(sum / wsum, texture2D(tColor, vUv).a);
-}
-`;
+// ---- depth of field: CUT IN ROUND 21 ---------------------------------------
+// A 17-tap golden-angle bokeh at full resolution, with a scatter-as-gather
+// weight and a temporal blend, ultra only, active in the over-the-shoulder
+// action camera and nowhere else. It cost 3.5 ms of a 58.4 ms frame plus a
+// full-res RGBA16F target (46 MB at 3200x1800) and a shader program — and in
+// nineteen rounds of blind critique not one reader ever mentioned it, for or
+// against. That is the signature of a pass that is expensive and invisible.
+//
+// Measured cost of the cut: `bridge` and `closeup` re-rendered cold are
+// BYTE-IDENTICAL to the round-20 plates; `action` — the one capture shot in
+// action mode — differs over 70.6% of its pixels at mean 3.55 LSB, and what
+// changed is that the far bank, the two houses and the barricade are legible
+// again instead of being smeared by 2 px of fake bokeh. On a watercolour plate
+// where every edge is already a wet-into-wet blur, a lens defocus on top of it
+// was the half-rendered thing that reads worse than the simple one.
+//
+// Its temporal blend was also the slowest term in the capture harness's settle
+// key, so cutting it makes every plate settle sooner.
 
 // ---- composite: bloom + graphite outline ------------------------------------
 const COMPOSITE_FRAG = /* glsl */`
@@ -2164,12 +2133,11 @@ export class CanvasRenderPipeline {
     this.autoUpdateMaterials = true;
     this.lightRig = null;
 
-    // Depth of field. Deliberately small, and it runs AFTER the ink (see
-    // render()). Round 1 blurred the wash and left the linework razor-sharp on
-    // top of it, which is a thing no painting can do and was the single tell
-    // that lost the command frame.
-    this.dof = { enabled: false, focus: 18, range: 22, maxCoC: 2.2 };
-    this._dofBlend = 0;
+    // Inert since round 21 — the pass is gone (see above). The object and the
+    // setFocus/setFocusFromPoint methods stay because the camera code and the
+    // capture shots still address them, and a demo that throws on a focus pull is
+    // worse than one that ignores it.
+    this.dof = { enabled: false, focus: 18, range: 22, maxCoC: 0 };
 
     this.clearColor = new THREE.Color(0xb9b39a);
 
@@ -2198,14 +2166,9 @@ export class CanvasRenderPipeline {
       window.__VC__ = { pipeline: this, renderer, scene, camera, THREE, CFG };
     }
 
-    // Command mode is a MAP. Valkyria Chronicles draws it as a flat illustrated
-    // plate with everything legible; the round-1 build put 6.5 px of bokeh over
-    // the whole valley there and it was the frame's blind-test tell. The only
-    // place a focus falloff belongs is the over-the-shoulder action camera, and
-    // even there it is a hairline.
-    this._offPhase = Bus.on('phase:change', ({ to }) => {
-      this.dof.enabled = (to === 'action');
-    });
+    // There used to be a phase:change subscription here that armed the depth of
+    // field for action mode. The pass is gone, so the only thing it could do now
+    // is keep the capture harness waiting on a blend that never moves.
   }
 
   // ------------------------------------------------------------- materials
@@ -2266,17 +2229,6 @@ export class CanvasRenderPipeline {
       },
       vertexShader: FS_VERT, fragmentShader: CONTACT_FRAG,
       depthTest: false, depthWrite: false, name: 'vcContact',
-    });
-
-    this.mDof = new THREE.ShaderMaterial({
-      uniforms: {
-        tColor: { value: null }, tND: { value: null },
-        uTexel: { value: new THREE.Vector2() },
-        uFar: { value: this.camera.far },
-        uFocus: { value: 18 }, uRange: { value: 22 }, uMaxCoC: { value: 2.2 },
-      },
-      vertexShader: FS_VERT, fragmentShader: DOF_FRAG,
-      depthTest: false, depthWrite: false, name: 'vcDof',
     });
 
     this.mComposite = new THREE.ShaderMaterial({
@@ -2761,7 +2713,6 @@ export class CanvasRenderPipeline {
     for (const t of this.gbuf.textures) { t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = false; }
 
     this.hdr = rt(w, h, { depthBuffer: true });
-    this.dofRT = rt(w, h);
     this.comp = rt(w, h);
 
     // The grade no longer draws to the canvas — it draws here, in LINEAR half
@@ -2824,9 +2775,6 @@ export class CanvasRenderPipeline {
     g.uResolution.value.set(w, h);
     g.uPixelRatio.value = this.dpr;
 
-    this.mDof.uniforms.uTexel.value.set(1 / w, 1 / h);
-    this.mDof.uniforms.tND.value = this.gbuf.textures[0];
-
     MaterialRegistry.setResolution(w, h, this.dpr);
     // publish the G-buffer so FX soft-particles can depth-fade for free
     MaterialRegistry.uniforms.uDepthTex.value = this.gbuf.textures[0];
@@ -2835,7 +2783,6 @@ export class CanvasRenderPipeline {
   _disposeTargets() {
     this.gbuf?.dispose();
     this.hdr?.dispose();
-    this.dofRT?.dispose();
     this.comp?.dispose();
     this.aoRT?.dispose();
     this.gradeRT?.dispose();
@@ -2930,7 +2877,6 @@ export class CanvasRenderPipeline {
     compU.uAspect.value = aspect;
     compU.uTanHalfFov.value = tanH;
     compU.uViewToWorld.value.copy(cam.matrixWorld);
-    this.mDof.uniforms.uFar.value = cam.far;
 
     // The contact pass needs the key direction in VIEW space, and the haze
     // wants to know what time of day it is — both come off the rig.
@@ -2995,25 +2941,11 @@ export class CanvasRenderPipeline {
     compU.uBloomStrength.value = CFG.render.bloomStrength;
     this._quad.draw(r, this.mComposite, this.comp, true);
 
-    let gradeTex = this.comp.texture;
+    const gradeTex = this.comp.texture;
 
-    // ---------------------------------------------------- 6. depth of field
-    // AFTER the ink. Blurring the wash and leaving the graphite sharp on top of
-    // it is physically impossible on paper and reads instantly as a post stack;
-    // out-of-focus pencil has to go soft with the pigment it was drawn over.
-    const wantDof = this.quality >= 2 && this.dof.enabled;
-    this._dofBlend += ((wantDof ? 1 : 0) - this._dofBlend) * Math.min(1, dt * 4);
-    if (this.quality >= 2 && this._dofBlend > 0.02) {
-      const u = this.mDof.uniforms;
-      u.tColor.value = gradeTex;
-      u.uFocus.value = this.dof.focus;
-      u.uRange.value = this.dof.range;
-      u.uMaxCoC.value = this.dof.maxCoC * this._dofBlend;
-      this._quad.draw(r, this.mDof, this.dofRT, true);
-      gradeTex = this.dofRT.texture;
-    }
+    // (6. depth of field was here. Cut in round 21 — see the note at DOF_FRAG.)
 
-    // ---------------------------------------------------- 7. grade + paper
+    // ---------------------------------------------------- 6. grade + paper
     const gu = this.mGrade.uniforms;
     gu.tColor.value = gradeTex;
     // The G-buffer written in step 1 is never rebound as a scratch target, so
@@ -3053,7 +2985,7 @@ export class CanvasRenderPipeline {
                     * THREE.MathUtils.clamp(keyI / 1.35, 0.50, 1.0);
     this._quad.draw(r, this.mGrade, this.gradeRT, true);
 
-    // ------------------------------- 8. histogram reduction + tonal range
+    // ------------------------------- 7. histogram reduction + tonal range
     // Two chains of four CDF knots, seed -> mid -> 1x1, then one monotone C1
     // curve built per frame from those eight numbers. See RANGE_FRAG.
     for (const i of [0, 1]) {
@@ -3395,12 +3327,11 @@ export class CanvasRenderPipeline {
   }
 
   dispose() {
-    this._offPhase?.();
     this._disposeTargets();
     this._quad.dispose();
     this.mDown.dispose(); this.mPrefilter.dispose(); this.mUp.dispose();
     this.mContact.dispose();
-    this.mDof.dispose(); this.mComposite.dispose(); this.mGrade.dispose();
+    this.mComposite.dispose(); this.mGrade.dispose();
   }
 }
 

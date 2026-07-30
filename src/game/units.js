@@ -845,7 +845,10 @@ export class Unit {
       Bus.emit('explosion', { pos: this.pos.clone(), radius: 7, power: TANK_DEATH_POWER, source });
       Bus.emit('sfx', { name: 'explosion', pos: this.pos, vol: 1 });
       this.actor?.play?.('death');
-      if (source) source.stats.kills++;
+      // Only a hostile gets the credit. The results screen sums stats.kills into
+      // "Enemies Routed", so an own-goal used to read as a rout with every Imperial
+      // still standing (Round 19: "Enemies Routed 1", zero Imperials dead).
+      if (source && source.team !== this.team) source.stats.kills++;
       return;
     }
     this.downed = true;
@@ -856,7 +859,7 @@ export class Unit {
     this.actor?.play?.('death');
     Bus.emit('unit:downed', { unit: this });
     Bus.emit('sfx', { name: 'downed', pos: this.pos });
-    if (source) source.stats.kills++;
+    if (source && source.team !== this.team) source.stats.kills++;   // never credit an own-goal
   }
 
   /** Bleed-out tick, called once per owning-team turn start. */

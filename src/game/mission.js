@@ -48,33 +48,41 @@ export const MISSION_VASEL = {
 
   briefing: {
     title: 'THE BRIDGE AT VASEL',
-    objective: 'Capture the Imperial base camp on the north bank.',
+    objective: 'Stand a Scout, Trooper or Engineer on the Imperial flag.',
     failure: 'The Edelweiss is destroyed, or the mission runs past 20 turns.',
     intel: [
       'The Vasel bridge is the last intact crossing for forty kilometres.',
       'Imperial infantry hold the mill town in company strength with one medium tank.',
       'A marksman has been reported in the church tower — do not cross the open square standing up.',
       'The riverbank scrub gives good cover. Use it.',
+      'Their camp falls the moment one of you ends a sortie on the flag with no Imperial beside it.',
     ],
     text:
       'Squad 7 has been ordered to seize the crossing at Vasel before the Imperials can blow it. '
       + 'The far bank is a burned-out mill town: broken walls, a church, and a great deal of open '
-      + 'square between you and their camp. Take that camp within twenty turns. Bring the tank home.',
+      + 'square between you and their camp. Get one soldier onto the flag in the middle of that '
+      + 'camp and hold the few metres around it — the rest of the garrison cannot stop you from '
+      + 'across the square, only from on top of you. Twenty turns. Bring the tank home.',
   },
 
   // -------------------------------------------------------------------------
   // Base camps
   // -------------------------------------------------------------------------
+  // `radius` is the camp FOOTPRINT — deployment slots, the dug-in defence bonus, the ground
+  // the AI walks to. `captureRadius` is the FLAG RING: the ground you have to stand on to
+  // take the camp, and the only ground an enemy can stand on to stop you. Contesting on the
+  // footprint made this mission mathematically unwinnable for twenty rounds — three Imperials
+  // live inside the 9 m circle and never leave it. See FLAG_RING in battle.js.
   camps: [
     {
       // The ally deployment zone from layout.js.
       id: 'gallian', name: 'Gallian Staging Post',
-      pos: [-2, 62], radius: 9.0, owner: 0, deploy: true,
+      pos: [-2, 62], radius: 9.0, captureRadius: 3.6, owner: 0, deploy: true,
     },
     {
       // layout.objectives 'camp', inside the ruined village on the north bank.
       id: 'imperial', name: 'Imperial Base Camp',
-      pos: [30, -46], radius: 9.0, owner: 1, deploy: true,
+      pos: [30, -46], radius: 9.0, captureRadius: 3.6, owner: 1, deploy: true,
     },
   ],
 
@@ -136,10 +144,12 @@ export const MISSION_VASEL = {
     // Marksman on the eastern rise, looking straight down the village approach.
     { cls: 'sniper', name: 'Imperial Scharfschütze', team: 1, pos: [50, -28], yaw: 0.6, potentials: ['mountainBorn', 'sharpshooter'] },
 
-    // Camp garrison.
+    // Camp garrison. All three stand in the camp but OFF the flag ring (>= 5.5 m from the
+    // pole at (30,-46)), so the garrison is something you fight rather than a permanent
+    // veto on the objective. Jaeger used to spawn 2.3 m from the pole and never move.
     { cls: 'lancer', name: 'Imperial Lanzentruppe', team: 1, pos: [23, -41], yaw: 0 },
     { cls: 'engineer', name: 'Imperial Pionier', team: 1, pos: [35, -52], yaw: 0, potentials: ['fieldMedic'] },
-    { cls: 'shock', name: 'Hauptmann Jaeger', team: 1, pos: [30, -48], yaw: 0, ace: true, hpScale: 1.6, aimScale: 1.2, potentials: ['campDefender', 'braveHeart', 'undertaker'] },
+    { cls: 'shock', name: 'Hauptmann Jaeger', team: 1, pos: [34, -50], yaw: 0, ace: true, hpScale: 1.6, aimScale: 1.2, potentials: ['campDefender', 'braveHeart', 'undertaker'] },
 
     // The armour, sitting behind the square where it can cover the whole approach.
     { cls: 'tank', name: 'Imperial Medium', team: 1, pos: [25, -33], yaw: 0, variant: 'lupus' },
@@ -177,8 +187,11 @@ export const MISSION_VASEL = {
   // Win / lose
   // -------------------------------------------------------------------------
   objectives: [
+    // Battle.publishObjectives() rewrites this label live — "Stand on their flag: Scout,
+    // Trooper or Engineer" / "Clear 2 Imperials off their flag" / "…secured" — so the player
+    // is told what the game is waiting for instead of guessing. This is the fallback text.
     { id: 'take-camp', type: 'captureCamp', campId: 'imperial', team: 0, win: true,
-      label: 'Capture the Imperial base camp' },
+      label: 'Stand on their flag: Scout, Trooper or Engineer' },
     { id: 'rout', type: 'rout', team: 1, win: true, label: 'Or destroy every Imperial in the sector' },
     { id: 'lose-tank', type: 'tankDestroyed', team: 0, fail: true, label: 'The Edelweiss must survive' },
     { id: 'lose-camp', type: 'captureCamp', campId: 'gallian', team: 1, fail: true,

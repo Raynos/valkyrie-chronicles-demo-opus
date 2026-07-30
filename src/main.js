@@ -441,7 +441,7 @@ function installSystems(S, updateTracers) {
   // 8. UI observes the settled state of the frame.
   engine.add(hud);
 
-  if (!CFG.capture) engine.add({ update: (dt) => autoQuality(S, dt) });
+  if (!CFG.capture) engine.add({ update: (dt) => autoScale(S, dt) });
 }
 
 let _shadowRadius = 0;
@@ -510,20 +510,67 @@ function updateLighting(S, dt) {
   rig.update(CFG.capture ? 1 : dt, _focus);
 }
 
-// --- quality auto step-down (never in capture mode) -------------------------
+// --- dynamic resolution (never in capture mode) -----------------------------
+//
+// ROUND 21 replaced an auto step-down of the SHADER QUALITY TIER with one of the
+// RESOLUTION, and took the player-facing toast off the screen. Three things were
+// wrong with the old one, all of them measured:
+//
+//   * It was the wrong knob. ultra -> low saved 10.9 ms of a 58.4 ms frame and
+//     compiled 38 new shader programs to do it (a multi-second stall — which
+//     then counted as more missed frames and tripped the next step down).
+//     Dropping the pixel ratio from 2.0 to 1.4 saved 24.8 ms with no recompiles.
+//   * It deleted art direction to buy frame rate: quality 0 drops the
+//     double-stroke ink and the chromatic edge, so the look CHANGED mid-session.
+//     Resolution does not change the look, only how many samples of it there are.
+//   * It told the player. "RENDER QUALITY: LOW" sat over the opening dialogue
+//     within 35 s of every session while the options menu still said Ultra. The
+//     console.warn below is the right audience for this.
+//
+// It also RECOVERS, which the old one never did, and it is not armed until the
+// boot is over. Both of those are the same bug seen twice: the first ten seconds
+// of a session are full of one-off costs (world generation, the shader
+// precompile, the first frame of every effect), the old ratchet counted them as
+// evidence about the frame budget, and the penalty was permanent. Measured after
+// the precompile landed, it still stepped twice inside the title card and left a
+// 60-fps machine rendering at 0.75 pixel ratio for the rest of the session.
+//
+// So: armed 3 s after the precompile resolves; each step 0.85 down or 1/0.85 up;
+// steps 6 s apart so a step is judged on a fair sample; 90 slow frames to step
+// down but 240 fast ones to step back up, which is what keeps it from
+// oscillating; floored at 0.75 device pixels per CSS pixel by pixelRatio().
 let _slow = 0;
+let _fast = 0;
 let _lastStep = -99;
+let _armAt = 8;
 
-function autoQuality(S, dt) {
-  const { pipeline, engine, hud } = S;
-  if (dt > 1 / 42) _slow++; else _slow = Math.max(0, _slow - 2);
-  if (_slow < 90) return;
-  _slow = 0;
-  if (pipeline.quality <= 0 || engine.time - _lastStep < 8) return;
-  _lastStep = engine.time;
-  pipeline.setQuality(pipeline.quality - 1);
-  hud.toast(`RENDER QUALITY: ${['LOW', 'HIGH', 'ULTRA'][pipeline.quality]}`);
-  console.warn('[main] frame budget missed, quality ->', pipeline.quality);
+function armAutoScale(t) { _armAt = Math.max(_armAt, t); }
+
+function autoScale(S, dt) {
+  const { engine } = S;
+  if (engine.time < _armAt) { _slow = 0; _fast = 0; return; }
+  // Both counters LEAK rather than reset. A consecutive-frame test for the way
+  // back up never fired: play at 12 ms mean still has a 30 ms p95 (a spawn, a
+  // shadow refresh, a GC), so `_fast = 0` on any slow frame meant 300 in a row
+  // never happened and a machine that had stepped down once stayed down forever.
+  if (dt > 1 / 42) { _slow++; _fast = Math.max(0, _fast - 8); } else {
+    _slow = Math.max(0, _slow - 2);
+    if (dt < 1 / 55) _fast++;
+  }
+  if (engine.time - _lastStep < 6) return;
+  if (_slow >= 90) {
+    _slow = 0; _lastStep = engine.time;
+    if (engine.setDynScale(CFG.render.dynScale * 0.85)) {
+      console.warn('[main] frame budget missed, pixel ratio ->',
+        S.renderer.getPixelRatio().toFixed(2));
+    }
+  } else if (_fast >= 240 && CFG.render.dynScale < 1) {
+    _fast = 0; _lastStep = engine.time;
+    if (engine.setDynScale(Math.min(1, CFG.render.dynScale / 0.85))) {
+      console.info('[main] frame budget comfortable, pixel ratio ->',
+        S.renderer.getPixelRatio().toFixed(2));
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -759,7 +806,8 @@ async function captureFlow(S) {
   //   draw calls + triangles   LOD has resolved and the grass/foliage instancing
   //                            has finished streaming in around the new camera
   //   geometries + textures    nothing is still being uploaded
-  //   _dofBlend                the pipeline's temporal depth-of-field has converged
+  // (the pipeline's temporal depth-of-field used to be in this key too; round 21
+  //  cut the pass, so there is nothing temporal left in the post stack)
   //   labels                   the DOM annotation layer (name slips, command-mode
   //                            counters, damage plates) has stopped adding or
   //                            hiding elements
@@ -781,7 +829,6 @@ async function captureFlow(S) {
   };
   let n = 0, stable = 0, lastKey = '';
   let fpsFrames = 0, fpsT0 = 0;
-  const wantDof = pipeline.quality >= 2 && pipeline.dof.enabled ? 1 : 0;
   while (n < SETTLE_MAX) {
     await raf();
     n++;
@@ -790,8 +837,7 @@ async function captureFlow(S) {
     const key = `${info.programs ? info.programs.length : 0}|${info.render.calls}|`
       + `${info.render.triangles}|${info.memory.geometries}|${info.memory.textures}`
       + `|${labelKey()}`;
-    const dofDone = Math.abs(pipeline._dofBlend - wantDof) < 0.004;
-    if (key === lastKey && dofDone) stable++; else stable = 0;
+    if (key === lastKey) stable++; else stable = 0;
     lastKey = key;
     if (n >= SETTLE_MIN && stable >= 5) break;
   }
@@ -984,7 +1030,45 @@ async function boot() {
     }
   } else {
     playFlow(S);
+    precompilePlay(S);
   }
+}
+
+/**
+ * Compile the shaders behind the title card.
+ *
+ * ROUND 21. `renderer.compile()` was called in captureFlow and NOWHERE ELSE, so
+ * a played session compiled ~50 programs lazily, one per first frame that needed
+ * one: measured p95 frame time of 115 ms and a 4.1 s worst frame over the first
+ * four seconds of play, all of it shader compilation. Those stalls were also what
+ * armed the auto step-down — the game was turning its own quality down in
+ * response to a cost that was one-off and had nothing to do with the frame.
+ *
+ * It runs after playFlow so the title card is already up: the orbit behind it is
+ * the one moment in the session where a stall is nobody's business. compileAsync
+ * uses KHR_parallel_shader_compile where the driver has it and yields between
+ * materials, so the orbit keeps moving.
+ *
+ * Honest limitation: three's compile() walks traverseVisible, so a material on
+ * an object that is hidden at title time — anything the deploy screen or a
+ * mid-battle spawn brings in — still compiles on the frame it first appears.
+ * Measured, that is 5 more programs at battle start, not 50.
+ */
+function precompilePlay(S) {
+  const { renderer, scene, camera } = S;
+  const t0 = performance.now();
+  const before = renderer.info.programs?.length || 0;
+  const done = () => {
+    console.info('[main] precompile:', (renderer.info.programs?.length || 0) - before,
+      'programs in', Math.round(performance.now() - t0), 'ms');
+    // Only now does a missed frame say anything about the machine.
+    armAutoScale(S.engine.time + 3);
+  };
+  try {
+    const p = renderer.compileAsync?.(scene, camera);
+    if (p && p.then) p.then(done, (e) => console.warn('[main] precompile', e));
+    else { renderer.compile(scene, camera); done(); }
+  } catch (e) { console.warn('[main] precompile', e); }
 }
 
 boot().catch((e) => showFatal(e, CFG.capture ? 'capture' : 'boot'));

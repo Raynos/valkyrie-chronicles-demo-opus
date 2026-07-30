@@ -30,6 +30,40 @@ import { MISSION_VASEL } from './mission.js';
 
 export const PHASES = ['briefing', 'deploy', 'command', 'action', 'enemy', 'result'];
 
+// ---------------------------------------------------------------------------
+// Camp capture geometry — the reason this mission was unwinnable for 20 rounds.
+//
+// A camp has TWO radii and they mean different things:
+//
+//   radius         the camp FOOTPRINT: deployment slots, the campDefender bonus, the
+//                  ground the AI walks to. 9 m at Vasel — wide enough to hold a
+//                  garrison, a tank and a supply dump.
+//   captureRadius  the FLAG RING: the few metres around the pole you must stand on to
+//                  raise your own colours, and the only ground an Imperial can stand on
+//                  to stop you.
+//
+// Contesting on the FOOTPRINT is what broke the game. Three Imperials live permanently
+// inside Vasel's 9 m footprint (2.3 m, 7.8 m and 8.2 m from the flag) and mission
+// aggression keeps the garrison sat on its own ground, so `contested` was true from the
+// first frame to the last: a scout could stand on the flag all mission and updateCamps()
+// returned {contested:true, over:false} forever. Contest the pole, not the parish —
+// which is what VC itself does.
+const FLAG_RING = 3.6;
+
+// Imperial-phase pacing, in WALL-CLOCK seconds. Measured before this change: 36.2 s for
+// turn 1 and 53.3 s for turn 2, with 11 of 12 activations happening on units the player
+// could not see. A turn is now paced by what is worth WATCHING.
+const ENEMY_PACE = {
+  fast: 10,       // sim frames per rendered frame while nobody the player can see is acting
+  press: 3.5,     // from here on, compress even the soldiers you can see
+  budget: 8.0,    // from here on, everything runs at flush speed
+  hard: 10.0,     // absolute cap: drain what is left, then hand the turn back regardless
+  flush: 40,
+  drainMs: 90,    // compute we will spend per frame on the drain (so it costs frames, not a freeze)
+};
+
+const _now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
 export class Battle {
   /**
    * @param {object} world  src/world/world.js World
@@ -57,6 +91,12 @@ export class Battle {
     this.result = null;
 
     this.activeUnit = null;
+    // The Imperial soldier currently acting, published for the camera. Set every frame of
+    // the enemy phase from ai.actor and cleared the moment the phase ends, so a follow
+    // camera can never latch onto a corpse or a stale unit (see paceEnemy()).
+    this.aiFocus = null;
+    this._aiActor = null;
+    this._enemyT = 0;                 // wall-clock seconds spent in the current enemy phase
     this.pendingDeploy = [];          // units awaiting placement
     this.deployment = new Map();      // unit -> slot
     this.barrages = [];
@@ -101,10 +141,13 @@ export class Battle {
         id: c.id, name: c.name,
         pos: new THREE.Vector3(c.pos[0], this.groundY(c.pos[0], c.pos[2] ?? c.pos[1]), c.pos[2] ?? c.pos[1]),
         radius: c.radius ?? 6.5,
+        // See FLAG_RING: capture is decided on the pole, not on the whole footprint.
+        captureRadius: Math.min(c.captureRadius ?? FLAG_RING, c.radius ?? 6.5),
         owner: c.owner ?? -1,
         deploy: c.deploy !== false,
         contested: false,
         captureT: 0,
+        ring: { mine: 0, theirs: 0, capMine: 0, capTheirs: 0 },
       });
     }
 
@@ -112,7 +155,10 @@ export class Battle {
     for (const spec of M.enemies) this.addUnit(spec);
 
     this.refreshFog();
+    this.updateCamps();
     Bus.emit('battle:ready', { battle: this, mission: M });
+    // After battle:ready, so the live objective text wins over the static mission list.
+    this.publishObjectives();
     return this;
   }
 
@@ -318,6 +364,9 @@ export class Battle {
 
   startTurn(team) {
     this.team = team;
+    this._enemyT = 0;
+    this.aiFocus = null;
+    this._aiActor = null;
     if (team === 0) {
       this.turn++;
       this.stats.turns = this.turn;
@@ -338,6 +387,8 @@ export class Battle {
 
     this.spawnReinforcements(team);
     this.refreshFog();
+    this.updateCamps();
+    this.publishObjectives();
     if (this.checkObjectives()) return;
 
     if (team === 0) {
@@ -524,7 +575,22 @@ export class Battle {
   // Camps
   // -------------------------------------------------------------------------
 
+  /**
+   * The camp whose FLAG RING contains `pos` — i.e. "am I standing on a flag". Both capture
+   * call sites outside this file (ActionMode's arrival check and the AI's) want exactly that
+   * question, so this is the ring. For the footprint, use campFootprintAt().
+   */
   campAt(pos) {
+    for (let i = 0; i < this.camps.length; i++) {
+      const c = this.camps[i];
+      const dx = pos.x - c.pos.x, dz = pos.z - c.pos.z;
+      if (dx * dx + dz * dz <= c.captureRadius * c.captureRadius) return c;
+    }
+    return null;
+  }
+
+  /** The camp whose footprint contains `pos`: deployment, defence bonuses, AI approach. */
+  campFootprintAt(pos) {
     for (let i = 0; i < this.camps.length; i++) {
       const c = this.camps[i];
       const dx = pos.x - c.pos.x, dz = pos.z - c.pos.z;
@@ -534,40 +600,111 @@ export class Battle {
   }
 
   /**
-   * A camp flips when a side has a capture-capable soldier inside it and the other side has
-   * nobody in the ring. Contested camps just sit there, which is exactly the standoff VC wants.
+   * A camp flips when a side has a capture-capable soldier standing in the FLAG RING and the
+   * other side has nobody in it. Imperials elsewhere in the camp do not stop the capture —
+   * they shoot at you, which is the fight this mission is supposed to be. See FLAG_RING.
    */
   updateCamps() {
     for (const c of this.camps) {
-      let n0 = 0, n1 = 0, cap0 = 0, cap1 = 0;
+      const rr = c.captureRadius * c.captureRadius;
+      let mine = 0, theirs = 0, capMine = 0, capTheirs = 0;
       for (const u of this.units) {
         if (!u.active) continue;
         const dx = u.pos.x - c.pos.x, dz = u.pos.z - c.pos.z;
-        if (dx * dx + dz * dz > c.radius * c.radius) continue;
-        if (u.team === 0) { n0++; if (u.classDef.canCapture) cap0++; }
-        else { n1++; if (u.classDef.canCapture) cap1++; }
+        if (dx * dx + dz * dz > rr) continue;
+        if (u.team === 0) { mine++; if (u.classDef.canCapture) capMine++; }
+        else { theirs++; if (u.classDef.canCapture) capTheirs++; }
       }
-      c.contested = n0 > 0 && n1 > 0;
-      if (c.contested) continue;
-      if (cap0 > 0 && c.owner !== 0) {
-        this.captureCamp(c, this.units.find((u) => u.team === 0 && u.active && this.inCamp(u, c)));
-      } else if (cap1 > 0 && c.owner !== 1) {
-        this.captureCamp(c, this.units.find((u) => u.team === 1 && u.active && this.inCamp(u, c)));
+      c.contested = mine > 0 && theirs > 0;
+      c.ring = { mine, theirs, capMine, capTheirs };
+      // What the HUD's ring draws: 1 = held outright, 0.6 = someone is on a flag they do
+      // not own yet, and the HUD makes a contested ring breathe on its own.
+      c.captureT = c.contested ? 0
+        : ((capMine > 0 && c.owner !== 0) || (capTheirs > 0 && c.owner !== 1)) ? 0.6
+          : c.owner >= 0 ? 1 : 0;
+      if (!c.contested) {
+        if (capMine > 0 && c.owner !== 0) {
+          this.captureCamp(c, this.units.find((u) => u.team === 0 && u.active
+            && u.classDef.canCapture && this.onFlag(u, c)));
+        } else if (capTheirs > 0 && c.owner !== 1) {
+          this.captureCamp(c, this.units.find((u) => u.team === 1 && u.active
+            && u.classDef.canCapture && this.onFlag(u, c)));
+        }
       }
+      this.publishCampState(c);
     }
   }
 
+  /** Standing on the flag: the only ground that captures, and the only ground that blocks. */
+  onFlag(u, c) {
+    const dx = u.pos.x - c.pos.x, dz = u.pos.z - c.pos.z;
+    return dx * dx + dz * dz <= c.captureRadius * c.captureRadius;
+  }
+
+  /** Inside the camp footprint. */
   inCamp(u, c) {
     const dx = u.pos.x - c.pos.x, dz = u.pos.z - c.pos.z;
     return dx * dx + dz * dz <= c.radius * c.radius;
   }
 
+  /**
+   * Make the blocked state READABLE. Before this, the only feedback that the game was
+   * refusing to let you capture was the word CONTESTED on a 13-pixel minimap blip — which is
+   * how twenty rounds went by without anyone noticing the mission could not be completed.
+   *
+   * Everything here goes out on Bus channels the HUD ALREADY listens to (`ui:objectives`,
+   * `ui:alert`), plus a new `camp:state` for anyone who wants the numbers. The HUD is another
+   * agent's file this round and needs no change: it already draws a capture ring per camp off
+   * `camp.contested`, which now means "an Imperial is standing on the pole" instead of
+   * "an Imperial is somewhere in the parish".
+   */
+  publishCampState(c) {
+    const r = c.ring;
+    const key = `${c.owner}|${c.contested ? 1 : 0}|${r.capMine > 0 ? 1 : 0}|${r.theirs}`;
+    if (key === c._stateKey) return;
+    const first = c._stateKey === undefined;
+    c._stateKey = key;
+    Bus.emit('camp:state', {
+      camp: c, id: c.id, name: c.name, pos: c.pos, owner: c.owner, contested: c.contested,
+      onFlag: r.mine, blocking: r.theirs, captureRadius: c.captureRadius,
+    });
+    this.publishObjectives();
+    // You are standing on their flag and it is not flipping. Say why, out loud.
+    if (!first && c.contested && r.capMine > 0 && c.owner !== 0) {
+      Bus.emit('ui:alert', {
+        text: 'FLAG CONTESTED',
+        sub: `clear ${r.theirs} Imperial${r.theirs === 1 ? '' : 's'} off the flag`,
+      });
+    }
+  }
+
+  /** The objective list with the camp objective's live state folded into its label. */
+  publishObjectives() {
+    const list = this.mission?.objectives;
+    if (!Array.isArray(list)) return;
+    const out = [];
+    for (const o of list) {
+      const e = { id: o.id, type: o.type, label: o.label, win: o.win, fail: o.fail, done: false };
+      if (o.type === 'captureCamp' && !o.fail) {
+        const c = this.camps.find((x) => x.id === o.campId);
+        if (c) {
+          e.done = c.owner === (o.team ?? 0);
+          e.label = campObjectiveLabel(c, e.done);
+        }
+      }
+      out.push(e);
+    }
+    Bus.emit('ui:objectives', { objectives: out });
+  }
+
   captureCamp(camp, by) {
     if (!camp || !by) return false;
     if (camp.owner === by.team) return false;
+    if (!by.classDef?.canCapture) return false;
+    if (!this.onFlag(by, camp)) return false;             // must be ON the pole
     for (const u of this.units) {
       if (!u.active || u.team === by.team) continue;
-      if (this.inCamp(u, camp)) return false;             // still contested
+      if (this.onFlag(u, camp)) return false;             // still contested
     }
     const from = camp.owner;
     camp.owner = by.team;
@@ -575,6 +712,7 @@ export class Battle {
     Bus.emit('camp:captured', { camp, by, from });
     Bus.emit('sfx', { name: 'capture', pos: camp.pos });
     this.commandMode?.markDirty();
+    this.publishObjectives();
     this.checkObjectives();
     return true;
   }
@@ -702,6 +840,8 @@ export class Battle {
     if (this.over) return;
     this.over = true;
     this.victory = victory;
+    this.aiFocus = null;
+    this._aiActor = null;
     this.ai.abort();
     this.actionMode?.exit();
     this.interception.reset();
@@ -764,7 +904,18 @@ export class Battle {
     // Aim-mode dilation. Camera and input stay at real time; the world slows.
     const want = this.actionMode?.active ? this.actionMode.timeScale : 1;
     this.timeScale = damp(this.timeScale, want, 12, dt);
-    const gdt = dt * this.timeScale;
+    let gdt = dt * this.timeScale;
+
+    // The Imperial phase decides how much simulation this frame is worth — see paceEnemy().
+    // Capture renders are excluded outright: their frame count must stay a pure function of
+    // the shot name.
+    let steps = 1, sub = gdt;
+    const paced = this.phase === 'enemy' && !CFG.capture;
+    if (paced) {
+      const p = this.paceEnemy(dt, gdt);
+      steps = p.steps; sub = p.sub;
+      gdt = steps * sub;                    // total simulated time for this frame
+    }
 
     this.updateBarrages(gdt);
 
@@ -778,9 +929,19 @@ export class Battle {
       this.actionMode?.update(dt, gdt);
       this.interception.update(gdt);
     } else if (this.phase === 'enemy') {
-      this.ai.update(gdt);
-      this.interception.update(gdt);
-      this.actionMode?.updateGrenades(gdt);
+      // Sub-step: the AI, interception fire and grenades in flight integrate in 1/60 slices
+      // however much simulated time this frame is worth. A fast-forwarded soldier still walks
+      // its path, still eats interception fire, and its grenade still flies a real arc,
+      // instead of teleporting through a wall on one enormous step.
+      for (let i = 0; i < steps; i++) {
+        if (this.phase !== 'enemy') break;
+        if (this.ai.running) {
+          this.ai.update(sub);
+          this.interception.update(sub);
+        }
+        this.actionMode?.updateGrenades(sub);
+      }
+      if (paced && this.phase === 'enemy' && this._enemyT > ENEMY_PACE.hard) this.drainEnemyTurn(sub);
       this.commandMode?.update(dt);
       if (this.aiFocus) this.commandMode?.focusOn(this.aiFocus.pos);
     } else {
@@ -791,6 +952,87 @@ export class Battle {
     }
 
     if (this.phase !== 'result') this.checkBodies(gdt);
+  }
+
+  // -------------------------------------------------------------------------
+  // Imperial-phase pacing
+  // -------------------------------------------------------------------------
+
+  /**
+   * How much simulation the Imperial phase is worth THIS frame.
+   *
+   * The old answer was "one frame, always", and it cost 36-53 s of wall clock per turn with
+   * the player watching an empty rooftop for nine tenths of it. The new answer:
+   *
+   *   - a soldier the player can actually see (spotted through the fog AND inside the frame)
+   *     moves at 1x, because that is the part of the turn worth showing;
+   *   - everything else runs ENEMY_PACE.fast sim-frames per rendered frame;
+   *   - past `press` seconds even watched soldiers compress, past `budget` everything runs
+   *     at flush speed, and past `hard` the turn is drained and handed back (drainEnemyTurn).
+   *
+   * @returns {{steps:number, sub:number}} run `steps` sub-steps of `sub` seconds.
+   */
+  paceEnemy(dt, gdt) {
+    const P = ENEMY_PACE;
+    this._enemyT += dt;
+
+    // Publish the acting soldier for the camera. ai.js sets battle.aiFocus when it activates
+    // a unit but nothing ever cleared it; owning it here means a follow camera can trust it.
+    const actor = this.ai?.actor || null;
+    if (actor !== this._aiActor) {
+      this._aiActor = actor;
+      this.aiFocus = actor;
+      if (actor) {
+        Bus.emit('enemy:focus', {
+          unit: actor, pos: actor.pos, watchable: this.watchable(actor), elapsed: this._enemyT,
+        });
+      }
+    }
+
+    let rate = this.watchable(actor) ? 1 : P.fast;
+    if (this._enemyT > P.budget) rate = P.flush;
+    else if (this._enemyT > P.press) rate = Math.max(rate, 1 + (this._enemyT - P.press) * 2.2);
+
+    const sub = 1 / 60;
+    const steps = clamp(Math.ceil((gdt * rate) / sub), 1, 120);
+    return { steps, sub };
+  }
+
+  /**
+   * Is this soldier worth animating in real time? Only if the player can see it: spotted
+   * through the fog AND inside the frame. A soldier behind the camera or forty metres off
+   * the edge of it is not worth a second of anybody's turn.
+   */
+  watchable(u) {
+    if (!u || !u.active) return false;
+    if (u.team === 0) return true;                       // never fast-forward the player's own
+    if (!u.spotted) return false;
+    const cam = this.camera;
+    if (!cam) return true;
+    _ndc.set(u.pos.x, u.pos.y + 1.1, u.pos.z).project(cam);
+    return _ndc.z > 0 && _ndc.z < 1 && Math.abs(_ndc.x) < 1.2 && Math.abs(_ndc.y) < 1.2;
+  }
+
+  /**
+   * The hard cap. Whatever the Imperials still meant to do is resolved as fast as the CPU
+   * will resolve it, inside a per-frame compute budget so the drain costs a few frames
+   * rather than freezing. If it still has not finished, the turn is simply over — an
+   * unfinished Imperial plan is cheaper than a player staring at a rooftop.
+   */
+  drainEnemyTurn(sub) {
+    const t0 = _now();
+    let n = 0;
+    while (this.ai.running && this.phase === 'enemy' && n < 6000 && _now() - t0 < ENEMY_PACE.drainMs) {
+      this.ai.update(sub);
+      this.interception.update(sub);
+      this.actionMode?.updateGrenades(sub);
+      n++;
+    }
+    if (this._enemyT > ENEMY_PACE.hard + 1.5 && this.phase === 'enemy' && !this.over) {
+      this.ai.abort();
+      Bus.emit('ai:end', { team: this.team, reason: 'timeCap' });
+      this.endTurn();
+    }
   }
 
   /** An enemy who stands over a downed soldier for a beat takes them prisoner. */
@@ -824,6 +1066,21 @@ export class Battle {
 
 /** Static override point: main.js may set Battle.actorFactory = (unit, spec) => actor. */
 Battle.actorFactory = null;
+
+const _ndc = new THREE.Vector3();
+
+/**
+ * One line of live objective text for a camp the player is trying to take. This is the text
+ * that tells a player what the game is actually asking of them; "Capture the Imperial base
+ * camp" did not, because it never said where to stand or what was blocking it.
+ */
+function campObjectiveLabel(c, done) {
+  const r = c.ring || { mine: 0, theirs: 0, capMine: 0 };
+  if (done) return `${c.name} secured`;
+  if (c.contested) return `Clear ${r.theirs} Imperial${r.theirs === 1 ? '' : 's'} off their flag`;
+  if (r.capMine > 0) return 'Hold their flag — camp falling';
+  return 'Stand on their flag: Scout, Trooper or Engineer';
+}
 
 function weightOf(u) {
   return u.isVehicle ? 100 : { lancer: 40, shock: 35, scout: 30, engineer: 20, sniper: 10 }[u.cls] || 15;

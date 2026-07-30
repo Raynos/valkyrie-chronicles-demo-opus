@@ -7,6 +7,8 @@
 // plain data object in and hand a plain result back through a callback.
 
 import { Bus } from '../core/bus.js';
+import { CFG } from '../core/config.js';
+import { loadSettings, patchSettings } from '../core/save.js';
 import { h, clear, panel, clickable, label, typewriter, roman, numberWord, pad, replay } from './dom.js';
 import {
   icon, inkRule, ribbon, chapterVignette, terrainSketch, rankStamp, keyCap, compassRose,
@@ -14,6 +16,72 @@ import {
 } from './icons.js';
 import { portrait, portraitMarkup } from './portraits.js';
 import { reducedMotion } from './style.js';
+
+// --------------------------------------------------------------------------
+// Page turns.
+//
+// A spread is a PAGE IN A BOOK, and the turn is the identity: it swings in about
+// its left edge, the scrim inks up behind it, and the live battle HUD fades out
+// so the sheet is not a web dialog hovering over a running game. Four of these
+// screens used to appear and vanish by toggling `display:none`.
+//
+// The two constants below must stay in step with `.vc-screen.in/.out` in
+// style.js — the CSS owns the motion, this owns when the sheet leaves layout.
+// --------------------------------------------------------------------------
+
+const PAGE_OUT_MS = 350;
+const PAGE_OUT_FAST = 70;      // reduced motion, or Flourishes: Reduced
+
+/** The `.vc-root` a spread lives in, or null when hosted bare (tests). */
+function bookRoot(el) { return (el && el.closest) ? el.closest('.vc-root') : null; }
+
+/** root element -> set of spreads currently open inside it. */
+const OPEN_SPREADS = new WeakMap();
+
+/** Dim the gameplay chrome while any spread is open; restore it when none is. */
+function markSpread(host, owner, on) {
+  const root = bookRoot(host);
+  if (!root) return;
+  let set = OPEN_SPREADS.get(root);
+  if (!set) OPEN_SPREADS.set(root, set = new Set());
+  if (on) set.add(owner); else set.delete(owner);
+  root.classList.toggle('vc-spread', set.size > 0);
+}
+
+function outMs(el) {
+  const root = bookRoot(el);
+  if (reducedMotion() || (root && root.classList.contains('vc-nomotion'))) return PAGE_OUT_FAST;
+  return PAGE_OUT_MS;
+}
+
+/** Turn a spread in. `s` is any screen with `.root`, `.host`, `.visible`. */
+function pageIn(s) {
+  clearTimeout(s._outT);
+  s._outT = 0;
+  s.root.classList.remove('vc-hidden', 'out');
+  markSpread(s.host, s.root, true);
+  replay(s.root, 'in');
+  s.visible = true;
+}
+
+/**
+ * Turn a spread out. `visible` drops and the HUD comes back on the same tick —
+ * callers read `.visible` immediately and start the battle behind the turn —
+ * while the sheet keeps swinging for one animation before leaving layout.
+ */
+function pageOut(s) {
+  if (s.root.classList.contains('vc-hidden')) { s.visible = false; return; }
+  s.visible = false;
+  markSpread(s.host, s.root, false);
+  s.root.classList.remove('in');
+  replay(s.root, 'out');
+  clearTimeout(s._outT);
+  s._outT = setTimeout(() => {
+    s._outT = 0;
+    s.root.classList.add('vc-hidden');
+    s.root.classList.remove('out');
+  }, outMs(s.root));
+}
 
 // --------------------------------------------------------------------------
 
@@ -91,6 +159,7 @@ export class ChapterCard {
     this.root.appendChild(p.root);
 
     this.root.classList.remove('vc-hidden', 'out');
+    markSpread(this.host, this.root, true);
     replay(this.root, 'in');
     this.visible = true;
 
@@ -98,12 +167,15 @@ export class ChapterCard {
     this._timers.push(setTimeout(() => {
       this.root.classList.remove('in');
       this.root.classList.add('out');
-      this._timers.push(setTimeout(() => { this.hide(); d.onDone?.(); }, reducedMotion() ? 220 : 800));
+      // The HUD comes back as the card leaves, not after it.
+      markSpread(this.host, this.root, false);
+      this._timers.push(setTimeout(() => { this.hide(); d.onDone?.(); }, reducedMotion() ? 120 : 380));
     }, dwell));
   }
 
   hide() {
     this._clearTimers();
+    markSpread(this.host, this.root, false);
     this.root.classList.add('vc-hidden');
     this.root.classList.remove('in', 'out');
     this.visible = false;
@@ -220,12 +292,11 @@ export class BriefingScreen {
 
     p.content.appendChild(in_);
     this.root.appendChild(p.root);
-    this.root.classList.remove('vc-hidden');
-    this.visible = true;
+    pageIn(this);
   }
 
-  hide() { this.root.classList.add('vc-hidden'); this.visible = false; }
-  dispose() { this.root.remove(); }
+  hide() { pageOut(this); }
+  dispose() { clearTimeout(this._outT); this.root.remove(); }
 }
 
 function defaultMarkers() {
@@ -288,8 +359,7 @@ export class DeploymentScreen {
     this.squad = (d.squad || []).filter((u) => !u || u.alive !== false);
     this.minDeploy = d.minDeploy != null ? d.minDeploy : 1;
     this._build();
-    this.root.classList.remove('vc-hidden');
-    this.visible = true;
+    pageIn(this);
   }
 
   _build() {
@@ -391,8 +461,8 @@ export class DeploymentScreen {
     Bus.emit('ui:deployConfirm', { assignments: out });
   }
 
-  hide() { this.root.classList.add('vc-hidden'); this.visible = false; }
-  dispose() { this.root.remove(); }
+  hide() { pageOut(this); }
+  dispose() { clearTimeout(this._outT); this.root.remove(); }
 }
 
 // --------------------------------------------------------------------------
@@ -487,15 +557,14 @@ export class ResultsScreen {
 
     p.content.appendChild(in_);
     this.root.appendChild(p.root);
-    this.root.classList.remove('vc-hidden');
-    this.visible = true;
+    pageIn(this);
 
     // stagger: the stamp lands, then the ledger fills in line by line
     const rm = reducedMotion();
     this._timers.push(setTimeout(() => {
       stamp.classList.add('slam');
       Bus.emit('sfx', { name: 'ui_stamp', vol: 0.9 });
-    }, rm ? 20 : 420));
+    }, rm ? 20 : 520));   // after the page has finished turning in (.45s)
     const lines = stats.querySelectorAll('.vc-stat');
     lines.forEach((el, i) => {
       el.style.opacity = '0';
@@ -507,9 +576,9 @@ export class ResultsScreen {
     });
   }
 
-  hide() { this._clear(); this.root.classList.add('vc-hidden'); this.visible = false; }
+  hide() { this._clear(); pageOut(this); }
   _clear() { for (const t of this._timers) clearTimeout(t); this._timers.length = 0; }
-  dispose() { this._clear(); this.root.remove(); }
+  dispose() { this._clear(); clearTimeout(this._outT); this.root.remove(); }
 }
 
 /** Fallback grading when the game does not supply a rank. */
@@ -548,7 +617,39 @@ export class PauseMenu {
       const m = this.options.find((o) => o.key === 'motion');
       if (m) m.index = 0;
     }
+    // The player's own choices survive a reload. Capture mode is excluded on
+    // purpose: the screenshot harness must render the authored defaults, not
+    // whatever a human last picked in this browser profile.
+    this.persist = !CFG.capture;
+    if (this.persist) this._restoreOptions();
     this._built = false;
+  }
+
+  /**
+   * Seed the option rows from `save.js`. Values are stored as their visible
+   * label, so a row whose choices changed since the save falls back to its
+   * default instead of landing on the wrong index. Only keys that actually came
+   * off disk are pushed back into the game — replaying the defaults at boot
+   * would, for instance, stamp `quality: Ultra` over the adaptive tier.
+   */
+  _restoreOptions() {
+    let saved = {};
+    try { saved = loadSettings(); } catch (e) { saved = {}; }
+    this.restored = [];
+    for (const o of this.options) {
+      const v = saved[o.key];
+      if (v == null) continue;
+      const i = o.values.indexOf(String(v));
+      if (i < 0) continue;
+      o.index = i;
+      this.restored.push(o);
+    }
+    for (const o of this.restored) {
+      try {
+        this.onOption?.(o.key, o.values[o.index], o.index);
+        Bus.emit('ui:option', { key: o.key, value: o.values[o.index], index: o.index, restored: true });
+      } catch (e) { /* one bad row must not take the HUD down at boot */ }
+    }
   }
 
   toggle() { this.visible ? this.hide() : this.show(); }
@@ -556,11 +657,10 @@ export class PauseMenu {
   show() {
     if (!this._built) { this._build(); this._built = true; }
     this._refresh();
-    this.root.classList.remove('vc-hidden');
-    this.visible = true;
+    pageIn(this);
   }
 
-  hide() { this.root.classList.add('vc-hidden'); this.visible = false; }
+  hide() { pageOut(this); }
 
   _build() {
     clear(this.root);
@@ -582,6 +682,9 @@ export class PauseMenu {
       clickable(row, () => {
         o.index = (o.index + 1) % o.values.length;
         v.textContent = o.values[o.index];
+        // Written the moment it is chosen — there is no "apply" button to press
+        // and no guarantee the session ends politely.
+        if (this.persist) { try { patchSettings({ [o.key]: o.values[o.index] }); } catch (e) { /* unsaved */ } }
         this.onOption?.(o.key, o.values[o.index], o.index);
         Bus.emit('ui:option', { key: o.key, value: o.values[o.index], index: o.index });
       });
@@ -607,7 +710,7 @@ export class PauseMenu {
 
   _refresh() { for (const r of this._rows) r.v.textContent = r.o.values[r.o.index]; }
   getOption(key) { const o = this.options.find((x) => x.key === key); return o ? o.values[o.index] : null; }
-  dispose() { this.root.remove(); }
+  dispose() { clearTimeout(this._outT); this.root.remove(); }
 }
 
 // --------------------------------------------------------------------------
