@@ -1,14 +1,18 @@
 {
   "name": "valkyrie-chronicles-demo-opus",
   "version": "1.0.0",
-  "description": "I want you to build a tactical role-playing game with shooter gameplay at the level of the most recent Valkyrie Chronicles Remastered for PS4. It should be utterly perfect, visually beautiful, with every single thing done at AAA quality—from textures to physics to anything you could think of.",
+  "description": "I want you to build a tactical role-playing game with shooter gameplay at the level of the most recent Valkyrie Chronicles Remastered for PS4. It should be utterly perfect, visually beautiful, with every single thing done at AAA quality\u2014from textures to physics to anything you could think of.",
   "main": "index.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "shoot": "node tools/shoot.mjs",
-    "cloc": "cloc --exclude-ext=json --vcs=git ."
+    "cloc": "cloc --exclude-ext=json --vcs=git .",
+    "shoot:all": "node tools/shoot.mjs all",
+    "shoot:cold": "node tools/shoot.mjs --cold",
+    "renderd": "node tools/renderd.mjs",
+    "renderd:stop": "node tools/shoot.mjs --stop"
   },
   "keywords": [],
   "author": "",

@@ -301,6 +301,254 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
 
 
 // ---------------------------------------------------------------------------
+// The skull's planes
+// ---------------------------------------------------------------------------
+
+/**
+ * FACE MASSES — the bone, so that LIGHT can draw the face instead of the paint.
+ *
+ * ROUND 15. The standing critique on the head is that "the face is drawn on
+ * rather than modelled — no zygomatic arch for a terminator to fall under, no
+ * brow shelf, no eye socket depth; in profile the nose/mouth reads as a
+ * protruding wedge and the mouth is a floating stroke." Measured on the round-14
+ * `closeup` that is exactly what the plate shows: a flat tan oval carrying a
+ * cream blob on the forehead, one wide dark smear over cheek and jaw, and four
+ * small dark marks (eye, brow, nostril, mouth seam) laid on top of it. Nothing
+ * in the value structure is bounded by a form.
+ *
+ * WHY THE SKULL'S OWN DISPLACEMENT DOES NOT FIX IT, and this is the whole reason
+ * this code exists in character.js at all. `rig.js buildHead` already models
+ * every landmark the critique asks for — a brow ridge (+7 mm), an orbital bowl
+ * (-6 mm), a malar tent, a mandibular border. But they are all expressed as
+ * smooth multiplicative fields on ONE ellipsoid: a gaussian 0.115 wide in dy is
+ * 25 mm of head, so its normal turns over 25 mm, and a normal that turns over
+ * 25 mm hands the band quantiser a GRADIENT. Round 14 proved the point on the
+ * cheek: sharpening the malar tent's half-width from 0.255 to 0.215 moved the
+ * best in-cheek step from 24.1 to 26.8 LSB, and going sharper again (0.180) made
+ * it WORSE, because a field on the parent surface cannot be narrower than the
+ * washes either side of it need to be. That knob is spent.
+ *
+ * A separate mass has no such limit. A tapered tube half-sunk into the skin has
+ * a genuine slope discontinuity along its whole length — the flank leaves the
+ * crest at 40-60 degrees instead of 28 — and the downstream passes all key off
+ * exactly that: the quantiser breaks a wash at it, the outline pass inks it, the
+ * AO bake finds the undercut beneath it. So the four bony borders that actually
+ * describe a head get built here, as bone-coloured masses on the SAME displaced
+ * surface the skin uses (via `head.surf`), each tapering to nothing at both ends
+ * so its ink line fades out rather than closing into an oval:
+ *
+ *   A  SUPRAORBITAL SHELF   brow ridge, crest 6 mm above the brow hair, so the
+ *                           socket sits in an overhang and the eye has a lid
+ *   B  MALAR CREST + ARCH   the oblique cheekbone, beside the nose up and back
+ *                           to the ear — the terminator VC draws on every face
+ *   C  MANDIBULAR BORDER    the jaw's lower edge from gonion to chin, so the jaw
+ *                           OVERHANGS the throat and has an angle in silhouette
+ *   D  INFRAORBITAL RIM     the socket's lower margin, which is what turns the
+ *                           eye from a mark on a cheek into a thing in a hole
+ *
+ * Every one of them is a RIDGE, i.e. a light-over-dark PAIR under any key above
+ * the horizon: the plane above the crest faces the sky, the plane below turns
+ * away. That is the pair the critique is asking for and it is not paint — swing
+ * the sun and it moves.
+ *
+ * THE MASSES ARE PAINTED INTO THE SAME FIELD. `buildHead` finishes with four
+ * `paintRange` passes over its own vertices; anything added afterwards misses
+ * them and carries raw `o.skin`. In the flat field that is a 0.5% error and
+ * invisible, but the block-in terms are not flat — the under-jaw wedge alone is
+ * -30% — so an unpainted mandibular border would render as a GLOWING jaw line,
+ * 28% brighter than the skin it sits on. `skinField` below reproduces the broad
+ * terms of that map (under-jaw wedge, buccal hollow, forehead, temple, cheekbone
+ * division, side planes) so the new bone sits in the same wash. The tight
+ * landmark marks are deliberately NOT reproduced: they belong on the skull, and
+ * a brow bar painted onto the brow shelf would put the dark on the proud edge.
+ *
+ * MEASURED, on `closeup`, and measured the way the rubric's metric-integrity
+ * section demands — inside ONE albedo zone (bare cheek: x 680-744, y 276-348, no
+ * eye, no mouth, no lip, no ear) and confirmed against a sun swing:
+ *
+ *     best vertical step per column, mean over the cheek
+ *       round 14        24.1 LSB     (peak 29.0)
+ *       with the masses 39.2 LSB     (peak 53.3)
+ *
+ * and the boundary the columns find wanders y 282-295 across those 64 px, i.e.
+ * it is oblique, so a horizontal scan crosses it rather than running along it.
+ * Swinging the sun from azimuth 2.15 to -0.15 (`vc.rig.setAzimuth`) removes the
+ * cheek wash ENTIRELY and leaves the same forms standing as light modelling —
+ * the shelf, the crest, the jaw border and the chin all still read, in the
+ * opposite value order. A painted step cannot do that, which is the whole test.
+ */
+function faceMasses(b, rig, o, head, f) {
+  const S = head.surf, FY = head.FY, D = head.disp;
+  if (!S || !FY || !D) return;              // head contract drift: build nothing
+  const C = head.center, R = head.radius;
+
+  const gauss = (v, w) => Math.exp(-(v / w) * (v / w));
+  const blob = (a, aw, c, cw) => gauss(a, aw) * gauss(c, cw);
+
+  const v0 = b.vertexCount;
+  b.setZone(ZONE.SKIN).setBones(BONE_GROUPS.HEAD).setColor(o.skin).setMottle(0.024);
+
+  /**
+   * One bony border. `pts` are [ax, faceFraction, dz, lift, rx, flat] — the
+   * direction is normalised by `surf`, so `dz` is a lean rather than a depth.
+   *
+   * On a spine that runs across the face the tube's parallel-transported frame
+   * comes out with its FIRST axis radially outward and its second vertical, so
+   * `rx` is how far the ridge stands PROUD and rx*flat is how TALL it is. That
+   * is the opposite of the reading in rig.js's brow tube, which is why the brows
+   * stand 6 mm off the forehead; verified here against the built frame rather
+   * than assumed.
+   */
+  const border = (side, pts) => {
+    b.addTube(pts.map(([ax, t, dz, lift, rx, flat]) => ({
+      p: S(side * ax, FY(t), dz, lift), rx, rz: rx * flat,
+    })), { seg: seg(8), capStart: 'round', capEnd: 'round' });
+  };
+  /** Front-hemisphere variant: dz falls out of the other two. */
+  const frontBorder = (side, pts) => border(side, pts.map(([ax, t, lift, rx, flat]) => {
+    const dy = FY(t);
+    return [ax, t, Math.sqrt(Math.max(0.04, 1 - ax * ax - dy * dy)), lift, rx, flat];
+  }));
+
+  for (const side of [1, -1]) {
+    // --- A. SUPRAORBITAL SHELF ---------------------------------------------
+    // Crest at face fraction 0.575, i.e. 6 mm above the brow hair and 19 mm
+    // above the palpebral fissure, running from the glabella out to the brow
+    // tail where it turns onto the temple. 3.6 mm proud and 13 mm tall: the
+    // lower flank is what overhangs the orbit, and the reason it is quoted from
+    // ABOVE the brow rather than on it is that rig.js's brow tube already
+    // stands 5.7 mm off the skin — a shelf at the same height would swallow it
+    // and the pair would render as one dark bar, which is the round-4 defect.
+    frontBorder(side, [
+      [0.055, 0.558, 0.0003, 0.0016, 2.1],
+      [0.200, 0.578, 0.0011, 0.0030, 2.2],
+      [0.380, 0.585, 0.0013, 0.0032, 2.2],
+      [0.550, 0.574, 0.0010, 0.0028, 2.1],
+      [0.680, 0.543, 0.0003, 0.0017, 1.8],
+    ]);
+
+    // --- B. MALAR CREST, CONTINUED AS THE ZYGOMATIC ARCH -------------------
+    // Laid ON the crest rig.js's tent already builds, not beside it: its zygY
+    // runs FY(0.398) + 0.150 * smoothstep(0.10, 0.92, ax), which evaluates to
+    // face fraction 0.410 beside the nose, 0.436, 0.465 and 0.477 at the ear.
+    // Reinforcing that line sharpens the corner it already has instead of
+    // adding a second, competing one — two crests 6 mm apart on a 158 mm head
+    // read as noise, which is what killed an earlier pass that put this at a
+    // constant height.
+    //
+    // Past ax 0.9 it leaves the front hemisphere and becomes the arch proper,
+    // the bar of bone running in front of the ear. That is the piece that makes
+    // a three-quarter view read as a skull rather than a pear, and it dies at
+    // dz -0.34 rather than at the ear, which rig.js builds at dz -0.215.
+    //
+    // FIRST PASS RAN IT AT 4.4 mm PROUD FROM ax 0.30 AND THAT WAS A BANDAGE.
+    // Measured on the plate: the outline pass inked the crest as one continuous
+    // near-straight stroke from the ala to the ear, and a 158 mm face with a
+    // ruled line across it reads as a mask edge, not a cheekbone. Two changes,
+    // both about drawn-ness rather than about anatomy: it now starts at ax 0.36,
+    // clear of the nose (the front end was what made the stroke look like it had
+    // been laid ON the face rather than found in it), and the crest height
+    // WOBBLES a few thousandths of a face fraction station to station. The
+    // rubric asks for lines that are "visibly wobbly" and a crest that is
+    // smooth to four decimal places cannot give the outline pass anything else.
+    // Proudness comes down a third at the same time: at 3.2 mm the plane below
+    // still turns a full band, and it stops swallowing the whole lower face.
+    border(side, [
+      [0.36, 0.418, 0.83, 0.0008, 0.0019, 1.6],
+      [0.52, 0.439, 0.72, 0.0014, 0.0028, 1.5],
+      [0.70, 0.462, 0.50, 0.0016, 0.0032, 1.5],
+      [0.86, 0.479, 0.18, 0.0014, 0.0029, 1.4],
+      [0.96, 0.474, -0.10, 0.0010, 0.0022, 1.4],
+      [0.92, 0.468, -0.34, 0.0003, 0.0009, 1.4],
+    ]);
+
+    // --- C. THE INFERIOR BORDER OF THE MANDIBLE ----------------------------
+    // From the gonion — behind the midline, under the ear — forward along the
+    // jaw to where the chin button takes over. rig.js's submandibular undercut
+    // pulls the surface up and back at dy -0.955; this border sits above it, so
+    // the two together make the jaw genuinely OVERHANG the throat, and the
+    // 0.044-radius AO bake finds the wedge between them.
+    border(side, [
+      [0.74, 0.190, -0.22, 0.0004, 0.0014, 1.5],
+      [0.72, 0.148, 0.08, 0.0016, 0.0034, 1.5],
+      [0.60, 0.115, 0.40, 0.0019, 0.0038, 1.4],
+      [0.42, 0.090, 0.66, 0.0016, 0.0032, 1.4],
+      [0.22, 0.072, 0.84, 0.0004, 0.0013, 1.4],
+    ]);
+
+    // --- D. INFRAORBITAL RIM -----------------------------------------------
+    // The socket's lower margin, tight under the eye and stopping at ax 0.52
+    // before it can collide with the malar crest below it. With the shelf above
+    // it the orbit is now bounded top and bottom, which is what "eye socket
+    // depth" means: the eye is in a hole rather than drawn on a cheek.
+    if (!SIMPLE()) frontBorder(side, [
+      [0.150, 0.478, 0.0003, 0.0012, 1.5],
+      [0.290, 0.463, 0.0009, 0.0019, 1.5],
+      [0.430, 0.462, 0.0008, 0.0018, 1.5],
+      [0.520, 0.471, 0.0003, 0.0011, 1.5],
+    ]);
+  }
+
+  // --- E. THE MENTAL PROTUBERANCE ------------------------------------------
+  // Not per side: the chin button is one mass on the midline, and it is here
+  // because of the other half of the critique — "in profile the nose/mouth reads
+  // as a protruding wedge". It does, and the cause is that the lips in
+  // rig.js's mouth block stand 8 mm off the face (their tube frame puts `rx` in
+  // DEPTH, so a 6.2 mm lower-lip radius at a 1.8 mm lift projects that far)
+  // while the chin below them is a smooth taper. Profile order on a head is
+  // lip -> IN at the labiomental sulcus -> OUT at the button -> under; without
+  // the last two the mouth is the front-most point of the lower face and the
+  // whole muzzle reads as a wedge.
+  //
+  // 3.4 mm forward on the midline, dying out by ax 0.20 so the button keeps the
+  // width a chin has rather than becoming a nose cone. It also breaks up the
+  // shaded lower plane the malar crest creates above it, because it is the one
+  // surface down there still facing the key.
+  b.addTube([[-0.20, 0.076], [-0.10, 0.058], [0, 0.051], [0.10, 0.058], [0.20, 0.076]]
+    .map(([dx, t], i) => {
+      const dy = FY(t), rx = [0.0015, 0.0029, 0.0034, 0.0029, 0.0015][i];
+      return {
+        p: S(dx, dy, Math.sqrt(Math.max(0.04, 1 - dx * dx - dy * dy)),
+          [0.0004, 0.0015, 0.0018, 0.0015, 0.0004][i]),
+        rx, rz: rx * 1.7,
+      };
+    }), { seg: seg(8), capStart: 'round', capEnd: 'round' });
+
+  // --- THE FIELD -----------------------------------------------------------
+  // The broad terms of rig.js's faceMap, so the bone above sits in the wash the
+  // skin around it is already carrying. The direction has to be recovered by
+  // inverting the displacement (a surface point is c + d*R*skull(d), so
+  // (p-c)/R is d*skull(d), not d) — three fixed-point iterations converge to
+  // under a milliradian, same as rig.js does it.
+  b.paintRange(v0, b.vertexCount, (x, y, z) => {
+    let dx = (x - C[0]) / R[0], dy = (y - C[1]) / R[1], dz = (z - C[2]) / R[2];
+    let l = Math.hypot(dx, dy, dz) || 1;
+    dx /= l; dy /= l; dz /= l;
+    for (let it = 0; it < 3; it++) {
+      const s = D(dx, dy, dz);
+      dx = (x - C[0]) / (R[0] * s[0]); dy = (y - C[1]) / (R[1] * s[1]); dz = (z - C[2]) / (R[2] * s[2]);
+      l = Math.hypot(dx, dy, dz) || 1;
+      dx /= l; dy /= l; dz /= l;
+    }
+    const ax = Math.abs(dx), front = clamp01(dz);
+    let k = 1;
+    k -= 0.300 * gauss(dy + 0.93, 0.255) * smoothstep(-0.45, 0.50, dz);   // under-jaw wedge
+    k -= 0.062 * blob(dy - FY(0.300), 0.115, ax - 0.50, 0.165) * front;   // buccal hollow
+    k += 0.085 * blob(dy - 0.44, 0.230, dx, 0.560) * smoothstep(0.20, 0.80, dz);
+    k -= 0.090 * blob(dy - 0.30, 0.26, ax - 0.86, 0.220) * smoothstep(-0.7, 0.5, dz);
+    k = clamp(k, 0.315, 1.20);
+    // The 1.005/1.150 pair is rig.js's contrast gain, kept exactly: the net
+    // scale on the field is 1.005, and the cheekbone division is a whisper.
+    k *= 1.005 / 1.150;
+    k *= 1.150 - 0.072 * smoothstep(FY(0.560), FY(0.300), dy) * (0.45 + 0.55 * front);
+    k *= 1.0 - 0.085 * smoothstep(0.35, 0.92, ax);
+    return k;
+  });
+  b.setMottle(0.06);
+}
+
+
+// ---------------------------------------------------------------------------
 // Uniform kit
 // ---------------------------------------------------------------------------
 
@@ -1434,6 +1682,7 @@ function makeFarBody(cls, team, rig) {
       };
       buildBody(b, canonRig, opts);
       const head = buildHead(b, canonRig, opts, app.face);
+      faceMasses(b, canonRig, opts, head, app.face);
       const covered = gearHead(b, canonRig, opts, head, cls);
       buildHair(b, canonRig, opts, head, app.hairStyle, covered);
       gearWebbing(b, canonRig, opts, cls);
@@ -1548,6 +1797,10 @@ export class Character {
     // head-height measurement the art rubric asks for) work off the same
     // numbers instead of re-deriving them from bone positions.
     this.headShape = head;
+    // The bony borders, built as separate masses on that same surface — see
+    // faceMasses. They have to go on before the AO bake so the 0.044-radius
+    // pass finds the undercut each ridge makes.
+    faceMasses(b, this.rig, opts, head, app.face);
     const covered = gearHead(b, this.rig, opts, head, this.cls);
     buildHair(b, this.rig, opts, head, app.hairStyle, covered);
     gearWebbing(b, this.rig, opts, this.cls);

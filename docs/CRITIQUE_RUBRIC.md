@@ -5,6 +5,37 @@ of *Valkyria Chronicles Remastered* (PS4, 2016 — SEGA CANVAS engine). The crit
 verdict is **REJECT**. It only passes a shot when it would genuinely mistake it for the real game
 in a blind test.
 
+## Render your own frame (round 15's most expensive lesson)
+
+**A critic must never judge a pre-existing `shots/*.png`.** Render the shot yourself, with the
+authoritative single-shot tool, and judge only that file:
+
+```bash
+node tools/shoot.mjs <shot> /tmp/claude-501/<shot>-<yourname>.png          # ~1.6 s, for looking
+node tools/shoot.mjs --cold <shot> /tmp/claude-501/<shot>-cold.png        # ~11 s, for MEASURING
+```
+
+Use the fast resident path to look at a frame and the `--cold` path for any number you quote:
+the resident renderer sits at a broad ~1.7 LSB offset from cold, which is invisible to the eye
+and larger than some of the deltas critiques have argued over. `docs/HARNESS.md` has the table.
+
+Round 15 lost a whole agent's work to this. The old batch harness booted once and re-posed the
+world per shot, and the `tank` plate came out carrying the **`aim` shot's over-the-shoulder camera** —
+proven by a cold re-render differing from the shipped plate by **mean 35.8 LSB** while matching the
+`aim` frame. The verifier dutifully reviewed the corrupt frame, reported "the Edelweiss is cropped
+into an unreadable pale deck", and scored a round of genuinely good running-gear work as a failure.
+The frame was wrong, not the work.
+
+Two rules follow, and they are cheap:
+
+1. **Critics and fixers render their own frames**, always, with `shoot.mjs`. It is ~1.6 s.
+2. **A claim that a shot looks wrong must be checked against a cold render before it is believed** —
+   including when the claim comes from a previous round's critic.
+
+The leak itself is fixed: `captureShots.js` now runs `resetShotState()` at the top of `runShot()`,
+and `node tools/shoot.mjs --verify <shot>` asserts a shot is reproducible across an intervening
+shot. Render your own frame anyway — it costs 1.6 s.
+
 ## The blind test protocol
 
 For each shot the critic must answer, in order, without hedging:
@@ -137,6 +168,41 @@ Two lessons:
    over the albedo in the deepest washes — so the surface keeps its identity and the skylight only
    cools it — not to keep hunting for a pole colour that happens to look acceptable on stone.
    Settled at `0x4c5766` (hue 162.9) as the least objectionable of the three pending that work.
+
+## The violet came back through the INK FLOOR (round 15)
+
+Rounds 12–14 closed "shade is violet" at the ambient/pole layer, and that fix held — r15 measured lit
+surfaces keeping their own hue and the shade family reading as cool grey-buff. **Round 15 then
+re-introduced violet through a completely different door**, while chasing a legitimate and unrelated
+goal (value range).
+
+The legitimate goal: the frame was compressed into midtones with no near-ink darks, so nothing
+snapped. `min L 42.4`, `p1 67`, only `1.49%` of pixels below L 70. Lowering the ink floor was right,
+and it worked — `min L 26.1`, `p1 47`, `10.4%` below 70, with `p99` held at 221.
+
+The regression: the floor was *re-authored darker without being re-authored warm*.
+
+| uniform | before | after | effect |
+|---|---|---|---|
+| `uInkBlack` | `0x3c3947` (L 59, hue ~253, sat 0.20) | `0x2b2333` (L 39, hue 270, sat 0.31) | deeper, **+17° toward magenta, +55% chroma** |
+| `uInk` | `0x342e33` (L 48) | `0x241d26` (L 32) | same drift |
+| green clamp | `max(g, min(r,b))` | `min(r,b) * 0.90` | deliberately weakened the guard that prevents exactly this |
+
+Measured consequence on `closeup`: the mean of all frame pixels below L 45 went from **hue 23.0 /
+sat 0.423** to **hue 282.6 / sat 0.137**; the hero's silhouette ink went hue 232.7 → 281.9 and the
+face-profile ink 244.2 → 270.1. Every outline on the hero turned purple.
+
+**The lesson is general, and it is the one to carry forward: darkening a colour is not a
+luminance-only operation.** Any change to a floor, a black point, or a shadow end must re-author hue
+and chroma at the new luminance and be measured there — an sRGB triple that reads as a neutral
+warm-slate at L 59 reads as saturated violet at L 39, because chroma is roughly scale-invariant
+while the eye's tolerance for it is not. And when a guard clamp exists specifically to stop a
+documented defect (here, green being pulled below both red and blue), **weakening it to make a
+different metric move is how you re-enter a dead end you already paid to escape.**
+
+Acceptance test for any future ink-floor work: the mean of frame pixels with `L < 45` must land
+**hue 12–45, sat 0.18–0.32**, with `min L <= 30` and `p99` within 2 LSB of 221 — i.e. prove you kept
+the depth *and* the warmth, in the same measurement.
 
 ## Output contract
 

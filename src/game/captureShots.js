@@ -1428,8 +1428,8 @@ export const SHOTS = {
     // moves the actor ROOT — but the bone world matrices, and therefore headPoint(),
     // are only rebuilt inside Character.update() on the next frame. Reading the head
     // here without settling returns the head position from WHATEVER THE PREVIOUS SHOT
-    // LEFT ON THE SKELETON, which is why this plate framed differently under
-    // shootBatch (residual state) than under shoot.mjs (spawn state): cold-boot put
+    // LEFT ON THE SKELETON, which is why this plate framed differently under the
+    // resident renderer (residual state) than under a cold boot (spawn state): cold-boot put
     // the head 33% down the frame with the weapon entirely below the bottom edge,
     // batch put it at 17% with the rifle in shot. Both were accidents. Three frames
     // is enough for the pose to land and for the foot IK to plant.
@@ -1645,8 +1645,63 @@ export function triangleBreakdown(ctx) {
  * Run a named shot. Unknown names fall back to `overview` so the harness never hangs.
  * Resolves when the pose is set; main.js then settles the frame and runs `ctx.finale`.
  */
+/**
+ * Put the world back to a known baseline before a shot poses it.
+ *
+ * WHY THIS EXISTS — measured, round 15. The batch harness renders every shot
+ * into ONE booted world, and a shot only sets the state it cares about. `aim`
+ * takes `battle.actionMode` into over-the-shoulder aim (phase 'action',
+ * `am.timeScale = aimSlowFactor`, its own fov/armLength/shoulder) and nothing
+ * put it back, so the NEXT shot in batch order inherited that camera. The
+ * shipped `tank` plate was measured at mean 35.8 LSB from a cold
+ * `shoot.mjs tank` render and matched the `aim` frame instead — a whole round of
+ * running-gear work was reviewed on the wrong frame and scored as a failure.
+ *
+ * Only 7 of the 12 shots call hideAll(), so unit visibility leaked the same way.
+ *
+ * This is also what makes a RESIDENT renderer safe (tools/renderd.mjs keeps one
+ * page alive for the whole session): the cost of a cold boot is ~7 s and the only
+ * thing it was buying us was a clean baseline. Establish the baseline explicitly
+ * and the boot is pure waste.
+ *
+ * Keep this in sync with anything a shot mutates. The rule for a new shot is: if
+ * you set it and it is not per-unit pose, it belongs here.
+ */
+export function resetShotState(ctx) {
+  const b = ctx.battle;
+  if (!b) return;
+
+  // Modes. exitAim() before exit(): aim is a sub-state of action mode, and
+  // exiting the parent first leaves the aim fov/armLength drive latched on.
+  const am = b.actionMode;
+  if (am) {
+    am.exitAim?.();
+    am.exit?.();
+    am.active = false;
+    am.timeScale = am.timeScaleTarget = 1;
+    // fovTarget/armTarget/shoulderTarget are the drives; the `aim` shot snaps the
+    // current values onto them (line ~1068) so both sides must be cleared.
+    if (am.fovTarget !== undefined) am.fov = am.fovTarget = am.fovRest ?? am.fovTarget;
+  }
+  b.commandMode?.exit?.();
+  b.setPhase?.('command');
+
+  // Camera. main.js holds the base plate at fov 32 whenever no mode is driving
+  // it; a shot that set its own fov (command uses 41) must not export that.
+  if (ctx.camera && ctx.camera.fov !== 32) {
+    ctx.camera.fov = 32;
+    ctx.camera.updateProjectionMatrix();
+  }
+
+  // Units: every shot declares its own cast via show(), so start from none.
+  hideAll(ctx);
+
+  ctx.finale = null;
+}
+
 export async function runShot(name, ctx) {
   const fn = SHOTS[name] || SHOTS.overview;
+  resetShotState(ctx);
   ctx.finale = null;
   await fn(ctx);
   await frames(3);

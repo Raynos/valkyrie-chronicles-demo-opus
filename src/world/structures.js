@@ -21,8 +21,9 @@ import {
   rubblePile, raggedEdge, carveGeometry, worldUV, scorch,
   smoothNormals, extrudeElevation,
 } from './geoutil.js';
-import { makeSurfaceMaterial, PALETTE } from './worldMaterials.js';
-import { stuccoTexture, stoneTexture, woodTexture, roofTileTexture } from './textures.js';
+import { makeSurfaceMaterial, PALETTE, ashlarMap, ASHLAR_TILE, ASHLAR_COURSE } from './worldMaterials.js';
+// stoneTexture() is deliberately NOT imported any more: see _commit.
+import { stuccoTexture, woodTexture, roofTileTexture } from './textures.js';
 import { makeBox } from './collider.js';
 import { WATER_Y } from './layout.js';
 
@@ -412,6 +413,106 @@ export function bridgeSpanLayout(length) {
   return { span, pierZ, spanZ };
 }
 
+// ---------------------------------------------------------------------------
+// ashlar coursing, as GEOMETRY (round 15)
+// ---------------------------------------------------------------------------
+//
+// WHY GEOMETRY AND NOT ANOTHER TEXTURE PASS. Four rounds have tried to put
+// coursing on this bridge through the shader — a per-block tonal offset in
+// render/materials.js, a coursed stone map in world/textures.js, a map-to-drive
+// term here — and every round has come back "the spandrel is a field of sage
+// blotches with zero readable stone coursing, |dL/dy|/|dL/dx| = 1.10". Three
+// separate reasons, all of them fatal on their own: the preset that switches the
+// shader branch on was never passed (fixed in _commit), the map's joint was
+// sub-pixel (fixed in ashlarMap), and — the one no texture pass can fix — a
+// value step painted on a flat plane throws no shadow, so it cannot survive a
+// pipeline whose whole job is to quantise value into four washes. A course that
+// stands 55 mm PROUD does: the sun rakes across it, the band drive steps at its
+// top arris, the outline pass finds a crease at its edge, and it goes on reading
+// when the shot is re-lit from somewhere else. That is the difference between
+// masonry and a decal of masonry, and it is what the rubric's "measure the
+// thing, not its proxy" section is about.
+//
+// Two things make these blocks land ON the other two terms instead of beating
+// against them:
+//  * the course rows are phase-locked to the WORLD-Y 0.42 m grid (see yPhase),
+//    which is the grid ashlarMap's joints and uPigment's per-block tone both
+//    use, so all three draw the same course line;
+//  * the stretcher pitch is courseH * 2.2, which is the pitch the shader's
+//    coursing branch assumes (materials.js: `lat / (bs * 2.2)`).
+const _tone = new THREE.Color();
+
+/** Subtract [a,b] from a list of [z0,z1] segments. */
+function segSubtract(segs, a, b) {
+  const out = [];
+  for (const [s0, s1] of segs) {
+    if (b <= s0 || a >= s1) { out.push([s0, s1]); continue; }
+    if (a > s0) out.push([s0, a]);
+    if (b < s1) out.push([b, s1]);
+  }
+  return out;
+}
+
+/**
+ * Proud ashlar course blocks on a vertical face lying in the plane x = faceX.
+ *
+ * o: { faceX, zMin, zMax, bands:[[y0,y1],...], courseH, yPhase, thick, joint,
+ *      forbid(yBottom, yTop) -> [[z0,z1],...], warm }
+ * @returns {THREE.BufferGeometry[]}
+ */
+function ashlarCourseBlocks(rng, o) {
+  const out = [];
+  const courseH = o.courseH;
+  // THE BED JOINT IS TWICE THE PERPEND, and that asymmetry is the point. In laid
+  // masonry the bed joints are continuous and run the length of the wall while
+  // the perpends are broken and stop at every course, so a wall reads as a stack
+  // of horizontal lines and not as a grid. Cutting them both to the same width —
+  // which the first pass did — gives an equal vertical and horizontal signal,
+  // i.e. brickwork-as-graph-paper, and it also flattens the |dL/dy| / |dL/dx|
+  // anisotropy the critique measures by putting as much gradient in x as in y.
+  const bedJoint = o.bedJoint ?? 0.075;
+  const perpJoint = o.perpJoint ?? 0.035;
+  const stretcher = courseH * 2.2;
+  const thick = o.thick ?? 0.11;
+  for (const [ya, yb] of o.bands) {
+    for (let r = Math.ceil((ya - o.yPhase) / courseH - 1e-6); ; r++) {
+      const y0 = o.yPhase + r * courseH;
+      if (y0 + courseH > yb + 1e-4) break;
+      if (y0 < ya - 1e-4) continue;
+      const stagger = (((r % 2) + 2) % 2) === 0 ? 0 : 0.5;
+      const banned = o.forbid ? o.forbid(y0, y0 + courseH) : [];
+      let cc = Math.floor(o.zMin / stretcher) - 1;
+      while ((cc + stagger) * stretcher < o.zMax) {
+        // one block in five is a double-length stretcher: the bond stays on the
+        // grid the shader assumes without reading as a checkerboard
+        const span = rng() < 0.20 ? 2 : 1;
+        const za = (cc + stagger) * stretcher;
+        cc += span;
+        let segs = [[Math.max(za, o.zMin), Math.min(za + span * stretcher, o.zMax)]];
+        if (segs[0][1] - segs[0][0] < 0.20) continue;
+        for (const [ba, bb] of banned) segs = segSubtract(segs, ba, bb);
+        for (const [s0, s1] of segs) {
+          const len = s1 - s0 - perpJoint;
+          if (len < 0.20) continue;
+          // ...and no two stones are dressed to the same projection, so the face
+          // is hand-laid rubble-ashlar rather than one milled plane. Kept to
+          // +/-15 mm: at +/-28 mm the per-stone value spread is as large as the
+          // bed-joint shadow on the FAR spandrel, and the row-mean autocorrelation
+          // peak there fell from 0.48 to 0.18 — the jitter was eating the very
+          // coursing it was meant to hand-letter.
+          const g = box(thick + rngRange(rng, -0.015, 0.015), courseH - bedJoint, len, undefined, {
+            x: o.faceX, y: y0 + courseH * 0.5, z: (s0 + s1) * 0.5,
+          });
+          setGeomColor(g, _tone.set(rng() < (o.warm ?? 0.22) ? PALETTE.stoneWarm : PALETTE.stone)
+            .multiplyScalar(0.90 + rng() * 0.21), 0.05, rng);
+          out.push(g);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Three-span masonry bridge.
  *
@@ -423,6 +524,29 @@ export function bridgeSpanLayout(length) {
  * span, because the outline pass draws a crease at every facet break.
  * `smoothNormals` then welds the barrel's 5-degree facets into a continuous
  * surface while leaving the 90-degree arris at the spandrel face intact.
+ *
+ * ROUND 15 — WHAT IS LAID ON TOP OF THAT ONE SWEEP. The single extrusion is the
+ * right way to get a continuous intrados and the wrong way to get a READABLE
+ * bridge: one sweep of one colour is one undifferentiated slab, which is what
+ * four rounds of critics called it. Everything that makes it read as built is
+ * now separate geometry sitting on that sweep, in the order a mason would work:
+ *
+ *   1. proud ashlar course blocks over both spandrel faces, phase-locked to the
+ *      0.42 m world-Y course grid and truncated against each arch ring, so the
+ *      coursing follows the arch  (ashlarCourseBlocks)
+ *   2. individual dressed voussoirs round each arch head, odd-numbered so there
+ *      is a keystone, each with its own extrados radius and projection
+ *   3. a two-part string course — bed course plus chamfered drip — deep enough
+ *      to throw a real cast band down the spandrel
+ *   4. the parapet's own coursing, then coping laid STONE BY STONE with gaps,
+ *      slumps and tilts, because a ribbon's top edge is a ruled line
+ *   5. the intrados stained down, because a damp barrel vault is the darkest
+ *      thing on a bridge and this one was measuring BRIGHTER than its spandrel
+ *
+ * None of it is a metric pass: every item is a real solid with a real projection,
+ * so it lights, shadows, inks and re-lights like masonry rather than like a decal
+ * of masonry. See the ashlarCourseBlocks header for why texture alone could not
+ * do this job.
  *
  * Local frame: length along +Z, width along X, deck top at y = 0.
  */
@@ -479,6 +603,49 @@ export function buildBridge(rng, length, width, deckY, riverBedY, waterY) {
   let body = extrudeElevation(shape, width, 40);
   setGeomColor(body, PALETTE.stone, 0.085);
   body = smoothNormals(body, 40);
+
+  // --- stain the intrados -------------------------------------------------
+  //
+  // Measured on round 14: the arch soffit came back at L 121.8 against L 115.8
+  // for the spandrel outside it — THE BARREL VAULT WAS BRIGHTER THAN THE FACE IT
+  // IS CUT INTO, which is the one thing a masonry arch can never look like. The
+  // lighting reason is not ours to fix (an inward-facing surface still collects
+  // the full hemisphere fill, and there is a lit pool bouncing into it), but the
+  // PIGMENT reason is: a barrel vault a metre and a half above moving water is
+  // damp for its whole life, and the intrados of a real village bridge is
+  // stained several values darker than the dressed face — algae at the
+  // springing, soot and weed toward the crown. It has been carrying the same
+  // clean limestone as the parapet.
+  //
+  // The test is a profile test, not a normal test on its own: a vertex is on the
+  // intrados if its (z, y) lies on one of the three punched holes — on the
+  // ellipse above the springing, on the vertical jamb below it — AND its normal
+  // is not the +/-X of an end cap. That keeps the arris with the spandrel hard,
+  // which is what makes the vault read as CUT rather than shaded.
+  {
+    const pa = body.getAttribute('position');
+    const na = body.getAttribute('normal');
+    const ca = body.getAttribute('color');
+    for (let i = 0; i < pa.count; i++) {
+      if (Math.abs(na.getX(i)) > 0.55) continue;
+      const y = pa.getY(i), z = pa.getZ(i);
+      let on = false;
+      for (const { z0, z1 } of spanZ) {
+        const zc = (z0 + z1) * 0.5;
+        if (y > springY) {
+          const e = Math.hypot((z - zc) / (span * 0.5), (y - springY) / rise);
+          if (Math.abs(e - 1) < 0.03) { on = true; break; }
+        } else if (y > bodyBase - 0.05
+          && (Math.abs(z - z0) < 0.03 || Math.abs(z - z1) < 0.03)) { on = true; break; }
+      }
+      if (!on) continue;
+      // heaviest at the springing where the river reaches it, easing to the crown
+      const t = Math.max(0, Math.min(1, (y - springY) / Math.max(rise, 0.1)));
+      const k = 0.62 + 0.16 * t;
+      ca.setXYZ(i, ca.getX(i) * k, ca.getY(i) * k * 0.99, ca.getZ(i) * k * 0.95);
+    }
+    ca.needsUpdate = true;
+  }
   bins.stone.push(body);
 
   if (splitOK) {
@@ -508,35 +675,133 @@ export function buildBridge(rng, length, width, deckY, riverBedY, waterY) {
   bins.stone.push(box(width - 1.5, 0.10, length, PALETTE.dirtDark,
     { y: 0.02, variation: 0.12 }));
 
-  // --- voussoir ring: a band of dressed stone standing proud of the spandrel
-  //     face, following the SAME ellipse as the intrados.
+  // --- voussoir ring: INDIVIDUAL DRESSED VOUSSOIRS, not one continuous band.
+  //
+  // The ring used to be a single extrusion of an annular shape, which is why
+  // three rounds of critics reported "no voussoirs radiating around the arch
+  // heads" against source that contains a voussoir ring: an unbroken band of
+  // one tone standing 0.11 m proud of a wall reads as a raised moulding, not as
+  // twenty-nine cut stones. Cutting it into wedges — each one with its own
+  // extrados radius, its own depth off the spandrel and its own tone — puts a
+  // RADIAL joint every 0.45 m round the arch, which is the one piece of coursing
+  // that cannot be confused with a horizontal course and the one that makes a
+  // barrel vault read as a curved solid. The count is forced odd so the ring has
+  // a keystone at the crown.
   const ringT = 0.44;
   for (const { z0, z1 } of spanZ) {
     const zc = (z0 + z1) * 0.5;
     const rxi = span * 0.5 - 0.06, ryi = rise - 0.06;
-    const rxo = rxi + ringT, ryo = ryi + ringT;
     const skew = springY - 0.42;
-    const band = new THREE.Shape();
-    band.moveTo(zc - rxo, skew);
-    band.absellipse(zc, springY, rxo, ryo, Math.PI, 0, true);
-    band.lineTo(zc + rxo, skew);
-    band.lineTo(zc + rxi, skew);
-    band.absellipse(zc, springY, rxi, ryi, 0, Math.PI, false);
-    band.lineTo(zc - rxi, skew);
-    band.closePath();
+    let nV = Math.max(9, Math.round((Math.PI * 0.5 * (rxi + ryi + ringT * 2)) / 0.46));
+    if (nV % 2 === 0) nV += 1;
+    const dj = (Math.PI / nV) * 0.055;             // half a joint, in ellipse parameter
+    const SEG = 3;
     for (const side of [-1, 1]) {
-      let ring = extrudeElevation(band, 0.17, 40);
-      setGeomColor(ring, PALETTE.stoneWarm, 0.10);
-      ring = smoothNormals(ring, 40);
-      ring.translate(side * (half + 0.055), 0, 0);
-      bins.stone.push(ring);
+      for (let i = 0; i < nV; i++) {
+        const a0 = Math.PI - (i / nV) * Math.PI - dj;
+        const a1 = Math.PI - ((i + 1) / nV) * Math.PI + dj;
+        const first = i === 0, last = i === nV - 1;
+        const kOut = ringT + rngRange(rng, -0.05, 0.040);
+        const depth = 0.17 + rngRange(rng, -0.03, 0.05);
+        const rxo = rxi + kOut, ryo = ryi + kOut;
+        const P = [];
+        // inner arc, springing skirt included on the two end stones (the
+        // springers still have to sit on a skewback, as the old band did)
+        if (first) P.push([zc + rxi * Math.cos(a0), skew]);
+        for (let k = 0; k <= SEG; k++) {
+          const a = a0 + (a1 - a0) * (k / SEG);
+          P.push([zc + rxi * Math.cos(a), springY + ryi * Math.sin(a)]);
+        }
+        if (last) {
+          P.push([zc + rxi * Math.cos(a1), skew]);
+          P.push([zc + rxo * Math.cos(a1), skew]);
+        }
+        for (let k = SEG; k >= 0; k--) {
+          const a = a0 + (a1 - a0) * (k / SEG);
+          P.push([zc + rxo * Math.cos(a), springY + ryo * Math.sin(a)]);
+        }
+        if (first) P.push([zc + rxo * Math.cos(a0), skew]);
+        const sh = new THREE.Shape();
+        sh.moveTo(P[0][0], P[0][1]);
+        for (let k = 1; k < P.length; k++) sh.lineTo(P[k][0], P[k][1]);
+        sh.closePath();
+        let v = extrudeElevation(sh, depth, 1);
+        // weld the 4-degree arc facets INSIDE one voussoir and nothing else: the
+        // 90-degree arris onto the spandrel and the joints between neighbours are
+        // exactly the creases the outline pass is supposed to find
+        v = smoothNormals(v, 26);
+        setGeomColor(v, _tone.set(i % 2 ? PALETTE.stoneWarm : PALETTE.stone)
+          .multiplyScalar(0.92 + rng() * 0.17), 0.05, rng);
+        v.translate(side * (half - 0.04 + depth * 0.5), 0, 0);
+        bins.stone.push(v);
+      }
     }
+  }
+
+  // --- spandrel coursing: proud ashlar blocks over the whole face, DYING INTO
+  //     the voussoir rings so the coursing visibly follows the arch.
+  //
+  // The forbid() callback is the "follows the arch" half. For a course row it
+  // returns the z interval each arch occupies at that height — the extrados
+  // ellipse above the springing, the skewback band just under it, the open
+  // barrel below that — so blocks are truncated against the ring instead of
+  // running through it, and the courses step round each arch head the way laid
+  // masonry does.
+  const rxoMax = span * 0.5 - 0.06 + ringT + 0.04;
+  const ryoMax = rise - 0.06 + ringT + 0.04;
+  const skewY = springY - 0.42;
+  const archForbid = (ya, yb) => {
+    const out = [];
+    for (const { z0, z1 } of spanZ) {
+      const zc = (z0 + z1) * 0.5;
+      let w = 0;
+      for (const y of [ya, yb]) {
+        let ww;
+        if (y >= springY) {
+          const t = (y - springY) / ryoMax;
+          ww = t >= 1 ? 0 : rxoMax * Math.sqrt(1 - t * t);
+        } else if (y >= skewY) ww = rxoMax;
+        else ww = span * 0.5;
+        if (ww > w) w = ww;
+      }
+      if (w > 0) out.push([zc - w - 0.07, zc + w + 0.07]);
+    }
+    return out;
+  };
+  // Phase-lock to the world-Y course grid: the geometry is emitted in a frame
+  // whose origin is the deck top, so shifting by -(deckY mod courseH) is what
+  // makes a row boundary here coincide with a joint in ashlarMap (whose UVs are
+  // world-Y) and with a block boundary in the shader's own coursing branch.
+  const courseH = ASHLAR_COURSE;
+  const yPhase = -(((deckY % courseH) + courseH) % courseH);
+  for (const side of [-1, 1]) {
+    for (const g of ashlarCourseBlocks(rng, {
+      faceX: side * half,
+      zMin: -length * 0.5 + 0.05, zMax: length * 0.5 - 0.05,
+      bands: [[bodyBase + 0.14, -0.56]],
+      // 0.15 thick = 0.075 m PROUD of the face. That projection is the whole
+      // mechanism: the top of every course gets a 5-6 px horizontal lit strip and
+      // its underside a matching dark one, which is a genuinely anisotropic signal
+      // (the metric the critique measures is |dL/dy| / |dL/dx|) and one that
+      // survives a re-light, unlike a value step painted onto a flat plane.
+      courseH, yPhase, thick: 0.17, forbid: archForbid,
+    })) bins.stone.push(g);
   }
 
   // --- string course under the parapet: the horizontal shadow line that tells
   //     you where the structure stops and the balustrade begins.
-  bins.stone.push(box(width + 0.34, 0.19, length, PALETTE.stoneWarm,
-    { y: -0.30, variation: 0.09 }));
+  //
+  // 0.30 m tall and 0.22 m proud on each side, up from 0.19/0.17. The purpose of
+  // this course — and of the sun solve in captureShots that was built around it —
+  // is to throw a hard cast band across the spandrel, and at 0.17 m of projection
+  // seen from a lens 1.6 m over the pool it threw a band under two pixels wide:
+  // measured, the whole face below it was one flat 107-147 field for 120 px. It
+  // is now a two-part moulding, a bed course with a chamfered drip under it, so
+  // the shadow it lays down has a step in it rather than one soft edge.
+  bins.stone.push(box(width + 0.44, 0.30, length, PALETTE.stoneWarm,
+    { y: -0.25, variation: 0.09 }));
+  bins.stone.push(box(width + 0.24, 0.12, length, PALETTE.stone,
+    { y: -0.46, variation: 0.10 }));
 
   // --- piers: pointed cutwaters running from the foundation to a sloped
   //     starling cap just under the springing, in ONE hexagonal-plan solid per
@@ -596,7 +861,19 @@ export function buildBridge(rng, length, width, deckY, riverBedY, waterY) {
   }
 
   // --- parapets with coping
+  //
+  // THE RULED LINE. The top of this bridge was one straight edge of constant
+  // weight running 1400 px across the frame, which is the single loudest CAD
+  // tell in the whole set: vertical cuts through the deck edge found 13-14 px of
+  // parapet face at x = 500/900/1100 and NONE at x = 700, bounded by a 3 px
+  // trough, with no coping course, no drip shadow and nothing interrupting the
+  // far-bank horizon. A ribbonWall gives a mathematically straight top by
+  // construction, so the coping is no longer a ribbon: it is laid as individual
+  // stones, each with its own height, its own tilt and its own gap, one in
+  // fourteen missing outright and one in nine slumped — a village bridge that has
+  // been fought over does not have a ruled parapet, and neither does a drawing.
   const parapetStart = bins.stone.length;
+  const copY = 0.92, copH = 0.22;
   for (const side of [-1, 1]) {
     const pts = [];
     const segs = 14;
@@ -604,16 +881,45 @@ export function buildBridge(rng, length, width, deckY, riverBedY, waterY) {
       const t = i / segs;
       pts.push({ x: side * (half - 0.26), z: -length * 0.5 + t * length });
     }
-    const par = ribbonWall(pts, 0, 0.92, 0.52);
+    const par = ribbonWall(pts, 0, copY, 0.52);
     setGeomColor(par, PALETTE.stone, 0.12, rng);
     bins.stone.push(par);
-    const cop = ribbonWall(pts, 0.92, 1.08, 0.68);
-    setGeomColor(cop, PALETTE.stoneWarm, 0.09, rng);
-    bins.stone.push(cop);
+
+    // the parapet's own coursing, on the same face plane as the spandrel's
+    for (const g of ashlarCourseBlocks(rng, {
+      faceX: side * half,
+      zMin: -length * 0.5 + 0.05, zMax: length * 0.5 - 0.05,
+      bands: [[-0.08, copY - 0.02]],
+      courseH, yPhase, thick: 0.13, warm: 0.30,
+    })) bins.stone.push(g);
+
+    // coping, stone by stone
+    const nCop = Math.max(10, Math.round(length / 0.66));
+    const cw = length / nCop;
+    for (let i = 0; i < nCop; i++) {
+      const z = -length * 0.5 + (i + 0.5) * cw;
+      if (rng() < 0.07) continue;                       // a stone gone from the wall
+      const slump = rng() < 0.11 ? rngRange(rng, -0.13, -0.06) : 0;
+      const dy = rngRange(rng, -0.045, 0.055) + slump;
+      const g = box(0.86, copH, cw - 0.05, undefined, {
+        x: side * (half - 0.26), y: copY + copH * 0.5 + dy, z,
+        rx: rngRange(rng, -0.035, 0.035), rz: rngRange(rng, -0.02, 0.02),
+      });
+      setGeomColor(g, _tone.set(PALETTE.stoneWarm).multiplyScalar(0.93 + rng() * 0.15), 0.07, rng);
+      bins.stone.push(g);
+      // the drip fillet, tucked under the outer lip. The coping oversails the
+      // parapet face by 0.17 m; this thickens the shadow that overhang throws so
+      // it reads as a dark band under the coping instead of a 1 px seam.
+      const f = box(0.16, 0.075, cw - 0.05, undefined, {
+        x: side * (half + 0.11), y: copY - 0.03 + dy, z,
+      });
+      setGeomColor(f, _tone.set(PALETTE.stone).multiplyScalar(0.86), 0.06, rng);
+      bins.stone.push(f);
+    }
 
     colliders.push({
-      cx: side * (half - 0.26), cy: 0.54, cz: 0,
-      hx: 0.34, hy: 0.54, hz: length * 0.5, yaw: 0,
+      cx: side * (half - 0.26), cy: 0.57, cz: 0,
+      hx: 0.34, hy: 0.57, hz: length * 0.5, yaw: 0,
       opts: { cover: 1, solid: true, blocksLos: false, tag: 'parapet', destructible: true, hp: 220 },
     });
   }
@@ -867,6 +1173,7 @@ export class Structures {
     this.bins = newBins();
     this._buildVillage();
     this._buildBridge();
+    this._buildRiverWorks();
     this._buildWindmill();
     this._buildWalls();
     this._commit();
@@ -1084,6 +1391,142 @@ export class Structures {
     this.bridgeInfo = { ...b };
   }
 
+  /**
+   * REVETTED BANKS AT THE CROSSING.
+   *
+   * "The upper-right bank is a large featureless tan wash with nothing to look
+   * at" has been on the `bridge` critique for two rounds, and it is not a
+   * terrain-shader problem: that region is 450 x 600 px of correctly-lit,
+   * correctly-graded, correctly-hazed slope with no OBJECT on it. A slope with
+   * nothing on it renders as a wash whatever the shader does. What belongs there
+   * is what belongs on the banks either side of any real village crossing — a
+   * quay wall at the waterline holding the bank out of the stream, a landing
+   * stair down into the shallows, and one or two terrace walls stepping the
+   * slope above it. Each of those is a long horizontal masonry line with a cast
+   * shadow under it, which is exactly the missing ingredient: something for the
+   * eye to read the ground's fall against.
+   *
+   * It is built here rather than in buildBridge() because it has to ask the
+   * terrain where the waterline actually is, and buildBridge is a pure function
+   * of its arguments.
+   *
+   * NO COLLIDERS, deliberately. These are revetment set INTO a bank at the
+   * water's edge, a few metres off the road corridor; giving 40 m of half-metre
+   * garden wall `solid: true` on both banks of the only crossing on the map is a
+   * navigation change dressed up as an art change, and the AI paths through here.
+   * Footprints ARE registered along the quay so vegetation does not grow a sward
+   * through the dressed stone.
+   */
+  _buildRiverWorks() {
+    const b = this.layout.bridge;
+    const rng = this.rng;
+    const co = Math.cos(b.yaw), si = Math.sin(b.yaw);
+    // The bridge's local +Z runs along the road, so the RIVER runs along local
+    // +X and the two banks are lines of roughly constant local Z.
+    const toW = (lx, lz) => ({ x: b.x + lx * co + lz * si, z: b.z - lx * si + lz * co });
+    const half = b.width * 0.5;
+
+    /** Walk out along the bank and return where the ground crosses `targetY`. */
+    const contour = (q, s, targetY, n, step, x0) => {
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const lx = s * (x0 + i * step);
+        let lz = null;
+        for (let k = 1; k <= 70; k++) {
+          const t = q * k * 0.30;
+          const w = toW(lx, t);
+          if (!this.terrain.inBounds(w.x, w.z)) break;
+          if (this.terrain.heightAt(w.x, w.z) >= targetY) { lz = t; break; }
+        }
+        if (lz === null) break;
+        const w = toW(lx, lz);
+        pts.push({ x: w.x, z: w.z, y: this.terrain.heightAt(w.x, w.z) });
+      }
+      return pts;
+    };
+
+    for (const q of [-1, 1]) {
+      for (const s of [-1, 1]) {
+        // --- the quay: dressed stone holding the bank out of the stream
+        const quay = contour(q, s, WATER_Y + 0.30, 10, 1.7, half + 1.5);
+        if (quay.length >= 4) {
+          const pts = quay.map((p) => ({
+            x: p.x, z: p.z,
+            y0: WATER_Y - 1.5, y1: Math.max(p.y + 0.26, WATER_Y + 0.82),
+          }));
+          const wall = ribbonWall(pts, 0, 1, 0.68);
+          setGeomColor(wall, PALETTE.stone, 0.13, rng);
+          this.bins.stone.push(wall);
+          // ...capped stone by stone, for the same reason the bridge's coping is:
+          // a ribbon's top edge is a ruled line and a ruled line reads as CAD.
+          for (let i = 0; i < pts.length - 1; i++) {
+            const a = pts[i], c = pts[i + 1];
+            const l = Math.hypot(c.x - a.x, c.z - a.z);
+            const nCap = Math.max(1, Math.round(l / 0.7));
+            for (let j = 0; j < nCap; j++) {
+              if (rng() < 0.10) continue;
+              const t = (j + 0.5) / nCap;
+              const g = box(l / nCap - 0.05, 0.16, 0.80, undefined, {
+                ry: -Math.atan2(c.z - a.z, c.x - a.x),
+                rz: rngRange(rng, -0.03, 0.03),
+              });
+              g.translate(a.x + (c.x - a.x) * t,
+                lerp(a.y1, c.y1, t) + 0.06 + rngRange(rng, -0.035, 0.035),
+                a.z + (c.z - a.z) * t);
+              setGeomColor(g, _tone.set(PALETTE.stoneWarm).multiplyScalar(0.92 + rng() * 0.16),
+                0.07, rng);
+              this.bins.stone.push(g);
+            }
+            this.footprints.push({ x: (a.x + c.x) * 0.5, z: (a.z + c.z) * 0.5, r: 1.5 });
+          }
+          // a landing stair down into the shallows, half way along
+          const mid = quay[Math.max(1, (quay.length * 0.45) | 0)];
+          const dirx = (quay[quay.length - 1].x - quay[0].x), dirz = (quay[quay.length - 1].z - quay[0].z);
+          const dl = Math.hypot(dirx, dirz) || 1;
+          // steps run INTO the water, i.e. across the bank line
+          const nx = -dirz / dl * -q, nz = dirx / dl * -q;
+          for (let t = 0; t < 6; t++) {
+            const g = box(2.1, 0.20, 0.42, undefined, {
+              ry: -Math.atan2(dirz, dirx),
+            });
+            g.translate(mid.x + nx * (0.4 + t * 0.38), WATER_Y + 0.72 - t * 0.24, mid.z + nz * (0.4 + t * 0.38));
+            setGeomColor(g, _tone.set(t > 2 ? PALETTE.mud : PALETTE.stone)
+              .multiplyScalar(0.90 + rng() * 0.18), 0.09, rng);
+            this.bins.stone.push(g);
+          }
+          // mooring bollards
+          for (let i = 1; i < quay.length - 1; i += 3) {
+            const p = pts[i];
+            this.bins.stone.push(cyl(0.17, 0.21, 0.62, 7, PALETTE.stoneWarm, {
+              x: p.x, y: p.y1 + 0.28, z: p.z, variation: 0.11,
+            }));
+          }
+        }
+
+        // --- terrace walls up the slope. Two of them, so the bank reads as
+        //     stepped ground rather than one unbroken fall, each with buttresses
+        //     that break its length and drop a shadow across the terrace below.
+        for (const [rise, thick] of [[2.5, 0.5], [4.1, 0.44]]) {
+          const ter = contour(q, s, WATER_Y + rise, 9, 2.0, half + 2.4);
+          if (ter.length < 4) continue;
+          const pts = ter.map((p) => ({
+            x: p.x, z: p.z, y0: p.y - 1.9, y1: p.y + rngRange(rng, 0.40, 0.62),
+          }));
+          const wall = ribbonWall(pts, 0, 1, thick);
+          setGeomColor(wall, PALETTE.stone, 0.15, rng);
+          this.bins.stone.push(wall);
+          for (let i = 1; i < pts.length - 1; i += 2) {
+            const p = pts[i];
+            this.bins.stone.push(box(0.62, p.y1 - p.y0 - 0.25, 0.9, PALETTE.stoneWarm, {
+              x: p.x, y: (p.y0 + p.y1) * 0.5 - 0.1, z: p.z + 0.42 * q,
+              ry: rngRange(rng, -0.2, 0.2), variation: 0.13,
+            }));
+          }
+        }
+      }
+    }
+  }
+
   _buildWindmill() {
     const w = this.layout.windmill;
     const built = buildWindmill(this.rng);
@@ -1182,17 +1625,37 @@ export class Structures {
   // -----------------------------------------------------------------------
 
   _commit() {
+    // THE `surface:` KEY. Every bin here used to be built without one, which
+    // meant forwardNpr() in worldMaterials.js found no SURFACE_PIGMENT preset,
+    // uPigment stayed at its all-zero default, and the masonry-coursing and
+    // bark-fissure branches in render/materials.js were unreachable from the
+    // world — three rounds of "the spandrel has no coursing" against source
+    // that plainly contained the coursing code. Naming the preset is the whole
+    // wiring; everything below still overrides it where a bin needs to.
+    //
+    // The stone bins take ashlarMap() rather than stoneTexture(): see the header
+    // note on ashlarMap for the arithmetic, but in one line — stoneTexture's
+    // coursing is 0.216 m with a 9-19 mm joint, which is sub-pixel at any
+    // distance this bridge is ever photographed from, so it mips away to a
+    // blotch field before the shader sees it.
     const mats = {
-      stucco: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, map: stuccoTexture(23), rim: 0.5 }),
-      stone: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, map: stoneTexture(31), rim: 0.45 }),
+      stucco: makeSurfaceMaterial({
+        surface: 'stucco', color: 0xffffff, vertexColors: true, map: stuccoTexture(23), rim: 0.5,
+      }),
+      stone: makeSurfaceMaterial({
+        surface: 'masonry', color: 0xffffff, vertexColors: true, map: ashlarMap({ seed: 31 }), rim: 0.45,
+      }),
       sunk: makeSurfaceMaterial({
-        color: 0xffffff, vertexColors: true, map: stoneTexture(31), rim: 0.25, outline: false,
+        surface: 'masonry', color: 0xffffff, vertexColors: true, map: ashlarMap({ seed: 31 }),
+        rim: 0.25, outline: false,
       }),
       tile: makeSurfaceMaterial({
-        color: 0xffffff, vertexColors: true, map: roofTileTexture(37), rim: 0.55, hatch: 0.8,
+        surface: 'tile', color: 0xffffff, vertexColors: true, map: roofTileTexture(37), rim: 0.55, hatch: 0.8,
       }),
-      timber: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, map: woodTexture(41), rim: 0.4 }),
-      metal: makeSurfaceMaterial({ color: 0xffffff, vertexColors: true, rim: 0.8 }),
+      timber: makeSurfaceMaterial({
+        surface: 'timber', color: 0xffffff, vertexColors: true, map: woodTexture(41), rim: 0.4,
+      }),
+      metal: makeSurfaceMaterial({ surface: 'metal', color: 0xffffff, vertexColors: true, rim: 0.8 }),
     };
     // Push the maps into the BAND DRIVE rather than letting them multiply the
     // albedo. makeSurfaceMaterial() has no parameter for this, so set it here:
@@ -1200,7 +1663,14 @@ export class Structures {
     // invisible after the quantiser, whereas one that moves the band drive puts
     // a real step in — which is the difference between engraved-looking
     // masonry and an untextured primitive with a decal on it.
-    const drive = { stucco: 0.24, stone: 0.34, sunk: 0.30, tile: 0.36, timber: 0.26, metal: 0.10 };
+    // stone/sunk go up from 0.34: their map is now a purpose-built coursing map
+    // whose ONLY job is to put a joint line in the drive, and the joint is 1% of
+    // the tile's area, so it can be driven harder than a general stain map
+    // without turning the wall busy. NOT much harder, though — 0.46 measured 13
+    // LSB darker on the spandrel than 0.34 did and dropped the whole span into
+    // the cross-hatched bands, because the map's deviation is not mean-zero once
+    // toValueDetail has clamped its highlights at 1.0.
+    const drive = { stucco: 0.24, stone: 0.38, sunk: 0.34, tile: 0.36, timber: 0.26, metal: 0.10 };
     for (const k of BINS) {
       const u = mats[k] && mats[k].uniforms;
       if (!u) continue;
@@ -1212,7 +1682,12 @@ export class Structures {
       if (u.uWetPx) u.uWetPx.value = 12;
     }
     // 0.5 -> one pantile texture per 2 m of roof, i.e. 0.14 m courses.
-    const uvScale = { stucco: 0.34, stone: 0.42, sunk: 0.42, tile: 0.5, timber: 0.75, metal: 0.5 };
+    // The stone bins MUST run at 1/ASHLAR_TILE and nothing else: that map is
+    // authored in metres, so any other scale moves its 0.42 m course off the
+    // 0.42 m course the shader's uPigment branch and the bridge's own geometric
+    // course blocks are both drawing, and the three start beating.
+    const aUv = 1 / ASHLAR_TILE;
+    const uvScale = { stucco: 0.34, stone: aUv, sunk: aUv, tile: 0.5, timber: 0.75, metal: 0.5 };
     this.materials = mats;
     this.meshes = [];
     for (const k of BINS) {

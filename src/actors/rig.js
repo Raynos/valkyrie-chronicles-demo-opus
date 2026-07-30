@@ -1945,13 +1945,34 @@ function buildShoulders(b, rig, o) {
     // shoulder cap sits OUTSIDE the ribcage silhouette: upper chest is now
     // 0.184*g, the deltoid's outer edge 0.235*g, so it clears by 51 mm and the
     // shoulder is a separate mass in profile instead of a bump on the tube.
-    // Pulled INBOARD (0.68 -> 0.54 of the clavicle->humerus span) and shrunk
-    // 12%. The outboard half of the shoulder mass is now the deltoid LOBE on the
-    // humerus itself (see buildArms), so this piece's only remaining job is the
-    // acromion — the bony shelf on TOP of the joint — and covering the seam
-    // where the sleeve meets the chest. Left at its old size the two masses
-    // stack and the shoulder goes back to being a ball.
-    const px = lerp(cl.x, p.x, 0.54), pz = lerp(cl.z, p.z, 0.62);
+    // ROUND 10 pulled it back INBOARD (0.68 -> 0.54) and shrank it 12% on the
+    // theory that the deltoid LOBE on the humerus (see buildArms) would own the
+    // outboard contour instead, leaving this piece only the acromion.
+    //
+    // ROUND 15 MEASURED WHAT THAT ACTUALLY BUILT, and it is this round's damning
+    // note. At 0.54 the cap's outer surface reached x 0.208 while the sleeve tube
+    // beside it reached 0.252 — the cap sat 44 mm INSIDE the silhouette and
+    // contributed nothing to it, so the shoulder's outline was drawn by the
+    // sleeve's first station. That station was authored at rx 0.055 where the
+    // lobe multiplier is at its 1.35 peak, and the two below it came out 0.250
+    // and 0.244: eight millimetres of change over 92 mm of arm, which is the
+    // "dead-straight vertical ink edge from (512,501) down past (512,700)"
+    // verbatim. Worse, that top ring sat at y 1.425 with capStart 'none' — an
+    // OPEN 128 mm circle whose rim, seen near edge-on, projects to a dead
+    // straight rule: the "ruled 90-degree corner" and the 78 px horizontal ink
+    // edge leaving it. THREE uncapped tubes were stacked in this region (sleeve
+    // top, cap sweep, armscye welt), every one of them with an exposed rim, and
+    // the widest of them was outside everything meant to cover it.
+    //
+    // So the cap goes back outboard to 0.62 with its lateral radius restored, and
+    // buildArms tucks the sleeve's top station under it and rounds its start cap.
+    // The shoulder's contour is now a single convex curve owned by the deltoid:
+    // cap pole at y 1.416 (level with the old crown, so still no shrug), cap max
+    // 0.233 at y 1.377, sleeve deltoid max 0.244 at y 1.345, then a real taper to
+    // 0.229 above the elbow. That is the read the reference draws — acromion to
+    // mid-humerus as one continuous curve — and it cannot be had while the piece
+    // that is supposed to draw it is buried.
+    const px = lerp(cl.x, p.x, 0.62), pz = lerp(cl.z, p.z, 0.62);
     b.setZone(ZONE.CLOTH).setBones(side > 0 ? ARM_L : ARM_R).setColor(o.tunic).setMottle(0.07);
     // 0.070 tall against 0.099 wide, not 0.084: a deltoid seen from the front is
     // a SHELF the sleeve hangs off, and a near-spherical cap of the same colour
@@ -1963,9 +1984,15 @@ function buildShoulders(b, rig, o) {
     // the shoulder line came out flat. Dropped 22 mm and flattened from 0.062 to
     // 0.051 tall, the acromion now tops out level with the collar, which is where
     // a shoulder is.
+    // ROUND 15: lateral radius back to the pre-shrink 0.099 and depth to 0.090,
+    // vertical only 0.051 -> 0.053. The cap has to be the OUTERMOST geometry
+    // between y 1.38 and its pole at 1.416 or it is not in the silhouette at all,
+    // and the whole finding is that it was not. The vertical stays flat because
+    // the acromion is a shelf and because the pole must not climb past the
+    // collar.
     b.addEllipsoid({
       center: [px, p.y - 0.012, pz + 0.002],
-      radius: [0.087 * g, 0.051 * g, 0.084 * g],
+      radius: [0.099 * g, 0.053 * g, 0.090 * g],
       seg: seg(16), rings: seg(11),
       displace: (dx, dy, dz) => {
         // A deltoid is not a ball: flat shelf on top, a lateral head that bulges
@@ -1986,31 +2013,36 @@ function buildShoulders(b, rig, o) {
         ];
       },
     });
-    // Short sweep down the humerus so the cap dies into the sleeve.
+    // Short sweep down the humerus so the cap dies into the sleeve. Held
+    // DELIBERATELY INSIDE both shells now — station outers 0.215 / 0.233 / 0.226
+    // against a cap of 0.233 and a sleeve of 0.230-0.242 at the same heights. Its
+    // only remaining job is to guarantee there is no gap where the ellipsoid and
+    // the tube cross, and any part of it that reached the silhouette would put a
+    // fourth exposed rim in the one region of the figure where the round-15
+    // critique found three.
     const el = rig.restWorld['foreArm' + s].pos;
     b.addTube([
-      { p: [lerp(px, p.x, 0.7), p.y + 0.006, lerp(pz, p.z, 0.7)], rx: 0.064 * g, rz: 0.066 * g },
-      { p: [lerp(p.x, el.x, 0.10), lerp(p.y, el.y, 0.10), lerp(p.z, el.z, 0.10)], rx: 0.059 * g, rz: 0.061 * g },
-      { p: [lerp(p.x, el.x, 0.30), lerp(p.y, el.y, 0.30), lerp(p.z, el.z, 0.30)], rx: 0.051 * g, rz: 0.054 * g },
+      { p: [lerp(px, p.x, 0.55), p.y + 0.010, lerp(pz, p.z, 0.55)], rx: 0.058 * g, rz: 0.060 * g },
+      { p: [lerp(p.x, el.x, 0.09), lerp(p.y, el.y, 0.09), lerp(p.z, el.z, 0.09)], rx: 0.050 * g, rz: 0.053 * g },
+      { p: [lerp(p.x, el.x, 0.24), lerp(p.y, el.y, 0.24), lerp(p.z, el.z, 0.24)], rx: 0.044 * g, rz: 0.047 * g },
     ], { seg: seg(12) });
 
-    // Armscye seam. A raised welt where the sleeve is set into the shoulder —
-    // 3 mm of geometry, but it is a CREASE, so the outline pass draws a line
-    // round the shoulder in every pose and at every light angle. Without it the
-    // deltoid and the sleeve are one continuous surface and the arm reads as a
-    // tube growing straight out of the ribcage.
-    // Darker than plain tunicShade and 2 mm prouder: with the ribcage pulled in
-    // to 0.156 the sleeve now stands clear of the trunk, and this welt is the
-    // line that says WHERE it was set in. It is the one mark that survives every
-    // light angle, so it is worth authoring at collar depth rather than at the
-    // shade cloth's.
-    b.setColor(mixCol(o.tunicShade, o.collar, 0.42)).setMottle(0.045);
-    const sx0 = lerp(px, p.x, 0.86), sz0 = lerp(pz, p.z, 0.86);
-    b.addTube([
-      { p: [sx0, p.y - 0.006, sz0], rx: 0.0625 * g, rz: 0.0645 * g },
-      { p: [lerp(sx0, el.x, 0.055), lerp(p.y - 0.006, el.y, 0.055), lerp(sz0, el.z, 0.055)], rx: 0.0690 * g, rz: 0.0710 * g },
-      { p: [lerp(sx0, el.x, 0.115), lerp(p.y - 0.006, el.y, 0.115), lerp(sz0, el.z, 0.115)], rx: 0.0605 * g, rz: 0.0625 * g },
-    ], { seg: seg(12) });
+    // ARMSCYE SEAM — MOVED, AND IT IS NOW BUILT AS A RING ROUND THE ARM RATHER
+    // THAN AS A TUBE ALONG IT. See buildArms.
+    //
+    // Rounds 10-14 swept it down the humerus at rx 0.0625-0.0690 from a spine at
+    // lerp(px, p.x, 0.86). Measured this round against the sleeve it is supposed
+    // to sit on top of: welt outer 0.236 / 0.244 / 0.237 against a sleeve of
+    // 0.224 / 0.236 / 0.242 — so its LAST station was 4 mm inside the sleeve and
+    // its first two stood proud only by exposing their own open rims. A welt that
+    // is partly buried and partly a rim is the worst of both: no interior ink
+    // line anywhere inside the 100x200 px card (the closeup's vertical scan at
+    // x=590 found sd 11.9 with no seam in 165 px), plus two more ruled edges.
+    //
+    // A set-in sleeve seam is a CLOSED LOOP round the limb, not a sleeve of
+    // slightly larger diameter, so it belongs in buildArms where the sleeve's own
+    // station radii and lobe multiplier are in scope and the welt can be laid
+    // exactly 4 mm proud of the surface it decorates, all the way round.
     b.setColor(o.tunic);
   }
 }
@@ -2064,13 +2096,49 @@ function buildArms(b, rig, o) {
       const az = Math.atan2(st, ct * side);
       const fold = 0.026 * Math.cos(az * 3.0 + t * 2.6 + 0.7) * smoothstep(0.14, 0.34, t)
         + 0.016 * Math.cos(az * 5.0 - t * 1.8) * smoothstep(0.30, 0.55, t) * (1 - smoothstep(0.80, 0.96, t));
-      return 1 + lat * Math.pow(out, 1.35) + ant + pos - seam * out + fold;
+      // HUMERAL SPLAY COMPENSATION (round 15), and it is the reason no amount of
+      // radius taper was producing a tapered arm. The rest table puts the humeral
+      // head at x 0.181 and the elbow at 0.203, so the bone axis walks 22 mm
+      // OUTBOARD over its length; a tube centred on it loses every millimetre the
+      // radius gives up. Measured on the old table the outboard silhouette ran
+      // 0.252 / 0.250 / 0.244 / ... — the taper was real in the radii and
+      // invisible in the outline. Trimming the OUTBOARD half of the section only,
+      // ramping in below the deltoid insertion and releasing at the epicondyles,
+      // walks the sleeve's effective axis medial while leaving the bone (and
+      // therefore anim.js and the weapon mounts) alone. It also thins nothing:
+      // the medial side keeps its full radius, so the arm stays a 90 mm oval and
+      // only its silhouette moves.
+      const splay = 0.16 * Math.pow(out, 1.25)
+        * smoothstep(0.28, 0.72, t) * (1 - smoothstep(0.82, 1.0, t));
+      return 1 + lat * Math.pow(out, 1.35) + ant + pos - seam * out + fold - splay;
     };
+    // ROUND 15 — THE TOP OF THIS TUBE WAS THE SHOULDER'S SILHOUETTE, AND IT WAS
+    // AN OPEN RING SITTING OUTSIDE THE DELTOID CAP. See the long note in
+    // buildShoulders for the measurement; the consequence for this table is that
+    // it is now authored as a SILHOUETTE rather than as a list of girths. Outer x
+    // at each station, computed against the lobe multiplier that actually applies
+    // there (nine stations, so t = j/8):
+    //   t 0.000  0.213   acromial tuck — tucked UNDER the cap, and ROUND-capped
+    //   t 0.125  0.234
+    //   t 0.250  0.244   deltoid belly: the widest point on the whole arm
+    //   t 0.375  0.240
+    //   t 0.500  0.237
+    //   t 0.625  0.234
+    //   t 0.750  0.229
+    //   t 0.875  0.229   supracondylar pinch
+    //   t 1.000  0.245   epicondyles step back out
+    // i.e. 31 mm of convex rise over the top 50 mm of height, then 15 mm of taper
+    // over the next 230 mm, against eight millimetres of nothing before. The dome
+    // on the round start cap tops out at y 1.420 — level with the deltoid cap's
+    // own pole and 30 mm below the neck bone — so closing the hole does not
+    // reintroduce the round-9 shrug.
     b.addTube(resample([
-      { p: at(sh, el, -0.13), rx: 0.055 * g, rz: 0.058 * g },
-      { p: at(sh, el, 0.16), rx: 0.052 * g, rz: 0.059 * g },
-      { p: at(sh, el, 0.40), rx: 0.050 * g, rz: 0.058 * g },   // bicep / tricep belly
-      { p: at(sh, el, 0.72), rx: 0.043 * g, rz: 0.048 * g },
+      { p: at(sh, el, -0.020), rx: 0.0240 * g, rz: 0.0262 * g },  // acromial tuck
+      { p: at(sh, el, 0.060), rx: 0.0398 * g, rz: 0.0432 * g },   // armscye
+      { p: at(sh, el, 0.160), rx: 0.0512 * g, rz: 0.0562 * g },   // deltoid belly
+      { p: at(sh, el, 0.320), rx: 0.0508 * g, rz: 0.0578 * g },
+      { p: at(sh, el, 0.520), rx: 0.0478 * g, rz: 0.0558 * g },   // bicep / tricep belly
+      { p: at(sh, el, 0.720), rx: 0.0432 * g, rz: 0.0492 * g },
       // SUPRACONDYLAR PINCH, and it is the whole reason a bent arm reads as
       // hinged rather than as a hose: the joint has to be NARROWER than the
       // muscle bellies either side of it, so the silhouette steps in, corners,
@@ -2079,10 +2147,48 @@ function buildArms(b, rig, o) {
       // second station so the notch has a floor rather than a single vertex.
       // On the `tank` lancer (486 px tall, arm radius ~14 px) that is a 4 px
       // step in and a 5 px step out — a corner the outline pass can bite.
-      { p: at(sh, el, 0.90), rx: 0.0330 * g, rz: 0.0392 * g },
+      { p: at(sh, el, 0.880), rx: 0.0345 * g, rz: 0.0410 * g },
       { p: at(sh, el, 0.955), rx: 0.0312 * g, rz: 0.0386 * g },
-      { p: el, rx: 0.0428 * g, rz: 0.0452 * g },                // elbow
-    ], simple() ? 1 : 3), { seg: seg(simple() ? 12 : 16), shape: delt });
+      { p: el, rx: 0.0428 * g, rz: 0.0452 * g },                  // elbow
+    ], simple() ? 1 : 3), { seg: seg(simple() ? 12 : 16), capStart: 'round', shape: delt });
+
+    // ARMSCYE WELT, AS A CLOSED RING ROUND THE LIMB.
+    //
+    // The closeup's vertical scan down the middle of the shoulder card found
+    // sd 11.9 over 165 px with "no plateau, no terminator, no seam, no strap, no
+    // stitch". The welt that was supposed to be that seam lived in
+    // buildShoulders and was a slightly-fatter SLEEVE swept along the humerus:
+    // partly buried in the sleeve it decorates, partly exposing its own open
+    // rims. A set-in sleeve seam is a loop round the arm, so it is built as one
+    // here, where the sleeve's own station radii and `delt` are in scope.
+    //
+    // addTube's parallel-transport frame on a straight humerus resolves to
+    // N ~ +X and B ~ -Z (that is the assumption `delt` already documents), so the
+    // sleeve's surface at station t is reproducible from outside the sweep: for
+    // each angle round the section, evaluate `delt` and lay the welt's centre-line
+    // 4.2 mm outside it. That puts the welt exactly proud of the cloth all the way
+    // round instead of proud at the front and sunk at the side, and its two round
+    // caps are parked on the MEDIAL side where the deltoid cap swallows them, so
+    // the joint never shows. What reaches the picture is a hairline convex ink arc
+    // from the front of the shoulder over the top to the back — the one interior
+    // mark the reference always draws inside that card.
+    if (!simple()) {
+      const t0 = 0.125, A = at(sh, el, 0.060);
+      const rx0 = 0.0398 * g, rz0 = 0.0432 * g, lift = 0.0042;
+      const NR = seg(22), ring = [];
+      for (let i = 0; i <= NR; i++) {
+        const a = Math.PI - 0.08 + (i / NR) * (TAU + 0.16);
+        const ct = Math.cos(a), st = Math.sin(a);
+        const k = delt(t0, ct, st);
+        ring.push({
+          p: [A[0] + (rx0 * k + lift) * ct, A[1], A[2] - (rz0 * k + lift) * st],
+          rx: 0.0031, rz: 0.0031,
+        });
+      }
+      b.setColor(mixCol(o.tunicShade, o.collar, 0.38)).setMottle(0.03);
+      b.addTube(ring, { seg: seg(6), capStart: 'round', capEnd: 'round' });
+      b.setColor(o.tunic).setMottle(0.07);
+    }
 
     // Triceps: the mass on the BACK of the upper arm, running from the deltoid's
     // rear head down to the point of the elbow. It is what makes an arm read as
@@ -2121,8 +2227,13 @@ function buildArms(b, rig, o) {
     // being a tan blob on a tan sleeve — the arm now reads sleeve / skin / hand
     // as three separate values, which is why the extremity survives to 40 m.
     const rollT = 0.44;
+    // First station 0.0405 -> 0.0442: the upper sleeve's end ring is 0.0417 after
+    // its own lobe multiplier, so at 0.0405 the humerus tube's open rim stood
+    // 1.2 mm PROUD of the forearm that is supposed to cover it — a third exposed
+    // rim, on the elbow this time. 0.0442 swallows it, and the epicondyle flare it
+    // adds is what an elbow does anyway.
     b.addTube(resample([
-      { p: el, rx: 0.0405 * g, rz: 0.0435 * g },
+      { p: el, rx: 0.0442 * g, rz: 0.0468 * g },
       { p: at(el, wr, 0.10), rx: 0.0470 * g, rz: 0.0490 * g }, // forearm belly (brachioradialis)
       { p: at(el, wr, 0.22), rx: 0.0475 * g, rz: 0.0485 * g },
       { p: at(el, wr, rollT - 0.02), rx: 0.0395 * g, rz: 0.0415 * g },
@@ -2331,10 +2442,41 @@ function buildHands(b, rig, o) {
         const ph = hinge((i - 0.5) / NS), d = len / NS;
         path.push([path[i - 1][0] + Math.cos(ph) * d, path[i - 1][1] + Math.sin(ph) * d]);
       }
+      // ROUND 15 — THE CURL WAS RIGHT AND THE HAND STILL WAS NOT HOLDING
+      // ANYTHING, because a curl is a rotation and a grip is a POSITION.
+      //
+      // Measured on the round-14 closeup: the four knuckle/finger knobs render as
+      // detached beans resting ON the top edge of the stock at (655-790, 748-800),
+      // each an isolated tan egg with its own cream lozenge, with no finger
+      // segment visible anywhere below the wood. The reason is that the whole
+      // chain starts at the metacarpal head and sweeps AROUND a fist-sized hole
+      // whose centre is the palm — so the middle phalanx runs along the near face
+      // of the stock and the tip finishes tucked behind it. Nothing crosses the
+      // wood's silhouette, and an emerging fingertip is the entire visual grammar
+      // of a grip: the eye reads "held" from the digit that comes out the far
+      // side, not from proximity.
+      //
+      // Two changes, both positional. First `close`: an 8 mm translation along the
+      // palm's own closing direction (-side, derived in the note above), ramped in
+      // over t 0.10-0.45 so the finger BASE stays welded to the metacarpal head
+      // and only the phalanges past the MCP move — a rigid shift would detach the
+      // hand from itself. Second, `at` now extrapolates past t = 1 along the final
+      // tangent, which lets the distal station run to 1.16 for a 20 % longer tip
+      // without lengthening the proximal segments (they are what carry the four
+      // broadside runs the fist reads by).
+      const close = 0.008;
       const at = (t) => {
-        const u = clamp01(t) * NS, i = Math.min(NS - 1, Math.floor(u)), fr = u - i;
-        const a = lerp(path[i][0], path[i + 1][0], fr);
-        const c = lerp(path[i][1], path[i + 1][1], fr);
+        let a, c;
+        if (t <= 1) {
+          const u = clamp01(t) * NS, i = Math.min(NS - 1, Math.floor(u)), fr = u - i;
+          a = lerp(path[i][0], path[i + 1][0], fr);
+          c = lerp(path[i][1], path[i + 1][1], fr);
+        } else {
+          const ph = hinge(1), ex = (t - 1) * len;
+          a = path[NS][0] + Math.cos(ph) * ex;
+          c = path[NS][1] + Math.sin(ph) * ex;
+        }
+        c += close * smoothstep(0.10, 0.45, t);
         return [px + dir.x * a - side * c, y0 + dir.y * a, pz + dir.z * a];
       };
       b.addTube([
@@ -2343,9 +2485,9 @@ function buildHands(b, rig, o) {
         { p: at(0.30), rx: r0 * 0.98, rz: r0 * 0.92 },   // proximal shaft
         { p: at(0.47), rx: r0 * 0.80, rz: r0 * 0.74 },   // waist at the PIP
         { p: at(0.62), rx: r0 * 0.98, rz: r0 * 0.90 },   // middle phalanx
-        { p: at(0.82), rx: r0 * 0.74, rz: r0 * 0.70 },   // waist at the DIP
-        { p: at(0.92), rx: r0 * 0.84, rz: r0 * 0.78 },   // distal phalanx
-        { p: at(0.99), rx: r0 * 0.52, rz: r0 * 0.48 },   // tip
+        { p: at(0.84), rx: r0 * 0.74, rz: r0 * 0.70 },   // waist at the DIP
+        { p: at(1.00), rx: r0 * 0.84, rz: r0 * 0.78 },   // distal phalanx
+        { p: at(1.16), rx: r0 * 0.50, rz: r0 * 0.46 },   // tip, clear of the stock
       ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
     }
     // THE PAINTED VALLEY. Geometry buys finger separation down to about ten
@@ -2370,7 +2512,16 @@ function buildHands(b, rig, o) {
         // 0.46, which is one paper-grain octave away from not finding it at all.
         // 0.54 widens the band of lines that carry it without darkening the digit
         // itself (the dip is on the SEAM, and the seam is 4.8 mm of a 22 mm pitch).
-        return 1 - 0.54 * smoothstep(0.20, 0.46, frac);
+        // ROUND 15 — THE SHOULDER, NOT THE DEPTH, WAS THE PROBLEM. The closeup
+        // read the four digits as "isolated tan eggs each with its own cream
+        // lozenge": with the ramp opened from 0.20 all the way to 0.46 of the
+        // pitch, the dark occupies more than half of every finger and what the eye
+        // sees is four independent HIGHLIGHTS separated by a gradient, which is a
+        // row of beans. The mark that reads as four digits is a hard ink line in
+        // the valley with flat skin either side of it. 0.30..0.42 is a 2.6 mm
+        // shoulder on a 22 mm pitch — three pixels at the portrait, and the dip
+        // goes 2 % deeper to pay for the narrower footprint.
+        return 1 - 0.56 * smoothstep(0.30, 0.42, frac);
       });
     }
     // KNUCKLE CREASE — the 4-vertex line the round-6 note asked for, sunk
@@ -2925,6 +3076,37 @@ export function buildHead(b, rig, o, f) {
     sx -= hollow * 0.060;
     sz -= hollow * 0.052;
 
+    // --- 4c. NASOLABIAL FOLD, AS SURFACE (round 15) ------------------------
+    // The closeup's horizontal scan across the near cheek (row 300, x 660-800)
+    // ran 127-174 over 140 px with "no local minimum below 127 anywhere", i.e.
+    // one flat mid-brown mass from the zygomatic terminator down to the jaw. The
+    // face map has carried a nasolabial dark since round 5 and it does not read,
+    // and the reason is the rubric's own warning: a painted step is not a break.
+    // Only a normal discontinuity gets picked up by the bands, the outline pass,
+    // the AO bake and the hatch gate all at once.
+    //
+    // A nasolabial fold is the boundary between the cheek fat pad and the upper
+    // lip: the surface steps IN along a line running from the alar base out and
+    // down past the corner of the mouth. Built as a narrow trench — 4.8 mm of
+    // half-width in direction units, i.e. about 7 mm on a 151 mm head — so the
+    // normal turns hard over three or four pixels of a portrait cheek rather than
+    // easing over forty. It leans outboard as it descends, which is both what the
+    // fold does and what makes it near-VERTICAL in image space at any yaw, so it
+    // crosses a horizontal cheek scan instead of lying along it.
+    {
+      const run = smoothstep(FY(0.315), FY(0.255), dy) * (1 - smoothstep(FY(0.120), FY(0.068), dy));
+      const line = 0.250 + 0.088 * smoothstep(FY(0.300), FY(0.170), dy)
+        - 0.050 * smoothstep(FY(0.150), FY(0.082), dy);
+      const nl = gauss(ax - line, 0.048) * run * smoothstep(0.18, 0.58, dz);
+      sz -= nl * 0.046;
+      sx -= nl * 0.028;
+      // ...and the cheek pad OUTBOARD of it stands proud, so the fold is a
+      // light-over-dark pair rather than a scratch. Same construction as the brow.
+      const pad = gauss(ax - (line + 0.135), 0.105) * run * smoothstep(0.20, 0.62, dz);
+      sz += pad * 0.026;
+      sx += pad * 0.018;
+    }
+
     // --- 4b. THE INFERIOR BORDER OF THE MANDIBLE ---------------------------
     // The second terminator on a head, and the one that makes a jaw OVERHANG a
     // neck instead of melting into it. Same construction as the crest above and
@@ -3329,13 +3511,27 @@ export function buildHead(b, rig, o, f) {
       { p: faceT(mW, seamT + 0.008, 0.0008), rx: 0.0028, rz: 0.0014 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
     // lower lip — fuller, and it catches light, so it is a touch paler
+    //
+    // ROUND 15 — IT WAS OUTSIDE THE JAW'S OWN INK SILHOUETTE. Measured on the
+    // round-14 closeup at (735-778, 372-392): the navy profile line runs down the
+    // face and a pale cream bead sits PROUD of it with no outline of its own, so
+    // the lower lip and the chin read as a detached pale pellet stuck onto the
+    // head. The cause is arithmetic, not art: `faceT` puts each station ON the
+    // displaced skin and the tube then adds its own rx OUTWARD from there, so a
+    // 6.2 mm ring lifted 1.8 mm stands 8 mm off a surface it is meant to be part
+    // of — and in the three-quarter view every shot uses, the mouth is within
+    // 15 degrees of the silhouette, where "outward" is straight out of the
+    // profile. The lifts go NEGATIVE (the lip roll is already cut into the skull
+    // in section 6c of the displacement, so the tube belongs inside its own
+    // groove) and the radii come down 18%, which keeps the surface inboard of the
+    // mandible ellipsoid and lets the outline pass own the profile.
     b.setColor(mixCol(PALETTE.lip, o.skin, 0.66));
     b.addTube([
-      { p: faceT(-mW * 0.92, seamT + 0.002, 0.0007), rx: 0.0026, rz: 0.0013 },
-      { p: faceT(-mW * 0.46, loT + 0.002, 0.0015), rx: 0.0056, rz: 0.0028 },
-      { p: faceT(0, loT, 0.0018), rx: 0.0062, rz: 0.0031 },
-      { p: faceT(mW * 0.46, loT + 0.002, 0.0015), rx: 0.0056, rz: 0.0028 },
-      { p: faceT(mW * 0.92, seamT + 0.002, 0.0007), rx: 0.0026, rz: 0.0013 },
+      { p: faceT(-mW * 0.86, seamT + 0.002, -0.0004), rx: 0.0022, rz: 0.0011 },
+      { p: faceT(-mW * 0.44, loT + 0.002, -0.0002), rx: 0.0046, rz: 0.0023 },
+      { p: faceT(0, loT, 0.0000), rx: 0.0051, rz: 0.0026 },
+      { p: faceT(mW * 0.44, loT + 0.002, -0.0002), rx: 0.0046, rz: 0.0023 },
+      { p: faceT(mW * 0.86, seamT + 0.002, -0.0004), rx: 0.0022, rz: 0.0011 },
     ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
     // THE SEAM. It now lies in a 6 mm groove cut into the skull itself (see
     // section 6c of the displacement) rather than standing on a flat face, so
@@ -3348,7 +3544,16 @@ export function buildHead(b, rig, o, f) {
     // the line continues past the visible lip mass into the cheek. A seam that
     // stops exactly where the lip volume stops draws a lozenge; a seam that
     // runs on draws a mouth.
-    b.setColor(mixCol(PALETTE.lip, [0.018, 0.012, 0.013], 0.86)).setMottle(0.008);
+    // ROUND 15 — 0.86 IS A WOUND, NOT A LIP LINE. [0.018,0.012,0.013] is a
+    // near-black maroon; at 86 % of the way there the seam resolved to a dark
+    // red-brown and the closeup measured it exactly as it was authored, "a
+    // horizontal dark red-brown GASH at (741-787, 350-368) reading as a cut".
+    // A mouth line in CANVAS is a warm dark ROSE — a value below the lip and a
+    // hue still inside it — because the darkest thing on a lit face is the
+    // underside of the jaw, never a feature. 0.52 keeps the seam a full wash
+    // below the lip rolls either side of it (which is what makes it read as a
+    // line) without putting ink inside a skin zone.
+    b.setColor(mixCol(PALETTE.lip, [0.018, 0.012, 0.013], 0.52)).setMottle(0.008);
     b.addTube([
       { p: faceT(-mW * 1.14, seamT + 0.013, 0.0004), rx: 0.0017, rz: 0.0011 },
       { p: faceT(-mW * 0.74, seamT + 0.004, 0.0004), rx: 0.0028, rz: 0.0016 },
@@ -3362,11 +3567,19 @@ export function buildHead(b, rig, o, f) {
     // fades out at both ends reads as a scratch; a stop at each end reads as a
     // mouth. They are also the only part of it that survives a three-quarter
     // view, which is the angle every shot in the set uses.
+    // ROUND 15 — AND THESE TWO WERE THE "STRAY DARK BLOBS THAT READ AS DIRT" the
+    // closeup found at (721-735, 370-384). A 4.4 x 4.2 x 3.0 mm ellipsoid centred
+    // ON the skin has half its mass outside it: 2.2 mm of near-black bead standing
+    // proud of the cheek, unattached to any feature the eye can name, which is
+    // precisely what a smudge of dirt looks like. Sunk 1.6 mm INTO the surface and
+    // flattened to a 1.4 mm disc, only the part sitting in the commissure's own
+    // dimple (section 6c cuts one) shows, and 0.90 -> 0.60 takes it off the ink
+    // register onto the same warm dark rose as the seam it terminates.
     if (!simple()) {
-      b.setColor(mixCol(PALETTE.lip, [0.016, 0.011, 0.012], 0.90)).setMottle(0);
+      b.setColor(mixCol(PALETTE.lip, [0.016, 0.011, 0.012], 0.60)).setMottle(0);
       for (const side of [1, -1]) {
-        const p = faceT(side * mW * 0.88, seamT + 0.005, 0.0002);
-        b.addEllipsoid({ center: p, radius: [0.0044, 0.0042, 0.0030], seg: seg(7), rings: seg(5) });
+        const p = faceT(side * mW * 0.88, seamT + 0.005, -0.0016);
+        b.addEllipsoid({ center: p, radius: [0.0038, 0.0034, 0.0014], seg: seg(7), rings: seg(5) });
       }
     }
     // Philtrum ridges, nose base down to the bow.
@@ -3454,6 +3667,25 @@ export function buildHead(b, rig, o, f) {
   //              the local value, each in a canonical place.
   //   MODELLING  everything else, at half round 4's amplitude, as connective
   //              tissue between the two.
+  //
+  // ROUND 15 — DECLINED, ON PURPOSE, AND RECORDED SO IT IS NOT RE-ARGUED. The
+  // round-14 critique asked for two more HARD ALBEDO STEPS here: "an orbital
+  // wedge one band darker over T_EYE..T_BROW" and "a nasolabial/buccal hollow
+  // from T_ALA to T_MOUTH, both authored as steps (no smoothstep wider than 0.04)
+  // so the quantiser reads them as wash boundaries". That last clause is the
+  // rubric's own documented trap, verbatim: a painted step read by the quantiser
+  // as a wash boundary is exactly how this codebase got a soldier in camouflage
+  // instead of a uniform, and it fails the one test that matters — swing the sun
+  // and a painted step does not move. Both marks already exist here as soft
+  // MODELLING terms (0.215 socket, 0.245 perioral chain) and they are the right
+  // amplitude for that job.
+  //
+  // The missing break was real, though, and it was missing from the SURFACE:
+  // section 4c of the displacement now cuts an actual nasolabial trench with a
+  // proud cheek pad outboard of it, so the bands, the outline pass, the AO bake
+  // and the hatch gate all find it at once and all four move when the light does.
+  // That is the same fix as round 14's zygomatic tent and it is the only kind of
+  // fix that survives the sun-azimuth test.
   //
   // The three vertex ranges matter: the skull carries the whole map, the drawn
   // eye assembly carries only the block-in (a socket dark applied to a sclera is

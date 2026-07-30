@@ -110,7 +110,41 @@ Then the standard checks: `git status --short`, `npx vite build`,
 node tools/shoot.mjs bridge shots/bridge.png
 ```
 
-## Where the visual loop currently stands (round 14)
+## Where the visual loop currently stands (round 15 in flight)
+
+**The r14 pole fix worked and should not be revisited.** Looking at `shots/bridge.png` after r14:
+the violet/lavender shade family is *gone*, lit surfaces kept their own hue, and cast shadows
+survived. Five rounds of "shade is violet" is closed. The mechanism that fixed it — the pole is a
+DIRECTION the deepest wash turns toward by a bounded amount, not a paint substituted for the
+pigment's chromaticity, and the 242..290 degree clamp is deleted — is documented in
+`render/lighting.js` above `SHADE_RAMP`. Leave it alone.
+
+**The defect ranking that replaced it**, from reading the four r14 frames directly (not from a
+metric):
+
+1. **Characters read as wooden mannequins.** A flat rectangular torso slab with straight vertical
+   sides, boxy shoulder pads, untapered tube limbs with no elbow or knee break, hands as pale
+   pebble clumps. Visible in every character shot and it is the single most damning tell. This is
+   geometry (`actors/rig.js`), not shading.
+2. **The Edelweiss does not read as a tank** (`actors/tank.js`) — a scatter of flat tan and olive
+   plates with a floating gun tube and no running gear at all: no road wheels, no track run, no
+   sprocket, no fender line.
+3. **Albedo mottle is doing form's job.** The uniform reads as camouflage rather than one dyed
+   serge; masonry reads as lichen mottle rather than cut stone. This is the exact trap the
+   "metric integrity" section below warns about, arrived at from a different direction.
+4. **A global haze veil compresses the whole frame into midtones** — almost no near-ink darks
+   anywhere, so nothing snaps. Aerial perspective belongs on the *distant* planes only.
+5. **The bridge has no coursing** — no voussoirs radiating around the arch heads, no string
+   course, no coping, and a parapet top edge that is a perfectly straight ruled line across the
+   full frame (reads as CAD, not as drawn).
+6. Distant figures at `overview` scale are featureless olive lozenges — they read as skittles.
+7. Water is an over-saturated mint green, and reads inconsistently between the arch openings and
+   the open channel (`world/water.js` — not yet assigned to a round).
+
+`overview` is currently the strongest plate: foliage, hatching, aerial perspective and composition
+genuinely work there. Its weakness is the washed-out left half and the skittle figures.
+
+## Historical: where round 14 stood
 
 **Playable and rendering:** 36.5k lines, full BLiTZ battle system, 12 deterministic capture shots
 at 72–189 fps, zero console errors. `docs/HARNESS.md` explains the ~3× render speedup and why

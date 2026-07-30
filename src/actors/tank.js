@@ -46,9 +46,43 @@ const PAL = {
   paint: 0xaeb5a6,
   paintAlt: 0x9ea595,
   darkMetal: 0x6d675d,       // gun, hatches, weld-proud steel
-  track: 0x6a5c4e,           // umber steel, worn bright on the wear faces
-  rubber: 0x554d51,
-  ochre: 0xa88654,           // canvas, stowage, tool handles
+
+  // ---- the running gear is a VALUE LADDER, not three shades of one mud ----
+  //
+  // Round 14 authored wheel steel (0x6d675d, V 0.43), track (0x6a5c4e, V 0.42)
+  // and tyre rubber (0x554d51, V 0.33) within 0.10 of each other, and put the
+  // whole assembly inside the sponson shadow pocket where the wash quantiser
+  // resolves everything onto bands 0-1. Measured on the round-14 `tank` plate,
+  // the road-wheel region came out at mean (100,90,81) and the track wrap at
+  // (121,111,93) — a 20 LSB spread across the entire running gear, under three
+  // directions of hatching. That is why the critic could not find "one road
+  // wheel, track link or sprocket" anywhere in frame: they were all there, at
+  // one value, under a scribble.
+  //
+  // A plate reads running gear by the ALTERNATION: pale dust-caked wheel discs,
+  // a mid dust-pale track band across them, near-black tyre rims, and the
+  // pocket behind darker than any of it. Three rungs, ~0.15 V apart, is the
+  // whole trick — and it has to be in the albedo, because the light down there
+  // is one wash and cannot supply it.
+  //
+  // The ladder is deliberately pitched BELOW the armour, not level with it. First
+  // pass of this fix authored the track at 0x7d7365 with a 0.52 shadow floor and
+  // measured the front idler wrap at (180,153,113) against a glacis of (99,88,71)
+  // — the running gear came out 50 LSB BRIGHTER than the hull it hangs off, so it
+  // read as a stack of cream crates bolted to a dark tank. Legibility comes from
+  // the gear being separated FROM EACH OTHER; it must still rank under the plates
+  // that face the sky.
+  wheelDisc: 0x969180,       // top rung: road-wheel/sprocket/idler disc, dusted
+  track: 0x6f6a5e,           // mid rung: umber track steel, road-dusted
+  rubber: 0x4d464c,          // bottom rung: tyre, mauve-grey — never black
+
+  // Stowage. `ochre` was 0xa88654, sat 0.50 — the loudest chroma on the whole
+  // vehicle, and on a thin backlit cylinder it measured (224,173,142) hue 22.7:
+  // a salmon-pink sausage lashed to the bustle. Dust-stained duck is a quiet
+  // warm grey-buff, and the tarp gets its own bin (see mat.canvas) so nothing
+  // else has to be compromised to keep it quiet.
+  ochre: 0x9c8a70,           // painted stowage tin, tool furniture
+  canvasDuck: 0x8a8065,      // rolled tarp, mud flaps, retaining straps
   wood: 0x94734c,
   glass: 0xd8d2b8,
   grille: 0x5f767a,          // radiator: cool teal so it reads as "the spot"
@@ -780,6 +814,38 @@ export class Tank {
       keyGain: 1.16, driveRange: [0.12, 0.86],
     };
 
+    // ---- how the RUNNING GEAR takes the light -------------------------------
+    //
+    // The pocket under the sponson is not a hole in the world. It is open to a
+    // dusty road one wheel-radius below it, and that road is the brightest
+    // surface in the plate; every photograph of a halted tank shows the road
+    // wheels lit from underneath nearly as hard as from the sky. So the gear
+    // declares a much higher `shadowFloor` than the armour above it (0.34):
+    // standing under the overhang costs it half the key, not all of it.
+    //
+    // `driveRange` is the other half, and it is the knob this defect was
+    // actually about. The whole running gear occupies the bottom quarter or so
+    // of the raw drive, so under the armour's [0.12, 0.86] span every wheel,
+    // tyre, shoe and sprocket tooth resolves into bands 0-1 — and bands 0-1 are
+    // exactly where materials.js runs the hatch pass in THREE directions at full
+    // strength and multiplies the result by 0.50. Everything down there
+    // converged on one scribbled dark: measured on the round-14 plate, wheels
+    // (100,90,81) against track (121,111,93), a 20 LSB spread over the entire
+    // assembly. Remapping the narrow span the gear really occupies onto the full
+    // 0..1 spreads it across bands 1-3, so a wheel gets a lit crescent and a
+    // shaded one and the hatching falls in the pocket BEHIND it, which is where
+    // a draughtsman puts it.
+    //
+    // And the hatch is cut hard and spaced wide. At the armour's 4.2 px spacing
+    // the strokes merge into a fill at running-gear scale and the wheels
+    // dissolve; at 7.4 px and a third of the strength they read as strokes laid
+    // across a form, which is the whole point of the pass.
+    const runningGear = {
+      ...armour,
+      shadowFloor: 0.50, shadowSoften: 0.34, driveRange: [0.04, 0.70],
+      hatchSpacing: 7.4, wrap: 0.32,
+    };
+
     this.mat = {
       paint: mk('paint', {
         ...armour,
@@ -793,21 +859,55 @@ export class Tank {
         outlineWidth: 1.1, map: metalTex, mapRepeat: [2, 2],
         bandBleed: 1.5, hatchSpacing: 4.2, wrap: 0.28,
       }),
+      // The track band: mid rung. `spec` is asked for explicitly — track steel
+      // is polished bright on the pad faces by the road and a hard-edged
+      // specular band is what says "steel" rather than "cast concrete".
       track: mk('track', {
-        ...armour,
-        color: PAL.track, roughness: 0.7, hatch: 0.9, rim: 0.7, paper: 0.8,
-        outlineWidth: 0.85, instanced: true, bandBleed: 1.4,
-        wrap: 0.34,
+        ...runningGear,
+        color: PAL.track, roughness: 0.68, hatch: 0.30, rim: 0.62, paper: 0.8,
+        outlineWidth: 1.05, instanced: true, bandBleed: 1.3, spec: 0.30,
+        mottle: 0.04, shadowFloor: 0.38, driveRange: [0.04, 0.80],
       }),
+      // Tyre: bottom rung, and the one part of the gear that is genuinely matte
+      // and genuinely dark, so it keeps a lower floor than its neighbours. That
+      // dark ring round a pale disc is the whole road-wheel read.
       rubber: mk('rubber', {
-        ...armour,
-        color: PAL.rubber, roughness: 0.95, hatch: 0.8, rim: 0.35, paper: 0.7,
-        outlineWidth: 1.0, instanced: true, wrap: 0.34,
+        ...runningGear,
+        color: PAL.rubber, roughness: 0.95, hatch: 0.34, rim: 0.30, paper: 0.7,
+        outlineWidth: 1.05, instanced: true, shadowFloor: 0.36,
+        driveRange: [0.06, 0.84], curvature: 0.26, spec: 0,
       }),
+      // Wheel discs, hubs, idlers, sprockets and return rollers: top rung.
+      // `curvature` because every one of them is a disc seen close to face-on,
+      // where N.L alone gives no boundary at all — the screen-space curvature
+      // term is what puts a wash edge on the flange instead of leaving the whole
+      // wheel inside one value.
+      gear: mk('gear', {
+        ...runningGear,
+        color: PAL.wheelDisc, roughness: 0.74, hatch: 0.20, rim: 0.78, paper: 0.85,
+        outlineWidth: 1.15, instanced: true, bandBleed: 1.35, spec: 0.36,
+        curvature: 0.32, mottle: 0.05,
+      }),
+      // Painted stowage tin (jerricans, mud-flap furniture). Desaturated at the
+      // palette; `subsurface` DELETED. materials.js:1186 applies subsurface
+      // additively as `albedo * keyTint * uSubsurface * trans * 1.45`, and on a
+      // thin backlit cylinder over a warm albedo that is what took the bustle
+      // tarp to a measured (224,173,142), hue 22.7, sat 0.366 — a soft
+      // cream-to-pink gradient with no band boundary anywhere on it. Grass is
+      // translucent. A rolled canvas tarp is not.
       ochre: mk('ochre', {
         ...armour,
         color: PAL.ochre, roughness: 0.92, hatch: 1.0, rim: 0.4, paper: 1.0,
-        outlineWidth: 1.15, subsurface: 0.25, bandBleed: 1.5,
+        outlineWidth: 1.15, subsurface: 0, bandBleed: 1.5,
+      }),
+      // Dust-stained duck: the tarp, the mud flaps, the retaining straps. A low
+      // `rim` so it takes a banded wash across the roll instead of a rim-lit
+      // lobe down one side of it, and `spec` forced to zero — canvas has no
+      // highlight at all.
+      canvas: mk('canvas', {
+        ...armour,
+        color: PAL.canvasDuck, roughness: 0.96, hatch: 1.0, rim: 0.25, paper: 1.0,
+        outlineWidth: 1.2, subsurface: 0, spec: 0, bandBleed: 1.5, mottle: 0.11,
       }),
       wood: mk('wood', { color: PAL.wood, roughness: 0.88, hatch: 0.9, rim: 0.4, paper: 1.0 }),
       glass: mk('glass', {
@@ -838,7 +938,7 @@ export class Tank {
   /** Hull, fenders, stowage, tools, lamps, exhaust, radiator. */
   _buildHull() {
     const rng = this.rng;
-    const B = { paint: [], metal: [], ochre: [], wood: [], glass: [], grille: [] };
+    const B = { paint: [], metal: [], ochre: [], canvas: [], wood: [], glass: [], grille: [] };
     const rivets = [];
 
     // ---- primary armour envelope -----------------------------------------
@@ -929,8 +1029,12 @@ export class Tank {
     // ---- rivet / bolt lines ----------------------------------------------
     const rivetSpacing = byQ([0.34, 0.22, 0.17]);
     for (const i of [1, 5, 6, 7]) ringSamples(rings[i].pts, rings[i].z, rivetSpacing, rivets);
-    // Bolt circle round the turret ring.
-    const ringR = 0.86;
+    // Bolt circle round the turret ring. OUTBOARD of the race, not inboard: at
+    // 0.86 every one of these bolts sat under the turret skirt (r 0.88) and was
+    // never drawn in any shot. At 0.965 they ring the ring, which is both where a
+    // real deck carries them and a row of highlights that says "this circle is a
+    // joint" from further away than the slot itself reads.
+    const ringR = 0.965;
     const nBolts = byQ([12, 20, 26]);
     for (let i = 0; i < nBolts; i++) {
       const a = (i / nBolts) * TAU;
@@ -938,9 +1042,35 @@ export class Tank {
     }
 
     // ---- turret ring / race ----------------------------------------------
-    const race = new THREE.CylinderGeometry(0.90, 0.94, 0.09, byQ([16, 24, 32]), 1, true);
-    place(race, 0, this.turretDeckY, -0.10);
+    //
+    // THE TURRET RING HAS TO BE A VISIBLE SLOT, not a coincident cylinder. Round
+    // 14's race was 9 cm tall centred exactly on the deck, and the turret skirt
+    // that overhangs it sat 1.75 cm above the deck — so the skirt covered the
+    // race's whole upper half and the turret met the hull along a single
+    // coincident edge. The critic could not find a "turret edge" anywhere in the
+    // frame because there wasn't one to find: the turret and the deck shared a
+    // silhouette.
+    //
+    // Now the race stands 10 cm PROUD as a collar (r 0.895-0.935) and the turret
+    // is lifted to sit DOWN INSIDE it: the shell's widest half-width is 0.86 and
+    // its skirt 0.88, both inboard of the collar bore. That buys two concentric
+    // ink lines instead of none — deck-to-collar and collar-to-turret — with the
+    // collar's own cast shadow pooling at its base, so the joint reads as a joint
+    // from any azimuth rather than depending on the sun to separate two washes
+    // that happen to meet.
+    this.ringTopY = this.turretDeckY + 0.075;
+    const race = new THREE.CylinderGeometry(0.895, 0.935, 0.15, byQ([16, 24, 32]), 1, true);
+    place(race, 0, this.turretDeckY + 0.03, -0.10);
     B.metal.push(race);
+    // Splash guard: a low horseshoe wall on the deck outboard of the race, open
+    // to the rear. It throws the deck's own shadow into the ring slot, so the
+    // annulus stays dark even when the sun is straight down the hull axis.
+    {
+      const gr = new THREE.CylinderGeometry(1.030, 1.045, 0.055, byQ([14, 22, 28]), 1, true,
+        -Math.PI * 0.42, Math.PI * 1.34);
+      place(gr, 0, this.turretDeckY + 0.026, -0.10);
+      B.metal.push(gr);
+    }
 
     // ---- engine deck: louvred grilles above the powerpack -----------------
     for (const zc of [-1.35, -1.95]) {
@@ -1038,13 +1168,38 @@ export class Tank {
       const plate = new THREE.BoxGeometry(0.44, 0.028, 4.5);
       place(plate, sx * 1.30, fenderY, -0.05);
       B.paint.push(plate);
+      // THE FENDER LINE. A 2.8 cm plate seen edge-on from a kneeling camera is a
+      // hairline, and a hairline is not a line a plate can rank: round 14 had the
+      // full length of both track guards reading as nothing at all, which is half
+      // of why the critic could find no "fender line" in the frame.
+      //
+      // A real track guard is folded down along its outboard edge, and that fold
+      // is worth three things at once. It gives the silhouette a single
+      // uninterrupted horizontal ink edge four and a half metres long — the one
+      // line that separates "vehicle" from "pile of plates". It gives the wash a
+      // proper three-rung step across the same edge: the guard's TOP is a
+      // near-horizontal aimed at the sky (top band), the fold's outer face is
+      // vertical (mid band), and the shadow it throws on the track beneath it is
+      // the pocket (bottom band). And it puts a hard normal discontinuity along
+      // the whole run for the outline pass to bite on.
+      //
+      // It stops short of the front lip and the rear mud flap so it does not
+      // fight either of them for the same edge.
+      const skirt = new THREE.BoxGeometry(0.026, 0.115, 4.32);
+      place(skirt, sx * 1.507, fenderY - 0.052, -0.09);
+      B.paint.push(skirt);
+      // A bead along the top of the fold — the folded metal has a radius, and the
+      // radius is what actually catches the sky band rather than the razor edge
+      // an unrelieved box corner presents.
+      B.metal.push(cylBetween(sx * 1.507, fenderY + 0.006, -2.25,
+        sx * 1.507, fenderY + 0.006, 2.07, 0.016, 4));
       // Down-turned front lip and rear flap.
       const lip = new THREE.BoxGeometry(0.44, 0.24, 0.028);
       place(lip, sx * 1.30, fenderY - 0.10, 2.20, 0.32, 0, 0);
       B.paint.push(lip);
       const flap = new THREE.BoxGeometry(0.42, 0.30, 0.022);
       place(flap, sx * 1.30, fenderY - 0.15, -2.30, -0.16, 0, 0);
-      B.ochre.push(flap);
+      B.canvas.push(flap);
       // Support brackets: diagonal struts from under the outboard lip of the
       // fender up to the sponson side. They must stay OUTSIDE the track's
       // return run, which now passes under the overhang at x ±1.00..1.42.
@@ -1164,7 +1319,7 @@ export class Tank {
       for (const dz of [-0.22, 0.22]) {
         const s = new THREE.BoxGeometry(0.09, 0.012, 0.05);
         place(s, x, fenderY + 0.05, z + dz);
-        B.ochre.push(s);
+        B.canvas.push(s);
       }
     }
 
@@ -1322,12 +1477,16 @@ export class Tank {
   /** Turret, mantlet, main gun with muzzle brake, coax MG, cupola, antenna. */
   _buildTurret() {
     const rng = this.rng;
-    const B = { paint: [], metal: [], ochre: [], glass: [], grille: [] };
+    const B = { paint: [], metal: [], ochre: [], canvas: [], glass: [], grille: [] };
 
     this.turret = new THREE.Group();
     this.turret.name = 'turret';
-    // Sits on the deck, wherever the deck now is (see this.deckRise).
-    this.turret.position.set(0, (this.turretDeckY ?? 0.52) + 0.015, -0.10);
+    // Sits IN the ring, not on the deck. The 1.5 cm clearance round 14 used left
+    // the shell bottom flush with the deck and the skirt covering the race, so the
+    // two masses shared one silhouette edge and the turret read as a lump grown
+    // out of the hull. Seated 7.5 cm up (see _buildHull's ringTopY) the shell base
+    // drops inside the proud race collar and the joint gets its own linework.
+    this.turret.position.set(0, (this.ringTopY ?? ((this.turretDeckY ?? 0.52) + 0.075)), -0.10);
     this.chassis.add(this.turret);
 
     // ---- turret shell: tapered, sloped, with a bustle ---------------------
@@ -1394,10 +1553,14 @@ export class Tank {
       B.metal.push(cylBetween(s * 0.44, 0.10, -1.32, s * 0.44, 0.34, -1.24, 0.016, 4));
     }
     B.metal.push(cylBetween(-0.44, 0.10, -1.32, 0.44, 0.10, -1.32, 0.016, 4));
-    // Rolled tarp lashed into the rack.
+    // Rolled tarp lashed into the rack. `canvas`, NOT `ochre`: on the round-14
+    // build this was PAL.ochre 0xa88654 through a bin carrying subsurface 0.25,
+    // and the two together made it the loudest thing on the vehicle — a measured
+    // (224,173,142), hue 22.7, sat 0.366 salmon-pink sausage with a soft
+    // cream-to-pink gradient and no band boundary anywhere on it. See mat.canvas.
     const tarp = new THREE.CylinderGeometry(0.13, 0.14, 0.80, byQ([6, 9, 12]));
     place(tarp, 0, 0.19, -1.20, 0, 0, Math.PI / 2);
-    B.ochre.push(tarp);
+    B.canvas.push(tarp);
     for (const z of [-0.32, 0.32]) {
       const strap = new THREE.BoxGeometry(0.29, 0.016, 0.05);
       place(strap, z, 0.19, -1.20, 0, Math.PI / 2, 0);
@@ -1539,7 +1702,12 @@ export class Tank {
 
     // ---- road wheel: rim + rubber tyre + hub + spoke bosses ---------------
     const parts = [];
-    const disc = new THREE.CylinderGeometry(rw - 0.055, rw - 0.055, 0.20, seg);
+    // The steel disc is pulled 3 cm further inside the tyre than round 14 had it.
+    // The tyre is the DARK ring in the light-ring/dark-ring/light-centre read, and
+    // at rw-0.055 it was only 5.5 cm wide — eight pixels at the distance the
+    // vehicle is drawn at, i.e. a hairline the outline pass ate. At rw-0.085 the
+    // dark band is 8.5 cm and survives.
+    const disc = new THREE.CylinderGeometry(rw - 0.085, rw - 0.085, 0.20, seg);
     place(disc, 0, 0, 0, 0, 0, Math.PI / 2);
     parts.push(disc);
     const hub = new THREE.CylinderGeometry(0.085, 0.085, 0.26, Math.max(6, seg >> 1));
@@ -1554,6 +1722,21 @@ export class Tank {
         parts.push(b);
       }
     }
+    // DISH THE WHEEL. A flat-faced coin between two dark tyre rims has one value
+    // on it and no reason for the quantiser to put an edge anywhere, which is why
+    // the round-14 wheels measured as a featureless part of one dark mass even
+    // though their silhouettes were there. A raised flange ring on each face,
+    // standing level with the proud hub, makes the face three concentric zones:
+    // flange (top band), the dish inside it (one band down, because the ring
+    // shades it and screen-space curvature reads the step), hub (top band again).
+    // Light ring / dark ring / light centre inside a near-black tyre is THE
+    // road-wheel read at any distance, and it costs one torus per face on a
+    // geometry that is instanced twelve times.
+    for (const s of [-1, 1]) {
+      const flange = new THREE.TorusGeometry(rw - 0.125, 0.028, 4, seg);
+      place(flange, s * 0.101, 0, 0, 0, Math.PI / 2, 0);
+      parts.push(flange);
+    }
     const wheelSteel = mergeGeos(parts);
     // Tyre is a separate material bucket, so a second instanced mesh.
     const tyre = new THREE.CylinderGeometry(rw, rw, 0.155, seg, 1, true);
@@ -1565,7 +1748,12 @@ export class Tank {
     const tyreGeo = mergeGeos([tyre, tyreCapA, tyreCapB]);
 
     const n = this.wheelCount * 2;
-    this.wheelMesh = new THREE.InstancedMesh(wheelSteel, this.mat.metal, n);
+    // `mat.gear`, not `mat.metal`. The hull's weld beads, hatch lids and tool
+    // heads live up in the light where darkMetal reads as dark steel; the running
+    // gear lives in the sponson pocket where the same pigment is indistinguishable
+    // from the track, the tyres and the shadow. See the `runningGear` block in
+    // _buildMaterials for the value ladder and why it has to be in the albedo.
+    this.wheelMesh = new THREE.InstancedMesh(wheelSteel, this.mat.gear, n);
     this.tyreMesh = new THREE.InstancedMesh(tyreGeo, this.mat.rubber, n);
     for (const m of [this.wheelMesh, this.tyreMesh]) {
       m.castShadow = true;
@@ -1605,10 +1793,15 @@ export class Tank {
     const sprocketParts = [];
     sprocketParts.push(place(new THREE.CylinderGeometry(this.sprocketR - 0.075, this.sprocketR - 0.075, 0.22, seg), 0, 0, 0, 0, 0, Math.PI / 2));
     sprocketParts.push(place(new THREE.CylinderGeometry(0.09, 0.09, 0.28, 6), 0, 0, 0, 0, 0, Math.PI / 2));
+    // The teeth are the whole point of a drive sprocket: they are the one place on
+    // a tank where the silhouette is a saw. Round 14's were 0.10 m tall at
+    // r = R-0.03, so their tips reached only R+0.02 — 2 cm past the track band
+    // they mesh with, i.e. buried. Taller and set further in, they now break the
+    // track line by 5 cm and each tooth root casts into its neighbour.
     for (let i = 0; i < teeth; i++) {
       const a = (i / teeth) * TAU;
-      const t = new THREE.BoxGeometry(0.055, 0.10, 0.075);
-      const r = this.sprocketR - 0.03;
+      const t = new THREE.BoxGeometry(0.055, 0.145, 0.075);
+      const r = this.sprocketR - 0.045;
       for (const s of [-1, 1]) {
         const tc = t.clone();
         placeS(tc, s * 0.075, Math.sin(a) * r, Math.cos(a) * r, 1, 1, 1, a, 0, 0);
@@ -1616,12 +1809,19 @@ export class Tank {
       }
       t.dispose();
     }
+    // Same dished-face trick as the road wheels, so the sprocket disc between the
+    // two tooth rings reads as a disc and not as more track.
+    for (const s of [-1, 1]) {
+      const flange = new THREE.TorusGeometry(this.sprocketR - 0.145, 0.026, 4, seg);
+      place(flange, s * 0.112, 0, 0, 0, Math.PI / 2, 0);
+      sprocketParts.push(flange);
+    }
     const sprocketGeo = mergeGeos(sprocketParts);
 
     // Left/right are identical apart from the X offset, so one instanced draw
     // each rather than four separate meshes.
-    this.idlerMesh = new THREE.InstancedMesh(idlerGeo, this.mat.metal, 2);
-    this.sprocketMesh = new THREE.InstancedMesh(sprocketGeo, this.mat.metal, 2);
+    this.idlerMesh = new THREE.InstancedMesh(idlerGeo, this.mat.gear, 2);
+    this.sprocketMesh = new THREE.InstancedMesh(sprocketGeo, this.mat.gear, 2);
     for (const m of [this.idlerMesh, this.sprocketMesh]) {
       m.castShadow = true;
       m.userData.outline = true;
@@ -1636,14 +1836,21 @@ export class Tank {
     // Low enough that the whole return run passes UNDER the sponson overhang
     // (top of run = rollerY + rollerR + half a shoe, which must clear
     // this.sponsonY) instead of driving straight through the hull side.
+    // Raised 2.5 cm over round 14 to buy the return run somewhere to hang. At
+    // axleY+0.36 the top of the run sat 0.213 in chassis space and the road-wheel
+    // tops at 0.080, so a run with any real catenary in it landed ON the wheels
+    // and had to be drawn taut. At +0.385 the run tops out at 0.238, still 3 cm
+    // clear of the sponson underside at 0.27, and the daylight gap between the
+    // slack run and the wheels — which is itself one of the things that reads as
+    // running gear rather than as a skirt — opens to 6 cm.
     this.rollerR = 0.095;
-    this.rollerY = this.axleY + 0.36;
+    this.rollerY = this.axleY + 0.385;
     this.rollerZ = [1.15, 0.05, -1.05];
     const rollerGeo = mergeGeos([
       place(new THREE.CylinderGeometry(this.rollerR, this.rollerR, 0.15, Math.max(6, seg >> 1)), 0, 0, 0, 0, 0, Math.PI / 2),
       place(new THREE.CylinderGeometry(0.03, 0.03, 0.22, 5), 0, 0, 0, 0, 0, Math.PI / 2),
     ]);
-    this.rollerMesh = new THREE.InstancedMesh(rollerGeo, this.mat.metal, this.rollerZ.length * 2);
+    this.rollerMesh = new THREE.InstancedMesh(rollerGeo, this.mat.gear, this.rollerZ.length * 2);
     this.rollerMesh.castShadow = true;
     this.rollerMesh.userData.outline = true;
     this.rollerMesh.frustumCulled = false;
@@ -1712,16 +1919,38 @@ export class Tank {
     add(0.26, 0.72, this.glacisAt(gz) + 0.033, gz, -Math.PI / 2 + this.glacisSlope, 0, this.chassis);
   }
 
-  /** One track shoe. Quality 0 collapses it to two boxes. */
+  /**
+   * One track shoe. Quality 0 collapses it to two boxes.
+   *
+   * WHAT MAKES A TRACK READ AS TRACK IS THE PERIOD, not the shoe. Round 14's
+   * shoes were pitch*0.92 long, so consecutive links left an 8% slot — 1.2 cm at
+   * this pitch, well under a pixel at any distance the vehicle is drawn at — and
+   * the run came out as one smooth band. Shortened to 0.82 the slot is 2.8 cm, and
+   * the hinge pins are pulled out to the shoe ends and fattened so they stand
+   * proud of the plate: what the eye gets is a rib / slot / rib ruling at the
+   * track's own pitch, which is the only cue that says "segmented steel".
+   *
+   * The grouser is also doubled. It sits on the shoe's OUTER face, which is the
+   * face pointed at the camera all the way round the idler and sprocket wraps —
+   * the two places in any three-quarter shot where the track is seen broadside —
+   * so two ribs per shoe instead of one halves the ruling period exactly where
+   * the track has the most screen area.
+   */
   _linkGeometry(quality = CFG.quality, pitch = 0.155) {
     const w = this.trackWidth;
     const parts = [];
-    parts.push(place(new THREE.BoxGeometry(w, 0.036, pitch * 0.92), 0, 0, 0));
-    parts.push(place(new THREE.BoxGeometry(w * 0.94, 0.030, 0.05), 0, -0.032, 0));   // grouser cleat
+    parts.push(place(new THREE.BoxGeometry(w, 0.036, pitch * 0.82), 0, 0, 0));
+    if (quality > 0) {
+      for (const dz of [-pitch * 0.20, pitch * 0.20]) {
+        parts.push(place(new THREE.BoxGeometry(w * 0.90, 0.036, 0.042), 0, -0.034, dz));
+      }
+    } else {
+      parts.push(place(new THREE.BoxGeometry(w * 0.94, 0.030, 0.05), 0, -0.032, 0)); // grouser cleat
+    }
     if (quality > 0) {
       parts.push(place(new THREE.BoxGeometry(0.055, 0.075, 0.062), 0, 0.052, 0));    // guide horn
-      parts.push(place(new THREE.CylinderGeometry(0.021, 0.021, w * 1.02, 5), 0, 0.008, pitch * 0.46, 0, 0, Math.PI / 2));
-      parts.push(place(new THREE.CylinderGeometry(0.021, 0.021, w * 1.02, 5), 0, 0.008, -pitch * 0.46, 0, 0, Math.PI / 2));
+      parts.push(place(new THREE.CylinderGeometry(0.026, 0.026, w * 1.04, 5), 0, 0.006, pitch * 0.41, 0, 0, Math.PI / 2));
+      parts.push(place(new THREE.CylinderGeometry(0.026, 0.026, w * 1.04, 5), 0, 0.006, -pitch * 0.41, 0, 0, Math.PI / 2));
     }
     if (quality > 1) {
       // End connectors — the little tabs that make a track read as segmented.
@@ -2402,22 +2631,48 @@ export class Tank {
       n++;
     }
 
-    // 3. Top run: rearmost return roller forward to the idler, with a little
-    //    catenary sag between supports — and a lot of it once the track has
-    //    been thrown and the run is hanging off the rollers.
+    // 3. Top run: rearmost return roller forward to the idler, with a REAL
+    //    catenary between supports — and a lot more of it once the track has been
+    //    thrown and the run is hanging off the rollers.
+    //
+    //    SAG IS NOT A DAMAGE EFFECT. A live track is slack by design: the
+    //    tensioner only takes up enough for the run not to jump the rollers, and
+    //    the scallops that hang between them are the single most recognisable
+    //    thing about a tracked vehicle in profile. Round 14 hung the resting run
+    //    2.8 cm below the chord over a 1.1 m span — 2.5% of the span, which draws
+    //    as a straight line — and only opened it up on `trackThrown`, i.e. a
+    //    healthy Edelweiss had a taut steel ruler down each side.
+    //
+    //    Scaled off the SPAN rather than fixed, so the long sprocket-to-first-
+    //    roller and last-roller-to-idler reaches (1.4-1.6 m) hang further than the
+    //    short roller-to-roller ones, which is how a real chord behaves and what
+    //    makes the row of scallops uneven instead of stamped. Capped at 0.11 m: it
+    //    may only ever sag DOWNWARD, away from the sponson, so no amount of it can
+    //    push the run back through the hull side the overhang exists to clear.
+    //
+    //    THE FLOOR IS NOT OPTIONAL. A slack run may not hang onto the road wheels
+    //    it passes over: the wheel tops are at axleY + wheelRadius and a shoe is
+    //    3.6 cm thick about the path, so the path itself has to stay a shoe and a
+    //    bit above them or the front span visibly threads through the first road
+    //    wheel. Clamped, not tuned — that way a later change to the roller height
+    //    or the wheel radius cannot silently reintroduce the intersection.
+    const catenary = (dz) => Math.min(0.11, 0.062 * Math.abs(dz));
+    const runFloor = this.axleY + this.wheelRadius + 0.035;
     let prevZ = this.sprocketZ, prevY = this.sprocketY + this.sprocketR;
     const topY = this.rollerY + this.rollerR;
     for (let i = this.rollerZ.length - 1; i >= 0 && n < cap - 1; i--) {
       const rz = this.rollerZ[i];
       Z[n] = (prevZ + rz) * 0.5;
-      Y[n] = (prevY + topY) * 0.5 - 0.028 - sag * 0.42;
+      Y[n] = Math.max(runFloor,
+        (prevY + topY) * 0.5 - catenary(rz - prevZ)) - sag * 0.42;
       n++;
       Z[n] = rz; Y[n] = topY - sag * 0.16; n++;
       prevZ = rz; prevY = topY;
     }
     if (n < cap) {
       Z[n] = (prevZ + this.idlerZ) * 0.5;
-      Y[n] = (prevY + (this.idlerY + this.idlerR)) * 0.5 - 0.03 - sag * 0.36;
+      Y[n] = Math.max(runFloor, (prevY + (this.idlerY + this.idlerR)) * 0.5
+           - catenary(this.idlerZ - prevZ)) - sag * 0.36;
       n++;
     }
 

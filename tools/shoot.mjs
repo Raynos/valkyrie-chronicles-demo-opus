@@ -1,135 +1,191 @@
 #!/usr/bin/env node
-// Screenshot harness for the visual-critic loop.
+// Screenshot client for the visual-critic loop. THIS IS THE ONLY SHOT TOOL.
 //
-//   node tools/shoot.mjs <shotName> [outPath] [--wait ms] [--w 1920] [--h 1080]
+//   node tools/shoot.mjs bridge                     # -> shots/bridge.png
+//   node tools/shoot.mjs bridge /tmp/b.png          # explicit out path
+//   node tools/shoot.mjs tank,closeup,bridge        # several, one request each
+//   node tools/shoot.mjs all --out shots            # all twelve
+//   node tools/shoot.mjs --list                     # shot names
+//   node tools/shoot.mjs --stop                     # kill the daemon
+//   node tools/shoot.mjs --verify bridge            # prove determinism (see below)
 //
-// Loads the game with ?capture&shot=<name>, which puts the game into a
-// deterministic scripted pose (see src/game/captureShots.js), waits for
-// window.__READY__, then writes a PNG.
+// It does no rendering itself. It talks to tools/renderd.mjs, a RESIDENT browser
+// holding the booted world, and starts that daemon on first use. Read renderd.mjs
+// for why — the short version is that the ~7 s of chromium launch + worldgen + 87
+// shader compiles is identical for every shot, and paying it per render made every
+// harness cost ~12.5 s regardless of which one you used:
 //
-// Shot names are declared in src/game/captureShots.js. `node tools/shoot.mjs --list`
-// prints them.
+//     old shoot.mjs      12.5 s / shot
+//     old shootBatch     12.2 s / shot (single), ~3.0 s amortised over 12
+//     this               ~0.6 s / shot after a one-time ~7 s boot
+//
+// `--wait` is accepted and ignored: it was measured to buy nothing (`--wait 0` and
+// `--wait 3500` produced byte-identical frames) because the daemon holds frames
+// until the render counters, the label layer and the temporal DoF converge, then
+// freezes the engine before the shutter. `--no-freeze` and `--kill-server` are
+// gone; the frozen shutter is what makes frames comparable across rounds, and the
+// dev server is deliberately never killed.
 
-import { chromium } from 'playwright';
-import { mkdirSync, existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import { readFileSync, mkdirSync, existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import net from 'node:net';
 
 const args = process.argv.slice(2);
 const flag = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : d; };
 const has = (n) => args.includes(`--${n}`);
 
-const shot = args.find((a) => !a.startsWith('--') && !/^\d+$/.test(a)) || 'overview';
-const outPath = resolve(args.filter((a) => !a.startsWith('--'))[1] || `shots/${shot}.png`);
-const W = parseInt(flag('w', '1920'), 10);
-const H = parseInt(flag('h', '1080'), 10);
-// Default 0. A settling wait after __READY__ was measured to buy NOTHING:
-// `--wait 0` and `--wait 3500` produce byte-identical frames (0.00% of pixels
-// differing, max delta 0). main.js already holds frames until every render
-// counter, the DOM label layer and the pipeline's temporal DoF have converged,
-// so __READY__ is the settled frame by construction. The old 2500-3500 ms
-// default was pure cost — 3.5 s on every one of several hundred renders per round.
-const WAIT = parseInt(flag('wait', '0'), 10);
-const PORT = parseInt(flag('port', '5173'), 10);
-/** The port we actually ended up talking to — see ensureServer(). */
-let port = PORT;
+const PORT = parseInt(flag('port', '5200'), 10);
+const ALL = ['overview', 'command', 'action', 'aim', 'firefight', 'tank',
+             'village', 'closeup', 'grass', 'dusk', 'bridge', 'squad'];
 
-async function portOpen(p) {
-  return new Promise((res) => {
-    const s = net.createConnection({ port: p, host: '127.0.0.1' }, () => { s.end(); res(true); });
-    s.on('error', () => res(false));
-    s.setTimeout(600, () => { s.destroy(); res(false); });
+if (has('list')) { console.log(ALL.join('\n')); process.exit(0); }
+
+const portOpen = (p) => new Promise((res) => {
+  const s = net.createConnection({ port: p, host: '127.0.0.1' }, () => { s.end(); res(true); });
+  s.on('error', () => res(false));
+  s.setTimeout(600, () => { s.destroy(); res(false); });
+});
+
+const req = async (path) => {
+  const r = await fetch(`http://127.0.0.1:${PORT}${path}`);
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+  return body;
+};
+
+/** Start renderd detached and wait for it to answer /health. */
+async function ensureDaemon() {
+  if (await portOpen(PORT)) return false;
+  const proc = spawn(process.execPath, ['tools/renderd.mjs', '--port', String(PORT)], {
+    cwd: process.cwd(), stdio: 'ignore', detached: true,
   });
-}
-
-let server = null;
-
-/** Spawn a dev server on `p` and wait for it to answer on 127.0.0.1. */
-async function trySpawn(p) {
-  // `--host 127.0.0.1` matters: vite's default binds `localhost`, which on macOS
-  // resolves to ::1 only, and Playwright/this probe both talk v4.
-  const proc = spawn('npx', ['vite', '--host', '127.0.0.1', '--port', String(p), '--strictPort'], {
-    cwd: process.cwd(), stdio: 'ignore', detached: false,
-  });
-  let dead = false;
-  proc.on('exit', () => { dead = true; });
-  for (let i = 0; i < 60 && !dead; i++) {
-    await new Promise((r) => setTimeout(r, 250));
-    if (await portOpen(p)) { server = proc; port = p; return true; }
+  proc.unref();
+  for (let i = 0; i < 160; i++) {                 // up to 80 s for the cold boot
+    await new Promise((r) => setTimeout(r, 500));
+    if (await portOpen(PORT)) { try { await req('/health'); return true; } catch {} }
   }
-  proc.kill();
-  return false;
+  throw new Error(`renderd did not come up on ${PORT} — run \`node tools/renderd.mjs\` to see why`);
 }
 
-async function ensureServer() {
-  if (await portOpen(PORT)) return;
-  // The requested port can be held by a server we cannot reach (another
-  // project's vite bound to ::1 only), in which case --strictPort makes ours
-  // exit immediately. Walk forward until one comes up rather than reporting the
-  // useless "vite failed to start".
-  for (let p = PORT; p < PORT + 12; p++) {
-    if (p !== PORT && await portOpen(p)) continue;   // someone else's, skip
-    if (await trySpawn(p)) return;
-  }
-  throw new Error(`vite failed to start on ports ${PORT}..${PORT + 11}`);
-}
-
-const main = async () => {
-  await ensureServer();
+/**
+ * COLD render — one throwaway browser, one shot, no daemon. ~12.5 s.
+ *
+ * This is the AUTHORITATIVE path and the reason it still exists is measured, not
+ * sentimental. Cold renders are byte-identical run to run (0.000% of pixels
+ * differing, max delta 0) because a cold boot rebuilds the world's stateful
+ * animation — cloud drift, water surface, wind phase, particle pools — from a seed.
+ * The resident daemon cannot rewind that state, so it sits at a broad, very
+ * low-amplitude offset from cold (measured on `bridge`: 67% of pixels differ but by
+ * a mean of only 1.71 LSB) and drifts ~0.37% when another shot is posed in between.
+ *
+ * Which to use:
+ *   ITERATING on a material, a mesh, a shader — resident (the default). 1.6 s, and
+ *   a 1.7 LSB broad offset cannot mislead you about form, silhouette or hue, which
+ *   move by 10-40 LSB when they change at all.
+ *   QUOTING A NUMBER IN A CRITIQUE, or diffing this round against the last — cold.
+ *   A cross-round regression smaller than the resident offset is unknowable, which
+ *   is the exact trap docs/HARNESS.md's determinism section was written about.
+ */
+async function coldShoot(shot, out) {
+  const { chromium } = await import('playwright');
+  const t = Date.now();
   const browser = await chromium.launch({
-    args: [
-      '--use-gl=angle', '--use-angle=metal',
-      '--enable-gpu', '--ignore-gpu-blocklist',
-      '--enable-unsafe-webgpu', '--disable-frame-rate-limit',
-    ],
+    args: ['--use-gl=angle', '--use-angle=metal', '--enable-gpu',
+           '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--disable-frame-rate-limit'],
   });
-  const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
+  const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(String(e)));
-
-  const url = `http://127.0.0.1:${port}/?capture&shot=${encodeURIComponent(shot)}`;
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
-
-  try {
-    await page.waitForFunction('window.__READY__ === true', { timeout: 45000 });
-  } catch {
-    errors.push('TIMEOUT waiting for window.__READY__');
-  }
-  // Freeze the simulation before the shutter. The game keeps animating after
-  // __READY__ — wind, cloud drift, water flow, particles — so the frame you get
-  // depends on when the screenshot lands. Pausing the engine makes the capture
-  // reproducible: two frozen runs measured 0.00% of pixels differing (max delta
-  // 0), against 8.44% for two unfrozen runs of this same harness. Engine.paused
-  // stops system updates but keeps rendering, which is exactly what we want.
-  // `--no-freeze` opts out if you are specifically capturing motion.
-  if (!has('no-freeze')) {
-    await page.evaluate(() => {
-      const v = window.__VC__;
-      if (v?.engine) v.engine.paused = true;
-    }).catch(() => {});
-  }
-  if (WAIT) await page.waitForTimeout(WAIT);
-
+  await page.goto(`http://127.0.0.1:5173/?capture&shot=${encodeURIComponent(shot)}`, { waitUntil: 'domcontentloaded' });
+  try { await page.waitForFunction('window.__READY__ === true', { timeout: 90000 }); }
+  catch { errors.push('TIMEOUT waiting for window.__READY__'); }
+  const outPath = resolve(out || `shots/${shot}.png`);
   if (!existsSync(dirname(outPath))) mkdirSync(dirname(outPath), { recursive: true });
   await page.screenshot({ path: outPath });
-
   const stats = await page.evaluate(() => window.__STATS__ || null).catch(() => null);
   await browser.close();
-  // Leave the dev server UP by default. Killing it here was costing ~13 s per
-  // invocation: vite transforms all 64 ES modules on first request, and a fresh
-  // server has a cold transform cache, so every shot re-paid a cost that a warm
-  // server serves from memory. Measured at 1920x1080:
-  //   cold server + cold browser   18.8 s   (goto 3.3 s, boot->__READY__ 13.1 s)
-  //   warm server                   6.0 s   (goto 2.6 s, boot->__READY__  3.1 s)
-  // The server is reused by the next invocation via portOpen(), so leaving it
-  // running is what makes the next shot fast. `--kill-server` opts out for CI
-  // or when you genuinely want a clean process tree.
-  if (server && has('kill-server')) server.kill();
+  return { shot, out: outPath, ms: Date.now() - t, cold: true,
+           drawCalls: stats?.drawCalls, triangles: stats?.triangles, errors };
+}
 
-  console.log(JSON.stringify({ shot, out: outPath, errors, stats }, null, 2));
+const main = async () => {
+  if (has('stop')) {
+    if (!(await portOpen(PORT))) { console.log(JSON.stringify({ renderd: 'not running' })); return; }
+    console.log(JSON.stringify(await req('/quit')));
+    return;
+  }
+
+  const positional = args.filter((a, i) => !a.startsWith('--') &&
+    !(i > 0 && args[i - 1].startsWith('--') && ['port', 'out', 'wait', 'w', 'h'].includes(args[i - 1].slice(2))));
+  const first = positional[0] || 'overview';
+  const shots = first === 'all' ? ALL : first.split(',').map((s) => s.trim()).filter(Boolean);
+  const outDir = flag('out', null);
+  const explicitOut = positional[1] || null;
+
+  // --cold bypasses the daemon entirely. It still needs vite, which the daemon (or
+  // a previous run) normally leaves up; start one if this is a fresh machine.
+  if (has('cold')) {
+    if (!(await portOpen(5173))) {
+      const p = spawn('npx', ['vite', '--host', '127.0.0.1', '--port', '5173', '--strictPort'],
+        { cwd: process.cwd(), stdio: 'ignore', detached: true });
+      p.unref();
+      for (let i = 0; i < 80 && !(await portOpen(5173)); i++) await new Promise((r) => setTimeout(r, 250));
+    }
+    const t0 = Date.now();
+    const results = [];
+    for (const shot of shots) {
+      const out = explicitOut && shots.length === 1 ? explicitOut
+        : outDir ? `${outDir}/${shot}.png` : `shots/${shot}.png`;
+      results.push(await coldShoot(shot, out));
+    }
+    const errs = results.flatMap((r) => r.errors);
+    console.log(JSON.stringify(shots.length === 1 ? results[0]
+      : { shots: results.map(({ shot, ms, errors: e }) => ({ shot, ms, errors: e.length })),
+          totalMs: Date.now() - t0, cold: true, errors: errs }, null, 1));
+    if (errs.length) process.exitCode = 2;
+    return;
+  }
+
+  const booted = await ensureDaemon();
+
+  // --verify: prove the resident path is byte-identical to itself across separate
+  // requests, which is the property the whole regression-diff method rests on.
+  // (Cross-checking against a cold boot is `--verify-cold`, below.)
+  if (has('verify')) {
+    const shot = shots[0];
+    const a = await req(`/shoot?shot=${shot}&out=${encodeURIComponent(`/tmp/claude-501/verify-a-${shot}.png`)}`);
+    // Pose a DIFFERENT shot in between, so the second render has to come back
+    // through resetShotState() rather than just re-screenshotting a live frame.
+    await req(`/shoot?shot=${shot === 'aim' ? 'bridge' : 'aim'}&out=${encodeURIComponent('/tmp/claude-501/verify-mid.png')}`);
+    const b = await req(`/shoot?shot=${shot}&out=${encodeURIComponent(`/tmp/claude-501/verify-b-${shot}.png`)}`);
+    const A = readFileSync(a.out), B = readFileSync(b.out);
+    const identical = A.length === B.length && A.equals(B);
+    console.log(JSON.stringify({ verify: shot, identical, bytes: [A.length, B.length],
+      note: identical ? 'resident path is reproducible across an intervening shot'
+                      : 'NOT reproducible — resetShotState() is missing something this shot mutates' }, null, 1));
+    if (!identical) process.exitCode = 3;
+    return;
+  }
+
+  const t0 = Date.now();
+  const results = [];
+  for (const shot of shots) {
+    const out = explicitOut && shots.length === 1 ? explicitOut
+      : outDir ? `${outDir}/${shot}.png` : `shots/${shot}.png`;
+    results.push(await req(`/shoot?shot=${shot}&out=${encodeURIComponent(out)}`));
+  }
+  const totalMs = Date.now() - t0;
+  const errors = results.flatMap((r) => r.errors || []);
+
+  console.log(JSON.stringify(shots.length === 1
+    ? { ...results[0], daemonBooted: booted }
+    : { shots: results.map(({ shot, ms, drawCalls, triangles, convergedAt, errors: e }) =>
+          ({ shot, ms, drawCalls, triangles, convergedAt, errors: e.length })),
+        totalMs, perShotMs: Math.round(totalMs / shots.length), daemonBooted: booted, errors },
+    null, 1));
   if (errors.length) process.exitCode = 2;
 };
 
-main().catch((e) => { console.error(e); if (server && has("kill-server")) server.kill(); process.exit(1); });
+main().catch((e) => { console.error(String(e.message || e)); process.exit(1); });

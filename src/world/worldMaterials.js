@@ -18,6 +18,7 @@
 import * as THREE from 'three';
 import * as Mats from '../render/materials.js';
 import { CFG } from '../core/config.js';
+import { makeRng, valueNoise2 } from '../core/rng.js';
 // ONE substrate for the whole frame. The world used to synthesise its own
 // paper here; two different sheets under one painting is a tell all by itself,
 // and the render module's is now the isotropic cold-press build.
@@ -630,9 +631,39 @@ function tryRender(fn, opts, needs) {
 // flat lavender wash over 70% of the frame". Earth and foliage — which is where
 // the frame's shade family actually has to be legible, and which is broken up
 // by grass, rock and detail — keep the full amount.
+//
+// ROUND 15 — THE PRESETS WERE NEVER APPLIED TO ANYTHING BUILT. Every knob in
+// this table was dead for the whole village and the whole bridge, because
+// structures.js and props.js called makeSurfaceMaterial() with no `surface:`
+// key: forwardNpr() found no preset, uPigment.x stayed at its 0 default, and
+// the masonry-coursing branch in render/materials.js — the one whose own
+// comment records that it "has been dead since it was written" — was STILL
+// dead, one bug downstream of the fix. The callers are wired now (see
+// structures.js _commit and props.js), and the numbers below had to change the
+// moment they became live:
+//
+//  * masonry's `mottle` drops 0.105 -> 0.045 and it now names `blotch` (0.55
+//    against the 1.0 default). Measured on the round-14 spandrel, three
+//    uncorrelated noise fields — uBlotch at 12 m/3 m, uMottle at 0.4 m/0.11 m
+//    and the stone map's own broad fbm — summed to sd 15.4 LSB against the
+//    single 23-LSB band step the surface has. The noise was two thirds of the
+//    wash, which is why coursing could not have read even if it had been
+//    switched on, and why stone/water/sand/canopy all measured the same blob
+//    amplitude and read as one substance in four tints. Masonry is the one
+//    family that now gets its structure from COURSES instead of from blobs, so
+//    it is the one family whose blobs come down. (0.022/0.42 rather than the
+//    0.045/0.55 the first pass used: the isotropic noise floor is also the
+//    denominator of the |dL/dy| / |dL/dx| anisotropy the critique measures, so
+//    every LSB of blob taken off masonry shows up twice — once as coursing that
+//    is easier to read, once in the number.)
+//  * blockSize stays 0.42 and is now load-bearing arithmetic, not a taste
+//    knob: ashlarMap() below draws its joints on the same 0.42 m pitch and
+//    structures.js phase-locks its geometric course blocks to the same world-Y
+//    grid, so all three terms land on the SAME course line instead of beating
+//    against each other.
 export const SURFACE_PIGMENT = {
   //            block m  tone  fissure  freq   other
-  masonry:  { blockSize: 0.42, blockTone: 0.115, pigLevels: 15, mottle: 0.105, wetRim: 0.85, violet: 0.78 },
+  masonry:  { blockSize: 0.42, blockTone: 0.135, pigLevels: 15, mottle: 0.022, blotch: 0.42, wetRim: 0.85, violet: 0.78 },
   brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15, mottle: 0.090, wetRim: 0.80, violet: 0.82 },
   stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35, mottle: 0.125, wetRim: 0.75, violet: 0.72 },
   tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14, mottle: 0.080, wetRim: 0.80, violet: 0.86 },
@@ -641,6 +672,174 @@ export const SURFACE_PIGMENT = {
   metal:    { pigLevels: 12, grain: 0.25, mottle: 0.055, wetRim: 0.70, violet: 0.95 },
   cloth:    { pigLevels: 12, grain: 0.38, mottle: 0.050, violet: 0.90 },
 };
+
+// ---------------------------------------------------------------------------
+// ashlar coursing map (round 15)
+// ---------------------------------------------------------------------------
+//
+// A COURSED-ASHLAR detail map, authored in METRES rather than in texels.
+//
+// WHY IT IS HERE AND NOT IN world/textures.js. textures.js already paints a
+// stone map with coursing in it, and four rounds of critics have reported that
+// the bridge has none. The reason is arithmetic, not artistry: that map lays 11
+// courses across a 512 px tile which structures.js applies at uvScale 0.42,
+// i.e. ONE TILE PER 2.38 m — so a course is 0.216 m and its mortar joint is
+// 9-19 MILLIMETRES wide. On the `bridge` plate the spandrel resolves at roughly
+// 75 px/m, which puts that joint at well under one screen pixel, so the mip
+// chain averages it away before the fragment shader ever sees it and the whole
+// map arrives as the broad fbm blotch that is painted over it. A joint you
+// cannot resolve is not coursing; it is noise.
+//
+// So this map is sized from the OTHER end. The tile is 4.62 m, the course is
+// 0.42 m (= SURFACE_PIGMENT.masonry.blockSize, deliberately) and the joint is
+// 45 mm, which is 3-4 screen px at bridge distance and about one at 90 m. The
+// tile divides exactly: 11 courses of 0.42 and 5 columns of 0.924 (= the
+// shader's own blockSize * 2.2 stretcher pitch), so the map's joints, the
+// shader's per-block tone and structures.js's geometric course blocks all fall
+// on the same lines instead of beating against one another.
+//
+// It is a VALUE-ONLY detail map for the same reason every other map in this
+// world is one: hue comes from baked vertex colour, and a map that carries its
+// own colour multiplies the two together and turns the village muddy. And it
+// deliberately carries NO broad blotch — the shader has two of those already
+// (uBlotch at 12 m/3 m, uMottle at 0.4 m) and the whole point of this pass is
+// that the coursing has to beat them, not join them.
+export const ASHLAR_TILE = 4.62;      // metres per tile — structures.js uses 1/this as its uvScale
+export const ASHLAR_COURSE = 0.42;    // course height in metres
+
+const _mapCache = new Map();
+
+/** Value-only detail conversion: re-centre on the image mean, compress to [1-s, 1]. */
+function toValueDetail(ctx, S, strength, contrast) {
+  const img = ctx.getImageData(0, 0, S, S);
+  const d = img.data;
+  const lum = new Float32Array(S * S);
+  let mean = 0;
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    lum[p] = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
+    mean += lum[p];
+  }
+  mean = Math.max(1e-4, mean / lum.length);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    let v = 1 + (lum[p] / mean - 1) * contrast;
+    v = Math.max(1 - strength, Math.min(1, v));
+    const b = (v * 255) | 0;
+    d[i] = d[i + 1] = d[i + 2] = b;
+    d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/**
+ * @param {object} opts { seed, tile, course, joint, strength, contrast }
+ * @returns {THREE.Texture} a tiling, sRGB, value-only ashlar map
+ */
+export function ashlarMap(opts = {}) {
+  const tile = opts.tile ?? ASHLAR_TILE;
+  const course = opts.course ?? ASHLAR_COURSE;
+  const joint = opts.joint ?? 0.045;
+  const seed = opts.seed ?? 31;
+  const key = `ashlar:${seed}:${tile}:${course}:${joint}`;
+  const hit = _mapCache.get(key);
+  if (hit) return hit;
+
+  const S = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  const rng = makeRng(seed * 2749 + 11);
+  const ppm = S / tile;
+  const rows = Math.max(3, Math.round(tile / course));
+  const rowH = S / rows;
+  const cols = Math.max(2, Math.round(tile / (course * 2.2)));
+  const colW = S / cols;
+  const jp = Math.max(2.2, joint * ppm);
+
+  // the mortar bed — the only thing that shows through a joint
+  g.fillStyle = '#4b4749';
+  g.fillRect(0, 0, S, S);
+
+  // One block, drawn three times so a staggered course wraps cleanly across the
+  // tile seam. (Two of the three are always off-canvas; the cost is nothing and
+  // the alternative is a visible column of half-blocks down the seam.)
+  const drawBlock = (x0, y0, w, h, tone) => {
+    for (const dx of [-S, 0, S]) {
+      const bx0 = x0 + dx + jp * 0.5, bx1 = x0 + dx + w - jp * 0.5;
+      const by0 = y0 + jp * 0.5, by1 = y0 + h - jp * 0.5;
+      if (bx1 <= -4 || bx0 >= S + 4) continue;
+      const v = (k) => Math.max(0, Math.min(255, (tone * k * 255) | 0));
+      g.fillStyle = `rgb(${v(1)},${v(0.985)},${v(0.955)})`;
+      // the face is drawn as a slightly irregular quad: a dressed block still
+      // has a hand-cut arris, and a pixel-exact rectangle reads as a tile map
+      g.beginPath();
+      g.moveTo(bx0 + rng() * 1.6, by0 + rng() * 1.3);
+      g.lineTo(bx1 - rng() * 1.6, by0 + rng() * 1.3);
+      g.lineTo(bx1 - rng() * 1.6, by1 - rng() * 1.3);
+      g.lineTo(bx0 + rng() * 1.6, by1 - rng() * 1.3);
+      g.closePath();
+      g.fill();
+      // the relief: the bed joint is RECESSED, so the top of every block catches
+      // the light and its bottom edge is raked dark. This is what makes a course
+      // read as depth instead of as a stripe.
+      // (the rake is kept modest on purpose: at 0.40 alpha the map's own mean
+      // sat well below its block faces, and since the shader turns the map's
+      // deviation into BAND DRIVE that biased the whole of the world's masonry a
+      // third of a band darker — measured, the bridge spandrel lost 15 LSB and
+      // fell into the cross-hatch bands, which buried the very coursing this map
+      // exists to draw.)
+      const grad = g.createLinearGradient(0, by0, 0, by1);
+      grad.addColorStop(0, 'rgba(255,255,255,0.22)');
+      grad.addColorStop(0.30, 'rgba(255,255,255,0.03)');
+      grad.addColorStop(0.80, 'rgba(0,0,0,0.02)');
+      grad.addColorStop(1, 'rgba(26,22,26,0.26)');
+      g.fillStyle = grad;
+      g.fillRect(bx0, by0, bx1 - bx0, by1 - by0);
+    }
+  };
+
+  for (let r = 0; r < rows; r++) {
+    const y0 = r * rowH;
+    const stagger = (r % 2) * 0.5;                 // half-block bond, as the shader assumes
+    let cc = 0;
+    while (cc < cols) {
+      // one block in five is a double-length stretcher: the bond stays on the
+      // 0.924 m grid (it has to, to stay locked to uPigment) without reading as
+      // a checkerboard
+      const span = rng() < 0.20 && cc + 1 < cols ? 2 : 1;
+      drawBlock((cc + stagger) * colW, y0, span * colW, rowH, 0.66 + rng() * 0.28);
+      cc += span;
+    }
+  }
+
+  // fine granular tooth only. NO broad octave — see the header note.
+  const img = g.getImageData(0, 0, S, S);
+  const d = img.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = (y * S + x) * 4;
+      const k = (valueNoise2(x * 0.62, y * 0.62, seed + 9) - 0.5) * 0.070;
+      d[i] = Math.max(0, Math.min(255, d[i] + k * 255));
+      d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + k * 255));
+      d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + k * 255));
+    }
+  }
+  g.putImageData(img, 0, 0);
+
+  // The joints have to survive the [1-strength, 1] compression as a real step:
+  // the shader turns this map's local deviation from its own mip-4 fetch into
+  // BAND DRIVE (uMapDrive), and at 4 bands a step of 0.25 in the drive is a
+  // whole wash. 0.46/1.30 lands a joint about 0.8 of a band below its block,
+  // which is a drawn line rather than a 4% darkening nobody can see.
+  toValueDetail(g, S, opts.strength ?? 0.46, opts.contrast ?? 1.30);
+
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  _mapCache.set(key, t);
+  return t;
+}
 
 /**
  * Opaque surface: buildings, props, bridges, tree trunks.

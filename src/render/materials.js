@@ -677,12 +677,28 @@ const NPR_SHADE_BODY = /* glsl */`
   // triangles in a landscape frame, so it is where the fragment budget actually
   // goes. The sheet still reaches the blades — the grade pass lays it over the
   // whole picture.
+  //
+  // ROUND 15 — THIS IS A THIRD MOTTLE FIELD AND NOBODY HAD COUNTED IT. It is
+  // written as "paper", so five rounds of blotch archaeology went looking in the
+  // blotch and mottle terms; but a perturbed SHADING normal feeds keyN, and keyN
+  // is the band drive, so at amplitude 0.075 this term flips washes exactly like
+  // the other two. Measured by rendering the closeup with the perturbation
+  // zeroed: the tunic's sub-3-px detail energy fell further than zeroing BOTH
+  // pigment-noise terms did. Its own scale is why — the gradient is a finite
+  // difference over e = 0.21 field units, i.e. 0.12 m at uToothScale 1.7, so its
+  // structure sits at a hand's width, the same wavelength as the camouflage.
+  //
+  // 0.040, and uToothScale down to 1.05 with it (see the default), which puts the
+  // difference at 0.20 m. The sheet the rubric's axis 4 actually asks for is a
+  // MULTIPLY laid over the finished frame by the grade pass, and that is
+  // untouched; what lives here is only "a perfectly flat wall is not perfectly
+  // flat", which does not need enough amplitude to cross a band boundary.
   #ifdef VC_CHEAP
     N = normalize( N + extraN );
   #else
     vec3 tooth = vcToothGradient( vWorldPos, uToothScale );
     vec3 toothV = ( viewMatrix * vec4( tooth, 0.0 ) ).xyz;
-    N = normalize( N + toothV * uPaper * 0.075 + extraN );
+    N = normalize( N + toothV * uPaper * 0.040 + extraN );
   #endif
 
   vec3 V = normalize( -vViewPos );
@@ -825,20 +841,36 @@ const NPR_SHADE_BODY = /* glsl */`
     vec2 bv = vcSurfUV( vWorldPos, vWorldNormal ) * uBlotchScale;
     float vert = 1.0 - abs( vWorldNormal.y );
     vec3 blot = mix( texture2D( uBlotchTex, bu ).rgb, texture2D( uBlotchTex, bv ).rgb, vert );
-    // a second, ~4x finer octave: the broad one is the wash, this one is the
+    // a second, finer octave: the broad one is the wash, this one is the
     // mottling inside it. Stucco lives almost entirely on this term.
-    vec3 fine = mix( texture2D( uBlotchTex, bu * 3.7 + 0.31 ).rgb,
-                     texture2D( uBlotchTex, bv * 3.7 + 0.31 ).rgb, vert );
-    wash = blot.r * 0.64 + fine.r * 0.36;
-    gran = blot.b * 0.50 + fine.b * 0.50;
+    //
+    // ROUND 15 — 3.7 was a CAMOUFLAGE generator, not a mottle. At the world
+    // bins' uBlotchScale of 0.085 the broad tile is ~12 m and 3.7x put the fine
+    // one at ~3.2 m, which on the bridge plate (spandrel ~30 m out, ~0.03 m per
+    // pixel) is a ~100 px lobe — the exact size of the "sage-green camouflage
+    // blotches" every critic on that shot has named. Worse, it is ISOTROPIC, so
+    // it is the term that measured the spandrel's |dL/dy|/|dL/dx| at 1.10 on a
+    // coursed masonry wall. 2.3x moves the fine lobe to ~5 m (~160 px), where it
+    // reads as one wall being damper at one end than the other, and the weights
+    // move onto the broad octave so what varies is the WASH, not the pixel.
+    vec3 fine = mix( texture2D( uBlotchTex, bu * 2.3 + 0.31 ).rgb,
+                     texture2D( uBlotchTex, bv * 2.3 + 0.31 ).rgb, vert );
+    wash = blot.r * 0.79 + fine.r * 0.21;
+    gran = blot.b * 0.66 + fine.b * 0.34;
   }
   #elif defined( VC_CHEAP )
   // One fetch instead of four. A blade needs a per-blade tonal offset, not a
   // triplanar granulation field it is too narrow to show.
   wash = texture2D( uBlotchTex, vWorldPos.xz * uBlotchScale ).r;
   #endif
-  drive += ( wash - 0.5 ) * uBlotch * 0.090;
-  drive += ( gran - 0.5 ) * uBlotch * 0.038;
+  // ...and the amplitude comes down with the frequency. These two adds are what
+  // pushes a patch of surface a whole wash darker; at 0.090/0.038 they were
+  // doing it often enough that the DYE VARIATION was carrying more contrast than
+  // the lighting, which is the definition of the blotch defect. 0.062/0.026
+  // still crosses a boundary on a broad face — that is the term's job — but only
+  // where the broad octave is genuinely loaded.
+  drive += ( wash - 0.5 ) * uBlotch * 0.062;
+  drive += ( gran - 0.5 ) * uBlotch * 0.026;
 
   // ---- sub-metre pigment structure -----------------------------------------
   // The blotch fetches above run at uBlotchScale — a ~12 m broad tile and a
@@ -855,13 +887,55 @@ const NPR_SHADE_BODY = /* glsl */`
   // a multiply that smears the plateau. Surface-locked so it sits still, and
   // faded out the moment its finer lobe would fall under ~3 screen px, so it
   // can never degenerate into noise on a distant wall.
+  //
+  // ROUND 15 — THE SCALE WAS THE DEFECT, AND IT WAS AIMED AT THE WRONG TARGET.
+  // "Sub-metre" was written against critics who called the tank an untextured
+  // primitive, and it fixed that, but 2.6/9.1 puts lobes at 0.4 m and 0.11 m
+  // and 0.11 m is a HAND'S WIDTH: on the closeup the hero's tunic is ~0.45 m of
+  // cloth filling ~400 px, so the fine grain arrives as ~100 px patches. Fed
+  // into a five-band quantiser, each patch lands in a different wash, and the
+  // result is not a dyed serge with uneven pigment on it — it is disruptive
+  // camouflage. Same arithmetic renders masonry as lichen.
+  //
+  // The fix is scale AND amplitude, in the same direction: 1.15/3.2 (≈0.9 m and
+  // ≈0.31 m lobes) with the weight moved almost entirely onto the broad one, and
+  // the total cut to 0.55. What survives is one bolt of cloth that took the dye
+  // slightly unevenly across the whole garment — a term that can still tip a
+  // large face into the neighbouring wash but can no longer stipple it. The
+  // FORM's own gradient, which is 3-4x this after uLightContrast and
+  // uDriveRange, is what the band boundaries follow again.
+  //
+  // The distance fade moves out with the scale (a 0.31 m lobe reaches 2 px at
+  // mPerPx 0.155, where a 0.11 m one reached it at 0.055) — otherwise raising
+  // the scale would have silently deleted the term at mid distance.
+  //
+  // WHERE THE REST OF THE CLOTH CAMOUFLAGE ACTUALLY COMES FROM, so the next
+  // round does not spend itself in this file: it is NOT this term, and it is not
+  // uBlotch or the tooth either. Measured on the closeup by replacing
+  // the albedo *= vColorC.rgb multiply with a luminance-normalised one and
+  // re-rendering: the tunic's 12-70 px band-passed energy collapsed 19.2 -> 9.1
+  // LSB, i.e. HALF the patchwork on the hero is his own per-vertex albedo. Two
+  // sources, both in actors/rig.js and both outside this file's remit:
+  //   * rig.js:593-595 multiplies every vertex colour by an fbm at world
+  //     frequency 7.3 (a 0.14 m period — one hand's width, ~110 px at the
+  //     closeup) with amplitude ±0.048, and again by a value noise at 23.0;
+  //   * the tunic / tunicShade / collar zone split (rig.js:83,112,126 —
+  //     0x9c8d68 / 0x82754f / 0x60563a) paints hard value steps ACROSS one
+  //     garment, which is the practice the rubric's "metric integrity" section
+  //     names outright as the reason "the soldier came out looking like he was
+  //     wearing camouflage instead of a uniform".
+  // Nothing in materials.js can low-pass a per-vertex attribute — there is no
+  // reference to core it against in the fragment stage — so the amplitude has to
+  // come down at the source. Cutting THIS term's amplitude and raising its scale
+  // removes the half of the patchwork that is ours and no more.
   if ( uMottle > 0.0 ) {
-    float mFade = 1.0 - smoothstep( 0.055, 0.16, mPerPx );
+    float mFade = 1.0 - smoothstep( 0.155, 0.42, mPerPx );
     if ( mFade > 0.002 ) {
       vec2 mu = vcSurfUV( vWorldPos, vWorldNormal );
-      float m1 = vcFbm3( mu * 2.6 );            // ~0.4 m lobes
-      float m2 = vcNoise2( mu * 9.1 + 4.7 );    // ~0.11 m grain
-      drive += ( ( m1 - 0.5 ) * 0.70 + ( m2 - 0.5 ) * 0.30 ) * uMottle * mFade;
+      float m1 = vcFbm3( mu * 1.15 );           // ~0.9 m lobes — the dye lot
+      float m2 = vcNoise2( mu * 3.2 + 4.7 );    // ~0.31 m — weathering inside it
+      drive += ( ( m1 - 0.5 ) * 0.86 + ( m2 - 0.5 ) * 0.14 )
+             * uMottle * mFade * 0.55;
     }
   }
 
@@ -893,11 +967,49 @@ const NPR_SHADE_BODY = /* glsl */`
       float row = floor( vWorldPos.y / bs );
       // pick the horizontal axis that runs ALONG this face
       float lat = mix( vWorldPos.x, vWorldPos.z, step( abs( vWorldNormal.z ), abs( vWorldNormal.x ) ) );
-      float colI = floor( lat / ( bs * 2.2 ) + fract( row * 0.5 ) );
+      float cp = bs * 2.2;                       // column pitch
+      float phase = fract( row * 0.5 );          // alternate courses break bond
+      float colI = floor( lat / cp + phase );
       float bh = vcHash21( vec2( colI, row ) + 0.5 );
       // a course is not one flat tone either: a slow wash across the block
       float bw = vcNoise2( vec2( lat, vWorldPos.y ) * ( 1.4 / bs ) );
       drive += ( bh - 0.5 ) * uPigment.y + ( bw - 0.5 ) * uPigment.y * 0.45;
+
+      // ---- THE JOINT ITSELF, and why it has to exist (round 15) -------------
+      // Everything above this is a per-block TONE. A random tone per block is
+      // scale-free: shuffle the hash and you get the same picture, which is why
+      // the bridge critic could measure the spandrel's |dL/dy|/|dL/dx| at 1.10
+      // and find no autocorrelation peak at ANY pitch and still be looking at
+      // code that plainly says "masonry coursing". A tone field has no pitch. A
+      // JOINT does, and it is the only thing on a stone wall that is anisotropic
+      // — the bed joints run dead level and the perpends are broken by the bond,
+      // so |dL/dy| must beat |dL/dx| on cut stone or it is not cut stone.
+      //
+      // This is where the amplitude taken out of the mottle above is being
+      // SPENT: same total contrast on the wall, moved off an isotropic lichen
+      // field and onto the structure the eye reads as masonry. A joint is a
+      // recessed line of lime mortar in its own shade, so it is a step DOWN in
+      // the drive — a patch of the neighbouring wash, exactly like every other
+      // pigment term here, and it inherits the wet edge for free.
+      //
+      // Band-limited two ways, because a 1-px-wide dark ruling at a fixed world
+      // pitch is precisely the "repeating texture with an obvious tiling period"
+      // and the "aliased edge" the rubric auto-rejects: the joint is never
+      // narrower than ~1.7 screen pixels (jm), and the whole term fades out once
+      // a course is under ~4 px tall, so a distant wall goes back to being a
+      // plain wash rather than a moire.
+      float jm = max( bs * 0.085, mPerPx * 1.7 );          // joint width, metres
+      float fBed = fract( vWorldPos.y / bs );
+      float dBed = min( fBed, 1.0 - fBed ) * bs;
+      float fPer = fract( lat / cp + phase );
+      float dPer = min( fPer, 1.0 - fPer ) * cp;
+      float bed = 1.0 - smoothstep( jm * 0.45, jm, dBed );
+      // perpends at 0.55 of the bed joints: that ratio IS the anisotropy, and it
+      // is also how a mason's wall actually reads, the beds being continuous and
+      // the perpends interrupted every course.
+      float per = ( 1.0 - smoothstep( jm * 0.35, jm * 0.90, dPer ) ) * 0.55;
+      float jFade = 1.0 - smoothstep( bs * 0.16, bs * 0.42, mPerPx );
+      drive -= max( bed, per ) * uPigment.y * 1.9 * jFade;
     }
     if ( uPigment.z > 0.0 ) {
       // circumferential coordinate: wraps naturally round a trunk or a barrel
@@ -1719,14 +1831,37 @@ export function makeCanvasMaterial(opts = {}) {
     mottle: opts.skinning ? 0.050 : 0.075,
     // how much of an albedo map.s TONAL detail is handed to the band quantiser
     // instead of multiplied into the wash
-    mapFlat: 0.55,
+    //
+    // ROUND 15 — 0.55 WAS THE LICHEN. The comment on this pair (see the VC_MAP
+    // block) says the point is to keep the map's chroma and its coarse form and
+    // move its fine tonal deviation into the drive; at 0.55 it did that AND left
+    // 45% of the deviation behind as a smooth luminance multiply on the wash. On
+    // the stone and stucco maps that residue is the lichen-blotch and damp-streak
+    // field textures.js paints at ~1/14 of a tile — sub-metre, isotropic, and,
+    // being a multiply rather than a step, unquantisable: it survives every wash
+    // and every plateau. Measured by rendering the plate with the residue removed
+    // entirely, it is the largest single contributor to the mottle on the bridge
+    // and on the village stucco, larger than uMottle and uBlotch combined.
+    //
+    // 0.92 keeps a whisper of it (a map that has genuinely warm and cool patches
+    // still reads as one, because the CHROMA is untouched either way) and hands
+    // the rest to the drive, where it steps and gets a wet edge instead of
+    // smearing. mapDrive stays at 0.115: that number is now load-bearing for
+    // world/structures.js's ashlar coursing, whose bed joint comes through
+    // ashlarMap and reaches the wash by this route.
+    mapFlat: 0.92,
     mapDrive: 0.115,
     // hard painted specular band — metal, glass, wet paint
     spec: undefined,
     weave: undefined,
     blotch: 1,
     blotchScale: 0.085,
-    toothScale: 1.7,
+    // Round 15: 1.7 put the tooth gradient's finite difference at 0.12 m — a
+    // hand's width, and therefore a camouflage patch on a 0.45 m torso. 1.05
+    // puts it at 0.20 m, which is a slab of wall rather than a blotch on one.
+    // No caller in the tree overrides this; grass skips the tooth entirely
+    // (VC_CHEAP) and terrain has its own 0.85.
+    toothScale: 1.05,
     hatchSpacing: opts.skinning ? 6.8 : 5.8,
     shadowSoften: 1,
     // How much of the key a surface keeps inside a cast shadow. See

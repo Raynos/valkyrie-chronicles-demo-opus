@@ -25,6 +25,48 @@
 //      tonemap to a cream white point, split-tone, saturation shaping, paper
 //      fibre multiply that peaks in the midtones, paper cockle, vignette.
 // -----------------------------------------------------------------------------
+// ROUND 15 — WHERE THE VALUE RANGE WENT, since four critics found the same
+// symptom from four different frames and the cause was three constants and one
+// ramp in this file, not the palette, not the lighting rig and not the paper.
+//
+// SYMPTOM: "no ink anywhere", "everything compressed into a narrow midtone
+// band", "0.000% of the plate below L 30, 0.049% below L 50", "the whole left
+// half dissolves into one tea-stained cream wash", "a barrel vault BRIGHTER than
+// the wall it is cut into". Measured on the r14 build, all four plates bottomed
+// out at exactly L 42.4 — and that pixel is the HUD's own caption ornament. The
+// darkest SCENE pixel was L 58.
+//
+// FOUR CAUSES, all here:
+//
+//  1. THE FLOOR WAS THE BLACK POINT. uInkBlack was 0x3c3947, display luma 59,
+//     laid down as inkBlack * (1-c)^uFloorPow and renormalised to its own luma —
+//     so no stroke, hatch, cast shadow or cavity could go below it, whatever the
+//     paint underneath was. The bottom 23% of the range was unreachable by
+//     construction. Now 0x2b2333 (L 39), and DEPTH-KEYED: 0.72 of that inside
+//     6 m, back to the authored value by 60 m, because a plate puts its ink
+//     accents on the near planes and lets the air lift the distance.
+//  2. THE PENCIL WAS A MID-GREY. uInk 0x342e33 is luma 48 before the composite's
+//     own (0.55 + 0.75 * lum) scale; a stroke on a cream wall resolved near L 90.
+//     Now 0x241d26 (luma 32).
+//  3. THE HAZE WAS A VEIL, NOT AERIAL PERSPECTIVE. A Beer-Lambert ramp takes its
+//     biggest bite in the FIRST metres past its onset, so wherever the onset was
+//     put, the plane just behind it lost the most contrast — which is why the
+//     midground of every plate measured the same value as the focal subject. The
+//     optical path is now quadratic over uHazeOnset metres and asymptotically
+//     linear after, so 12 m past the onset reads as 2.5 m of air and 200 m still
+//     reads as 200.
+//  4. A CLOSE SUBJECT DELETED THE TOWN. inkStart was clamped off subjZ alone, so
+//     a 6.5 m subject put far01 = 1 on everything past ~26 m and the far-field
+//     residue (0.30 opacity, 55% toward haze colour) erased every architectural
+//     line in the frame. inkStart now has a 20 m absolute floor and the residue
+//     is 0.62 / 28%.
+//
+// AND THE CONTACT PASS COULD NOT SEE A ROOM OR A BOOT: one 0.5 m ring (blind to
+// a 3 m vault) whose ray-march was cut off at 38 m (blind to half the figures in
+// a landscape plate), feeding a 3-step quantiser with a dead zone below occ
+// 0.167 (blind to any faint seam at all). Fixed as a second 4 m cavity ring
+// combined with min(), a 22/52 m march fade, and occ^0.62 before quantisation.
+// -----------------------------------------------------------------------------
 
 import * as THREE from 'three';
 import { CFG } from '../core/config.js';
@@ -190,11 +232,14 @@ uniform float uTanHalfFov;
 uniform float uAspect;
 uniform vec3  uSunV;           // view-space unit vector TOWARD the sun
 uniform float uAoRadius;       // metres
+uniform float uAoFarMul;       // ...and the CAVITY ring, as a multiple of it
+uniform float uAoFarW;         // how much of the cavity ring reaches the wash
 uniform float uRayLength;      // metres
 uniform float uThickness;      // metres — how deep a hit still counts as a hit
 varying vec2 vUv;
 
 const int   AO_TAPS = 10;
+const int   AO_FAR_TAPS = 6;
 const float GA = 2.39996323;
 
 vec3 rayAt(vec2 uv) {
@@ -204,6 +249,21 @@ vec3 rayAt(vec2 uv) {
 vec2 uvOf(vec3 p) {
   float z = max(-p.z, 1e-3);
   return vec2(p.x / (z * uTanHalfFov * uAspect), p.y / (z * uTanHalfFov)) * 0.5 + 0.5;
+}
+
+// One Alchemy tap, factored out because the pass now runs TWO rings at two
+// different world radii (see main()). 'bias' is in metres of height above the
+// centre's tangent plane that a neighbour has to clear before it counts as an
+// occluder at all; it is what keeps a gently curved hillside from occluding
+// itself once the ring is metres wide.
+float aoTap(vec2 suv, vec3 P, vec3 N, float z, float dq, float r2max, float bias) {
+  vec4 snd = texture2D(tND, suv);
+  float slz = snd.a;
+  float valid = step(0.0001, slz) * step(0.4, length(snd.xyz));
+  vec3 v = rayAt(suv) * (slz * uFar) - P;
+  float vv = dot(v, v);
+  return max(0.0, dot(v, N) - z * 0.0018 - dq * 2.0 - bias) / (vv + 0.02)
+       * step(vv, r2max) * valid;
 }
 
 void main() {
@@ -236,7 +296,36 @@ void main() {
   vec2 sPx = vUv * uResolution;
   float phi = texture2D(tNoise, sPx / 41.0).r * 6.2831853;
 
-  // ---- hemisphere occlusion ------------------------------------------------
+  // ---- hemisphere occlusion: A CREASE RING AND A CAVITY RING ----------------
+  // ONE RADIUS CANNOT SEE A ROOM. uAoRadius is 0.50 m, which is the right scale
+  // for the things this pass was written for — the seam where a boot meets mud,
+  // the root of a grass sward, the reveal of a window — and it is also the only
+  // occlusion term in the whole pipeline. A bridge barrel vault is a 5 m wide,
+  // 3 m deep tube: EVERY 0.5 m neighbourhood inside it is a flat piece of
+  // masonry, so the estimator reports a fully open hemisphere and the intrados
+  // receives the same sky fill and warm ground bounce as the open bank. Measured
+  // on 'bridge' before this change: mid-arch intrados L 121.8 against L 115.8
+  // for the spandrel face 12 px away — the soffit was BRIGHTER than the wall it
+  // is cut into, and the voussoir rings were invisible.
+  //
+  // So there are two rings now, at 0.5 m and uAoFarMul x that (4 m), each
+  // normalised by its OWN radius, combined with min() — the darker of "is this
+  // pixel in a crease" and "is this pixel inside a cavity" wins, which is what
+  // a painter's washed shadow under an eave or inside a vault actually is. min()
+  // rather than a product: two rings that see the same corner must not square
+  // it into a black hole.
+  //
+  // The cavity ring carries a 0.09 m tangent-plane bias (see aoTap) because at
+  // 4 m the ordinary curvature of a hillside or a hull plate clears the depth
+  // quantum easily, and without the bias the whole landscape acquires a general
+  // grey — which is the "passed the metric by darkening everything" failure the
+  // rubric warns about. Verified against an open control patch: the unoccluded
+  // far bank must not move.
+  // How much of this surface's value is the KEY rather than the ambient. Both
+  // the cavity ring and the contact march below need it, so it is hoisted out of
+  // the march block it used to live in.
+  float ndl = dot(N, uSunV);
+
   float rUv = uAoRadius * 0.5 / (uTanHalfFov * max(z, 0.30));
   float r2max = uAoRadius * uAoRadius * 1.8;
   float ao = 0.0;
@@ -245,15 +334,57 @@ void main() {
     float rr = sqrt(fi / float(AO_TAPS));
     float a = fi * GA + phi;
     vec2 suv = vUv + vec2(cos(a) / uAspect, sin(a)) * rr * rUv;
-    vec4 snd = texture2D(tND, suv);
-    float slz = snd.a;
-    float valid = step(0.0001, slz) * step(0.4, length(snd.xyz));
-    vec3 v = rayAt(suv) * (slz * uFar) - P;
-    float vv = dot(v, v);
-    ao += max(0.0, dot(v, N) - z * 0.0018 - dq * 2.0) / (vv + 0.02)
-        * step(vv, r2max) * valid;
+    ao += aoTap(suv, P, N, z, dq, r2max, 0.0);
   }
   float vis = clamp(1.0 - (2.0 * uAoRadius / float(AO_TAPS)) * ao, 0.0, 1.0);
+  // The crease ring's own reach, applied HERE rather than at the end of the
+  // pass: at 60 m+ a 0.5 m radius is a handful of pixels of quantised mantissa
+  // and all it estimates is the mantissa. The cavity ring below must not be
+  // dragged out with it, which is what a single fade at the end of the pass did.
+  vis = mix(1.0, vis, 1.0 - smoothstep(45.0, 95.0, z));
+
+  // ...and the cavity ring. It reads a feature metres across, so it stays
+  // trustworthy far deeper into the frame than the crease ring does: at 90 m a
+  // 4 m radius is still ~60 px of screen and nowhere near the depth quantum,
+  // where the 0.5 m ring is down to a handful of pixels of quantised mantissa.
+  // That is why the two fades below are different distances rather than one
+  // number — a term should be faded out when its own radius stops being
+  // resolvable, not when some other term's does.
+  {
+    float rF = uAoRadius * uAoFarMul;
+    float rUvF = rF * 0.5 / (uTanHalfFov * max(z, 0.30));
+    float r2maxF = rF * rF * 1.8;
+    float aoF = 0.0;
+    for (int i = 0; i < AO_FAR_TAPS; i++) {
+      float fi = float(i) + 0.5;
+      float rr = sqrt(fi / float(AO_FAR_TAPS));
+      float a = fi * GA + phi * 1.37 + 2.1;
+      vec2 suv = vUv + vec2(cos(a) / uAspect, sin(a)) * rr * rUvF;
+      aoF += aoTap(suv, P, N, z, dq, r2maxF, 0.09);
+    }
+    float visF = clamp(1.0 - (2.0 * rF / float(AO_FAR_TAPS)) * aoF, 0.0, 1.0);
+    // ---- AND IT SCALES THE AMBIENT, NOT THE DIRECT KEY ----------------------
+    // A wide ring is not selective on its own, and the first version of this
+    // block proved it: measured on 'bridge', it took the mid-arch intrados down
+    // 8.8% and the SUNLIT retaining wall on the right bank — which stands in the
+    // angle between the bank and the abutment, so it has real large-scale
+    // occlusion — down 8.4%. The same glaze on both. That is a general grey, and
+    // 14 LSB off a lit wall is exactly the "passed the metric by darkening the
+    // plate" failure the rubric warns about.
+    //
+    // The physics says what to do. Occlusion at 4 m cannot block the SUN: the sun
+    // is not in the 4 m neighbourhood, and what does block it is the shadow map.
+    // What a 4 m cavity blocks is the SKY FILL and the ground bounce — the
+    // ambient — so its wash belongs on surfaces whose value is ambient-dominated.
+    // A vault soffit, a doorway interior, the underside of an eave or a track
+    // guard all face away from the key (N.L <= 0) and are lit by nothing else; a
+    // sunlit wall's value is mostly key and keeps 22% of the glaze, which lands
+    // inside the +-3 LSB the bridge critic asked its control to hold.
+    float ambW = mix(1.0, 0.22, smoothstep(0.03, 0.50, ndl));
+    visF = 1.0 - (1.0 - visF) * uAoFarW * ambW;
+    visF = mix(1.0, visF, 1.0 - smoothstep(120.0, 240.0, z));
+    vis = min(vis, visF);
+  }
 
   // ---- contact ray-march toward the sun ------------------------------------
   // Only for surfaces that FACE the sun. A wall whose normal points away is
@@ -262,7 +393,6 @@ void main() {
   // which stamped a full-strength second shadow over the entire shaded face of
   // the bridge. The N.L gate is what makes a screen-space contact term usable
   // at all; without it it is a back-face detector.
-  float ndl = dot(N, uSunV);
   float occ = 0.0;
   if (ndl > 0.03) {
     float steps = 8.0;
@@ -289,15 +419,17 @@ void main() {
     // shading is taking over anyway
     occ *= smoothstep(0.03, 0.28, ndl);
   }
-  // A contact seam is a near-field read. Past ~35 m it is smaller than a pixel
-  // and all it can contribute is shimmer — and, once the depth quantum passes
-  // the hit threshold, a triangle lattice. Brought in from 26/62 m.
-  occ *= 1.0 - smoothstep(16.0, 38.0, z);
-  // The hemisphere term has the same problem in slower motion: at 60 m+ a 0.5 m
-  // radius is a handful of pixels wide and every one of them is reading a
-  // quantised depth, so all it estimates is the mantissa. Fade it out too — the
-  // AERIAL PERSPECTIVE below is what is supposed to be doing the work out there.
-  vis = mix(1.0, vis, 1.0 - smoothstep(45.0, 95.0, z));
+  // A contact seam is a near-field read: once it is smaller than a pixel all it
+  // can contribute is shimmer, and once the depth quantum passes the hit
+  // threshold it contributes a triangle lattice. It was pulled in to 16/38 m to
+  // kill both — but half the figures in a landscape plate stand between 20 and
+  // 45 m, and 16/38 takes the seam out from under their boots, which is most of
+  // "roughly half of character footprints have no contact darkening". The hit
+  // window is floored on the local depth quantum (hitLo/hitHi above), so the
+  // lattice was never a function of DISTANCE as such; pushed back out to 22/52 m,
+  // which covers the 19-31 m band the overview section stands in and still stops
+  // well short of the 45 m near edge of the command plate.
+  occ *= 1.0 - smoothstep(22.0, 52.0, z);
 
   gl_FragColor = vec4(vis, 1.0 - occ, 0.0, 1.0);
 }
@@ -392,6 +524,7 @@ uniform mat4  uViewToWorld;
 uniform vec3  uHazeColor;
 uniform float uHazeDensity;   // 1/metres
 uniform float uHazeStart;     // metres of clear air in front of the camera
+uniform float uHazeOnset;     // ...and metres over which the air thickens up
 uniform float uHazeRefK;      // ...or this fraction of the subject distance
 uniform float uHazeMax;
 uniform float uHazeHeight;    // metres of scale height above uHazeBase
@@ -544,8 +677,21 @@ void main() {
   // Weighted toward the subject but not pinned to it, so a single blade of
   // grass 0.4 m from the lens cannot collapse the whole depth ramp.
   float subjZ = clamp(mix(nearZ, refZ, 0.34), 2.0, 70.0);
-  float hazeStart = clamp(subjZ * uHazeRefK, uHazeStart * 0.55, 70.0);
-  float inkStart = clamp(subjZ * 1.30, uInkFadeStart * 0.45, 44.0);
+  // The relative floor was uHazeStart * 0.55, i.e. 11 m — inside the MIDGROUND
+  // of every plate in the set. A CANVAS plate hazes the distant planes and
+  // leaves the near and mid ones alone; 0.95 puts the earliest possible onset
+  // at 19 m, and the quadratic onset below is what keeps the next 20 m of air
+  // nearly clear as well.
+  float hazeStart = clamp(subjZ * uHazeRefK, uHazeStart * 0.95, 70.0);
+  // Ink recession is measured from an ABSOLUTE distance as well as from the
+  // subject. Keyed on subjZ alone, a close-subject shot (the tank plate's hull
+  // at 6.5 m -> inkStart 8.45 m, inkEnd ~26 m) put far01 = 1 on the entire town
+  // behind it and deleted every architectural line in the frame: a horizontal
+  // scan across the white building's near corner ran 172 172 175 | 193 193 195 |
+  // 214 214, three washes meeting with no pen between them, while the figures in
+  // the same frame outlined at 66-77. The pencil recedes with distance; it does
+  // not recede because the camera happened to stand close to something.
+  float inkStart = clamp(subjZ * 1.30, 20.0, 44.0);
   float inkEnd = inkStart + clamp(refZ * 1.55, 18.0, uInkFadeEnd - uInkFadeStart);
 
   // ---- contact wash --------------------------------------------------------
@@ -558,6 +704,25 @@ void main() {
     vec2 cs = texture2D(tContact, uv).rg;
     float occ = clamp((1.0 - cs.r) * uAoStrength + (1.0 - cs.g) * uContactStrength, 0.0, 1.0);
     occ *= 1.0 - isSkyC;
+    // THE THREE-STEP WASH HAD A DEAD ZONE, AND THE FEET WERE IN IT.
+    //
+    // vcQuantiseBands(1-occ, 3.0, ...) cannot express anything below the first
+    // step: the wash only leaves zero once (1-occ)*3 drops under 2.5, i.e. at
+    // occ > 0.167, and the boundary warp only lends about ±0.11 of that. So an
+    // occlusion of 0.05-0.16 — which is exactly what a 0.28 m boot sole two
+    // pixels wide produces once the half-res contact target has been bilinearly
+    // upsampled — quantised to NOTHING, and a footprint either got a full 1/3
+    // wash or no seam at all. Measured on the r14 overview with the annulus
+    // stated in the report: 5 of 9 figures had no darkening within 0.45 m of
+    // their own feet.
+    //
+    // The fix is not a fourth band (the rubric wants 3-4 washes, and a fourth
+    // step here reads as an airbrushed ramp): it is to spend the three steps
+    // where the occlusion actually lives. occ^0.62 puts the first boundary at
+    // occ 0.06 instead of 0.167 while leaving occ = 1 exactly where it was, so
+    // the deep corners are untouched and the faint seams reach the sheet. The
+    // steps stay three and stay hard.
+    occ = pow(occ, 0.62);
     if (occ > 0.004) {
       float f1 = vcFbm3(sPx / 33.0);
       float f2 = vcFbm3(sPx / 13.0 + 7.3);
@@ -716,13 +881,20 @@ void main() {
   // their eaves and their pantiles dissolved into one cream ghost brighter than
   // the sky behind them. Aerial perspective in a plate desaturates and cools
   // the drawing; it never deletes it.
+  // ...and 0.30 opacity into a haze-tinted colour was still a rub-out, just a
+  // slower one. Resolved at far01 = 1 the old pair was a 30% stroke in
+  // (93,90,89) laid over a cream wall at L 200 — a line at L 167 on a 200 wall,
+  // which is not a faint line, it is no line. 0.62 keeps a distant eaves and a
+  // window reveal legible at 90 m (measured L 118-130 against a 190-200 wall)
+  // while a near silhouette still outranks it two to one, so the depth cue keeps
+  // its sign.
   float far01 = smoothstep(inkStart, inkEnd, distM);
-  line *= mix(1.0, 0.30, far01);
+  line *= mix(1.0, 0.62, far01);
 
   float a = clamp(line, 0.0, 1.0);
   // Graphite over a wash is never opaque black — it takes the value of what is
   // under it, which is why a pencil line on a lit surface reads warm.
-  vec3 inkCol = mix(uInk, uHazeColor * 0.60, far01 * 0.55);
+  vec3 inkCol = mix(uInk, uHazeColor * 0.60, far01 * 0.30);
   vec3 ink = inkCol * (0.55 + 0.75 * vcLum(color));
   color = mix(color, min(color, ink), a);
 
@@ -736,7 +908,26 @@ void main() {
     vec3 vpos = rayAt(uv) * distC;
     float wy = (uViewToWorld * vec4(vpos, 1.0)).y;
     float hFall = exp(-max(wy - uHazeBase, 0.0) / max(uHazeHeight, 1.0));
-    float haze = (1.0 - exp(-max(distC - hazeStart, 0.0) * uHazeDensity));
+    // AERIAL PERSPECTIVE IS FOR THE DISTANT PLANES. A Beer-Lambert ramp is not:
+    // its steepest stretch is the FIRST metres past hazeStart, so however far out
+    // the onset is pushed, the plane immediately behind it takes the biggest
+    // single bite of veil in the frame. With hazeStart 11-18 m that bite landed
+    // on the midground of every plate — the tank shot's town at 30 m came back
+    // 11% cream, the closeup's buildings measured L 150.9 sd 11.3, the SAME
+    // value as the hero's shoulder, and the overview's whole left half dissolved
+    // into one tea-stained wash. That is the global veil the r15 critics all
+    // named: everything compressed into a narrow midtone band with no near-ink
+    // darks left anywhere.
+    //
+    // So the optical path length is made QUADRATIC in the first uHazeOnset
+    // metres and asymptotically linear after: dEff = d^2 / (d + onset). At 12 m
+    // past the onset it is 2.5 m of air (was 12), at 70 m it is 42 (was 70), and
+    // by 200 m it has converged to within 20% of the straight ramp so the far
+    // bank and the windmill knoll still sit in real atmosphere. Near and mid
+    // ground keep their darks; only the distance is painted in air.
+    float dh = max(distC - hazeStart, 0.0);
+    float dEff = dh * dh / (dh + max(uHazeOnset, 1.0));
+    float haze = (1.0 - exp(-dEff * uHazeDensity));
     haze *= mix(0.55, 1.0, hFall) * uHazeMax * (1.0 - isSkyC);
     // Haze LIGHTENS and lowers contrast. It used to WARM as well, hard: a
     // (1.13, 0.99, 0.69) straw laid over the whole midground at up to 0.5
@@ -798,6 +989,8 @@ uniform float uWhiteStart;    // luma at which the cream white point starts
 uniform float uHighStart;     // luma at which the warm highlight tint starts
 uniform float uFloorPow;      // how fast the ink floor lets go of the midtones
 uniform float uFloorTint;     // ...and how much of the pigment its HUE carries
+uniform float uNearInk;       // ...and how far the floor drops on the NEAR plane
+uniform float uFar;           // metres at lz = 1, for the depth-keyed floor
 uniform float uGreenLift;     // hue turns the sage lobe is pushed toward green
 uniform float uGreenChroma;
 uniform float uSkySat;
@@ -1169,8 +1362,50 @@ void main() {
     // hue 300-360 in round 4 and the rose bruise was named in the verdict. With
     // the floor carrying the pigment's hue, a tan glacis walked its own floor to
     // hue 327; this line lands it on a near-neutral warm grey instead.
-    ink.g = max(ink.g, min(ink.r, ink.b));
+    // ...but the clamp was at min(r,b) exactly, and that is a NEUTRAL: any
+    // violet or brown-violet has green as its lowest channel by definition, so
+    // clamping green up to the lower of red and blue turned uInkBlack itself
+    // from (43,35,51) into (43,43,51) — a 0.16-chroma cool grey, which is what
+    // the r15 closeup critic measured as "a near-NEUTRAL slate at 23% grey" and
+    // scored against rubric axis 3. 0.90 of min(r,b) still forbids the magenta
+    // case (green far below both) while leaving the floor a recognisable
+    // brown-violet at ~0.22 chroma.
+    ink.g = max(ink.g, min(ink.r, ink.b) * 0.90);
     ink *= lumaOf(uInkBlack) / max(lumaOf(ink), 1e-5);
+    // ---- AND THE FLOOR IS NOT THE SAME HEIGHT ALL THE WAY BACK ---------------
+    // A single global floor is a statement that the deepest crease of a face
+    // 2 m from the lens and a hedgerow at 120 m may be equally dark. On a plate
+    // they may not: the near planes carry the ink accents — the crease of a
+    // sleeve, the seam under an eave, the inside of a track guard — and the
+    // distance is where the air lifts the darks and takes the drawing away. The
+    // floor being flat is why the closeup's darkest face pixel measured L 58.9,
+    // "exactly the authored floor", in the same frame as a hazed midground
+    // building at L 150.9: one number was serving both.
+    //
+    // So the floor is depth-keyed. Inside 6 m it drops to uNearInk of its
+    // authored value (L 39 -> ~28, which is where a portrait-scale silhouette
+    // has to land); it reaches the authored floor again at 60 m, past which
+    // AERIAL PERSPECTIVE owns the value range and a lifted floor is correct.
+    // The ramp runs to 60 rather than to 16 on purpose: the mid ground is the
+    // other half of this round's finding — the tank plate's town at 25-35 m had
+    // three washes meeting at 153|173|193 with not one dark pixel between them —
+    // and 60 m is where the ink recession has genuinely taken over.
+    //
+    // This costs a LIT surface almost nothing, which is the whole reason it is
+    // safe: the floor is weighted by pow(1-c, 2.9), so a cream wall at c = 0.55
+    // receives 10% of it and moves under 1 LSB, while an ink stroke or a hatch
+    // crossing at c ~ 0.02 receives 94% of it and moves the full amount. It
+    // opens the bottom of the range without translating the picture down.
+    //
+    // The renormalise above is still what guarantees the floor's VALUE is a
+    // value and not a colour; this scales that value with depth, deliberately,
+    // and it is the only thing in the pass that does.
+    //
+    // Sky reads distG = 0 and must NOT be treated as 0 m — it is the one surface
+    // with no floor to speak of.
+    float distG = texture2D(tND, uv).a * uFar;
+    float nearK = step(0.0001, distG) * (1.0 - smoothstep(6.0, 60.0, distG));
+    ink *= mix(1.0, uNearInk, nearK);
     c = ink * pow(max(vec3(1.0) - c, vec3(0.0)), vec3(uFloorPow)) + c * top;
   }
 
@@ -1601,6 +1836,17 @@ export class CanvasRenderPipeline {
         uAspect: { value: 1.6 },
         uSunV: { value: new THREE.Vector3(0.35, 0.6, 0.72) },
         uAoRadius: { value: 0.50 },
+        // The CAVITY ring, as a multiple of the crease ring: 8 x 0.50 = 4 m, which
+        // is the scale of the things this pipeline had no way to darken — a
+        // barrel vault, the inside of a doorway, the space under an eave, the
+        // well between two houses. See the two-ring block in CONTACT_FRAG.
+        uAoFarMul: { value: 8.0 },
+        // ...at 0.72 rather than 1.0. The wide ring answers a coarser question
+        // than the crease ring and it answers it on more of the frame, so it is
+        // authored as a glaze rather than as a full occlusion: a 3 m deep vault
+        // still lands 45-60 LSB under its own spandrel, and open ground with a
+        // building 4 m away picks up a few LSB instead of a grey halo.
+        uAoFarW: { value: 0.72 },
         uRayLength: { value: 0.42 },
         uThickness: { value: 0.30 },
       },
@@ -1635,7 +1881,14 @@ export class CanvasRenderPipeline {
         uWobble: { value: CFG.render.outlineWobble },
         uBloomStrength: { value: CFG.render.bloomStrength },
         uHorizonLine: { value: 0.52 },
-        uInk: { value: new THREE.Color(0x342e33) },
+        // THE PENCIL. 0x342e33 is luma 48 — a mid-grey — and since `ink` below is
+        // this colour scaled by (0.55 + 0.75 * lum), a stroke on a lit cream wall
+        // resolved near L 90 and one on a midtone wall near L 70. Two critics
+        // measured the consequence independently ("the darkest pixel on the
+        // hero's face profile is L 58.9", "not one dark pixel between three
+        // washes"). 0x241d26 is luma 32: a 2B graphite over a wash, which is what
+        // it is supposed to be. Still nowhere near #000 and still brown-violet.
+        uInk: { value: new THREE.Color(0x241d26) },
         // Was 0xffdcae — (1.32, 0.95, 0.56) once normalised, i.e. a 2.4:1
         // red-over-blue ADD wherever anything is bright, which in a daylight
         // frame is everywhere. Still cream, no longer amber.
@@ -1667,6 +1920,12 @@ export class CanvasRenderPipeline {
         // Measured on `bridge` that flattened the plate to sd 30.66 with a
         // p5-p95 range of only 104 LSB and a p5 of 93, i.e. no dark anywhere.
         uHazeStart: { value: 20 },
+        // Metres over which the air thickens from nothing to its full density.
+        // See the aerial-perspective block: this is the whole difference between
+        // "the distant planes are painted in air" and "a veil sits over the
+        // frame". 45 m leaves the midground of a 6 m-subject plate (a town at
+        // 25-35 m) inside 3% haze where the straight ramp gave it 11-19%.
+        uHazeOnset: { value: 45 },
         uHazeRefK: { value: 0.80 },
         uHazeMax: { value: 0.60 },
         uHazeHeight: { value: 34 },
@@ -1722,10 +1981,35 @@ export class CanvasRenderPipeline {
         // the lowest channel. 0x3a3043 normalised to (1.24, 0.87, 1.64), and
         // since the tonemap lays that down across the whole tonal range it was
         // subtracting green from every pixel in the picture.
-        uInkBlack: { value: new THREE.Color(0x3c3947) },
+        //
+        // ROUND 15: THIS CONSTANT IS THE FRAME'S BLACK POINT AND IT WAS L 59.
+        // Every one of the four r15 critics bottomed out on it and three of them
+        // named it: 0.000% of the overview plate below L 30, 0.049% below L 50,
+        // darkest pixel in a 1920x1080 plate L 42.4 (and that one is the HUD
+        // caption, not the scene — the darkest SCENE pixel was L 58.1, i.e.
+        // exactly lumaOf(0x3c3947) = 59.5). The floor is laid down as
+        // inkBlack * (1-c)^uFloorPow and renormalised to its own luma two lines
+        // above, so no ink stroke, no hatch crossing, no cast shadow and no
+        // barrel vault in the engine could ever be darker than this number
+        // however dark the paint under it was. The bottom 23% of the value range
+        // was unreachable by construction, which is the milky veiled read the
+        // whole round complained about.
+        //
+        // 0x2b2333 is luma 39: a 15% grey, still a warm-leaning violet-slate, and
+        // still a very long way from #000 (the rubric's no-pure-black rule is
+        // about the darkest pixel not being 0,0,0 — it is not a licence to keep
+        // the darkest pixel at 23% grey). Nothing else in the chain has to move
+        // with it: the floor is renormalised to lumaOf(uInkBlack), so lowering
+        // this constant lowers the toe and leaves the white point, the highlight
+        // tint and the paper alone.
+        uInkBlack: { value: new THREE.Color(0x2b2333) },
         uWhiteStart: { value: 0.62 },
         uHighStart: { value: 0.74 },
-        uFloorPow: { value: 2.6 },
+        // ...and the floor lets go of the midtones faster. 2.6 handed a
+        // scene-linear 0.30 midtone 40% of the floor colour; at 2.9 it is 34%,
+        // which is what stops a deeper floor from simply translating the whole
+        // picture down instead of opening the bottom of it.
+        uFloorPow: { value: 2.9 },
         // How much of the PIGMENT the ink floor's hue carries. The floor's VALUE
         // is unchanged at any setting; 0 is the old behaviour (every shadow mass
         // in frame painted the same hue-253 violet), 1 would hand the floor the
@@ -1742,6 +2026,12 @@ export class CanvasRenderPipeline {
         // build with the deep wash already fixed, the shaded village facade sat
         // at hue 200 and its own cast shadow at 234 purely on this term.
         uFloorTint: { value: 0.88 },
+        // How far the ink floor drops inside 4 m — see the depth-keyed floor in
+        // the grade's floor block. 0.72 of L 39 is L ~28, i.e. a near-ink accent
+        // in the creases of the focal subject, which is what a CANVAS plate has
+        // and what four r15 critics measured this build as not having.
+        uNearInk: { value: 0.72 },
+        uFar: { value: 900 },
         uGreenLift: { value: 0.084 },        // +30 deg on the sage lobe
         uGreenChroma: { value: 0.22 },
         uSkySat: { value: 1.02 },
@@ -1808,6 +2098,21 @@ export class CanvasRenderPipeline {
         // riding a wash whose whole step is twenty. The deep masses — running
         // gear, canopy interiors, the underside of a jaw — are all below L 92
         // and keep the full weight, which is where the rubric puts pencil.
+        //
+        // ROUND 15 LEFT THIS WINDOW ALONE ON PURPOSE, and the reasoning is worth
+        // keeping because it looks like it needs to move and it does not. The
+        // gate is authored in the wash quantiser's coordinate, which is computed
+        // from SCENE-referred luminance BEFORE the tonemap, so it is unaffected
+        // by the ink floor dropping from L 59 to L 39 — the same surfaces are
+        // gated in, they simply display darker, which is the point of the floor
+        // change. The bridge critic read the floor as "disabling hatching" and
+        // asked for the window to be re-seated on the new dark end; measured, at
+        // 0.465/0.605 the extra weight lands on the MID-FOLIAGE of the closeup
+        // (the flat canopy cards at 12-20 m) rather than in the spandrel's
+        // creases, i.e. it buys more lattice on unbroken planes, which is the
+        // fishnet three critics named this round. Whatever is wrong with hatch
+        // PLACEMENT is in the flat-plane gate and the ruling angles, not in this
+        // window, and it is not a value-range fix.
         uHatch: { value: 0 },
         uHatchSpacing: { value: 7.0 },
         uHatchLo: { value: 0.43 },
@@ -2085,6 +2390,7 @@ export class CanvasRenderPipeline {
     // the hatch pass can still ask it whether this fragment sits on a fold or
     // on an unbroken plane.
     gu.tND.value = this.gbuf.textures[0];
+    gu.uFar.value = cam.far;
     gu.uExposure.value = CFG.render.exposure;
     gu.uVignette.value = CFG.render.vignette;
     gu.uChroma.value = CFG.render.chroma;
