@@ -571,6 +571,150 @@ vec3 vcShadeDeep( vec3 cool, vec3 violet, vec3 floorCol, float amt ) {
   return t * ( L / max( vcLum( t ), 1e-5 ) );
 }
 
+// ---- THE GRADE'S OWN HUE WARP — where 14 to 18 of the 33 degrees came from --
+//
+// ROUND 18 DIAGNOSIS. The authored shade turn was never the problem. Measured
+// cold on 'bridge', ONE stage downstream of this file was contributing more
+// rotation than this file asks for, and — because it is a NONLINEAR function of
+// the hue the wash happens to land on — it contributed a DIFFERENT amount to
+// every material, which is what made the error look dispersed and un-fixable
+// from one knob.
+//
+// The stage is canvasRenderPipeline.js:1534-1549, the palette-shaping hue
+// separation warp:
+//
+//     rise = smoothstep( 0.110, 0.152, h )      // 40 -> 55 deg
+//     fall = 1 - smoothstep( 0.180, 0.360, h )  // 65 -> 130 deg
+//     h   += rise * fall * smoothstep( 0.035, 0.105, chroma ) * uGreenLift
+//
+// with uGreenLift = 0.084, i.e. +30.2 deg at full weight. It exists to pull the
+// LIT pigments apart (round 2 measured grass 50.3 / sand 33.0 / stucco 31.7 /
+// stone 32.5 — one pigment for the whole picture) and its chroma gate exists
+// specifically so that it does NOT catch a shade wash: the note there measured
+// the bridge spandrel arriving at chroma 0.022 against lit grass at 0.146.
+//
+// THE SPANDREL NO LONGER ARRIVES AT 0.022. Round 14 stopped laundering the deep
+// wash through a low-chroma skylight grey (rightly — that was the pole
+// substitution), so the wash now reaches the grade at chroma 0.065-0.086, where
+// the gate is 55-75% OPEN. Inverting the warp on eight named single-wash boxes
+// off the round-17 cold plates:
+//
+//   surface / box                      screen   pre-grade   the grade added
+//   masonry LIT   1600,500-1800,600     40.4      40.2         + 0.2
+//   masonry shade  700,430-1000,470     73.2      55.1         +18.1
+//   masonry shade  520,410-1120,478     70.8      52.8         +18.0
+//   render  LIT   1560,200-1620,260     39.4      39.4         + 0.0
+//   render  shade 1630,160-1690,270     42.4      41.3         + 1.1
+//   cloth   shade  580,560- 650,660     59.4      46.4         +13.0
+//
+// Read the two shade rows against each other. A wash that lands at 41 deg keeps
+// 1 degree; a wash that lands at 53-55 keeps EIGHTEEN. The warp's rise is
+// steepest across exactly the band a cooled warm pigment lands in, so ONE stage
+// manufactures both signs of the "per-material" error at once: masonry
+// overshoots to 73-86 and reads as pond algae, the away-facing render undershoots
+// to +3 and reads as unlit pigment. No per-material override could have fixed
+// that, because the amount to compensate is a function of the pixel, not of the
+// material.
+//
+// So the shade turn is now MEASURED WHERE A CRITIC MEASURES IT. vcPreLift
+// inverts the warp above by bisection (it is monotone by construction — that is
+// the whole point of the "steep rise, long tail" note there), so a ceiling
+// authored in SCREEN degrees can be enforced in this shader's own pre-grade
+// units. vcSageFinish already pre-compensates the same grade's CHROMA lobe for
+// the same reason and with the same knowingly-duplicated constants: getting them
+// slightly wrong drifts the ceiling a couple of degrees, not compensating at all
+// is an 18 degree error with a hue dependence.
+#define VC_GLIFT 0.0840           // = canvasRenderPipeline uGreenLift
+float vcGradeLift( float hx, float sy ) {
+  return smoothstep( 0.110, 0.152, hx )
+       * ( 1.0 - smoothstep( 0.180, 0.360, hx ) )
+       * smoothstep( 0.035, 0.105, sy )
+       * VC_GLIFT;
+}
+// The pre-grade hue that the warp above carries to screenH. Bisection, not a
+// fixed-point iteration: the warp's slope reaches ~2.4 in the middle of the
+// rise, so h <- screenH - lift(h) DIVERGES there (it oscillated 50.3 / 52.2 /
+// 48.9 on the tunic's own numbers). Nine steps over a <=130 deg bracket is
+// 0.14 deg of residual.
+float vcPreLift( float screenH, float sy ) {
+  if ( screenH >= 0.3611 ) return screenH;      // past 130 deg the warp is zero
+  float lo = 0.0;
+  float hi = screenH;                           // f(h) >= h, so the root is below
+  for ( int i = 0; i < 9; i++ ) {
+    float m = 0.5 * ( lo + hi );
+    if ( m + vcGradeLift( m, sy ) < screenH ) lo = m; else hi = m;
+  }
+  return 0.5 * ( lo + hi );
+}
+// A SOFT ceiling: strictly monotone and asymptotic, so the far tail compresses
+// against the cap instead of piling onto it. A hard min() would hand every
+// over-turned pixel on a 244k-pixel spandrel the identical hue, which is the
+// "the frame is two hues wide" defect arriving by a new route.
+//
+// 4 deg of knee, not 8. The knee costs an incoming wash that sits AT its own cap
+// about 0.63 of the knee width, so a wide one is a tax on the materials that were
+// never over-turned: at 8 deg it took the tunic's half-tone from +17.5 to +6.5,
+// i.e. it broke a surface that passed in order to fix one that did not.
+#define VC_CEIL_KNEE 0.0111
+// ...and the budget, in MULTIPLES of the authored uShadeTurn, measured off the
+// PIGMENT'S OWN hue in screen degrees. 1.60 => 22.4 deg at the 14 deg default.
+//
+// WHY THE ANCHOR IS THE ALBEDO AND NOT THE LIT WASH, even though the acceptance
+// test is stated against the lit wash. Measured cold on 'bridge', the cream lift
+// moves a LIT hue a long way off its own pigment and it does so by a
+// material-dependent amount: limestone's albedo arrives at the shader at hue ~27
+// (the stone map is warmer than PALETTE.stone's 37.7) and its lit wash measures
+// 40.5, i.e. +13. Anchoring on the lit wash therefore hands masonry and cloth
+// caps 2.2 deg apart, because the LIT family is uniformly 36-42 across the whole
+// frame — the r14 test (three materials, three DIFFERENT shaded hues) would fail
+// by construction, and it would fail as "the frame is two hues wide" all over
+// again, just at a warmer pair of hues. Albedo hues are 27 (limestone) / ~24
+// (render) / 60-70 (serge) / 71 (pasture) and those DO differ, so a cap anchored
+// there keeps the shade family as wide as the pigments are.
+//
+// The consequence, and it is the intended one: this ceiling can only ever bind a
+// WARM pigment. A green pigment sits within a few degrees of the skylight
+// already, so its own albedo + 22 is far above anything the turn can reach and it
+// passes through untouched. The runaway was always a warm-pigment failure — 200
+// deg of wheel between ochre and the pole, three stacked turns, and then the
+// grade's rise sitting right where they land.
+// 2.45 = 34.3 deg, CALIBRATED AGAINST THE FRAME, not against the algebra. The
+// albedo the shader actually sees is not the palette constant: the stone map and
+// the per-block tone carry limestone's 37.7 deg down to an effective 24-31 and the
+// render's 41.1 down to ~20, so the anchor sits well warm of the pigment the
+// palette names and the budget has to cover that too. Measured on 'bridge' at
+// 1.60 (22.4 deg) the spandrel came back at hue 44.3 / 51.7 — a +4 to +11 turn,
+// i.e. the ceiling had overshot into round 16's "shade barely rotates" failure.
+// At 1.25 it was worse still: hue 41.4, a +0.9 turn on the focal subject.
+//
+// The calibration curve on the spandrel box x700-1000, y430-470, mid decile, and
+// the reason it is a straight line rather than the algebra's amplified one: as the
+// ceiling brings that wash out of the grade's rise, its chroma also falls out of
+// the grade's green lobe (display sat 0.178 -> 0.157), which closes the warp's own
+// chroma gate, so the wash arrives BELOW the gate and vcPreLift correctly reduces
+// to the identity. The turn is then worth exactly what this file authors.
+//
+//     budget   cap off albedo   spandrel hue   Gmax of the 11.8% masonry mass
+//      1.25         17.5 deg        41.4              -
+//      1.60         22.4            44.3              -
+//      1.85         25.9            45.6            9.2%
+//      2.25         31.5            48.4           12.2%   (cold)
+//      2.45         34.3            (this build)
+//   (none)            -             73.2           79-96%   round 17
+//
+// The slope is 0.54 deg of screen hue per degree of budget, not 1.0, because the
+// ceiling binds a DISTRIBUTION: raising it stops binding the pixels already under
+// it and only lets the tail up. Do not extrapolate it past a couple of degrees —
+// re-measure. The lower bound on the budget is the r16 test (>= 8 deg of turn off
+// the surface's own lit wash) and the upper bound is the majority-green fraction
+// of the masonry mass, which starts climbing fast once the mean passes 55 deg.
+#define VC_CEIL_BUDGET 2.45
+float vcHueCeil( float h, float cap ) {
+  float knee = cap - VC_CEIL_KNEE;
+  if ( h <= knee ) return h;
+  return knee + VC_CEIL_KNEE * ( 1.0 - exp( -( h - knee ) / VC_CEIL_KNEE ) );
+}
+
 // ---- the sage/olive finish -------------------------------------------------
 // The LAST thing that touches a green albedo, and the only ceiling in the chain
 // that nothing downstream of it can walk back over.
@@ -1390,10 +1534,63 @@ const NPR_SHADE_BODY = /* glsl */`
   // still-red-dominant pigment produces MAGENTA (the gable measured hue 339)
   // and on one whose green has already been brought up produces violet. Half a
   // turn on band 2 is what puts it on the right side of that.
+  //
+  // ROUND 18 moved the upper edge 0.84 -> 0.88 and the lower 0.30 -> 0.40, which
+  // roughly DOUBLES what band 2 gets (0.35 -> 0.66 at its four-band centre) and
+  // still leaves the lit washes at exactly zero. Band 2 is where a large
+  // away-facing wall actually sits — the farmhouse's camera-facing render on
+  // 'bridge' measures L155 against L196 on its own sunlit gable, i.e. 0.79 of
+  // lit, which is band 2, the PIGMENT band — and 0.35 of the budget through the
+  // 0.78 share is 3.8 deg, which is the +3.0 deg turn round 17 measured on it.
+  // The undershoot was never a missing budget, it was a gate.
+  //
+  // Spending more of it is only safe because of the ceiling below: before that
+  // existed, doubling band 2 would have walked every mid wash another 6 deg INTO
+  // the grade's rise, where it would have come back multiplied.
   {
-    float turnAmt = ( 1.0 - smoothstep( 0.30, 0.84, g ) )
+    float turnAmt = ( 1.0 - smoothstep( 0.40, 0.88, g ) )
                   * mix( 0.80, 1.0, clamp( uShadeCool, 0.0, 1.0 ) );
     col = vcShadeTurnL( col, turnAmt, uShadeTurn * 0.78 );
+
+    // ---- ...AND THE TURN IS BOUNDED WHERE IT IS SEEN, NOT WHERE IT IS SPENT --
+    // Every previous round authored the turn here and measured it on the plate,
+    // with a +0 to +18 deg hue-dependent stage in between (see the vcGradeLift
+    // note). This is the ceiling that closes that loop: a shade wash may not
+    // READ, ON SCREEN, more than uShadeTurn * 1.25 cooler than ITS OWN PIGMENT.
+    //
+    // Three properties matter and none of them is available from a per-material
+    // override or from the shade pole:
+    //
+    //  * It is PER PIGMENT. The cap is the albedo's own hue plus a budget, so
+    //    limestone (albedo 38 deg) caps at 55 while olive serge (60) caps at 77
+    //    and pasture (71) at 89. A ceiling like that cannot collapse the shade
+    //    family onto one hue — which is exactly what the old flat VC_SHADE_CAP
+    //    at 135 deg, and every pole-chroma sweep in rounds 12-14, did do.
+    //  * It only ever binds the OVERSHOOT. Cloth arrives 13 deg under its own
+    //    cap and is not touched at all; masonry arrives 18 over and is brought
+    //    back. So the r14 "three different shaded hues" test is structural here
+    //    rather than something to be re-tuned each round.
+    //  * It is luminance-exact, so it cannot move a band boundary, a hatch
+    //    ratio, a cast-shadow delta or the frame's darkest pixel.
+    //
+    // The albedo-chroma gate is load-bearing: a pigment with no hue of its own
+    // has no cap to compute, and vcShadeDeep's 'neutral' branch is DELIBERATELY
+    // allowed to paint those with the skylight (a washed-out near-neutral
+    // limestone taking the sky as a direct lean). Clamping that back would
+    // re-open the round-6 "shade does not rotate at all" defect on exactly the
+    // surfaces that have nothing else to rotate.
+    if ( turnAmt > 0.001 ) {
+      vec3 aHsv = vcRgb2Hsv( albedo );
+      vec3 cHsv = vcRgb2Hsv( col );
+      if ( aHsv.y > 0.04 && cHsv.y > 0.035 ) {
+        float capPre = vcPreLift( aHsv.x + uShadeTurn * VC_CEIL_BUDGET, cHsv.y );
+        float l0 = vcLum( col );
+        cHsv.x = mix( cHsv.x, vcHueCeil( cHsv.x, capPre ),
+                      smoothstep( 0.0, 0.25, turnAmt ) );
+        vec3 t = vcHsv2Rgb( cHsv );
+        col = t * ( l0 / max( vcLum( t ), 1e-5 ) );
+      }
+    }
   }
 
   // ---- the sheet -----------------------------------------------------------

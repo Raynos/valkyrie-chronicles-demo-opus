@@ -208,9 +208,46 @@ export const PALETTE = {
 // clip point the LIT wash does not move at all (it was already saturated) and
 // the plane below it drops away from it, which is the whole of a modelled cheek.
 // The five darker tones are untouched: they were already under the clip.
+//
+// ROUND 18 — THE LADDER'S BOTTOM THREE RUNGS WERE DARKER THAN THE UNIFORM AND
+// MORE SATURATED THAN THE PALETTE RULE DIRECTLY ABOVE ALLOWS.
+//
+// character.js:56 picks one of these UNIFORMLY, so the two bottom rungs were
+// handed to 2 soldiers in 7. Their sRGB luminances were 92.1 and 68.9 against
+// PALETTE.tunic (0x9c8d68) at 141.5 and PALETTE.trouser (0x77694a) at 105.7 —
+// i.e. 29 % of every squad in the game was authored with a FACE DARKER THAN ITS
+// OWN JACKET, and the bottom rung was darker than the collar (0x60563a, 86.1)
+// it sits on. No lighting or grade stage can recover contrast that the albedo
+// never had, and this is one direct cause of the round-17 verdict "every
+// character in the frame is the lowest-contrast, least-drawn object in it".
+//
+// The second half of the defect is saturation, and it is the note directly above
+// this one being violated by the rungs it was never re-checked against: that note
+// desaturated skin to ~0.30 because a lit neck at sat 0.443 "read as a stripe of
+// paint rather than as skin", but the old ladder ran 0.29 / 0.32 / 0.36 / 0.39 /
+// 0.44 / 0.47 / 0.49 — the bottom four rungs were AT or PAST the value the note
+// exists to forbid. Darkening a colour is not a luminance-only operation and the
+// old ladder is what that rule looks like when it is broken in the other
+// direction: value was walked down and chroma was left to ride up with it.
+//
+// The replacement spans 191.3 -> 152.0, so its DARKEST rung still clears the tunic
+// by 10.5 LSB before a single lighting term has run, and saturation is re-authored
+// AT each new luminance rather than inherited: 0.25-0.34 across the whole ladder.
+// Only the incumbent top rung keeps the 218 max channel; every other rung is
+// <= 210, i.e. further under the lit wash's clip point than 0xd8b493 was when
+// round 14 removed it for being over.
+//
+// WHAT THIS DOES NOT FIX, stated because the obvious reading is wrong: the
+// round-17 tank finding was a cheek measuring the same HUE as the jacket 5 LSB
+// away, and that is NOT an authored-hue problem — the old rungs were already hue
+// 25-30 against the tunic's 43. The rendered hues converge because both surfaces
+// land in the same low bands, where `col` is shadeCol/coolCol and carries the
+// shade wash's hue rather than the pigment's. Only VALUE and CHROMA are being
+// fixed here. See the lightBias note in SKIN_BANDS for the measured reason the
+// value fix alone recovers ~7 of the ~45 LSB the finding asks for.
 export const SKIN_TONES = [
-  rgbLin(0xdabb9b), rgbLin(0xd4b190), rgbLin(0xc8a180),
-  rgbLin(0xb38d6d), rgbLin(0x977155), rgbLin(0x77573f), rgbLin(0x5a412e),
+  rgbLin(0xdabb9b), rgbLin(0xd2b29d), rgbLin(0xd2ac8d),
+  rgbLin(0xcda590), rgbLin(0xc7a083), rgbLin(0xc19883), rgbLin(0xb39376),
 ];
 
 // Hair has to survive the palette-discipline rule as well as the band shader.
@@ -1337,6 +1374,48 @@ const SKIN_BANDS = {
   // ramp is 100% shade colour and a face measures hue 268 whatever else is done
   // to it). Verified by the sun-azimuth test, not by this comment.
   wrap: 0.72, keyGain: 0.99, fillGain: 2.55,
+  // ROUND 18 — LIGHT BIAS STAYS AT 0.40. TRIED AT 0.50 AND 0.72 AND REVERTED;
+  // THIS IS THE MEASURED DECOMPOSITION OF THE ROUND-17 TANK FINDING.
+  //
+  // Measured this round on a COLD `tank`, with the skin region isolated by
+  // rendering a pass with every SKIN_TONE forced to magenta and using the
+  // magenta pixels as a mask (997 px of real face on the hero, so the failing
+  // surface is genuinely large and the mask excludes helmet, hair, collar and
+  // the ink outline, which are the three things a hand-drawn face box picks up
+  // by accident): the hero's masked face measured L 82.5 against a jacket at
+  // L 83.4. The judge read that as skin arriving 114 LSB below its authored
+  // albedo. It is not. Two controlled cold renders say so:
+  //     every SKIN_TONE forced to the ladder's top (albedo L 191): 82.5 -> 92.4
+  //     shadowSoften 0.64 -> 0.00 (skin ignores cast shadow):     82.5 -> 92.7
+  // A 122-LSB albedo swing bought 9.9 LSB, and deleting the cast shadow bought
+  // 10.2. So the face is very nearly ALBEDO-INDEPENDENT, which places it on
+  // bands 0-1, where `col` is mix(shadeCol, coolCol, ...) and coolCol is capped
+  // at 0.62 of the pigment's own value. Sweeping this number alone to 0.72
+  // reached L 107.2 — one whole extra band for +0.32 of bias — and the median
+  // was still sitting on band 1. A global lift big enough to push the median to
+  // band 2 puts the `closeup` cheek entirely into band 4, which is the flat white
+  // face round 14 spent itself escaping. MEASURED at bias 0.50 with everything
+  // else back at round-14 values, against a CONTROLLED baseline rendered with this
+  // whole file reverted in the same working tree (other agents were editing other
+  // modules concurrently; the closeup tunic moving 119.8 -> 130.5 on a window this
+  // file never touched is the frame grade responding to a brighter face, not the
+  // cloth window changing):
+  //     closeup cheek box 700,250-760,310   L 178.7 -> 205.0
+  //     and its spread                      p10 119.6 -> 178.5, p90 216.7 -> 217.5
+  // i.e. 90 % of the cheek in one wash. +0.10 of bias costs the closeup its
+  // terminator to buy the tank hero about 5 LSB. Reverted.
+  //
+  // THE HONEST REMAINDER, so round 19 does not spend itself here again. Against
+  // the controlled baseline (tank hero's masked face L 83.0; jacket at box
+  // 1390,530-1470,580 L 82.9) the three levers this file owns are worth, COLD and
+  // separately: the albedo ladder ~+7, shadowSoften 0.64 -> 0.28 ~+7, and
+  // lightBias +0.10 ~+5-but-it-breaks-closeup. The deficit to a 45-LSB gap is
+  // ~45 LSB. It is NOT recoverable from a material window, because that head is
+  // carrying THREE stacked drive deficits at once: contre-jour (keyN pinned),
+  // inside the Edelweiss's cast shadow, and pitched down-and-forward in a hunched
+  // run pose so the malar plane's skyView — the only surviving signal — is low and
+  // ambTerm with it. The first two belong to the world, the third to the POSE in
+  // captureShots.js. Round 19 should aim at the pose or the shot's key azimuth.
   driveRange: [0.068, 1.068], contrast: 1.42, lightBias: 0.40,
   // A CEILING WORTH KNOWING ABOUT, measured this round: the largest step ANY
   // two adjacent washes on a face can show is about 20-25 LSB, and it is not set
@@ -1381,12 +1460,68 @@ const SKIN_BANDS = {
   // only lever that separates the shaded case from the lit one — raising the
   // window instead would blow out the closeup, which already sits at -38 against
   // a bar of -45. Shade is a colour, not an absence.
-  shadowSoften: 0.64,
+  //
+  // ROUND 18 — 0.64 -> 0.42. THE ONLY KNOB IN THE FILE THAT MOVES A FIGURE IN A
+  // CAST SHADOW MORE THAN IT MOVES ONE IN THE OPEN — but NOT, as first assumed,
+  // one that leaves `closeup` alone. See the measurement below.
+  //
+  // Note the semantics, because the round-5 comment above has them backwards:
+  // materials.js:708 is `shadowMask = mix(1.0, shadowMask, uShadowSoften)`, so
+  // this number is HOW MUCH OF THE CAST SHADOW APPLIES, not how much is softened
+  // away. 0.64 means a face in shade eats 64 % of a shadow the materials.js note
+  // measures at 0.34 of drive — 0.218, i.e. a full band on a five-band window,
+  // spent on the one surface in the frame that VC never lets go quiet.
+  //
+  // It separates the two shots because the `tank` hero stands in the Edelweiss's
+  // cast shadow and the `closeup` hero stands in the open: measured COLD, driving
+  // it to 0.00 moved the tank hero's masked face L 82.5 -> 92.7.
+  //
+  // It is NOT free on `closeup`, and the first draft of this change at 0.28 proved
+  // it: that hero stands under a tree, so he takes dappled canopy shadow too, and
+  // his cheek box went 178.7 -> 199.5 with p10 119.6 -> 161.1. Judged on the
+  // PICTURE rather than the number that is half a win — the round-17 closeup
+  // finding was "the lower 60 % of the face dumped into one flat mud-brown wash"
+  // and at 0.28 that mud is gone — but the forehead flattened with it. 0.42 is the
+  // settled compromise: a face under a canopy keeps a real shade wash (the round-5
+  // case this line was written for), the tank hero gets back half the band, and
+  // the closeup keeps a modelled forehead.
+  //
+  // What it is NOT is a fix for the whole finding. Even at 0.00 the hero's face
+  // only reaches L 92.7 against a jacket at 83.6. See the lightBias note below
+  // for the measured decomposition and the honest remainder.
+  shadowSoften: 0.42,
   // A skull, a cheek and a forearm are all smooth curved masses; without a
   // curvature term no boundary can fall on them however the drive is scaled.
   curvature: 0.21,
   // VC hatches its terrain and its masonry. It does not scribble graphite across
   // a face.
+  //
+  // ROUND 18 — MEASURED AND REVERTED: rim AND subsurface ARE BOTH THE WRONG
+  // LEVER FOR A FACE IN A CAST SHADOW, AND THE REASON IS ONE SHARED FACTOR.
+  //
+  // The obvious reading of the round-17 tank finding is "the hero is contre-jour,
+  // so lift the two terms that exist for contre-jour". Translucency looks
+  // perfectly targeted: materials.js:1354 gates it on
+  // `pow(clamp(dot(-V, primaryL), 0, 1), 3)`, which is zero unless the key is
+  // coming toward the camera. Tried at subsurface 0.090 -> 0.235 with rim
+  // 0.24 -> 0.34, COLD:
+  //     tank    masked hero face  L 82.5 -> 95.9   (+13.4)
+  //     closeup cheek box         L 178.9 -> 205.5 (+26.6), and its spread
+  //                               collapsed: p10 119.7 -> 178.5, p90 216.7 ->
+  //                               218.4, i.e. 90 % of the cheek in one wash.
+  // It moved the shot that was already right twice as far as the shot that was
+  // wrong, and it did it by erasing the closeup's terminator — round 14's win.
+  //
+  // The cause is a factor both terms carry and I had not read:
+  //     rim   *= ( 0.32 + 0.68 * shadowMask )        materials.js:1348
+  //     trans *= mix( 1.0, shadowMask, 0.6 )         materials.js:1355
+  // Both are SHADOW-WEIGHTED. The tank hero is inside the tank's cast shadow, so
+  // shadowMask ~ 0 attenuates both to 0.32 / 0.40 of strength on precisely the
+  // figure that needs them, while the closeup hero stands in the open and gets
+  // them at full. So neither can ever be the lever for a shadowed face — they
+  // are levers for an UNSHADOWED back-lit one, which is the case that already
+  // works. Both restored to their round-14 values. Do not re-proposed either for
+  // a figure in shade.
   hatch: 0.10, rim: 0.24, subsurface: 0.090, weave: false,
   // ROUND 14 — ONE WOBBLY EDGE, NOT A FRINGE. wetBands scales as
   // fwidth(drive) * uWetPx * uBandBleed, so at the inherited 0.85 x 9 px the

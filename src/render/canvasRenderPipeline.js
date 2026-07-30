@@ -80,6 +80,12 @@ const HALF = THREE.HalfFloatType;
 // See _bloom(): CFG's threshold is authored for a physical range we do not use.
 const BLOOM_THRESHOLD_SCALE = 0.55;
 
+// Histogram-reduction chain sizes. Chosen so the tap counts are EXACT at
+// 1920x1080: 240x135 seed fragments each averaging an 8x8 source block covers
+// every pixel once, then 16x15 and 15x9 reductions land on 1x1 with no leftover.
+const STATS_SEED_W = 240, STATS_SEED_H = 135;
+const STATS_MID_W = 15, STATS_MID_H = 9;
+
 // ------------------------------------------------------------- fullscreen
 class FsQuad {
   constructor() {
@@ -1039,10 +1045,6 @@ uniform float uHatchHi;       // ...and at which it has gone
 uniform float uHatchSmall;    // what is left of it on a small form
 uniform float uHatchFlat;     // ...and what is left on an unbroken plane
 uniform float uHatchDepth;    // wash multiplier under a full-pressure stroke
-// ---- the plate's TONAL RANGE (see the range block at the end of main) -------
-uniform float uRangeLo;       // display value held fixed at the bottom
-uniform float uRangeHi;       // ...and at the top
-uniform float uRangeAmt;      // 0 = off, 1 = the full redistribution
 varying vec2 vUv;
 
 float lumaOf(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
@@ -1870,70 +1872,279 @@ void main() {
   c *= mix(vT, vec3(1.0), vig);
   c *= mix(0.94, 1.0, vig);
 
-  // ---- THE PLATE'S TONAL RANGE ---------------------------------------------
-  // ROUND 17. THE FRAME WAS ONE MIDTONE BAND WITH A FLOOR AND A CEILING IT
-  // NEVER REACHED. Measured cold, HUD masked, on the r16 build:
+  // ---- THE PLATE'S TONAL RANGE IS NOT DONE HERE ANY MORE --------------------
+  // Round 17 ended this shader with a fixed-anchor smoothstep that redistributed
+  // the frame's values. It bought bridge and closeup a top and a bottom and it
+  // crushed village and dusk, because a FIXED pair of anchors assumes every
+  // plate has the same distribution. Round 18 moved the job to its own pass
+  // (RANGE_FRAG) fed by a real histogram reduction of THIS pass's output, so the
+  // curve is built from the plate in front of it. Everything the round-17 block
+  // argued about WHY the redistribution belongs last, and why monotone makes it
+  // safe, still holds and now lives next to RANGE_FRAG.
   //
-  //             maxBin   <L60    >L195   p99    p1    p5    p50   p95
-  //   bridge    24.66%   0.95%   3.62%   214.8  60.4  75.2  144.7 192.4
-  //   closeup   16.27%   3.37%   7.95%   220.4  49.1  64.6  129.1 206.0
-  //
-  // A QUARTER of the bridge plate inside one 16-LSB bin, one pixel in a hundred
-  // below L 60, and the darkest scene pixel L 30.7 — while the pass three
-  // blocks up authors an ink floor at L 38 (near) / L 44 (far) and a painted
-  // ceiling at L 225. Both end stops were correct and almost nothing in the
-  // picture was standing on either of them. That is the "faded antique pastel
-  // plate" read: not a wrong palette, a wrong DISTRIBUTION.
-  //
-  // WHY IT IS HERE AND NOT IN THE TONEMAP. The frame's value structure is built
-  // by ten things — the surface washes, the contact pass, aerial perspective,
-  // the tonemap S, the ink floor, the painted ceiling, the split tone, the
-  // hatch, the tooth and the vignette — and every one of them was authored
-  // against the value it saw. Widening the range upstream re-argues all ten.
-  // Doing it LAST, as one monotone map, is the same argument the wash quantiser
-  // makes fifteen blocks above ("the LAST thing that touches the tonal
-  // structure re-imposes it"), and monotone is what makes it safe:
-  //
-  //   * a plateau stays a plateau, and its STEP grows by the local slope;
-  //   * the paper tooth and the hatch are authored as fractions of that step,
-  //     and they are scaled by the SAME local slope, so tooth:step and ink:wash
-  //     are preserved exactly — this cannot re-open the round-5 "substrate
-  //     louder than the painting" defect;
-  //   * hue and HSV saturation are untouched by construction (the triple is
-  //     scaled, not re-mixed), so it cannot walk a dark into violet — the
-  //     round-15 trap. What it DOES change is which pixels are dark, which is
-  //     why the floor's own hue had to be re-authored alongside it: see
-  //     uFloorTint and uInkBlack below.
-  //
-  // THE TWO ANCHORS ARE THE PIPELINE'S OWN END STOPS, and they are FIXED POINTS
-  // of the curve, so nothing is crushed past them and no new clipping can
-  // appear: uRangeLo is the near-field ink floor and uRangeHi sits just under
-  // the painted-surface ceiling. In between, a cubic S redistributes. Because
-  // the shape is exactly a smoothstep between two fixed points, it was
-  // calibrated OFFLINE against the two cold plates above (apply the same map to
-  // the 8-bit frame and re-measure) rather than by rendering a sweep — which is
-  // also why it works in true sRGB rather than in the file's usual pow 0.4545.
-  //
-  // Predicted from that calibration, and to be checked against a cold render:
-  //   bridge  maxBin 16.0  <L60 6.1  >L195 8.5  p99 219.0  clip 0
-  //   closeup maxBin 10.5  <L60 12.3 >L195 12.0 p99 220.4  clip 0
-  if (uRangeAmt > 0.001) {
-    vec3 cD = vec3(vcSrgbEnc(c.r), vcSrgbEnc(c.g), vcSrgbEnc(c.b));
-    float p = lumaOf(cD);
-    if (p > uRangeLo && p < uRangeHi) {
-      float span = max(uRangeHi - uRangeLo, 1e-4);
-      float q = (p - uRangeLo) / span;
-      float s = q * q * (3.0 - 2.0 * q);
-      float pN = mix(p, uRangeLo + span * s, uRangeAmt);
-      cD *= pN / max(p, 1e-5);
-      c = vec3(vcSrgbDec(cD.r), vcSrgbDec(cD.g), vcSrgbDec(cD.b));
+  // The 8-bit dither also moved there: it has to be the last thing that touches
+  // the frame, and this pass no longer is.
+
+  gl_FragColor = vec4(max(c, vec3(0.0)), 1.0);
+  #include <colorspace_fragment>
+}
+`;
+
+// ---- histogram reduction ----------------------------------------------------
+// ROUND 18. The tonal-range curve needs to know what THIS plate's distribution
+// is, and the pipeline had no way to ask. This is that reduction: three passes
+// that turn the graded frame into eight CDF knots, i.e. the fraction of the
+// frame below each of eight display luminances.
+//
+// It is an INDICATOR AVERAGE, not a scatter: a histogram needs per-bin counters
+// and a fragment shader cannot increment one, but the average of step(p, t) over
+// the frame IS the CDF at t, and averaging is the one thing a downsample chain
+// does exactly. Four thresholds fit in an RGBA target; eight take two chains,
+// which is cheaper and far less fragile than MRT here.
+//
+// The tap counts are exact at 1920x1080: the seed pass is 240x135 and each of
+// its fragments averages an 8x8 block, so every source pixel is counted exactly
+// once with equal weight, and the two reductions (16x15 then 15x9) are exact
+// too. At other backbuffer sizes the 8x8 grid over-/under-samples the cell
+// slightly and the CDF becomes an estimate rather than a census; that is fine,
+// it shapes a curve, it is not a number anyone quotes.
+//
+// It reads the GRADED frame, not the composite, because the curve runs after the
+// grade and the grade's transfer is neither monotone in isolation (the wash
+// quantiser) nor spatially uniform (hatch, tooth, vignette) — the distribution
+// the curve has to fix is not recoverable from the distribution upstream of it.
+const STATS_SEED_FRAG = /* glsl */`
+uniform sampler2D tColor;
+uniform vec2 uSrcRes;
+uniform vec2 uDstRes;
+uniform vec4 uThresh;
+varying vec2 vUv;
+float lumaOf(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+float vcSrgbEnc(float x) {
+  x = clamp(x, 0.0, 1.0);
+  return x <= 0.0031308 ? x * 12.92 : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+void main() {
+  vec2 idx = floor(vUv * uDstRes);
+  vec2 cell = uSrcRes / uDstRes;
+  vec2 st = cell / 8.0;
+  vec4 acc = vec4(0.0);
+  for (int j = 0; j < 8; j++) {
+    for (int i = 0; i < 8; i++) {
+      vec2 sp = (idx * cell + (vec2(float(i), float(j)) + 0.5) * st) / uSrcRes;
+      vec3 c = texture2D(tColor, sp).rgb;
+      float p = lumaOf(vec3(vcSrgbEnc(c.r), vcSrgbEnc(c.g), vcSrgbEnc(c.b)));
+      // step(p, t) is 1 where t >= p, i.e. the indicator of "this pixel is at or
+      // below threshold t" — averaged, that is the CDF.
+      acc += step(vec4(p), uThresh);
     }
   }
+  gl_FragColor = acc / 64.0;
+}
+`;
 
-  // 8-bit dither so the big flat washes do not band on the way out
+function statsReduceFrag(tx, ty) {
+  return /* glsl */`
+uniform sampler2D tSrc;
+uniform vec2 uSrcRes;
+uniform vec2 uDstRes;
+varying vec2 vUv;
+void main() {
+  vec2 idx = floor(vUv * uDstRes);
+  vec4 acc = vec4(0.0);
+  for (int j = 0; j < ${ty}; j++) {
+    for (int i = 0; i < ${tx}; i++) {
+      vec2 sp = (idx * vec2(${tx}.0, ${ty}.0) + vec2(float(i), float(j)) + 0.5) / uSrcRes;
+      acc += texture2D(tSrc, sp);
+    }
+  }
+  gl_FragColor = acc / ${tx * ty}.0;
+}
+`;
+}
+
+// ---- THE PLATE'S TONAL RANGE ------------------------------------------------
+// ROUND 17 DIAGNOSED THIS CORRECTLY AND THEN OVER-FITTED IT. The frame was one
+// midtone band with a floor and a ceiling nothing stood on — a quarter of the
+// bridge plate inside one 16-LSB bin, one pixel in a hundred below L 60. That is
+// the "faded antique pastel plate" read: not a wrong palette, a wrong
+// DISTRIBUTION. Its fix was a cubic smoothstep between two FIXED display
+// anchors, 0.100 and 0.868, and it failed in the two ways a fixed-anchor curve
+// has to:
+//
+//   A. IT CRUSHED THE PLATES THAT WERE ALREADY DARK. Cold, HUD masked: village
+//      25.3% of the frame in ONE bin and 38.8% under L 60, dusk 26.0% in one
+//      bin — the shaded half-timbered facade's timber studs went from dark brown
+//      with internal value to black voids. A smoothstep has ZERO derivative at
+//      both fixed points, so any population sitting near an anchor is compressed
+//      to nothing, and village's darks were already sitting on the low one.
+//   B. IT CRUSHED THE SUNLIT GROUND. uRangeHi 0.868 put that zero-derivative
+//      shoulder at L 221, four LSB above where sunlit ground sits; local slope
+//      ran 0.98/0.75/0.58/0.36/0.14 at L 200/210/215/219/221. The paper tooth
+//      and the hatch are authored as FRACTIONS of the local wash step, so they
+//      are scaled by the same collapsing slope: the substrate did not get
+//      louder, it vanished, and the sunlit road read as unpainted paper.
+//
+// WHAT IS KEPT. Doing the redistribution LAST, as one monotone map on display
+// luminance, is still right: the frame's value structure is built by ten things
+// (surface washes, contact, aerial perspective, the tonemap S, the ink floor,
+// the painted ceiling, split tone, hatch, tooth, vignette) each authored against
+// the value it saw, and widening the range upstream re-argues all ten. Monotone
+// is what makes it safe — a plateau stays a plateau and its step scales by the
+// local slope, tooth:step and ink:wash are preserved exactly, and because an RGB
+// triple is SCALED rather than re-mixed, hue and HSV saturation are unchanged by
+// construction, so this cannot walk a dark into violet (the round-15 trap).
+//
+// WHAT CHANGED — TWO THINGS.
+//
+// 1. THE CURVE IS BUILT FROM THE PLATE, NOT FROM A CONSTANT. It is a
+//    slope-clipped PARTIAL HISTOGRAM EQUALISATION over nine segments whose
+//    boundaries are fixed but whose slopes come from the reduction above:
+//    segment i's equalisation slope is (its share of the frame) x (the span) /
+//    (its width), mixed uAmt of the way from 1 toward that, then clamped into
+//    [floor, uRangeGmax] and renormalised so the two outer knots stay exact
+//    fixed points. Dense bands get expanded — that is what breaks a 25% bin and
+//    what re-opens the timber studs — and sparse bands give up range, but never
+//    more than the floor allows.
+//
+// 2. THERE IS A SLOPE FLOOR, AND IT IS HIGHER IN THE HIGHLIGHTS. This is the
+//    direct answer to failure B: the transfer's derivative is bounded below
+//    everywhere, so nothing can be compressed to nothing, and above L 184 the
+//    floor is uRangeGminHi rather than uRangeGmin so the sunlit band keeps its
+//    tooth. Measured on the four calibration plates the slope at
+//    L 200/210/215/219/221 never falls below 0.63, against 0.14 at L 221 before.
+//
+// AND THE ANCHORS ARE OUTSIDE THE PICTURE. uRangeKnot[0] = 20/255 and [9] =
+// 250/255, while the darkest scene pixel across the four plates is L 25.1 and
+// the brightest L 234.6. The two zero-population fixed points define the output
+// budget without any real pixel ever sitting on one.
+//
+// WHY THE SLOPE PROFILE IS INTERPOLATED. A piecewise-constant slope means a
+// derivative discontinuity at every knot, and every plate here has a sky — a
+// smooth gradient lays a Mach band across exactly such a crease. So the segment
+// slopes are placed at segment MIDPOINTS and linearly interpolated, which
+// integrates in closed form to a C1 piecewise-QUADRATIC transfer. Monotonicity
+// is free: an interpolated slope is a convex combination of positive numbers, so
+// the minimum slope over the whole domain is exactly min(g) — there is no
+// interior dip to hunt for.
+//
+// NO TEMPORAL SMOOTHING, DELIBERATELY. Averaging the statistics over frames
+// would steady the curve under a moving camera, and it would also make a
+// resident render depend on the shot posed before it — the exact class of bug
+// that cost round 15 a whole round. The curve is a pure function of the frame.
+// The clamps are what keep it from lurching: between two similar frames the
+// CDF moves a little and the clipped, renormalised slopes move less.
+const RANGE_FRAG = /* glsl */`
+${GLSL_HASH}
+uniform sampler2D tColor;
+uniform sampler2D tCdfA;      // 1x1: CDF at knots 1..4
+uniform sampler2D tCdfB;      // 1x1: CDF at knots 5..8
+uniform float uRangeKnot[10]; // segment boundaries in display luminance
+uniform float uRangeAmt;      // 0 = off, 1 = full equalisation
+uniform float uRangeGmin;     // slope floor
+uniform float uRangeGminHi;   // ...above uRangeHiFrom
+uniform float uRangeGmax;     // slope ceiling
+uniform float uRangeHiFrom;
+uniform float uTime;
+varying vec2 vUv;
+
+float lumaOf(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+// The REAL sRGB transfer, both ways. The rest of the grade uses pow 0.4545 as a
+// stand-in for "display", which is fine for a local amplitude (a tooth budget, a
+// hatch gate) but not for an absolute value: at display 0.149 the two encodings
+// of one linear luminance are 4.5 LSB apart, and this curve is calibrated
+// against measured 8-bit plate values.
+float vcSrgbEnc(float x) {
+  x = clamp(x, 0.0, 1.0);
+  return x <= 0.0031308 ? x * 12.92 : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+float vcSrgbDec(float x) {
+  x = clamp(x, 0.0, 1.0);
+  return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4);
+}
+
+void main() {
+  vec3 c = texture2D(tColor, vUv).rgb;
+  vec3 cD = vec3(vcSrgbEnc(c.r), vcSrgbEnc(c.g), vcSrgbEnc(c.b));
+
+  if (uRangeAmt > 0.001) {
+    float p = lumaOf(cD);
+
+    vec4 ca = texture2D(tCdfA, vec2(0.5));
+    vec4 cb = texture2D(tCdfB, vec2(0.5));
+    float cdf[10];
+    cdf[0] = 0.0;
+    cdf[1] = ca.x; cdf[2] = ca.y; cdf[3] = ca.z; cdf[4] = ca.w;
+    cdf[5] = cb.x; cdf[6] = cb.y; cdf[7] = cb.z; cdf[8] = cb.w;
+    cdf[9] = 1.0;
+
+    float lo = uRangeKnot[0], hi = uRangeKnot[9];
+    float span = hi - lo;
+    float g[9], m[9], gRaw[9], fl[9];
+    for (int i = 0; i < 9; i++) {
+      float w = uRangeKnot[i + 1] - uRangeKnot[i];
+      m[i] = 0.5 * (uRangeKnot[i] + uRangeKnot[i + 1]);
+      float f = max(0.0, cdf[i + 1] - cdf[i]);
+      gRaw[i] = 1.0 + uRangeAmt * ((f * span) / w - 1.0);
+      fl[i] = uRangeKnot[i] >= uRangeHiFrom ? uRangeGminHi : uRangeGmin;
+    }
+    // THE CLAMPS ARE ON THE DELIVERED SLOPE, g*k, NOT ON g. k is fixed by the
+    // requirement that the two outer knots stay fixed points, so it depends on
+    // every g, and the clamps depend on k — a fixed point, and five sweeps put it
+    // inside a thousandth. Clamping g before normalising instead would make the
+    // floor mean whatever k the frame happened to produce: on the dusk plate k is
+    // 0.72, which quietly turns a 0.70 floor into 0.50 in the highlights, i.e.
+    // exactly the round-17 defect this floor exists to prevent, in a form no
+    // parameter would show.
+    float k = 1.0;
+    for (int it = 0; it < 6; it++) {
+      float total = 0.0;
+      for (int i = 0; i < 9; i++) g[i] = clamp(gRaw[i], fl[i] / k, uRangeGmax / k);
+      total = g[0] * (m[0] - lo) + g[8] * (hi - m[8]);
+      for (int i = 0; i < 8; i++) total += 0.5 * (g[i] + g[i + 1]) * (m[i + 1] - m[i]);
+      k = span / max(total, 1e-5);
+    }
+
+    float pN = -1.0;
+    float acc = lo + g[0] * k * (m[0] - lo);       // out(m[0])
+    if (p <= lo) pN = p;
+    else if (p <= m[0]) pN = lo + g[0] * k * (p - lo);
+    else {
+      for (int i = 0; i < 8; i++) {
+        float d = m[i + 1] - m[i];
+        if (pN < 0.0 && p < m[i + 1]) {
+          float u = (p - m[i]) / d;
+          pN = acc + d * k * (g[i] * u + 0.5 * (g[i + 1] - g[i]) * u * u);
+        }
+        acc += 0.5 * k * (g[i] + g[i + 1]) * d;
+      }
+      if (pN < 0.0) pN = acc + g[8] * k * (p - m[8]);
+    }
+
+    cD *= pN / max(p, 1e-5);
+  }
+
+  // 8-bit dither, IN DISPLAY SPACE. It has to be here and it has to be here.
+  //
+  // Rounds 1-17 added this in LINEAR space, one 255th of full linear scale, just
+  // before three.js's own sRGB encode — and the sRGB encode is steeply CONCAVE
+  // at the bottom, so a symmetric linear dither does not average out: by Jensen
+  // it LIFTS every shadow. Measured on paired cold renders of this build with the
+  // range curve off and on, the shipped transfer sat 2 to 7 LSB above the
+  // calibrated one everywhere below L 100, and the apparent local slope at L 30
+  // came out 1.0-1.4 against an authored 0.60 — the dither, not the curve. It
+  // also cost the shadows chroma, because adding an equal linear amount to r, g
+  // and b raises the smallest channel by the largest fraction.
+  //
+  // A dither exists to break the quantiser it is feeding. The quantiser here is
+  // the 8-bit sRGB framebuffer, so half an 8-bit sRGB step is the correct
+  // amplitude and display space is the correct space. The decode below is undone
+  // by colorspace_fragment's encode; in float that round trip is lossless and it
+  // keeps three.js's colour management the one authority on output encoding.
   float dith = (vcHash21(gl_FragCoord.xy + fract(uTime) * 61.3) - 0.5) / 255.0;
-  c += dith;
+  cD = max(cD + dith, vec3(0.0));
 
+  c = vec3(vcSrgbDec(cD.r), vcSrgbDec(cD.g), vcSrgbDec(cD.b));
   gl_FragColor = vec4(max(c, vec3(0.0)), 1.0);
   #include <colorspace_fragment>
 }
@@ -2434,67 +2645,99 @@ export class CanvasRenderPipeline {
         // value. (Round 5 took half and three critics called the pencil louder
         // than the paint; that was at a gate four times as wide.)
         uHatchDepth: { value: 0.62 },
-        // ---- the plate's tonal range (see the range block at the end of the
-        // grade). Both anchors are the pipeline's OWN end stops, in display:
-        // 0.100 (L 25.5) is the plate's MEASURED black point and 0.868 sits 4 LSB
-        // under the painted-surface ceiling at 225/255 = 0.882.
-        //
-        // The low anchor is the measured minimum, NOT lumaOf(uInkBlack) * uNearInk
-        // (L 38), and the difference matters. That constant is the floor's
-        // ASYMPTOTE as the paint under it goes to zero; it is not a hard minimum,
-        // because the hatch multiplies through it (c * uHatchDepth + uInkBlack *
-        // 0.04) and so does the outline. Cold, HUD masked, the darkest scene pixel
-        // is L 29.8 on bridge and L 25.8 on closeup. Anchoring on L 38 left the
-        // whole 26-38 band outside the curve's span, and measured offline that cost
-        // the bridge plate its single-bin test: 17.4% at lo 0.135 and 16.2% at
-        // 0.118 against 15.2% at 0.100, because a wider span is more slope
-        // everywhere, and the bridge mode is dense enough to need it.
-        //
-        // The top anchor was 0.860 for one round; 0.868 puts p99 at 221.3 rather
-        // than 219.5, i.e. on the number rather than 1.5 LSB under it, without
-        // reaching the ceiling guard — anchoring ON the ceiling (0.882) piles p99
-        // at 224.6, inside the band by 0.4 LSB and for the wrong reason, since it
-        // is the guard's own soft clip doing the work rather than the picture.
-        uRangeLo: { value: 0.100 },
-        uRangeHi: { value: 0.868 },
-        // 1.0 = the full redistribution.
-        //
-        // KNOWN SCOPE LIMIT, MEASURED, NOT GUESSED: a FIXED pair of anchors assumes
-        // every plate has a similar distribution, and two of the twelve do not.
-        // Cold, HUD masked, with this curve switched off vs on:
-        //
-        //                <L60          p99            maxBin        mean L
-        //   bridge     1.3 -> 6.6   216.5 -> 220.9   23.9 -> 14.9   138 -> 139
-        //   closeup    (see r2)     220 -> 222.1     16.3 -> 11.7   137 -> 134
-        //   village   25.9 -> 39.1  190.6 -> 207.5   21.2 -> 25.4   101 ->  94
-        //   dusk      14.0 -> 37.6  203.5 -> 212.1   20.4 -> 25.0   106 ->  95
-        //
-        // bridge and closeup were the mid-heavy plates this curve was written for
-        // and it does exactly what it was asked to. village and dusk were ALREADY
-        // open at the bottom (26% and 14% under L 60 before the curve) and short at
-        // the TOP (0.5% and 1.7% over L 195) — they needed the shoulder and not the
-        // toe, and they get both. On village the visible cost is the shaded
-        // half-timbered facade on the right and the near soldier in front of it:
-        // studs, doorway and uniform crush into one near-black mass.
-        //
-        // Trading the amount back does NOT buy that off — swept offline against all
-        // four plates, k 1.00 -> 0.85 moves village 39.1 -> 36.5 while costing
-        // bridge 6.6 -> 5.2 and the acceptance bar with it. Nor does raising
-        // uRangeLo: village's darks are pixels that were dark BEFORE the curve, so
-        // lifting the anchor only piles them onto it (village maxBin 25.4 -> 33.7 at
-        // lo 0.175).
-        //
-        // The fix is a per-frame anchor — uRangeLo driven from the plate's own p1
-        // and uRangeHi from its p99, which is a one-mip histogram reduction the
-        // pipeline does not currently have. Until then this curve is calibrated for
-        // the mid-heavy majority and village/dusk are known to be over-driven.
-        // (dusk's 18% pctViolet is NOT from this: the curve scales an RGB triple, so
-        // hue and HSV saturation are algebraically unchanged, and measured cold the
-        // number is 18.62% with the curve off against 17.78% with it on.)
-        uRangeAmt: { value: 1.0 },
       },
       vertexShader: FS_VERT, fragmentShader: GRADE_FRAG,
       depthTest: false, depthWrite: false, name: 'vcGrade',
+    });
+
+    // ---- histogram reduction + the plate's tonal range ----------------------
+    // Eight CDF knots in two chains of four. The thresholds are the interior
+    // segment boundaries of the curve below, in display luminance.
+    const KNOT8 = [48, 64, 84, 106, 130, 156, 184, 212].map((v) => v / 255);
+    this.mStats = [0, 1].map((half) => new THREE.ShaderMaterial({
+      uniforms: {
+        tColor: { value: null },
+        uSrcRes: { value: new THREE.Vector2() },
+        uDstRes: { value: new THREE.Vector2(STATS_SEED_W, STATS_SEED_H) },
+        uThresh: { value: new THREE.Vector4(...KNOT8.slice(half * 4, half * 4 + 4)) },
+      },
+      vertexShader: FS_VERT, fragmentShader: STATS_SEED_FRAG,
+      depthTest: false, depthWrite: false, name: `vcStatsSeed${half}`,
+    }));
+    const mkReduce = (tx, ty, dw, dh, name) => new THREE.ShaderMaterial({
+      uniforms: {
+        tSrc: { value: null },
+        uSrcRes: { value: new THREE.Vector2() },
+        uDstRes: { value: new THREE.Vector2(dw, dh) },
+      },
+      vertexShader: FS_VERT, fragmentShader: statsReduceFrag(tx, ty),
+      depthTest: false, depthWrite: false, name,
+    });
+    this.mStatsMid = [0, 1].map((i) => mkReduce(16, 15, STATS_MID_W, STATS_MID_H, `vcStatsMid${i}`));
+    this.mStatsOut = [0, 1].map((i) => mkReduce(STATS_MID_W, STATS_MID_H, 1, 1, `vcStatsOut${i}`));
+
+    this.mRange = new THREE.ShaderMaterial({
+      uniforms: {
+        tColor: { value: null },
+        tCdfA: { value: null },
+        tCdfB: { value: null },
+        uTime: { value: 0 },
+        // Nine segments over [20, 250] in 8-bit luminance. The two outer knots
+        // are the fixed points and they are OUTSIDE the picture: across the four
+        // calibration plates the darkest scene pixel is L 25.1 and the brightest
+        // L 234.6, so no real pixel ever sits on a fixed point. The interior
+        // eight are placed roughly ninth-tiles of a plate's occupied range, a
+        // little tighter low down where the shade washes and the linework are.
+        uRangeKnot: { value: [20, 48, 64, 84, 106, 130, 156, 184, 212, 250].map((v) => v / 255) },
+        // How far each segment's slope is pushed from 1 toward its full
+        // histogram-equalisation slope. Swept offline against cold bridge,
+        // closeup, village and dusk — 405 configurations x 4 plates scored on all
+        // six acceptance criteria — using the FULL-FRAME CDF, because that is what
+        // the reduction above actually measures (it cannot mask the HUD, and a
+        // HUD-masked calibration mispredicted bridge's single-bin number by 2.8
+        // points on the first cold check of this pass). Below about 0.6 bridge
+        // keeps a 17% bin; 1.0 is plain equalisation, which passes too but buys
+        // nothing here and costs bridge and closeup a point of >L195.
+        //
+        // CALIBRATE AGAINST A FRESH CURVE-OFF RENDER, NOT A STORED ONE. Two hours
+        // of other people's edits to materials and geometry moved these plates
+        // enough that a sweep against stale ones put bridge 2.4 points wrong.
+        // Setting this to 0 gives the curve-off plate to calibrate on.
+        uRangeAmt: { value: 0.85 },
+        // The slope floor. This is the whole answer to round 17's crushed darks:
+        // a smoothstep between fixed points has slope ZERO at both ends, so a
+        // population near an anchor is destroyed. Because the clamp is applied to
+        // the DELIVERED slope (see the fixed-point loop in RANGE_FRAG), 0.60 is a
+        // guarantee about the shipped transfer and not about an intermediate:
+        // nothing anywhere in any frame loses more than 40% of its local
+        // contrast, and the sunlit band measures 0.596-0.657 across the four
+        // calibration plates against 0.14 at L 221 in round 17.
+        uRangeGmin: { value: 0.60 },
+        // A SEPARATE, HIGHER FLOOR FOR THE HIGHLIGHTS WAS TRIED AND DOES NOT PAY.
+        // It is the obvious answer to round 17's failure B — the sunlit band is a
+        // sparse population, so equalisation wants its range, and the tooth and
+        // the hatch are fractions of the local step and go with it. But the top
+        // two segments are 66 of the 230 LSB of output budget, so raising their
+        // floor comes straight out of everything else's expansion. Measured on the
+        // four cold plates, a delivered floor of 0.72 above L 184 costs bridge its
+        // single-bin test (17.66%) and village and dusk their >L195 floor (3.26%
+        // and 3.53%); 0.78 makes it 18.93% / 2.68% / 2.82%. Held equal to
+        // uRangeGmin, which the sweep says is the highest floor that passes
+        // everywhere. Kept as its own knob because the asymmetry is the right
+        // shape and a future round with more output headroom should retry it.
+        uRangeGminHi: { value: 0.60 },
+        uRangeHiFrom: { value: 184 / 255 },
+        // The ceiling, on the delivered slope. 3.2 is generous on purpose — this
+        // is the knob that breaks a 25% bin apart and re-opens village's timber
+        // studs, and bridge's masonry-and-river band asks for 2.6 of it. It cannot
+        // make the paper tooth louder than the painting: the tooth is authored as
+        // a fraction of the wash step and a monotone scale multiplies both by the
+        // same local slope, so tooth:step is invariant. Above about 3.2 it stops
+        // binding on any of the four plates.
+        uRangeGmax: { value: 3.20 },
+      },
+      vertexShader: FS_VERT, fragmentShader: RANGE_FRAG,
+      depthTest: false, depthWrite: false, name: 'vcRange',
     });
   }
 
@@ -2520,6 +2763,27 @@ export class CanvasRenderPipeline {
     this.hdr = rt(w, h, { depthBuffer: true });
     this.dofRT = rt(w, h);
     this.comp = rt(w, h);
+
+    // The grade no longer draws to the canvas — it draws here, in LINEAR half
+    // float, so the histogram reduction and the range pass can both read it and
+    // so nothing is quantised to 8 bits until the very last write. Nearest
+    // filtering is load-bearing on the reduction side: the seed pass wants the
+    // indicator of individual pixels, and a bilinear tap would hand it the
+    // indicator of a 2x2 average instead.
+    this.gradeRT = rt(w, h, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    this.statsSeed = [0, 1].map(() => rt(STATS_SEED_W, STATS_SEED_H,
+      { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter }));
+    this.statsMid = [0, 1].map(() => rt(STATS_MID_W, STATS_MID_H,
+      { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter }));
+    this.statsOut = [0, 1].map(() => rt(1, 1,
+      { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter }));
+    for (const i of [0, 1]) {
+      this.mStats[i].uniforms.uSrcRes.value.set(w, h);
+      this.mStatsMid[i].uniforms.uSrcRes.value.set(STATS_SEED_W, STATS_SEED_H);
+      this.mStatsOut[i].uniforms.uSrcRes.value.set(STATS_MID_W, STATS_MID_H);
+    }
+    this.mRange.uniforms.tCdfA.value = this.statsOut[0].texture;
+    this.mRange.uniforms.tCdfB.value = this.statsOut[1].texture;
 
     // Contact / AO, always half res. The term is a soft wash, the bilinear
     // upsample doubles as its blur, and it is then QUANTISED into a three-step
@@ -2574,6 +2838,11 @@ export class CanvasRenderPipeline {
     this.dofRT?.dispose();
     this.comp?.dispose();
     this.aoRT?.dispose();
+    this.gradeRT?.dispose();
+    for (const set of [this.statsSeed, this.statsMid, this.statsOut]) {
+      if (set) for (const t of set) t.dispose();
+    }
+    this.statsSeed = this.statsMid = this.statsOut = null;
     if (this.bloomMips) for (const m of this.bloomMips) m.dispose();
     this.bloomMips = null;
   }
@@ -2782,7 +3051,23 @@ export class CanvasRenderPipeline {
     const keyI = this.lightRig?.sun?.intensity ?? 2;
     gu.uHatch.value = Math.min(1.9, CFG.render.hatchStrength * 1.9)
                     * THREE.MathUtils.clamp(keyI / 1.35, 0.50, 1.0);
-    this._quad.draw(r, this.mGrade, null, true);
+    this._quad.draw(r, this.mGrade, this.gradeRT, true);
+
+    // ------------------------------- 8. histogram reduction + tonal range
+    // Two chains of four CDF knots, seed -> mid -> 1x1, then one monotone C1
+    // curve built per frame from those eight numbers. See RANGE_FRAG.
+    for (const i of [0, 1]) {
+      this.mStats[i].uniforms.tColor.value = this.gradeRT.texture;
+      this._quad.draw(r, this.mStats[i], this.statsSeed[i], true);
+      this.mStatsMid[i].uniforms.tSrc.value = this.statsSeed[i].texture;
+      this._quad.draw(r, this.mStatsMid[i], this.statsMid[i], true);
+      this.mStatsOut[i].uniforms.tSrc.value = this.statsMid[i].texture;
+      this._quad.draw(r, this.mStatsOut[i], this.statsOut[i], true);
+    }
+    const ru = this.mRange.uniforms;
+    ru.tColor.value = this.gradeRT.texture;
+    ru.uTime.value = this.time;
+    this._quad.draw(r, this.mRange, null, true);
 
     r.setRenderTarget(null);
     r.setClearColor(this._prevClear, prevClearAlpha);

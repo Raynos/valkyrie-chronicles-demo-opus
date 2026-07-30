@@ -700,6 +700,24 @@ export const SURFACE_PIGMENT = {
   masonry:  { blockSize: 0.42, blockTone: 0.135, pigLevels: 15, mottle: 0.022, blotch: 0.42, wetRim: 0.85, violet: 0.78,
               driveRange: [0.30, 0.72], shadowFloor: 0.40 },
   brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15, mottle: 0.090, wetRim: 0.80, violet: 0.82 },
+  // ROUND 18, FOR WHOEVER OWNS FORM NEXT — A DIAGNOSIS, NOT A FIX, AND THE FIX
+  // WAS TRIED AND REVERTED. The farmhouse's camera-facing render on 'bridge'
+  // (x1630-1690, y160-270) measures hue 42.4 against hue 39.4 on its own sunlit
+  // gable, i.e. a 3.0 deg shade turn where the brief asks for 8-25. The cause is
+  // not the hue budget. At L155 against the gable's L196 that wall is at 0.79 of
+  // lit, i.e. it is sitting in BAND 2 — the PIGMENT band, where midCol is
+  // albedo * 0.98 + coolCol * 0.06 and the composite turn is gated to about half.
+  // An away-facing wall that lands on the raw albedo has not been shaded, it has
+  // been left alone, and no hue knob reaches it.
+  //
+  // driveRange [0.32, 0.74] + shadowFloor 0.40 (masonry's own window, one shade
+  // narrower) WAS measured: it moved that wall L155 -> L125 as intended and moved
+  // its hue 42.4 -> 38.6, i.e. it bought a band boundary and paid for it with the
+  // last 4 degrees of the turn it was supposed to help. Reverted, because it is a
+  // form change to every rendered wall in the game, it did not deliver the
+  // temperature it was made for, and this round could only verify it on three
+  // shots. If you take it up, the number to watch is the SHADE hue, not just the
+  // luminance split, and village/command are where it costs the most.
   stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35, mottle: 0.125, wetRim: 0.75, violet: 0.72 },
   tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14, mottle: 0.080, wetRim: 0.80, violet: 0.86 },
   timber:   { fissure: 0.075, fissureFreq: 3.4, pigLevels: 13, mottle: 0.085, violet: 0.95 },

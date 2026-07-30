@@ -110,6 +110,14 @@ function normObjectives(list) {
 // +-60 degree window is always fully populated whatever the heading.
 const TAPE_DEG = 1080;
 
+// How far out a unit still earns a name slip, in metres, under the EYE policy
+// (action / aim / field). See _applyLabelPolicy. These are DELIBERATELY much
+// tighter than worldLabels' own 88 m / 76 m draw leash, which is a legibility
+// limit ("a slip on a man 90 m off is a smudge") and not a relevance one.
+const TAG_FOE_RANGE = 30;      // a spotted Imperial inside engagement range
+const TAG_ARMOUR_RANGE = 34;   // our tank, while it is in the same fight
+const TAG_ALLY_RANGE = 12;     // an ally close enough that his state matters
+
 const LEGENDS = {
   command: [
     ['Drag', 'Pan Map'], ['LMB', 'Select Unit'], ['Q', 'Orders'],
@@ -677,8 +685,10 @@ export class HUD {
     this.compassTape = h('div', { class: 'vc-compass-tape' });
     this.compass.appendChild(this.compassTape);
     // Objective pins ride a second row below the cardinal tape so they never
-    // sit on top of a letter.
-    this.compassPins = h('div', { class: 'vc-compass-tape', style: 'width:100%;top:1.7em;height:auto' });
+    // sit on top of a letter. 1.15em, not 1.7em: the tape's paper is 1.05em tall
+    // since round 18 slimmed it, and a pin row hanging 0.65em clear of it was a
+    // second band of chrome floating unsupported over the sky.
+    this.compassPins = h('div', { class: 'vc-compass-tape', style: 'width:100%;top:1.15em;height:auto' });
     this.compass.appendChild(this.compassPins);
     this._buildCompassTape();
     L.appendChild(this.compass);
@@ -712,10 +722,13 @@ export class HUD {
           (card ? (deg === 0 ? '#8d3730' : '#3a2f28') : '#6b5a44'),
       });
       if (card) {
+        // Sized to the 1.05em tape, not the old 2.2em one: the cardinal has to
+        // sit ON the paper. At .62em/.48em the four cardinals still read and the
+        // eight-points stay subordinate to them.
         el.appendChild(h('div', {
           class: 'glyph',
-          style: 'font-size:' + (deg % 90 === 0 ? '1.02em' : '.78em') +
-            ';font-variant:small-caps;letter-spacing:.14em;line-height:1',
+          style: 'font-size:' + (deg % 90 === 0 ? '.62em' : '.48em') +
+            ';font-variant:small-caps;letter-spacing:.10em;line-height:1',
           text: card,
         }));
       }
@@ -2070,7 +2083,49 @@ export class HUD {
         tokens: true, marked: this.selected,
       });
     } else {
-      this.labels.setPolicy({ filter: null, occlusion: true, lift: 0, tokens: false });
+      // THE EYE'S POLICY IS RELEVANCE, NOT A ROLL-CALL.
+      //
+      // `filter: null` annotated every living unit the line of sight could reach,
+      // and worldLabels' own leash is 88 m for the squad / 76 m for Imperials —
+      // the whole depth of the valley. Round 17's field frames came back with five
+      // to seven name slips strung across the midground (`dusk` 7, `grass` 6) and
+      // `closeup` stacked three Imperial slips over the far bank. That is a list
+      // of names laid over a fight, which is exactly what the collision-avoidance
+      // pass was written to stop and cannot: the slips do not overlap, there are
+      // simply too many of them. Valkyria annotates the soldier you are holding
+      // and the men close enough to shoot at you.
+      //
+      // So: the selected soldier always; a spotted Imperial while he is inside
+      // engagement range; our armour while it is in the same fight; and an ally
+      // only when he is close enough that his state is the player's problem.
+      // Everything past those radii keeps its soldier and loses its label.
+      //
+      // CAVEAT, measured, do not assume otherwise: thinning the candidate set is
+      // NOT purely subtractive at the picture level. worldLabels packs slips into
+      // lanes and DROPS one that cannot find a lane above its soldier without
+      // crossing the top guard, so removing a neighbour can let a previously
+      // dropped slip reappear. Separately, `grass` gained a visible slip here
+      // without gaining a tag: its fourth slip was always being placed, and the
+      // old 2.2em compass bar was sitting on top of it. Count slips off the
+      // RENDER, never off this filter.
+      const cam = this.camera;
+      const range = (u) => {
+        if (!cam || !u.pos) return 0;
+        const dx = u.pos.x - cam.position.x;
+        const dy = (u.pos.y || 0) - cam.position.y;
+        const dz = u.pos.z - cam.position.z;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+      };
+      this.labels.setPolicy({
+        filter: (u) => {
+          if (u === this.selected) return true;
+          const d = range(u);
+          if ((u.team | 0) === 1) return d < TAG_FOE_RANGE;
+          if (u.isVehicle) return d < TAG_ARMOUR_RANGE;
+          return d < TAG_ALLY_RANGE;
+        },
+        occlusion: true, lift: 0, tokens: false,
+      });
     }
   }
 

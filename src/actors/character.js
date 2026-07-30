@@ -631,6 +631,112 @@ function faceMasses(b, rig, o, head, f) {
       [0.430, 0.462, 0.0008, 0.0018, 1.5],
       [0.520, 0.471, 0.0003, 0.0011, 1.5],
     ]);
+
+    // --- F/G/H. THE THREE PADS OF THE LOWER FACE ---------------------------
+    // ROUND 18. The blind judge's single most damning tell on this project:
+    // "a single hard shade terminator crosses the face at eye level, dumping the
+    // lower 60% of the face into one flat mud-brown wash that reads as a BANDANA
+    // rather than as light." Measured on the round-17 cold `closeup` in 8x8 cells
+    // over the bare cheek, x 656-748 (no eye, no mouth, no ear, no hair, no
+    // collar in it):
+    //
+    //     y 276   198 203 201 203 203 206 208 201     <- lit malar plane
+    //     y 284   145 160 159 163 165 176 180 187     <- 16 px of terminator
+    //     y 292   133 122 123 122 117 121 120 127     <- and then nothing
+    //     y 300   124 119 119 121 122 124 126 126        happens for
+    //     y 308   116 116 102  92 104 121 122 125        FORTY PIXELS
+    //     y 316    86  86  97  95 103 121 123 117
+    //     y 324    80  84  97  96  97 120 126 127
+    //     y 332    91  97  95  91  95 100 112 120
+    //
+    // Two separate defects and they compound. The EDGE is ruled: rows 292-332
+    // sit inside 117-127 across 80 px of cheek, so the boundary above them is a
+    // single isoline at one height. And BELOW it there is no form at all — the
+    // only things modelled down there are the malar crest above (a horizontal
+    // ridge), rig.js's buccal hollow (a 6% gaussian centred on a constant dy)
+    // and its under-jaw wedge (likewise). Every term is a function of dy alone,
+    // so every boundary they can produce is a horizontal line across the face.
+    //
+    // WHY THIS IS GEOMETRY AND NOT PAINT. The wash down there is not merely
+    // dark, it is CLAMPED: rig.js's faceMap ends in `k = clamp(k, 0.315, 1.20)`
+    // and in the lower face the mouth lozenge (0.46), the perioral chain (0.245),
+    // the commissure (0.40) and the under-jaw wedge (0.30) sum straight through
+    // the floor, so a whole region of cheek and jaw arrives at the shader with
+    // ONE albedo. Adding more paint there cannot produce a value step — the
+    // clamp eats it — and painting a lighter patch instead is the rubric's
+    // dead end 5, the one that put a soldier in camouflage. The only thing left
+    // that can differ per pixel in a clamped region is N.L. So: three broad LOW
+    // pads whose upper planes face the key and whose lower flanks turn away,
+    // stacked with GAPS between them, so the gaps read as the recesses.
+    //
+    // LOW and BROAD is load-bearing, and the arithmetic is in the outline pass,
+    // not in taste. Round 17's malar crest was inked as "one continuous
+    // near-straight stroke from the ala to the ear... a mask edge, not a
+    // cheekbone" because it is a NARROW tube: the composite's crease term is
+    // smoothstep(0.78, 1.45, |dN|) over a 2-texel cross, which a 3 mm ridge
+    // clears and a 20 mm pad does not, while its silhouette term needs a plane
+    // error past tol = 0.030 + distM * 0.0115 (~70 mm at this camera) which
+    // neither reaches. A pad 2.0-2.6 mm proud and 11-22 mm tall is therefore
+    // pure light modelling: it CANNOT draw its own outline, so it turns a band
+    // rather than adding a line.
+    //
+    // F. THE MALAR FAT PAD — the cheek apple, immediately below and outboard of
+    // the crest. This is the piece that breaks the terminator, and it breaks it
+    // by pushing lit form UP into the shade: its top edge reaches face fraction
+    // ~0.425 against a crest at 0.418-0.479, so over the middle third of the
+    // cheek the plane below the cheekbone is facing the sky again and the band
+    // boundary has to detour around it instead of running straight through.
+    //
+    // CYCLE 1 RAN ALL THREE PADS AT 3.7-5.6 mm PROUD AND THAT WAS TOO MUCH IN
+    // BOTH DIRECTIONS AT ONCE. Measured on the same cheek box: the flat wash was
+    // gone (rows 292-338 went from 117-127 to 132-212) but it had gone the WRONG
+    // WAY — the lower face lifted 60 LSB into the lit band almost everywhere, so
+    // one flat dark had become one flat light, and each pad had picked up its own
+    // closed oval of graphite. That second part is the arithmetic above coming
+    // back the other way: a tube whose section is 3.8 mm proud meets the skull in
+    // a 3.8 mm rim, and a rim IS a normal discontinuity, so the crease term fires
+    // round the pad's whole circumference and the cheek reads as a patch sewn on.
+    // Every pad below is therefore held at or under 2.5 mm of total projection
+    // (lift + rx) with the section 4-9x taller than proud, which keeps the rim
+    // inside the crease term's dead band while leaving the pad enough surface to
+    // turn a wash. Their VALUE now comes from area and orientation, not from
+    // sticking out.
+    if (!SIMPLE()) frontBorder(side, [
+      [0.360, 0.328, 0.0004, 0.0009, 7.6],
+      [0.460, 0.344, 0.0007, 0.0015, 8.8],
+      [0.560, 0.360, 0.0008, 0.0016, 9.0],
+      [0.660, 0.373, 0.0006, 0.0013, 8.2],
+      [0.730, 0.378, 0.0002, 0.0008, 7.0],
+    ]);
+
+    // G. THE MODIOLUS MOUND — the muscular knot at the corner of the mouth,
+    // outboard of the nasolabial fold and below the pad. Placed LATERAL of
+    // rig.js's perioral chain, whose centre line runs ax 0.250 -> 0.340 -> 0.285
+    // as it descends, so this mound's medial flank drops INTO that painted fold
+    // and the fold reads as a groove between two lit masses instead of as a
+    // stripe. It is also the one mark down here that is near-vertical in image
+    // space at every yaw — which is rig.js's own argument for the chain, and the
+    // reason it survives the three-quarter view every shot in the set uses.
+    frontBorder(side, [
+      [0.300, 0.288, 0.0003, 0.0007, 4.4],
+      [0.375, 0.225, 0.0007, 0.0012, 4.8],
+      [0.420, 0.168, 0.0008, 0.0013, 4.6],
+      [0.395, 0.118, 0.0004, 0.0008, 4.4],
+    ]);
+
+    // H. THE MASSETER PLANE — the mandibular ramus, from below the buccal hollow
+    // back to the gonion. Between F and H sits a gap at face fraction ~0.30,
+    // which is exactly where rig.js paints its buccal hollow: with a proud mass
+    // above it and another below it, a 6% albedo whisper finally has two lit
+    // planes to be a hollow BETWEEN. That is the third value the lower face
+    // needs, and none of the three is painted.
+    if (!SIMPLE()) border(side, [
+      [0.500, 0.286, 0.74, 0.0004, 0.0008, 5.6],
+      [0.620, 0.256, 0.62, 0.0008, 0.0015, 6.2],
+      [0.740, 0.228, 0.44, 0.0009, 0.0017, 6.0],
+      [0.830, 0.210, 0.20, 0.0005, 0.0010, 5.4],
+      [0.860, 0.214, -0.06, 0.0002, 0.0005, 5.0],
+    ]);
   }
 
   // --- E. THE MENTAL PROTUBERANCE ------------------------------------------
@@ -648,13 +754,26 @@ function faceMasses(b, rig, o, head, f) {
   // width a chin has rather than becoming a nose cone. It also breaks up the
   // shaded lower plane the malar crest creates above it, because it is the one
   // surface down there still facing the key.
-  b.addTube([[-0.20, 0.076], [-0.10, 0.058], [0, 0.051], [0.10, 0.058], [0.20, 0.076]]
+  //
+  // ROUND 18 — A BUTTON IS NOT A CHIN PLANE. Round 17's version was 40 mm wide
+  // (ax +-0.20) and 5.8 mm tall (rx 0.0034 * 1.7), which is a knuckle: measured
+  // on the round-17 cold plate the chin held no value of its own at all, the jaw
+  // and the chin both reading 88-100 at y 340-348. The requirement is that the
+  // chin catch light SEPARATELY from the jaw, and for that it needs a top plane
+  // with area — a mental TRIGONE, the flat triangle of bone that a real chin is,
+  // running from the midline out to the mental tubercles at ax 0.34. Widened to
+  // ax +-0.34 with the section made taller than proud (flat 2.6 against 1.7), so
+  // the pad is 8-9 mm of surface facing up-and-forward instead of a 5 mm bead.
+  // Same total proudness as before, so nothing moves in the profile the round-15
+  // note was fixing — this is area, not projection.
+  b.addTube([[-0.34, 0.104], [-0.22, 0.076], [-0.11, 0.058], [0, 0.052],
+    [0.11, 0.058], [0.22, 0.076], [0.34, 0.104]]
     .map(([dx, t], i) => {
-      const dy = FY(t), rx = [0.0015, 0.0029, 0.0034, 0.0029, 0.0015][i];
+      const dy = FY(t), rx = [0.0006, 0.0014, 0.0021, 0.0024, 0.0021, 0.0014, 0.0006][i];
       return {
         p: S(dx, dy, Math.sqrt(Math.max(0.04, 1 - dx * dx - dy * dy)),
-          [0.0004, 0.0015, 0.0018, 0.0015, 0.0004][i]),
-        rx, rz: rx * 1.7,
+          [0.0002, 0.0011, 0.0021, 0.0028, 0.0021, 0.0011, 0.0002][i]),
+        rx, rz: rx * 3.6,
       };
     }), { seg: seg(8), capStart: 'round', capEnd: 'round' });
 
@@ -895,6 +1014,146 @@ function eyeInk(b, rig, o, head, f) {
       { p: E(eW * 0.88, -eH * 0.84, 0.0034), rx: 0.0009, rz: 0.0008 },
     ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
   }
+  b.setColor(o.skin).setMottle(0.028);
+}
+
+
+/**
+ * THE MOUTH, MADE TO READ — the drawn upper line, the lit lower roll, and the
+ * shadow the roll casts on the chin.
+ *
+ * ROUND 18. The brief is verbatim: "A MOUTH. It is currently a smear. It needs a
+ * defined upper lip line (the drawn one), a lit lower lip, and a shadow under the
+ * lower lip." rig.js builds an upper lip with a cupid's bow, a fuller lower lip,
+ * a seam and two commissure darks — so, exactly like the eye in round 17, the
+ * assembly is not missing, it is BURIED, and the arithmetic says where.
+ *
+ *  1  THE WASH IT SITS IN IS CLAMPED. rig.js's faceMap sums the mouth lozenge
+ *     (0.46), the perioral chain (0.245), the commissure (0.40) and the under-jaw
+ *     wedge (0.30) and then runs `k = clamp(k, 0.315, 1.20)`. Every one of those
+ *     marks is at the floor together, so the mouth's PAINTED contribution is
+ *     arithmetically zero — the lozenge cannot make the stomion darker than the
+ *     nasolabial fold beside it, because both are already at 0.315.
+ *  2  THE MARKS ARE TWO PIXELS. The seam is 2.0 mm tall (rz 0.0020) and the lit
+ *     lower-lip roll rig paints is a +0.105 albedo blob. At the closeup's 1.17
+ *     px/mm vertical that seam is 2.3 px of a colour ~30 LSB off its surround,
+ *     and the composite's watercolour blur and the band quantiser between them
+ *     take it to nothing. Measured on the round-17 cold plate at mouth height
+ *     (y 332-348, x 744-792) there is no horizontal dark line anywhere: the
+ *     whole strip runs 85-127 with no interior step over 12 LSB.
+ *
+ * So this is an OVERLAY on rig's own mouth canon, built like eyeInk: same
+ * landmarks, re-derived, every mark 1.7-2x taller in section and pushed to a
+ * standoff that wins the depth test against the layer underneath. Depths along
+ * the face normal in millimetres, front-most surface of each mark in brackets —
+ * rig's marks are seam 4.2, lower lip 4.7, upper lip 6.4:
+ *
+ *   upper line 3.0 + 2.6 = 5.6    lower roll 1.0 + 4.4 = 5.4    sulcus 0.8 + 1.8 = 2.6
+ *
+ * Nothing here goes past rig's own upper lip at 6.4, which is deliberate: round
+ * 15's note is that the mouth sits within 15 degrees of the silhouette in every
+ * shot in the set, so anything that stands PROUDER than the lip mass already
+ * there pokes outside the jaw's ink outline and reads as a pale pellet stuck onto
+ * the head. This buys legibility out of section height and value, not projection.
+ *
+ * AND THE SECTION HEIGHTS ARE SET BY A PIXEL BUDGET, NOT BY ANATOMY. Measured on
+ * the round-18 cycle-2 plate: the eye at face fraction 0.5 lands at y 290 and the
+ * strongest mouth-height dark at y 350, so 0.332 of face fraction spans 60 px and
+ * this head renders at 0.87 px/mm vertical — NOT the 1.17 the round-17 eye notes
+ * assume. Worse, `closeup` poses the head at ~40 degrees of yaw, which puts the
+ * mouth's midline ON the silhouette: the whole visible half of it is a box about
+ * 20 x 13 px hard against the jaw's 4 px outline. Three marks have to fit inside
+ * 13 px or they cannot be three marks. 4.4 + 4.6 + 3.6 mm at 0.87 px/mm is
+ * 3.8 + 4.0 + 3.1 px with a pixel of skin between each, which just fits, and that
+ * is why every section below is 1.7-2.3x rig's. It is not a taste judgement and
+ * it does not generalise: a shot that framed the head straight on would want
+ * these back at life proportion.
+ *
+ * Built AFTER the AO bakes, for eyeInk's reason: the lit lower roll is a 4 mm
+ * bead in a modelled perioral hollow and a 44 mm probe finds it enclosed.
+ */
+function mouthInk(b, rig, o, head, f) {
+  const S = head.surf, FY = head.FY;
+  if (!S || !FY) return;
+  const faceT = (dx, t, lift = 0) =>
+    S(dx, FY(t), Math.sqrt(Math.max(0.04, 1 - dx * dx - FY(t) * FY(t))), lift);
+
+  // rig.js's landmark canon. It does not export these, so they are restated —
+  // any drift between these and rig's puts the overlay off the mouth it is
+  // overlaying, exactly as eyeInk re-derives the eye frame.
+  const T_LIPLOW = 0.118, T_MOUTH = 0.168, T_MENTAL = 0.092;
+  const mW = 0.395 * f.width;
+
+  // THE DRAWN LINE. Warm dark, and warm on purpose: the rubric's round-15 entry
+  // is that dropping luminance without re-authoring hue and chroma is what
+  // turned every outline on this hero violet. 0x2a1d18 is hue 24 deg / sat 0.41
+  // as authored; mixed 0.74 off PALETTE.lip (hue 15 deg) the result stays inside
+  // the 12-45 deg band the ink acceptance uses. It is a full wash below the lip
+  // rolls either side of it — which is what makes a line a line — without being
+  // ink inside a skin zone, and it is NOT the 0.86 near-black maroon round 15
+  // measured as "a horizontal dark red-brown GASH reading as a cut".
+  const lineInk = mixCol(PALETTE.lip, rgbLin(0x2a1d18), 0.74);
+  // The lower roll. Paler than skin, because a mouth is a light-over-dark pair
+  // exactly like a brow. Held to 0.38 toward cream and not further: rig.js's
+  // warning about a bright sclera "blooming into a pair of glowing dots" is the
+  // same failure mode, and a lip that outruns the lit forehead reads as a
+  // highlight stuck on a shaded face rather than as a lip.
+  const rollLit = mixCol(o.skin, rgbLin(0xf0dec4), 0.46);
+  const sulcus = mixCol(o.skin, rgbLin(0x4a352a), 0.58);
+
+  b.setZone(ZONE.SKIN).setBones(BONE_GROUPS.HEAD);
+
+  // --- 1. THE UPPER LIP LINE ------------------------------------------------
+  // 3.8 mm tall against rig's 2.0, and it runs WIDER than the lip mass it
+  // divides (1.10 mW against 0.92) for rig.js's own reason: a seam that stops
+  // exactly where the lip volume stops draws a lozenge, a seam that runs on
+  // draws a mouth. The bow is in it — the line dips at the philtrum and lifts
+  // over each peak — because a perfectly straight mouth line is the single
+  // clearest tell of a drawn-on face.
+  b.setColor(lineInk).setMottle(0.010);
+  b.addTube([
+    { p: faceT(-mW * 1.10, T_MOUTH + 0.018, 0.0018), rx: 0.0013, rz: 0.0012 },
+    { p: faceT(-mW * 0.72, T_MOUTH + 0.006, 0.0027), rx: 0.0023, rz: 0.0019 },
+    { p: faceT(-mW * 0.32, T_MOUTH + 0.001, 0.0030), rx: 0.0026, rz: 0.0022 },
+    { p: faceT(0, T_MOUTH - 0.003, 0.0030), rx: 0.0024, rz: 0.0021 },
+    { p: faceT(mW * 0.32, T_MOUTH + 0.001, 0.0030), rx: 0.0026, rz: 0.0022 },
+    { p: faceT(mW * 0.72, T_MOUTH + 0.006, 0.0027), rx: 0.0023, rz: 0.0019 },
+    { p: faceT(mW * 1.10, T_MOUTH + 0.018, 0.0018), rx: 0.0013, rz: 0.0012 },
+  ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
+
+  // --- 2. THE LIT LOWER ROLL ------------------------------------------------
+  // Placed at face fraction 0.140, i.e. ABOVE rig's own lower lip at 0.118 and
+  // in front of it, so rig's mass becomes the lip's shaded underside and this is
+  // its top roll. 4.4 mm tall, with 1.9 mm of skin between its top edge and the
+  // line's bottom edge — enough that the quantiser sees two marks and not one
+  // fat one, close enough that they read as parts of the same feature.
+  b.setColor(rollLit).setMottle(0.012);
+  b.addTube([
+    { p: faceT(-mW * 0.84, T_MOUTH - 0.010, 0.0004), rx: 0.0017, rz: 0.0014 },
+    { p: faceT(-mW * 0.44, T_LIPLOW + 0.021, 0.0009), rx: 0.0040, rz: 0.0022 },
+    { p: faceT(0, T_LIPLOW + 0.019, 0.0010), rx: 0.0044, rz: 0.0025 },
+    { p: faceT(mW * 0.44, T_LIPLOW + 0.021, 0.0009), rx: 0.0040, rz: 0.0022 },
+    { p: faceT(mW * 0.84, T_MOUTH - 0.010, 0.0004), rx: 0.0017, rz: 0.0014 },
+  ], { seg: seg(7), capStart: 'round', capEnd: 'round' });
+
+  // --- 3. THE SHADOW UNDER THE ROLL ----------------------------------------
+  // The labiomental sulcus. This is the third of the three marks the brief asks
+  // for and the one that makes the pair read as a mouth on a head rather than as
+  // two stripes: without a dark below it, a pale roll has no underside and the
+  // chin runs straight up into the lip. Narrower than the roll (0.66 mW against
+  // 0.84) and set 2.4 mm proud only — it wants to sit in its own trough, not
+  // stand on the chin. Clear of the mental pad faceMasses builds, whose top edge
+  // reaches face fraction 0.082.
+  if (!SIMPLE()) {
+    b.setColor(sulcus).setMottle(0.014);
+    b.addTube([
+      { p: faceT(-mW * 0.66, T_MENTAL + 0.018, 0.0004), rx: 0.0009, rz: 0.0008 },
+      { p: faceT(-mW * 0.28, T_MENTAL + 0.008, 0.0008), rx: 0.0018, rz: 0.0016 },
+      { p: faceT(mW * 0.28, T_MENTAL + 0.008, 0.0008), rx: 0.0018, rz: 0.0016 },
+      { p: faceT(mW * 0.66, T_MENTAL + 0.018, 0.0004), rx: 0.0009, rz: 0.0008 },
+    ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
+  }
+
   b.setColor(o.skin).setMottle(0.028);
 }
 
@@ -2246,6 +2505,11 @@ export class Character {
     // eyeInk wants the bake either; a socket already carries the orbital dark from
     // the skull's own paint map.
     eyeInk(b, this.rig, opts, head, app.face);
+    // Same argument, same place in the order: the mouth overlay's one LIT mark is
+    // a 4 mm roll inside a modelled perioral hollow, and a 44 mm probe finds that
+    // enclosed too. Its two dark marks do not want the bake either — the region
+    // is already at rig.js's albedo floor, so AO on top of it is pure loss.
+    mouthInk(b, this.rig, opts, head, app.face);
     this.geometry = b.finish(this.rig);
     this.mesh = createSkinnedBody(this.geometry, this.rig, actorBodyMaterial());
     this.root.add(this.mesh);

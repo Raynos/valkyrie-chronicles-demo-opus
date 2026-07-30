@@ -715,39 +715,54 @@ function css() {
 .vc-ammo-n small{ font-size:.55em; color:var(--ink-3); }
 .vc-reload{ margin-top:.2em; color:var(--red); font-variant:small-caps; letter-spacing:.2em; font-size:.72em; }
 
-/* The heading tape is a strip of gummed paper stuck across the top of the page,
-   not a hairline rule: bare ticks over the render read as a debug overlay. */
-/* 2.5em, not 1.5: the page's running head is gummed to the head of the sheet at
-   0.34em and the cardinal tape used to sit hard under it, so two strips of cream
-   stock touched along the top edge of every action frame. */
+/* THE HEADING TAPE — a slim strip of gummed paper at the head of the sheet.
+   It is still paper and still nibbed ticks: bare hairlines over the render read
+   as a debug overlay, which is why the tape exists at all.
+
+   ROUND 18 SIZING, and why. The previous cut was 36em x 2.2em of near-opaque
+   cream (alpha .90-.96) gummed at top:2.5em — measured 660 x 41 px at 1920x1080,
+   3.68% of the frame's upper third, and on 'dusk' that is a bright bar ruled
+   across a purple sky at exactly the height a horizon wants. Round 17's own
+   verifier filed it as the heaviest remaining piece of chrome, and on 'grass' the
+   tape's lower edge came down onto a name slip.
+
+   The real game's heading readout is a slim, low-contrast tape that loses to the
+   sky. So: 19em x 1.05em of paper at alpha .50-.62 behind a .78 layer opacity,
+   gummed at top:.5em so it hugs the head of the sheet instead of crossing the
+   picture. That is ~355 x 20 px, ~1% of the upper third, and its bottom edge
+   (~row 30 of 1080) now sits ABOVE the name slips' own top guard at 5.5% of
+   frame height, so the tape and a slip can no longer overprint each other.
+
+   The running head this used to be clearing at 2.5em is display:none in
+   gameplay (page furniture, book screens only), so nothing is under it now. */
 .vc-compass{
-  position:absolute; top:2.5em; left:50%; transform:translateX(-50%);
-  width:36em; max-width:62vw; height:4.0em; overflow:hidden;
-  -webkit-mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
-  mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
+  position:absolute; top:.5em; left:50%; transform:translateX(-50%);
+  width:19em; max-width:34vw; height:2.0em; overflow:hidden; opacity:.78;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 17%,#000 83%,transparent);
+  mask-image:linear-gradient(90deg,transparent,#000 17%,#000 83%,transparent);
 }
 .vc-compass::before{
-  content:''; position:absolute; left:0; right:0; top:.06em; height:2.2em; z-index:0;
+  content:''; position:absolute; left:0; right:0; top:.04em; height:1.05em; z-index:0;
   background-image:var(--grain),
-    linear-gradient(180deg, rgba(250,244,228,.96) 0%, rgba(238,227,201,.94) 62%, rgba(214,197,163,.90) 100%);
+    linear-gradient(180deg, rgba(250,244,228,.62) 0%, rgba(238,227,201,.57) 62%, rgba(214,197,163,.50) 100%);
   background-blend-mode:multiply, normal;
   background-size:160px 160px, 100% 100%;
-  box-shadow:0 1px 3px rgba(58,47,51,.26);
+  box-shadow:0 1px 2px rgba(58,47,51,.13);
   clip-path:var(--tape-clip, none);
 }
 .vc-compass-tape{ position:absolute; top:0; left:0; height:100%; will-change:transform; z-index:1; }
-.vc-compass-pin{ position:absolute; top:.16em; transform:translateX(-50%); text-align:center; }
+.vc-compass-pin{ position:absolute; top:.05em; transform:translateX(-50%); text-align:center; }
 .vc-compass-pin svg{ width:1.1em; height:1.1em; margin:0 auto; }
 .vc-compass-pin span{ font-size:.56em; font-variant:small-caps; letter-spacing:.14em; }
 /* Every tick on the tape is a nibbed stroke (icons.js compassTick), not a 1px
    div filled with currentColor — a grid of hairline rectangles over the render
    is the "debug overlay" look axis 11 rejects. */
-.vc-compass-pin .tick{ width:.34em; height:.62em; margin:.1em auto 0; display:block; }
+.vc-compass-pin .tick{ width:.26em; height:.30em; margin:.04em auto 0; display:block; }
 .vc-compass-pin .tick svg{ width:100%; height:100%; }
 /* Heading pip: an inked caret nailed to the centre, outside the scrolling tape. */
 .vc-compass-pip{
-  position:absolute; left:50%; top:-.06em; width:.78em; transform:translateX(-50%);
-  filter:drop-shadow(0 1px 1px rgba(58,47,51,.45)); z-index:2;
+  position:absolute; left:50%; top:-.10em; width:.56em; transform:translateX(-50%);
+  filter:drop-shadow(0 1px 1px rgba(58,47,51,.35)); z-index:2;
 }
 .vc-compass-pip svg{ width:100%; height:auto; }
 
