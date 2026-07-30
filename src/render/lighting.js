@@ -71,6 +71,21 @@ const FIT_STEPS = [9, 12, 16, 21, 27, 35, 45, 58, 74, 94];
 // caster's shadow clears its own silhouette and rakes measurably across the
 // frame, near enough that the near planes of every subject stay lit.
 const MIN_OFF_AXIS = 1.22;
+
+// Hard ceiling on three's own constant normal offset, in METRES. It is derived
+// from the texel size, and a wide frustum's texel is big enough (22 mm at r=45)
+// that 1.6 of them peter-pans a boot's contact shadow off its own boot. See
+// applyRadius().
+//
+// DEAD END, so nobody spends another round on it: round 15's critique blamed
+// `closeup`'s missing shadows on this offset, arithmetic'd on a 1024 map
+// (texel 0.19 m). The shipped map is 4096 (CFG.render.shadowMapSize at
+// quality 2), so the measured values on that plate were texel 0.0171 m,
+// normalBias 0.0273 m — already under this ceiling. Clamping it is a NO-OP
+// there; a cold `closeup` with and without the clamp was byte-identical. The
+// ceiling stays as insurance for the quality-0 (1024) path, where the same
+// formula really does ask for 0.14 m.
+const NORMAL_BIAS_MAX = 0.045;
 const CORRECT_LAMBDA = 1.8;
 
 /** Wrap to (-PI, PI]. */
@@ -467,7 +482,7 @@ export function createLightRig(scene, opts = {}) {
     const depthRange = Math.max(1, cam.far - cam.near);
     sun.shadow.bias = -Math.min(0.0016, (texel * 1.5 + 0.006) / depthRange);
     // Safety net for foreign materials that still use three's own vertex stage.
-    sun.shadow.normalBias = texel * 1.6;
+    sun.shadow.normalBias = Math.min(texel * 1.6, NORMAL_BIAS_MAX);
   }
 
   /**
@@ -505,11 +520,36 @@ export function createLightRig(scene, opts = {}) {
     const h = Math.max(0.8, _camPos.y - focus.y);
     const pitch = -_camFwd.y;
     // A level camera sees to the horizon but only ever needs shadows over the
-    // near ground, so cap it by eye height rather than letting it diverge.
+    // near ground, so cap it by eye height rather than letting it diverge. The
+    // cap is PROPORTIONAL, with only a small constant: the old `h * 4.5 + 18`
+    // was 24 m for a camera 1.4 m off the deck, i.e. the constant decided it,
+    // and 24 m of look is a 45 m box centred 42 m downrange — for a portrait
+    // whose subject is 1.5 m from the lens. `h * 6 + 4` is within a couple of
+    // metres of the old value for every camera above 5 m (tank 52 vs 54,
+    // command and overview both still clamp at 150) and pulls the eye-level
+    // plates in to 12 m, which is a 21 m box at 10 mm per texel.
     let look = pitch > 0.06 ? h / pitch : 1e9;
-    look = Math.min(look, h * 4.5 + 18);
+    look = Math.min(look, h * 6 + 4);
     look = THREE.MathUtils.clamp(look, 7, 150);
-    const far = THREE.MathUtils.clamp(look * 1.6 + 11, 22, o.shadowFar);
+    // ...AND BOUNDED BY HOW FAR AWAY THE SUBJECT ACTUALLY IS.
+    //
+    // The bounding sphere of a truncated frustum is sized and CENTRED by its far
+    // cap: with far = 50 the centre lands 42 m down the axis and the radius comes
+    // out 44. That is fine for a landscape plate and catastrophic for a portrait,
+    // because the subject 1.5 m off the lens then sits 41 m from the box centre,
+    // i.e. right on the boundary of a 44 m box at 22 mm per texel. Measured on
+    // `closeup` (r = 45, centre 42.5 m ahead of a camera 1.5 m from its subject):
+    // not one cast shadow in the frame — the near half of the picture was one
+    // texel-row from falling out of the map, and the normal offset that goes with
+    // a 22 mm texel (0.035 m) lifts a boot's own contact shadow clean off it.
+    // Clamping the RADIUS alone makes it worse, since the centre stays 42 m out
+    // and the subject leaves the box altogether. The far cap is the only knob
+    // that shrinks the centre and the extent together, so bound it by the
+    // camera's distance to what it is looking at. On the eleven landscape plates
+    // the focus is tens of metres out and this bound never binds.
+    const dFocus = _camPos.distanceTo(focus);
+    const far = THREE.MathUtils.clamp(
+      Math.min(look * 1.6 + 11, dFocus * 4 + 12), 14, o.shadowFar);
     const near = Math.max(0.1, cam.near);
 
     // Tight bounding sphere of a truncated perspective frustum (the usual CSM
@@ -683,7 +723,7 @@ export function createLightRig(scene, opts = {}) {
     // Re-assert every frame. main.js pokes `sun.shadow.normalBias` directly on
     // its own ladder, and applyRadius() early-outs when the radius has not
     // changed, so a bias derived from a frustum we no longer use would stick.
-    sun.shadow.normalBias = texel * 1.6;
+    sun.shadow.normalBias = Math.min(texel * 1.6, NORMAL_BIAS_MAX);
     // `bounce` is a hemisphere light: it has no position or direction to place.
   }
 

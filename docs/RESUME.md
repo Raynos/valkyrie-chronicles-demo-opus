@@ -47,10 +47,10 @@ last commit and re-run whatever agent owned it.
 ### 2. Confirm the game still boots
 
 ```bash
-node tools/shoot.mjs overview shots/overview.png --wait 3500
+node tools/shoot.mjs all          # all twelve, ~18 s
 ```
 
-Exit 0 with an empty `errors` array = the build is healthy. Look at the PNG.
+Exit 0 with an empty `errors` array = the build is healthy. Look at the PNGs.
 
 ### 3. Restart the workflow
 
@@ -94,13 +94,10 @@ on disk even if it never returned a report.
 
 A reboot kills three things that are not on disk:
 
-1. **The warm vite dev server on port 5173.** Restart it before any rendering, or every
-   screenshot silently costs ~13 s extra:
-   ```bash
-   cd /Users/raynos/projects/game-demos/valkyrie-chronicles-demo-opus
-   npx vite --host 127.0.0.1 --port 5173 --strictPort &
-   ```
-2. **Any headless Chromium** left over from the harness. They die cleanly; nothing to do.
+1. **The render daemon and its vite server.** Nothing to do by hand — `tools/shoot.mjs` starts
+   both on first use (~7 s once, then ~1.6 s/shot). Do NOT start vite yourself.
+2. **Any headless Chromium** left over from the harness. They die cleanly; nothing to do. If a
+   daemon is wedged rather than dead, `node tools/shoot.mjs --stop` clears it.
 3. **Any running workflow.** Its agents are gone. Files they had already written survive —
    `git status` will show them.
 
@@ -109,6 +106,11 @@ Then the standard checks: `git status --short`, `npx vite build`,
 ```bash
 node tools/shoot.mjs bridge shots/bridge.png
 ```
+
+**The harness changed after round 15 — see `CLAUDE.md` and `docs/HARNESS.md`.** `tools/shootBatch.mjs`
+is deleted; `tools/shoot.mjs` is a thin client over a resident browser daemon (`tools/renderd.mjs`)
+and costs ~1.6 s/shot instead of 12.5 s. `--cold` is the byte-deterministic path for any number you
+quote or any cross-round diff. Never launch your own browser, never start or kill vite.
 
 ## Where the visual loop currently stands (round 15 in flight)
 

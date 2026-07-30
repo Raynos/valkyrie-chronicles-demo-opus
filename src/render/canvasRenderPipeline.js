@@ -1367,10 +1367,20 @@ void main() {
     // clamping green up to the lower of red and blue turned uInkBlack itself
     // from (43,35,51) into (43,43,51) — a 0.16-chroma cool grey, which is what
     // the r15 closeup critic measured as "a near-NEUTRAL slate at 23% grey" and
-    // scored against rubric axis 3. 0.90 of min(r,b) still forbids the magenta
-    // case (green far below both) while leaving the floor a recognisable
-    // brown-violet at ~0.22 chroma.
-    ink.g = max(ink.g, min(ink.r, ink.b) * 0.90);
+    // scored against rubric axis 3.
+    //
+    // ROUND 16 PUTS THE CLAMP BACK AT min(r,b) EXACTLY, and takes the chroma the
+    // r15 critic wanted out of the FLOOR'S AUTHORED HUE instead. The *0.90
+    // relaxation was the wrong lever twice over: it is the guard that exists
+    // specifically to stop green falling under both neighbours, and the only
+    // chroma it can hand back is by definition the chroma with green lowest —
+    // i.e. violet-magenta, the one documented dead end. Measured consequence of
+    // relaxing it (r15 closeup): mean of frame pixels below L 45 went hue 23.0 /
+    // sat 0.42 -> hue 282.6, and every outline on the hero read purple. With a
+    // WARM floor (blue lowest, see uInkBlack below) the clamp is inert — it only
+    // fires on the magenta case it was written for — so the darks can be both
+    // deep and chromatic without going anywhere near violet.
+    ink.g = max(ink.g, min(ink.r, ink.b));
     ink *= lumaOf(uInkBlack) / max(lumaOf(ink), 1e-5);
     // ---- AND THE FLOOR IS NOT THE SAME HEIGHT ALL THE WAY BACK ---------------
     // A single global floor is a statement that the deepest crease of a face
@@ -1407,6 +1417,33 @@ void main() {
     float nearK = step(0.0001, distG) * (1.0 - smoothstep(6.0, 60.0, distG));
     ink *= mix(1.0, uNearInk, nearK);
     c = ink * pow(max(vec3(1.0) - c, vec3(0.0)), vec3(uFloorPow)) + c * top;
+  }
+
+  // ---- ...AND THE TOP OF A PAINTED SURFACE IS NOT PAPER WHITE ---------------
+  // The floor work above gave the frame its bottom back; the tank critic found
+  // the other end broken. The near road measured 3774 px above L 225 with a peak
+  // of (254,242,170) — i.e. the paint had walked all the way onto, and past, the
+  // sheet. On a plate, paper white is what is LEFT UNPAINTED: a few square
+  // centimetres of specular. Anything the brush touched is at least a wash below
+  // it, and the difference between "cream highlight" and "blown highlight" is
+  // those last 8 LSB of headroom.
+  //
+  // So painted surfaces get a ceiling at paper white minus ~8 LSB (225/255 in
+  // display), as a rational soft clip from 0.80 up rather than a min(): a hard
+  // clamp would give a lit road a flat-topped plateau, which is the same amoeba
+  // by another route. The SKY is exempt — an open sky IS bare paper, that is the
+  // one surface allowed to sit at the sheet — and so is anything already under
+  // 0.80 display, so p99 (221) and the whole midtone range are untouched by
+  // construction. Placed after the white point and before the tooth on purpose:
+  // the grain then has somewhere to bite in the brightest wash.
+  {
+    float lD = pow(clamp(lumaOf(c), 0.0, 1.0), 0.4545);
+    float knee = 0.80;
+    float head = 225.0 / 255.0 - knee;
+    float over = max(lD - knee, 0.0);
+    float lN = min(lD, knee) + over / (1.0 + over / max(head, 1e-4));
+    lN = mix(lN, lD, sky);
+    c *= pow(lN / max(lD, 1e-3), 2.2);
   }
 
   // ---- split tone ----------------------------------------------------------
@@ -1589,18 +1626,66 @@ void main() {
       // stroke is marginal anyway, that a plane with no fold in it should be
       // left as a wash. dark is the band weight, so this costs nothing.
       float flatW = mix(uHatchFlat, 1.0, smoothstep(0.055, 0.30, nv));
-      dark *= mix(flatW, 1.0, dark);
+      // ...and what LETS the cut go is a CAVITY, not depth of wash.
+      //
+      // Round 15 wrote mix(flatW, 1.0, dark), i.e. the flat-plane cut is
+      // bypassed in proportion to how deep the wash already is. The bridge critic
+      // measured what that does: the densest mesh in the frame landed on the
+      // NEAREST unbroken bank slope, band-passed rms 16.0 against 8.8-9.8 on the
+      // vaults behind it, because a big dark flat card is exactly the pixel this
+      // term forgives. The intent was right — deep tone is legitimately graphite —
+      // but "deep" is not the same claim as "there is a cavity here".
+      //
+      // occ from the contact pass lives in COMPOSITE_FRAG, a shader earlier in the
+      // chain, so it is not in scope here (the prescribed mix(flatW,1.0,occ)
+      // cannot be written literally). The grade CAN measure the same thing off the
+      // frame it is holding: a pixel that is materially darker than its own
+      // neighbourhood is a crease, a fold or the inside of an opening; a pixel
+      // that matches its neighbourhood is a plane, however dark the plane is. Four
+      // taps at ~7 px, relative so it behaves the same on a dark bank and a lit
+      // wall. An unbroken slope now keeps its wash and the graphite goes where the
+      // surface turns.
+      vec2 cOff = uTexel * 7.0;
+      float lH = lumaOf(texture2D(tColor, uv).rgb);
+      float lR = 0.25 * (lumaOf(texture2D(tColor, uv + vec2(cOff.x, 0.0)).rgb)
+                       + lumaOf(texture2D(tColor, uv - vec2(cOff.x, 0.0)).rgb)
+                       + lumaOf(texture2D(tColor, uv + vec2(0.0, cOff.y)).rgb)
+                       + lumaOf(texture2D(tColor, uv - vec2(0.0, cOff.y)).rgb));
+      float cav = smoothstep(0.05, 0.32, (lR - lH) / max(lR, 0.02));
+      dark *= mix(flatW, 1.0, cav);
     }
     if (dark > 0.004) {
       vec2 sPx = uv * uResolution;
-      float sp = uHatchSpacing * uPixelRatio;
-      float h = vcHatchField(sPx, 0.6981, sp, 3.7);
-      // the crossing ruling comes in over the darker half of the gate
+      // ---- ONE PITCH AND TWO FIXED ANGLES IS A SCREENTONE ----------------------
+      // The bridge critic FFT'd four regions — a 3 m foreground bank, a 30 m mid
+      // vault, the left vault and the right vault — and got the same dominant
+      // stroke-normal family (116-130 deg) at the same 10-12 px pitch in all four,
+      // with a second family at 52-60 deg closing it into a regular 11 px diamond
+      // lattice. That is a mechanical screen laid over the frame, not a hand: a
+      // draughtsman re-sets his wrist for every plane he shades, so a soffit and a
+      // bank never share a ruling.
+      //
+      // So the ruling is keyed to the SURFACE, off the G-buffer normal quantised
+      // to a coarse bucket: same plane -> same wrist, different plane -> different
+      // wrist, and it is stable in screen space (no crawl) because the normal is.
+      // A low-frequency field off the paper sheet is mixed in so the pitch also
+      // wanders WITHIN one large plane rather than holding one exact period across
+      // it. Pitch stays inside +/-25% and the angle inside +/-16 deg: rubric axis 5
+      // wants constant stroke width and a screen-aligned family, not a random
+      // scribble — what it cannot have is ONE period and ONE angle everywhere.
+      vec3 nQ = floor(texture2D(tND, uv).xyz * 3.0 + 0.5);
+      float hs = vcHash31(nQ * 1.37 + 7.3);
+      float wob = texture2D(tPaper, uv * vec2(uResolution.x / uResolution.y, 1.0) * 0.85 + 0.37).g;
+      float sp = uHatchSpacing * uPixelRatio * (0.75 + 0.50 * mix(hs, wob, 0.45));
+      float ang = 0.6981 + 0.55 * (hs - 0.5);
+      float h = vcHatchField(sPx, ang, sp, 3.7);
+      // the crossing ruling comes in over the darker half of the gate, holding its
+      // original 61 degree separation from whatever the base ruling turned out to be
       float cross = smoothstep(0.30, 0.78, dark);
-      h = max(h, vcHatchField(sPx + vec2(137.0, 61.0), -0.3665, sp * 1.17, 21.3) * cross);
+      h = max(h, vcHatchField(sPx + vec2(137.0, 61.0), ang - 1.0646, sp * 1.17, 21.3) * cross);
       // and a third, shallow ruling in the deepest quarter only
       float deep = smoothstep(0.68, 0.96, dark);
-      h = max(h, vcHatchField(sPx + vec2(43.0, 211.0), 1.5010, sp * 0.86, 47.9) * deep * 0.8);
+      h = max(h, vcHatchField(sPx + vec2(43.0, 211.0), ang + 0.8029, sp * 0.86, 47.9) * deep * 0.8);
       // vcHatchField hands back a soft coverage value; a pencil does not lay
       // down a soft edge, it lays down graphite or it does not. Thresholding
       // the coverage both WIDENS the stroke (the field's own width is 1.0-1.85
@@ -1697,7 +1782,20 @@ void main() {
   // nothing brighter than the sheet for them to go to. Keeping the negative
   // half up there is both truer and useful — it is what stops a sunlit road
   // from clipping a channel, which a symmetric multiply had no way to avoid.
-  float signal = tooth * mid + min(tooth, 0.0) * low * hi * 0.45;
+  //
+  // ROUND 16 RAISES THAT ONE-SIDED HALF FROM 0.45 TO 1.0, because the tank critic
+  // measured the consequence of it being a half-measure: 3774 px above L 225 on
+  // the near road with ZERO measurable tooth in them — "a featureless cream
+  // amoeba", a blown 3D highlight with a watercolour filter on it. A CANVAS plate
+  // reserves paper white for a few square centimetres of specular and keeps
+  // cold-press grain right up to it. The window stays where round 7 put it (the
+  // SYMMETRIC tooth must still be gone by L~196 — that shoulder was authored
+  // against a critic's 7 px high-pass sd bar on a lit road and re-widening it
+  // walks straight back into a noise-overlay read). What survives above it is only
+  // the DARKENING half — the hollows of the tooth catching pigment — which is
+  // physically the only thing bare paper can do up there, and it is what makes a
+  // highlight read as a sheet instead of as a clipped buffer.
+  float signal = tooth * mid + min(tooth, 0.0) * low * hi * 1.0;
   // Additive in display, hue-preserving: scale linear RGB by the ratio the two
   // display luminances imply.
   {
@@ -1887,8 +1985,18 @@ export class CanvasRenderPipeline {
         // measured the consequence independently ("the darkest pixel on the
         // hero's face profile is L 58.9", "not one dark pixel between three
         // washes"). 0x241d26 is luma 32: a 2B graphite over a wash, which is what
-        // it is supposed to be. Still nowhere near #000 and still brown-violet.
-        uInk: { value: new THREE.Color(0x241d26) },
+        // it is supposed to be. Still nowhere near #000.
+        //
+        // ROUND 16 KEEPS THE VALUE AND RE-AUTHORS THE HUE. 0x241d26 is (36,29,38):
+        // blue ABOVE green and above red, i.e. hue 269 — r15 dropped the pencil's
+        // luma without re-authoring its chromaticity at the new luma, and the
+        // closeup critic measured the hero's face-profile ink at hue 270 and the
+        // silhouette at 282. 0x251e1b is (37,30,27): hue 18, sat 0.27 at the same LINEAR
+        // value as 0x241d26 — a warm brown-black graphite, which is what a soft pencil over
+        // a dried wash actually is. See the rubric's r15 ink-floor entry: chroma
+        // is roughly scale-invariant, so a triple that reads neutral-slate at L 59
+        // reads as saturated violet at L 32. Darkening is never luminance-only.
+        uInk: { value: new THREE.Color(0x251e1b) },
         // Was 0xffdcae — (1.32, 0.95, 0.56) once normalised, i.e. a 2.4:1
         // red-over-blue ADD wherever anything is bright, which in a daylight
         // frame is everywhere. Still cream, no longer amber.
@@ -1995,14 +2103,28 @@ export class CanvasRenderPipeline {
         // was unreachable by construction, which is the milky veiled read the
         // whole round complained about.
         //
-        // 0x2b2333 is luma 39: a 15% grey, still a warm-leaning violet-slate, and
-        // still a very long way from #000 (the rubric's no-pure-black rule is
-        // about the darkest pixel not being 0,0,0 — it is not a licence to keep
-        // the darkest pixel at 23% grey). Nothing else in the chain has to move
-        // with it: the floor is renormalised to lumaOf(uInkBlack), so lowering
-        // this constant lowers the toe and leaves the white point, the highlight
-        // tint and the paper alone.
-        uInkBlack: { value: new THREE.Color(0x2b2333) },
+        // The r15 value move was right and is KEPT: ~luma 40, a 15% grey, still a
+        // very long way from #000 (the rubric's no-pure-black rule is about the
+        // darkest pixel not being 0,0,0 — it is not a licence to keep the darkest
+        // pixel at 23% grey). Nothing else in the chain has to move with it: the
+        // floor is renormalised to lumaOf(uInkBlack), so lowering this constant
+        // lowers the toe and leaves the white point, the highlight tint and the
+        // paper alone.
+        //
+        // ROUND 16 RE-AUTHORS THE HUE AT THAT NEW VALUE. r15 went 0x3c3947 (L 59,
+        // hue 235, sat 0.20) -> 0x2b2333 (L 39, hue 270, sat 0.31): deeper AND
+        // rotated 35 degrees into magenta AND half again as chromatic, because it
+        // treated darkening as a luminance-only operation. 0x2e2522 is (46,37,34):
+        // hue 15, sat 0.26 at the SAME LINEAR luma as 0x2b2333 (0.0166 vs 0.0189 —
+        // these constants are sRGB and THREE converts them, so matching "L 39" in sRGB
+        // digits would have LIFTED the toe by a third: measured p1 47 -> 52.9 on the
+        // first warm authoring before this correction) — a warm brown-black, blue LOWEST, so
+        // the green clamp restored above never fires on it. The rubric's axis 3
+        // asks the darkest pixel to be a warm brown-violet; between "violet" and
+        // "warm" this constant now spends its chroma on the warm side, and the
+        // COOLING of shade is left where rounds 12-14 proved it belongs — the
+        // ambient/shade pole in lighting.js, not the frame's black point.
+        uInkBlack: { value: new THREE.Color(0x2e2522) },
         uWhiteStart: { value: 0.62 },
         uHighStart: { value: 0.74 },
         // ...and the floor lets go of the midtones faster. 2.6 handed a

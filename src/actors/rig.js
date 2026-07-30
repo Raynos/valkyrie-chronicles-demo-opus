@@ -109,7 +109,22 @@ export const PALETTE = {
   // so the form was being lit correctly all along and the painted panels were
   // simply drowning it. Now a same-hue tonal step: still 12% darker in luma so
   // every crease authored in it keeps its definition, but no hue break.
-  tunicShade: rgbLin(0x82754f),
+  // ROUND 16 — THE LAST PAINTED VALUE STEP ON THE TORSO COMES OUT.
+  // Round 12 took the HUE break out of this zone (see above) but left it 12%
+  // darker in luma than `tunic`: 0x82754f is luma 117 against the tunic's 141.
+  // That 24-LSB step is painted on BROAD PANELS — the shoulder yoke is an 18-seg
+  // hoop right across the chest, the pocket flaps are 30 mm rectangles, the elbow
+  // patch is a 70 mm ellipsoid — so a horizontal scan across the closeup's torso
+  // crossed five levels (114/138/128/153/174) inside 120 px with no light change
+  // to justify any of them. That is the rubric's "painted value steps instead of
+  // lit ones" verbatim, and it is why the tunic read as camouflage.
+  // 0x9a8b5e is luma 138 — 3 LSB under the tunic, inside the same band, same hue
+  // family — so the ZONE SPLIT SURVIVES (the seams still ink, the wear map and
+  // the kit mixes still key off it) while the painted step does not. The interior
+  // linework that genuinely needs to be dark — spinal furrow, skirt folds, sleeve
+  // roll, pocket flap edge — is re-authored below as an explicit mix toward
+  // `collar`, i.e. as an INK STROKE with a stroke's width, not as a panel.
+  tunicShade: rgbLin(0x9a8b5e),
   // Headgear is a clear step DARKER and greener than the tunic. A cap in tunic
   // colour on a tan face reads as a bald head with a stripe on it.
   // A HEAD IS READ AS A DARK MASS OVER A LIGHT FACE. Under this fill-dominated
@@ -588,11 +603,24 @@ export class MeshBuilder {
     this.uv.push(u, vv);
     const col = c || this._c;
     // Gouache mottling — uneven pigment load, invisible at range, alive up close.
+    //
+    // ROUND 16 — THIS WAS THE TUNIC PATCHWORK, AND THE FREQUENCY WAS THE BUG.
+    // The fbm ran at world frequency 7.3, i.e. a 0.14 m period. On a soldier that
+    // is the width of his own chest, and at the closeup camera it is ~110 px, so
+    // the "uneven pigment load" projected as a dozen hard-edged cream/olive BLOBS
+    // the size of a pocket. Measured on the round-15 plate: a pure-chroma stain at
+    // (702-750, 590-645) sitting hue 40 / sat 0.353 against its neighbour's hue 60
+    // / sat 0.268 at IDENTICAL luminance (74.6 vs 75.5) — a hue patch with no value
+    // change, which is the definition of a mud smear, not of cloth.
+    // At 26 (0.04 m period, ~30 px here) the same noise is a WEAVE: it breaks the
+    // flat panel up without ever making a shape the eye can name. The amplitude
+    // comes down with it — +/-0.048 was carrying a hue swing because the two
+    // channels move at different rates once the multiplier is that far from 1.
     let m = 1;
     if (this._mottle > 0) {
-      const n1 = fbm2(px * 7.3 + pz * 2.1, py * 7.9, { octaves: 3, seed: 77 });
+      const n1 = fbm2(px * 26.0 + pz * 7.5, py * 28.0, { octaves: 3, seed: 77 });
       const n2 = valueNoise2(px * 23.0 + py * 4.0, pz * 23.0 - py * 3.0, 131);
-      m = 1 + (n1 - 0.5) * this._mottle * 1.6 + (n2 - 0.5) * this._mottle * 0.7;
+      m = 1 + (n1 - 0.5) * this._mottle * 0.46 + (n2 - 0.5) * this._mottle * 0.7;
     }
     this.col.push(col[0] * m, col[1] * m, col[2] * m);
     this.vgroup.push(this._g);
@@ -1767,7 +1795,9 @@ function buildTorso(b, rig, o) {
     });
   }
   if (!simple()) {
-    b.setColor(o.tunicShade).setMottle(0.05);
+    // Stroke, not panel (r16): tunicShade is now the tunic's own value, so the
+    // spinal furrow has to carry its own dark or it stops being a line.
+    b.setColor(mixCol(o.tunicShade, o.collar, 0.55)).setMottle(0.05);
     b.addTube([
       { p: [0, hy + 0.400, zc - 0.104 * g], rx: 0.011, rz: 0.006 },
       { p: [0, hy + 0.300, zc - 0.110 * g], rx: 0.013, rz: 0.007 },
@@ -1793,7 +1823,8 @@ function buildTorso(b, rig, o) {
   b.tintRange(v0, b.vertexCount, 0.985);
   // Four vertical drape folds in the skirt. Each is 5 mm of geometry and a
   // permanent ink line, and four of them turn a bell into cloth.
-  b.setColor(o.tunicShade).setMottle(0.05);
+  // Stroke, not panel (r16) — see the tunicShade note in PALETTE.
+  b.setColor(mixCol(o.tunicShade, o.collar, 0.50)).setMottle(0.05);
   for (let i = 0; i < (simple() ? 0 : 6); i++) {
     const a = (i / 6) * TAU + 0.4;
     const sx = Math.sin(a), sz = Math.cos(a);
@@ -1884,7 +1915,10 @@ function buildTorso(b, rig, o) {
       new THREE.Vector3(1, 1, 1)));
     b.addRoundedBox({ size: [0.078 * g, 0.086, 0.020], bevel: 0.008, div: 2 });
     // Flap: a whole value darker, with its hard lower edge across the pocket.
-    b.setColor(o.tunicShade).setMottle(0.04);
+    // r16: a flap EDGE, not a flap-shaped patch — 15 LSB under the tunic instead
+    // of the old 24, which is enough for the hard lower edge and not enough to
+    // read as a second cloth.
+    b.setColor(mixCol(o.tunicShade, o.collar, 0.30)).setMottle(0.04);
     b.addRoundedBox({ center: [0, 0.036, 0.004], size: [0.082 * g, 0.030, 0.022], bevel: 0.006, div: 2 });
     if (!simple()) {
       // Box pleat down the pocket centre.
@@ -2108,9 +2142,25 @@ function buildArms(b, rig, o) {
       // therefore anim.js and the weapon mounts) alone. It also thins nothing:
       // the medial side keeps its full radius, so the arm stays a 90 mm oval and
       // only its silhouette moves.
-      const splay = 0.16 * Math.pow(out, 1.25)
-        * smoothstep(0.28, 0.72, t) * (1 - smoothstep(0.82, 1.0, t));
-      return 1 + lat * Math.pow(out, 1.35) + ant + pos - seam * out + fold - splay;
+      // ROUND 16 — 0.16 WAS NOT ENOUGH AND IT RELEASED TOO EARLY. Measured on the
+      // r15 closeup the outboard silhouette's darkest-x sat at 520-522 for EVERY
+      // row from y568 to y664: 96 px of dead straight ink, +/-2 px total, no taper
+      // and no wobble. 0.16 buys 7.7 mm of medial walk at its peak and then hands
+      // it all back over t 0.82-1.0, which is exactly the span the critic scanned.
+      // 0.30, ramped in from t 0.12 and released only in the last 14% (where the
+      // epicondyles legitimately step back out), closes the edge ~14 mm — 6 px at
+      // this camera — over the same run.
+      const splay = 0.30 * Math.pow(out, 1.25)
+        * smoothstep(0.12, 0.70, t) * (1 - smoothstep(0.86, 1.0, t));
+      // AND A STRAIGHT EDGE IS A TELL EVEN WHEN IT TAPERS. A hanging serge sleeve
+      // bunches: its outboard contour is non-monotonic at a scale of a few
+      // centimetres. This is a deterministic (t-keyed, no RNG, so the frame stays
+      // byte-reproducible) +/-6 mm lateral wobble on the OUTBOARD half only, at
+      // ~1.8 cycles over the humerus, which is 2-3 px of wander in the ink line at
+      // the closeup and invisible at 40 m. It is not decoration: a ruled line is
+      // the single loudest "this was extruded by a program" signal on the figure.
+      const wobble = 0.13 * out * Math.cos(t * 11.5 + 0.7);
+      return 1 + lat * Math.pow(out, 1.35) + ant + pos - seam * out + fold - splay + wobble;
     };
     // ROUND 15 — THE TOP OF THIS TUBE WAS THE SHOULDER'S SILHOUETTE, AND IT WAS
     // AN OPEN RING SITTING OUTSIDE THE DELTOID CAP. See the long note in
@@ -2148,8 +2198,15 @@ function buildArms(b, rig, o) {
       // On the `tank` lancer (486 px tall, arm radius ~14 px) that is a 4 px
       // step in and a 5 px step out — a corner the outline pass can bite.
       { p: at(sh, el, 0.880), rx: 0.0345 * g, rz: 0.0410 * g },
-      { p: at(sh, el, 0.955), rx: 0.0312 * g, rz: 0.0386 * g },
-      { p: el, rx: 0.0428 * g, rz: 0.0452 * g },                  // elbow
+      // r16: 0.0312 -> 0.0296 and the elbow 0.0428 -> 0.0398. The critique asked
+      // for outer 0.222/0.226 here; reading the code says that is too far — the
+      // forearm sleeve's first station is 0.0442*g at the SAME point, so pulling
+      // the humerus end to 0.226 would put a 21 mm step OUTWARD at the elbow,
+      // trading a straight edge for a bayonet. These two, with the stronger splay
+      // above, take the outer edge to 0.2245 / 0.2355 and leave the forearm to own
+      // the joint's contour.
+      { p: at(sh, el, 0.955), rx: 0.0296 * g, rz: 0.0386 * g },
+      { p: el, rx: 0.0398 * g, rz: 0.0452 * g },                  // elbow
     ], simple() ? 1 : 3), { seg: seg(simple() ? 12 : 16), capStart: 'round', shape: delt });
 
     // ARMSCYE WELT, AS A CLOSED RING ROUND THE LIMB.
@@ -2173,15 +2230,54 @@ function buildArms(b, rig, o) {
     // from the front of the shoulder over the top to the back — the one interior
     // mark the reference always draws inside that card.
     if (!simple()) {
-      const t0 = 0.125, A = at(sh, el, 0.060);
-      const rx0 = 0.0398 * g, rz0 = 0.0432 * g, lift = 0.0042;
+      // ROUND 16 — A LEVEL RING ON A VERTICAL LIMB CAN ONLY PROJECT AS A LEVEL
+      // RULE. The r15 build laid this loop in a plane of constant y at a constant
+      // 4.2 mm offset, and the r15 critique measured what that has to be: the
+      // largest vertical step per column across x 560-655 sat at y 559-577, i.e.
+      // +/-9 px of wander over 95 px of width at dL 32-63 — a second ruled line at
+      // the same weight as the silhouette it runs beside.
+      //
+      // A set-in sleeve is NOT cut square to the bone. The armscye runs high at
+      // the front of the shoulder (over the anterior deltoid, where the seam has
+      // to clear the pectoral insertion) and low at the back (into the axilla), so
+      // its plane sits ~30 degrees off the humeral cross-section. Anterior is -st
+      // and outboard is ct*side in this frame (see `delt`), so tilting the ring's
+      // y by -st * rTilt puts the front of the loop up and the back down. At a
+      // 45 mm section radius, tan(30) gives 26 mm of rise — a third of the way
+      // down the deltoid — and the projected mark becomes a slanted arc.
+      // The station the surface is sampled at has to follow the tilt too, or the
+      // welt floats off the cloth at the front and sinks into it at the back:
+      // `tAt` walks the sweep parameter with the height, and `rAt` interpolates
+      // the sleeve's own station radii there.
+      // The offset is modulated 2.5-6.0 mm round the circumference as well: real
+      // piping is squeezed flat where the sleeve is stretched over the deltoid and
+      // stands proud where the cloth gathers under the arm, and a constant offset
+      // is a machined part.
+      const A = at(sh, el, 0.060);
+      const armLen = Math.max(1e-4, sh[1] - el[1]);
+      const rTilt = 0.0255 * g;
+      const STA = [[0.000, 0.0240], [0.125, 0.0398], [0.250, 0.0512], [0.375, 0.0508],
+                   [0.500, 0.0478], [0.625, 0.0432], [0.875, 0.0296], [1.000, 0.0398]];
+      const rAt = (t) => {
+        for (let k = 1; k < STA.length; k++) {
+          if (t <= STA[k][0] || k === STA.length - 1) {
+            const f = (t - STA[k - 1][0]) / (STA[k][0] - STA[k - 1][0]);
+            return lerp(STA[k - 1][1], STA[k][1], clamp01(f)) * g;
+          }
+        }
+        return STA[1][1] * g;
+      };
       const NR = seg(22), ring = [];
       for (let i = 0; i <= NR; i++) {
         const a = Math.PI - 0.08 + (i / NR) * (TAU + 0.16);
         const ct = Math.cos(a), st = Math.sin(a);
+        const dy = -st * rTilt;                       // anterior high, posterior low
+        const t0 = clamp(0.125 - dy / armLen, 0.02, 0.42);
+        const rx0 = rAt(t0), rz0 = rx0 * 1.086;       // the table's rz/rx ratio
+        const lift = 0.0025 + 0.0035 * (0.5 + 0.5 * Math.cos(a * 2.0 + 0.6));
         const k = delt(t0, ct, st);
         ring.push({
-          p: [A[0] + (rx0 * k + lift) * ct, A[1], A[2] - (rz0 * k + lift) * st],
+          p: [A[0] + (rx0 * k + lift) * ct, A[1] + dy, A[2] - (rz0 * k + lift) * st],
           rx: 0.0031, rz: 0.0031,
         });
       }
@@ -2265,7 +2361,7 @@ function buildArms(b, rig, o) {
       b.setColor(o.tunic).setMottle(0.07);
     }
     // The roll itself: a thicker band of doubled cloth.
-    b.setColor(o.tunicShade);
+    b.setColor(mixCol(o.tunicShade, o.collar, 0.45));
     b.addTube([
       { p: at(el, wr, rollT - 0.04), rx: 0.043 * g, rz: 0.045 * g },
       { p: at(el, wr, rollT + 0.02), rx: 0.050 * g, rz: 0.052 * g },
@@ -2479,16 +2575,34 @@ function buildHands(b, rig, o) {
         c += close * smoothstep(0.10, 0.45, t);
         return [px + dir.x * a - side * c, y0 + dir.y * a, pz + dir.z * a];
       };
+      // ROUND 16 — WHY EACH FINGER TOOK ITS OWN FULL OUTLINE. Every one of these
+      // was a CLOSED capsule: `capStart: 'round'` put a cap on a station that sits
+      // 26 mm above the palm box, so four separate closed tubes floated in front of
+      // the hand, each with its own complete silhouette and its own lit crest —
+      // measured on the r15 closeup as "four isolated tan eggs, each with its own
+      // closed ink outline AND each still carrying a pale core". Welding is the
+      // only fix: the first station is pushed 14 mm BACK down the metacarpal, i.e.
+      // inside the palm shell and inside the knuckle bar, and the cap comes off, so
+      // the tube dies into the palm's surface instead of ending in front of it.
+      // The metacarpal head also goes 1.12 -> 1.24 of the finger radius: 2 x 0.0114
+      // is 22.8 mm against a 22.0 mm pitch, so the four heads now OVERLAP into one
+      // continuous knuckle mass and only the shafts below them (2 x 0.0103 = 20.6 mm
+      // at the same pitch) still carry the 1.4 mm valley the eye reads as digits.
+      // A fist is one mass with four grooves in it, not four sausages in a row.
+      const base = at(0.00), bDir = at(0.06);
+      const back = [base[0] - (bDir[0] - base[0]) * 2.3, base[1] - (bDir[1] - base[1]) * 2.3,
+                    base[2] - (bDir[2] - base[2]) * 2.3];
       b.addTube([
-        { p: at(0.00), rx: r0 * 1.00, rz: r0 * 0.94 },
-        { p: at(0.11), rx: r0 * 1.12, rz: r0 * 1.02 },   // metacarpal head
-        { p: at(0.30), rx: r0 * 0.98, rz: r0 * 0.92 },   // proximal shaft
+        { p: back, rx: r0 * 0.86, rz: r0 * 0.80 },       // sunk INTO the palm
+        { p: at(0.00), rx: r0 * 1.10, rz: r0 * 1.00 },
+        { p: at(0.11), rx: r0 * 1.24, rz: r0 * 1.10 },   // metacarpal head — welded
+        { p: at(0.30), rx: r0 * 1.12, rz: r0 * 1.00 },   // proximal shaft
         { p: at(0.47), rx: r0 * 0.80, rz: r0 * 0.74 },   // waist at the PIP
         { p: at(0.62), rx: r0 * 0.98, rz: r0 * 0.90 },   // middle phalanx
         { p: at(0.84), rx: r0 * 0.74, rz: r0 * 0.70 },   // waist at the DIP
         { p: at(1.00), rx: r0 * 0.84, rz: r0 * 0.78 },   // distal phalanx
         { p: at(1.16), rx: r0 * 0.50, rz: r0 * 0.46 },   // tip, clear of the stock
-      ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
+      ], { seg: seg(8), capStart: 'none', capEnd: 'round' });
     }
     // THE PAINTED VALLEY. Geometry buys finger separation down to about ten
     // metres and then the gap goes sub-pixel and the hand fuses again. A
@@ -2521,7 +2635,18 @@ function buildHands(b, rig, o) {
         // the valley with flat skin either side of it. 0.30..0.42 is a 2.6 mm
         // shoulder on a 22 mm pitch — three pixels at the portrait, and the dip
         // goes 2 % deeper to pay for the narrower footprint.
-        return 1 - 0.56 * smoothstep(0.30, 0.42, frac);
+        // ROUND 16 — AND THE DIP HAS TO FADE OUT OVER THE WELDED KNUCKLE MASS.
+        // Full-depth seams across a mass that is now continuous surface put four
+        // closed dark rings on it, and a closed dark ring round a lit crest IS the
+        // "isolated pale core" the critique measured — the ink boundary is entirely
+        // interior to the hand's silhouette, so the eye reads an egg, not a digit.
+        // Over the first ~20 mm out of the palm the seam is a quarter-strength
+        // shading groove; past the PIP, where the shafts really are separate tubes
+        // with air between them, it goes to full depth.
+        const dx = x - fg.x, dy = y - fg.y, dz = z - fg.z;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const grow = 0.28 + 0.72 * smoothstep(0.014, 0.036, d);
+        return 1 - 0.56 * grow * smoothstep(0.30, 0.42, frac);
       });
     }
     // KNUCKLE CREASE — the 4-vertex line the round-6 note asked for, sunk
@@ -2602,8 +2727,31 @@ function buildLegs(b, rig, o) {
       const med = clamp01(-nx * side);                     // faces the other leg
       const run = smoothstep(an[1] + 0.04, an[1] + 0.18, y) * (1 - smoothstep(hp[1] - 0.02, hp[1] + 0.07, y));
       const k = run * Math.pow(med, 1.6);
-      return k < 0.005 ? null : 1 - 0.26 * k;
+      return k < 0.005 ? null : 1 - 0.34 * k;   // r16: 0.26 -> 0.34, see the welt below
     });
+
+    // INSEAM WELT (round 16). The r15 closeup measured the mid-ground soldier as
+    // "one continuous flat green slab from shoulders to a single boot-shaped blob —
+    // no leg separation anywhere over a 280-px figure". Reading the code says the
+    // prescribed fix (split the tubes, author a gap) is already built: the two legs
+    // are separate shells and the authored gap is 200 mm between bone axes against
+    // 2 x 68 mm of thigh, i.e. 64 mm clear at the knee and 110 mm at the ankle,
+    // both already past the acceptance figures. What was missing is INK: the gap is
+    // filled by whatever is behind the figure, both inner faces are turned away
+    // from the key so they land in the same wash, and the only mark between them
+    // was a 26% albedo dip with no edge to it. So each leg gets the same 5 mm welt
+    // its OUTBOARD seam has always had, laid on the medial extremity from crotch to
+    // boot top: two hard ink lines flanking the gap, present at every light angle
+    // and in every pose, and geometry rather than paint so the outline pass owns it.
+    if (!simple()) {
+      b.setColor(o.trouserCuff).setMottle(0.04);
+      b.addTube([
+        { p: [hp[0] - side * 0.080 * g, hp[1] - 0.010, hp[2] + 0.016], rx: 0.0055, rz: 0.0040 },
+        { p: [at(hp, kn, 0.45)[0] - side * 0.070 * g, at(hp, kn, 0.45)[1], at(hp, kn, 0.45)[2] + 0.014], rx: 0.0055, rz: 0.0040 },
+        { p: [kn[0] - side * 0.052 * g, kn[1] + 0.004, kn[2] + 0.012], rx: 0.0048, rz: 0.0035 },
+        { p: [at(kn, an, 0.30)[0] - side * 0.058 * g, at(kn, an, 0.30)[1], at(kn, an, 0.30)[2] + 0.012], rx: 0.0048, rz: 0.0035 },
+      ], { seg: seg(6), capStart: 'round', capEnd: 'round' });
+    }
 
     // Patella, standing proud on the FRONT only, so it never bulges the profile
     // of a straight leg but gives a bent one a corner.

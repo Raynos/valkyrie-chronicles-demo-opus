@@ -94,6 +94,12 @@ uniform vec3  uFoamShade;
 uniform vec3  uBed;
 uniform vec3  uHaze;
 uniform vec3  uVault;
+// The ink the ripple RULES are drawn in. Not black and not the ground's ink —
+// a cold slate-teal, so the strokes read as pencil laid into a wet wash.
+uniform vec3  uRipple;
+// Hard ceiling on the water bin's HSV saturation, spent at the very end of the
+// fragment. See the note where it is applied.
+uniform float uSatCap;
 uniform float uFogDensity;
 uniform vec3  uSunDir;
 uniform vec3  uSunColor;
@@ -180,7 +186,16 @@ float deckDist(vec2 w) {
 
 void main() {
   // Flow-aligned UVs: u runs downstream, v runs across the channel.
-  vec2 flowUV = vec2(vArc * 0.085, vAcross.x * 2.4);
+  //
+  // ANISOTROPY. r15 measured the surface as "amorphous isotropic hard-edged
+  // lobes 60-150 px across" — which is exactly what an equal-frequency lookup
+  // gives you, a blotch card. Real current smears its pigment DOWNSTREAM, so
+  // the downstream frequency is cut to 0.22 of what it was (0.085 -> 0.019) and
+  // the across-channel frequency raised, stretching every lobe ~5:1 along the
+  // flow. Every term that reads this UV — turbulence, silt, foam lace, the
+  // quantiser jitter — inherits the stretch, which is the point: they should all
+  // be combed by the same current rather than each being its own cloud.
+  vec2 flowUV = vec2(vArc * 0.019, vAcross.x * 3.4);
 
   // Two layers scrolling at different rates and slightly different scales.
   // Cross-fading them the way a flow-map does keeps the surface from visibly
@@ -280,6 +295,30 @@ void main() {
   float streak = smoothstep(0.60, 0.78, line) * smoothstep(0.12, 0.45, dNorm);
   col *= 1.0 - streak * 0.17;
 
+  // --- ripple RULES ----------------------------------------------------------
+  // The tell r15 named: every CANVAS water plate carries DRAWN LINE on the
+  // surface — a handful of horizon-parallel strokes ruled across the current —
+  // and this shader had none. The noise terms above are all texture; none of
+  // them is a line, so the river read as a card with blotches on it.
+  //
+  // So: three thresholded sines of WORLD Z (the river runs roughly along X here,
+  // so constant Z is horizon-parallel), at three drawing frequencies, with the
+  // flow noise injected as PHASE so no rule is ever straight and no two rules
+  // are parallel for long. The thresholds are tight — 0.86..0.995 — which is
+  // what makes each one a ~1.5 px stroke instead of a soft band. They are laid
+  // in ink BEFORE the foam, so spray sits on top of the linework the way it does
+  // on paper, and they die out in the shallows where there is no open water to
+  // ripple.
+  float rulePhase = vWorld.z * 1.25 + (n3.b - 0.5) * 2.8 + (n1.g - 0.5) * 1.6;
+  float rule = smoothstep(0.86, 0.995, sin(rulePhase))
+             + smoothstep(0.90, 0.998, sin(rulePhase * 0.43 + 1.7)) * 0.80
+             + smoothstep(0.93, 0.999, sin(rulePhase * 2.35 - uTime * 0.22)) * 0.55;
+  rule = clamp(rule, 0.0, 1.0) * smoothstep(0.06, 0.42, dNorm)
+             * smoothstep(0.0, 0.09, vDepth) * (1.0 - pierSolid);
+  // Under the vault the rules survive at reduced weight: they are drawn line,
+  // not a reflection, and a shadow does not erase pencil.
+  col = mix(col, uRipple, rule * 0.40 * (1.0 - vault * 0.35));
+
   // --- surface normal from the warp field, for glints only
   vec3 N = normalize(vec3(warp.x * 7.0, 1.0, warp.y * 7.0));
   vec3 V = normalize(vView);
@@ -322,7 +361,12 @@ void main() {
   // only around it.
   float shore = (1.0 - smoothstep(0.05, 0.40, dWater)) * wet * (1.0 - pierSolid);
   float lace = smoothstep(0.42, 0.86, n3.b + n1.a * 0.4 - shore * 0.2);
-  float foam = clamp(shore * (0.46 + lace * 0.80), 0.0, 0.90);
+  // r15-2 traced the "brightest water in the frame sits exactly where the 4 m
+  // masonry wall meets it" reading to HERE and not to the shadow term: the shore
+  // band peaks in the same shallow collar the abutment stands in, and it was
+  // painting cream at 0.46 base weight. A river only laces white where it is
+  // actually breaking; against a vertical wall it does not break, it goes dark.
+  float foam = clamp(shore * (0.28 + lace * 0.58), 0.0, 0.82);
   foam += smoothstep(0.55, 0.95, dWater) * lace * 0.16;   // midstream riffles
   // pier wash: aObstacle is the coarse per-vertex wake, pierHalo the exact
   // 0.25 m collar the fragment shader can resolve against the real footprint.
@@ -353,6 +397,26 @@ void main() {
   // Under water the stone reads as a green-slate shadow, not as a dry course.
   col = mix(col, uDeep * 0.62, pierSolid * 0.70);
 
+  // --- the bank's own value, dropped into the water at its foot ---------------
+  // r15-2: the vertical L profile crossing the waterline under the bridge read
+  // 147,159,159,157,156,167,169,174,174,175 and then STAYED 173-175, i.e. the
+  // river was at its brightest against 4 m of masonry — peter-panning on the
+  // largest object in the frame. The prescribed cure was a screen-space mirror
+  // about the waterline row, which needs the composite colour buffer; this pass
+  // does not have it and cannot get it from inside water.js.
+  //
+  // What it CAN do is the half of that effect which is local geometry, and which
+  // is most of the read: anything standing at the waterline takes the SKY away
+  // from the film at its foot and glazes its own shaded value back down. Every
+  // waterline in the frame therefore gets a dark collar over the shallow band,
+  // strongest where the film is thinnest — so bank, abutment and pier all sit
+  // IN the water with a contact wash instead of ON it, and the collar lands on
+  // exactly the pixels the foam cut above vacated. Quantised against the flow
+  // noise so it is a torn wet edge and not an alpha ramp.
+  float collar = band(clamp((1.0 - smoothstep(0.03, 0.66, dWater))
+                            + (n1.b - 0.5) * 0.14, 0.0, 1.0), 2.0, 0.15) * wet;
+  col *= 1.0 - collar * 0.32;
+
   // --- the shade COLOUR ------------------------------------------------------
   // materials.js does not paint its shadows by dimming the pigment, it paints
   // them with a pigment that has been TURNED — cooler, a little greyer, at a
@@ -376,8 +440,42 @@ void main() {
   // suspension and dries both darker and more chromatic — so the hold is opened
   // up in shade rather than closed down. Without this the covered reach loses
   // chroma exactly where the rubric says a wash must not go neutral.
+  // 1.28 -> 1.06: this term was a 28% chroma BOOST on top of a lit-band lift,
+  // and it is a good part of how a hue-154 albedo at sat 0.29 arrived on screen
+  // at sat p95 0.405. The granulation reasoning still holds, so the shade-only
+  // half of the boost is kept; it is the flat multiplier on the LIT wash that
+  // had no defence.
   float wlum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-  col = mix(vec3(wlum), col, 1.28 + shade * 0.30 + vault * 0.22);
+  col = mix(vec3(wlum), col, 1.06 + shade * 0.30 + vault * 0.22);
+
+  // --- chroma CEILING on the water bin ---------------------------------------
+  // r15 measured the river at median hue 105.4, sat median 0.259 / p95 0.405 —
+  // spring green, 49 degrees off its own albedo and greener than the foliage.
+  // The rubric's "any saturated video-game green = automatic REJECT" makes this
+  // the one place in the frame that needs a hard stop rather than a nudge: the
+  // grade, the lit-band lift and the granulation hold each add chroma downstream
+  // of anything water.js chooses, and cutting the albedo alone just gets eaten.
+  //
+  // So the wash's HSV saturation is clamped here, at the end, by pulling toward
+  // its OWN luminance — which holds hue and value exactly and only bleeds
+  // chroma. It is a ceiling, not a set: anything already under it is untouched,
+  // so the shade turn and the vault bounce keep their modelling.
+  // TRIED AND REVERTED (this round): a hue guard here of the ink-floor's shape —
+  // col.b = mix(col.b, col.g, gLead * 0.70), i.e. blue may not sit below green
+  // in the water bin — on the theory that the residual hue-96 reading was green
+  // leading blue. Measured on a cold bridge render, it moved the critic region's
+  // median hue 96.0 -> 96.7 and pushed the frame's 100-110 degree bin the WRONG
+  // way, 2.24% -> 2.57%. Conclusion: in the main river body blue ALREADY leads
+  // green, so the guard finds nothing to clamp, and whatever residual green the
+  // region still measures is being added downstream of this shader (the grade /
+  // composite), not chosen here. Do not re-try it at this layer.
+  float cmx = max(col.r, max(col.g, col.b));
+  float cmn = min(col.r, min(col.g, col.b));
+  float csat = cmx > 1e-4 ? (cmx - cmn) / cmx : 0.0;
+  if (csat > uSatCap) {
+    float glum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    col = mix(vec3(glum), col, uSatCap / csat);
+  }
 
   // --- paper grain over everything, screen-space so it belongs to the page
   float fibre = texture2D(uPaperTex, gl_FragCoord.xy * 0.0023).r;
@@ -442,6 +540,8 @@ export class Water {
           uFoamShade: { value: new THREE.Color() },
           uHaze: { value: new THREE.Color() },
           uVault: { value: new THREE.Color() },
+          uRipple: { value: new THREE.Color() },
+          uSatCap: { value: 0.20 },
           uFogDensity: { value: 0.0026 },
           uSunDir: { value: new THREE.Vector3() },
           uSunColor: { value: new THREE.Color() },
@@ -476,8 +576,21 @@ export class Water {
     const u = this.material.uniforms;
     u.uFlowTex.value = flowNoiseTexture(256, 61);
     u.uPaperTex.value = paperTexture(512, 77);
-    u.uShallow.value.set(PALETTE.water).lerp(new THREE.Color(PALETTE.sand), 0.22);
-    u.uDeep.value.set(PALETTE.waterDeep);
+    // 0.22 -> 0.06. That sand lerp was a warm PULL on the shallow rung, and it
+    // is what rotated hue 154 (PALETTE.water) toward the 105 the r15 critic
+    // measured: sand is hue ~45, so a 0.22 mix drags a fifth of the way there
+    // and the lit-band lift finishes the job. 0.06 leaves the shallows warmed
+    // just enough to read as silty rather than aquarium-teal, and the bed term
+    // further down is the proper place for warmth anyway — it is gated on the
+    // sun actually reaching the gravel.
+    u.uShallow.value.set(PALETTE.water).lerp(new THREE.Color(PALETTE.sand), 0.06);
+    // The deep rung is set HERE rather than by moving PALETTE.waterDeep: that
+    // constant lives in worldMaterials.js and is shared with the puddle/wetness
+    // bins, and this round only owns the river. 0x3f5563 is the prescribed slate
+    // — same value as the old 0x466c67, rotated off green onto blue-grey — so
+    // the depth ramp now runs silty-teal to slate instead of teal to green, and
+    // the deepest wash can no longer contribute to the 100-110 degree bin.
+    u.uDeep.value.set(0x3f5563);
     u.uBed.value.set(PALETTE.sand).lerp(new THREE.Color(PALETTE.dirt), 0.35);
     u.uFoam.value.set(PALETTE.foam);
     // Spray in shade: the same pigment turned to a cool grey at a little under
@@ -488,6 +601,11 @@ export class Water {
     // Warm ochre bounce off the underside of the masonry, at a low enough level
     // that it glazes rather than lights.
     u.uVault.value.set(PALETTE.sand).multiply(new THREE.Color(0.55, 0.46, 0.36));
+    // Ripple ink: a cold slate-teal at roughly a third of the shallow rung's
+    // value. Dark enough to read as a drawn stroke against every wash the depth
+    // ramp produces, and cool enough that the strokes never re-introduce chroma
+    // the ceiling then has to spend itself removing.
+    u.uRipple.value.set(0x2c3a42);
     u.uSunDir.value = WorldLighting.sunDir;
     u.uSunColor.value.set(WorldLighting.sunColor);
     u.uSkyColor.value.set(PALETTE.skyHorizon);

@@ -204,6 +204,64 @@ Acceptance test for any future ink-floor work: the mean of frame pixels with `L 
 **hue 12–45, sat 0.18–0.32**, with `min L <= 30` and `p99` within 2 LSB of 221 — i.e. prove you kept
 the depth *and* the warmth, in the same measurement.
 
+## The shade-turn pendulum — five rounds of violet, then zero turn (round 16)
+
+**Read this before touching the shade turn again.** The project has now overshot in BOTH
+directions, and the two failures look nothing alike from inside a round.
+
+| rounds | glaze weight | measured shaded-vs-lit hue | reads as |
+|---|---|---|---|
+| 12–14 | 0.48–0.69, chromaticity *substituted*, clamped to 242–290° | +219° rotation off albedo | saturated violet blockwork |
+| **16** | driven to ~0 | **Δhue −0.2° (face), +1.5° (sleeve), +0.3° (sand)** across a 70–81 LSB value drop | Lambert falloff under one warm ramp |
+
+Round 16's `closeup` verifier put it exactly right: *"every shaded surface on the hero is the
+same hue as its lit side … a CANVAS shade always turns cool away from its albedo, and this
+round's violet-removal has driven that turn to literally zero."* `closeup` scored temperature
+**2/10** and its average went **down**, 4.6 → 3.8, while the violet defect it was fixing was
+already closed.
+
+**The knob is the MIX WEIGHT, not the hue.** Round 13 ruled out hue-hunting by measurement
+(sweeping pole chroma gave moss 99° / teal 163° / blue-violet 192°, all wrong). Round 14 removed
+the chromaticity substitution and the violet clamp, which was correct and must stay. Round 16
+then took the weight to zero, which is the opposite error: a surface that keeps 100% of its own
+chromaticity in shade is not painted, it is shaded.
+
+The target is a **bounded, non-zero** turn — the surface keeps its identity and the skylight
+cools it:
+
+- stone, grass and cloth must still shade to three *different* hues (the r14 acceptance test), AND
+- each must shade to a hue measurably **cooler than its own lit side** — the r16 test that was
+  missing. Require **8–25° of cool rotation**, not 0 and not 219.
+- Sample lit and shaded patches of the *same* albedo zone and report both hues. A single
+  "shaded hue" number cannot distinguish "no turn" from "correct turn" and that is how round 16
+  passed its own checks while the picture went flat.
+
+Owners: the glaze weight in `render/lighting.js`, applied at `render/materials.js`'s two
+`uShadeTurn` sites (~1168–1174 and ~1464).
+
+## Measure the thing, not its proxy — 24 refuted claims in one round
+
+Round 16's three verifiers refuted **24 of the fixers' claims**. Almost none were dishonest; they
+were acceptance tests that measured something adjacent to the defect. This is the single most
+expensive recurring failure in the project, so the specific traps:
+
+- **A "darkest pixel per row" tracker walks onto whatever is darkest.** A fixer proved 56–66 px of
+  sleeve taper; the tracker had walked onto the *rifle stock's* outline against open sand. Tracing
+  the actual tunic silhouette gave 12 px of excursion that then held dead straight for 25 rows —
+  the ruled line the finding was about.
+- **A horizontal scan across a figure crosses its OUTER CONTOUR first.** A fixer read
+  `133 113 | 48 44 47 | 60 87 84` as "a 3 px ink welt between two lit masses"; the 133–137 to the
+  left was open *sand*, not a lit leg. The interior welt did exist — 30 px lower.
+- **Fix every instance, then verify the one you did not fix.** The hand weld was applied to the
+  trigger hand and verified on the trigger hand. The fore hand still showed five isolated pale
+  islands — the r15 defect verbatim.
+- **"Brightest pixels are sky, deliberately exempt"** — 1209 of 1236 were the HUD caption card.
+  Bin your outliers spatially before you attribute them.
+
+So: **state the region you sampled, why that region isolates the defect, and what ELSE could be
+in it.** If a statistic moved but the picture did not, the statistic was measuring something else
+— say so and re-measure.
+
 ## Output contract
 
 The critic returns strict JSON:

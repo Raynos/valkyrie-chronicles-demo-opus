@@ -72,9 +72,28 @@ const PAL = {
   // read as a stack of cream crates bolted to a dark tank. Legibility comes from
   // the gear being separated FROM EACH OTHER; it must still rank under the plates
   // that face the sky.
-  wheelDisc: 0x969180,       // top rung: road-wheel/sprocket/idler disc, dusted
-  track: 0x6f6a5e,           // mid rung: umber track steel, road-dusted
-  rubber: 0x4d464c,          // bottom rung: tyre, mauve-grey — never black
+  // Round 15 measured the ladder INVERTED against that claim: shoe broadside
+  // faces ran 150-175 with peaks to 211 against a shaded armour flank median of
+  // 147, so the whole assembly read as pale cream crates bolted to a sage tank.
+  // A track is the dirtiest, darkest thing on a vehicle; the ladder is dropped
+  // one whole rung (≈28 LSB at the albedo) while KEEPING the ~0.12 V spacing
+  // between the three rungs, which is the part that worked. Separation between
+  // the rungs is what makes the gear legible; ranking under the sky-facing
+  // plates is what keeps it reading as running gear at all.
+  //
+  // Calibrated on a cold `tank` plate: the prescribed 0x7a7468/0x5c564b landed the
+  // wheel region 70 and the track 53 LSB under the flank — past the 25-40 the
+  // acceptance asked for, and with only 10-16 LSB between the gear's own rungs,
+  // which is the round-14 "one dark mass" failure re-entered from below. The top
+  // two rungs are lifted back ~16 and ~6 LSB: that widens the disc-against-tyre
+  // and disc-against-track steps (the thing that makes a wheel legible) while
+  // leaving the whole assembly ranked under the sky-facing plates.
+  wheelDisc: 0x8a8474,       // top rung: road-wheel/sprocket/idler disc, dusted
+  track: 0x625c50,           // mid rung: umber track steel, road-dusted
+  // Desaturated off the mauve. At 0x4d464c the tyre bin leaked pink-lilac smears
+  // into the inter-wheel gaps (measured 390-490, 655-695) — a chroma defect on
+  // top of the value one. Near-neutral warm charcoal instead: still never black.
+  rubber: 0x474445,          // bottom rung: tyre, neutral charcoal — never black
 
   // Stowage. `ochre` was 0xa88654, sat 0.50 — the loudest chroma on the whole
   // vehicle, and on a thin backlit cylinder it measured (224,173,142) hue 22.7:
@@ -82,7 +101,17 @@ const PAL = {
   // warm grey-buff, and the tarp gets its own bin (see mat.canvas) so nothing
   // else has to be compromised to keep it quiet.
   ochre: 0x9c8a70,           // painted stowage tin, tool furniture
-  canvasDuck: 0x8a8065,      // rolled tarp, mud flaps, retaining straps
+  // Out of the warm lobe entirely. 0x8a8065 is hue ~43 / sat 0.27 at the albedo,
+  // and rounds 14 and 15 both measured the roll landing at hue ~23-29 / sat 0.37
+  // in the integrated frame: the lit-band chroma lift rotates a warm albedo
+  // WARMER and pumps its saturation, so anything authored inside the ochre lobe
+  // arrives as ham. Authored at hue ~55 / sat 0.20 the same lift lands it in
+  // olive-buff, which is where dust-stained duck belongs. Do not "warm it back
+  // up" — that is the knob that failed twice.
+  // 0x6f6a58 (hue 47 / sat 0.21) still measured hue 39.6 / sat p90 0.388 on the
+  // roll: the lift is worth roughly -8 degrees and +0.16 sat, so the albedo has to
+  // be authored that much cooler and flatter than the target, not at it.
+  canvasDuck: 0x6d6c5d,      // rolled tarp, mud flaps, retaining straps
   wood: 0x94734c,
   glass: 0xd8d2b8,
   grille: 0x5f767a,          // radiator: cool teal so it reads as "the spot"
@@ -842,7 +871,15 @@ export class Tank {
     // across a form, which is the whole point of the pass.
     const runningGear = {
       ...armour,
-      shadowFloor: 0.50, shadowSoften: 0.34, driveRange: [0.04, 0.70],
+      // Round 15: shadowFloor 0.50 with driveRange [0.04, 0.70] is what LIFTED the
+      // shoe faces above the armour flank. The floor is the dominant term down
+      // here — the pocket is one wash, so the floor is very nearly the whole
+      // radiance the gear gets — and 0.50 handed the gear more key inside the
+      // overhang than the flank plates get out in the open. 0.38 still keeps the
+      // bounce off the road (the gear is not a hole in the world; that part of the
+      // round-14 reasoning stands), and the shorter drive span keeps the same
+      // band-1..3 spread over a lower total range instead of stretching to 0.70.
+      shadowFloor: 0.38, shadowSoften: 0.34, driveRange: [0.04, 0.58],
       hatchSpacing: 7.4, wrap: 0.32,
     };
 
@@ -865,8 +902,13 @@ export class Tank {
       track: mk('track', {
         ...runningGear,
         color: PAL.track, roughness: 0.68, hatch: 0.30, rim: 0.62, paper: 0.8,
-        outlineWidth: 1.05, instanced: true, bandBleed: 1.3, spec: 0.30,
-        mottle: 0.04, shadowFloor: 0.38, driveRange: [0.04, 0.80],
+        outlineWidth: 1.05, instanced: true, bandBleed: 1.3, spec: 0.16,
+        // The shoe faces are the measured offender, and this bin was overriding
+        // the preset UPWARD (driveRange to 0.80) on top of a 0.30 spec, which is
+        // how a broadside pad reached 211. Span pulled back to the preset's 0.58
+        // and floor under it, spec halved: enough polish to say "steel", not
+        // enough to out-shine the hull.
+        mottle: 0.04, shadowFloor: 0.36, driveRange: [0.04, 0.64],
       }),
       // Tyre: bottom rung, and the one part of the gear that is genuinely matte
       // and genuinely dark, so it keeps a lower floor than its neighbours. That
@@ -885,7 +927,7 @@ export class Tank {
       gear: mk('gear', {
         ...runningGear,
         color: PAL.wheelDisc, roughness: 0.74, hatch: 0.20, rim: 0.78, paper: 0.85,
-        outlineWidth: 1.15, instanced: true, bandBleed: 1.35, spec: 0.36,
+        outlineWidth: 1.15, instanced: true, bandBleed: 1.35, spec: 0.22,
         curvature: 0.32, mottle: 0.05,
       }),
       // Painted stowage tin (jerricans, mud-flap furniture). Desaturated at the
@@ -900,14 +942,20 @@ export class Tank {
         color: PAL.ochre, roughness: 0.92, hatch: 1.0, rim: 0.4, paper: 1.0,
         outlineWidth: 1.15, subsurface: 0, bandBleed: 1.5,
       }),
-      // Dust-stained duck: the tarp, the mud flaps, the retaining straps. A low
-      // `rim` so it takes a banded wash across the roll instead of a rim-lit
-      // lobe down one side of it, and `spec` forced to zero — canvas has no
-      // highlight at all.
+      // Dust-stained duck: the tarp, the mud flaps, the retaining straps. `rim`
+      // and `spec` are BOTH forced to zero. Round 15 measured a cream bloom
+      // lozenge running the length of the roll on top of the salmon hue: rim 0.25
+      // on a horizontal cylinder is a highlight stripe down its whole length, and
+      // a highlight is a chroma amplifier — it is the lit band, and the lit band
+      // is where the warm lift lives. Killing the rim removes the pale stripe and
+      // the peak-saturation pixels with it, leaving a banded wash across the roll,
+      // which is what a tarp lashed to a rack actually looks like in gouache.
       canvas: mk('canvas', {
         ...armour,
-        color: PAL.canvasDuck, roughness: 0.96, hatch: 1.0, rim: 0.25, paper: 1.0,
-        outlineWidth: 1.2, subsurface: 0, spec: 0, bandBleed: 1.5, mottle: 0.11,
+        color: PAL.canvasDuck, roughness: 0.96, hatch: 1.0, rim: 0, paper: 1.0,
+        // mottle halved too: on a near-neutral albedo the mottle is what supplies
+        // the saturation p90, and p90 is what the acceptance test reads.
+        outlineWidth: 1.2, subsurface: 0, spec: 0, bandBleed: 1.5, mottle: 0.055,
       }),
       wood: mk('wood', { color: PAL.wood, roughness: 0.88, hatch: 0.9, rim: 0.4, paper: 1.0 }),
       glass: mk('glass', {
@@ -1558,6 +1606,15 @@ export class Tank {
     // and the two together made it the loudest thing on the vehicle — a measured
     // (224,173,142), hue 22.7, sat 0.366 salmon-pink sausage with a soft
     // cream-to-pink gradient and no band boundary anywhere on it. See mat.canvas.
+    //
+    // WHERE THIS ROLL ACTUALLY IS, because two rounds of critique have measured
+    // the wrong thing. Probed on a cold `tank` plate by flooding mat.canvas with
+    // magenta: the tarp roll occupies roughly x 356-500, y 360-480, and the mud
+    // flaps x 240-310, y 600-700. The region rounds 14 and 15 both quoted for
+    // "the bustle tarp" — (1150-1270, 530-600) — contains ZERO canvas-bin pixels;
+    // it is the foreground rifleman's slung bedroll, i.e. a rig.js surface. That
+    // is why its hue/sat did not budge when this bin was re-authored twice. Mask
+    // the bin, do not eyeball a box.
     const tarp = new THREE.CylinderGeometry(0.13, 0.14, 0.80, byQ([6, 9, 12]));
     place(tarp, 0, 0.19, -1.20, 0, 0, Math.PI / 2);
     B.canvas.push(tarp);
@@ -1702,12 +1759,16 @@ export class Tank {
 
     // ---- road wheel: rim + rubber tyre + hub + spoke bosses ---------------
     const parts = [];
-    // The steel disc is pulled 3 cm further inside the tyre than round 14 had it.
-    // The tyre is the DARK ring in the light-ring/dark-ring/light-centre read, and
-    // at rw-0.055 it was only 5.5 cm wide — eight pixels at the distance the
-    // vehicle is drawn at, i.e. a hairline the outline pass ate. At rw-0.085 the
-    // dark band is 8.5 cm and survives.
-    const disc = new THREE.CylinderGeometry(rw - 0.085, rw - 0.085, 0.20, seg);
+    // The steel disc is pulled further inside the tyre each round this has been
+    // measured, because each round the dark annulus has come back too thin. At
+    // rw-0.055 it was 5.5 cm — a hairline the outline pass ate. rw-0.085 (round
+    // 14) gave 8.5 cm, and round 15 still measured the six wheels as "pale
+    // vertical capsules with no hub, no flange and no tyre": at the shot's 6.5 m a
+    // wheel is ~55 px, so 8.5 cm of 68 cm diameter is ~7 px BEFORE the band
+    // quantiser, and disc and tyre landed in the same band and merged. rw-0.115
+    // makes the annulus 11.5 cm — ~9 px, comfortably over the 6 px floor — and it
+    // is now backed by a value gap of ~50 LSB at the albedo rather than ~20.
+    const disc = new THREE.CylinderGeometry(rw - 0.115, rw - 0.115, 0.20, seg);
     place(disc, 0, 0, 0, 0, 0, Math.PI / 2);
     parts.push(disc);
     const hub = new THREE.CylinderGeometry(0.085, 0.085, 0.26, Math.max(6, seg >> 1));
@@ -1733,19 +1794,38 @@ export class Tank {
     // road-wheel read at any distance, and it costs one torus per face on a
     // geometry that is instanced twelve times.
     for (const s of [-1, 1]) {
-      const flange = new THREE.TorusGeometry(rw - 0.125, 0.028, 4, seg);
+      // Pulled in with the disc — at rw-0.125 with a 0.028 tube this ring reached
+      // rw-0.097, i.e. OUTSIDE the new disc rim, so it would have re-bridged the
+      // dark annulus it exists to bound. rw-0.155 keeps its outer edge just inside
+      // rw-0.115.
+      const flange = new THREE.TorusGeometry(rw - 0.155, 0.028, 4, seg);
       place(flange, s * 0.101, 0, 0, 0, Math.PI / 2, 0);
       parts.push(flange);
     }
     const wheelSteel = mergeGeos(parts);
-    // Tyre is a separate material bucket, so a second instanced mesh.
+    // Tyre is a separate material bucket, so a second instanced mesh. It already
+    // was a ring shell (an open cylinder rw..rw plus two cap tori) with
+    // userData.outline set below — the round-15 finding asked for that and it was
+    // there; what was missing was the VALUE gap, which is now in PAL.rubber, and
+    // the annulus WIDTH, which is now in the disc radius above.
     const tyre = new THREE.CylinderGeometry(rw, rw, 0.155, seg, 1, true);
     place(tyre, 0, 0, 0, 0, 0, Math.PI / 2);
     const tyreCapA = new THREE.TorusGeometry(rw - 0.028, 0.03, 4, seg);
     place(tyreCapA, 0.077, 0, 0, 0, Math.PI / 2, 0);
     const tyreCapB = new THREE.TorusGeometry(rw - 0.028, 0.03, 4, seg);
     place(tyreCapB, -0.077, 0, 0, 0, Math.PI / 2, 0);
-    const tyreGeo = mergeGeos([tyre, tyreCapA, tyreCapB]);
+    // Dark hub cap, 4 cm, proud of the pale hub so it caps both faces. It goes in
+    // the RUBBER bin, not `darkMetal` as prescribed: darkMetal is 0x6d675d against
+    // the new wheelDisc 0x7a7468 — 13 LSB at the albedo, through a different
+    // lighting preset (the armour block, not runningGear), which is exactly the
+    // "two shades of one mud" failure the value-ladder comment above was written
+    // about. In `rubber` the cap lands ~50 LSB under the disc and needs no third
+    // draw call, and it gives each wheel the alternation that reads at 55 px:
+    // dark tyre ring / pale disc annulus / dark hub. Three concentric values, not
+    // one flat lozenge.
+    const hubCap = new THREE.CylinderGeometry(0.04, 0.04, 0.31, Math.max(6, seg >> 1));
+    place(hubCap, 0, 0, 0, 0, 0, Math.PI / 2);
+    const tyreGeo = mergeGeos([tyre, tyreCapA, tyreCapB, hubCap]);
 
     const n = this.wheelCount * 2;
     // `mat.gear`, not `mat.metal`. The hull's weld beads, hatch lids and tool

@@ -53,6 +53,48 @@ const TILE = 15;
 // ---------------------------------------------------------------------------
 
 /**
+ * The unit foliage card used by both canopies and bushes: a 1x1 quad pivoted at
+ * its centre, with the plane's flat normal REPLACED BY A RADIAL LOBE NORMAL.
+ *
+ * Why the normal is rewritten (round 16). Foliage clusters are two crossed
+ * quads, and with each quad keeping its own face normal the pair meets along its
+ * intersection line at a 90 degree normal FLIP. The composite crease term in
+ * canvasRenderPipeline.js is a pure screen-space normal-difference test —
+ * `smoothstep(0.78, 1.45, nd)` — with no material gate, so `userData.outline =
+ * false` never reaches it: every card-vs-card intersection got full crease ink,
+ * and round 15's darker `uInk` plus its higher far-field ink residue printed
+ * them as an inked WIREFRAME of ~14 px equilateral triangles across every crown.
+ * A wireframe is a rubric auto-reject, so this has to die in the geometry, not be
+ * painted over downstream.
+ *
+ * `normalize(localPos - centre)` is symmetric about the card's own centre line,
+ * so at x = 0 — exactly where the two quads cross — the interpolated normal is
+ * VERTICAL, and vertical is invariant under the k * 90 degree yaw that separates
+ * the two instances. Both cards therefore agree along the seam and nd collapses
+ * from ~1.41 to ~0.34, well under the 0.78 knee.
+ *
+ * The 0.25 of the quad's own facing normal that survives keeps a face-on card
+ * from being lit edge-on. The blend DIRECTION is load-bearing: mostly-radial
+ * kills the flip, mostly-flat does not (at 0.75 flat the seam difference is
+ * 0.75 * sqrt(2) = 1.06, still inside the ink ramp). The bonus is the effect we
+ * wanted anyway — the crown now shades as one lobe instead of two flat cards.
+ */
+function lobeCard() {
+  const geo = quadCard(1, 1);
+  geo.translate(0, -0.5, 0);             // pivot at the cluster centre
+  const np = geo.attributes.normal, pp = geo.attributes.position;
+  for (let i = 0; i < pp.count; i++) {
+    const x = pp.getX(i), y = pp.getY(i), z = pp.getZ(i);
+    const rl = Math.hypot(x, y, z) || 1;
+    const nx = (x / rl) * 0.75, ny = (y / rl) * 0.75, nz = (z / rl) * 0.75 + 0.25;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    np.setXYZ(i, nx / l, ny / l, nz / l);
+  }
+  np.needsUpdate = true;
+  return geo;
+}
+
+/**
  * A grass blade as real geometry: a tapered strip with a baked forward curl.
  * Cheaper in fill than an alpha card and it gives the outline pass a crisp
  * silhouette to bite on.
@@ -1178,8 +1220,7 @@ export class Vegetation {
     this.foliageMeshes = [];
     for (const [kind, cards] of cardsByKind) {
       if (!cards.length) continue;
-      const geo = quadCard(1, 1);
-      geo.translate(0, -0.5, 0);           // pivot at the cluster centre
+      const geo = lobeCard();
       ensureAttrs(geo);
       setGeomColor(geo, 0xffffff);
       const im = new THREE.InstancedMesh(geo, this.matLeaf[kind], cards.length * 2);
@@ -1285,8 +1326,7 @@ export class Vegetation {
     }
 
     if (!cards.length) return;
-    const geo = quadCard(1, 1);
-    geo.translate(0, -0.5, 0);
+    const geo = lobeCard();
     ensureAttrs(geo);
     setGeomColor(geo, 0xffffff);
     const im = new THREE.InstancedMesh(geo, this.matBush, cards.length * 2);

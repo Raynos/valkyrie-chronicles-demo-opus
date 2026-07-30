@@ -661,9 +661,44 @@ function tryRender(fn, opts, needs) {
 //    structures.js phase-locks its geometric course blocks to the same world-Y
 //    grid, so all three terms land on the SAME course line instead of beating
 //    against each other.
+//
+// ROUND 16 — THE FAMILIES NOW DECLARE THE DRIVE SPAN THEY OCCUPY.
+//
+// Same defect, same mechanism, as the one tank.js diagnosed for its running
+// gear: a family whose surfaces occupy a narrow slice of the raw band drive,
+// shipped with the whole [0,1] window, quantises into ONE wash. Measured on the
+// round-15 `bridge` plate: the spandrel face at y 460-480 read 105,102,110,114,
+// 132,127,107,114,117,117,113,111,111 across 1300 px — 15 LSB with no boundary
+// anywhere on the focal subject — and a vertical scan down the pier sat in a
+// single 6-LSB bin apart from its joint spikes. The only bands in the picture
+// were the geometric cavities.
+//
+// Built masonry is mostly VERTICAL faces under a 57 deg key, so its half-Lambert
+// lands in roughly 0.34..0.70 of the raw drive and never touches either end of
+// the window. [0.30, 0.72] hands it the span it really occupies, so a spandrel
+// that used to sit inside band 2 now crosses two boundaries; `shadowFloor` comes
+// UP to 0.40 at the same time, because that stretch is only worth having if a
+// face under the arch soffit or behind the parapet still has modelling left in
+// it — at the material default 0.22 the remap pushes every occluded face to 0
+// and buys a terminator on the sunny side by flattening the shaded side, which
+// is the trade the rubric's cast-shadow note calls out.
+//
+// Why per-FAMILY and not per-bin: the span is a property of how a family sits in
+// the world (walls stand up, ground lies down), not of a particular parapet, and
+// the bins in structures.js/props.js already override anything they need to.
+//
+// ONE THING THIS EXPOSES, for whoever owns the shade pole next. Stretching the
+// span pushes more of the masonry into the DEEP wash, and the deep wash is where
+// the r13 note's "the pole dominates the albedo" defect lives — measured cold on
+// the round-16 bridge, the spandrel lands hue 86.0 sat 0.158, i.e. moss, off an
+// albedo at hue ~40. This window did not create that (the near bank, which has
+// no masonry on it, measures hue 122 the same round); it makes it easier to see,
+// because there is now a deep wash on the focal subject at all. Do not "fix" it
+// by narrowing this window back — that only hides it in a single mid wash again.
 export const SURFACE_PIGMENT = {
   //            block m  tone  fissure  freq   other
-  masonry:  { blockSize: 0.42, blockTone: 0.135, pigLevels: 15, mottle: 0.022, blotch: 0.42, wetRim: 0.85, violet: 0.78 },
+  masonry:  { blockSize: 0.42, blockTone: 0.135, pigLevels: 15, mottle: 0.022, blotch: 0.42, wetRim: 0.85, violet: 0.78,
+              driveRange: [0.30, 0.72], shadowFloor: 0.40 },
   brick:    { blockSize: 0.16, blockTone: 0.085, pigLevels: 15, mottle: 0.090, wetRim: 0.80, violet: 0.82 },
   stucco:   { blockSize: 0, blockTone: 0, pigLevels: 13, grain: 0.55, blotch: 1.35, mottle: 0.125, wetRim: 0.75, violet: 0.72 },
   tile:     { blockSize: 0.15, blockTone: 0.095, pigLevels: 14, mottle: 0.080, wetRim: 0.80, violet: 0.86 },
@@ -863,7 +898,7 @@ const NPR_FORWARD = [
   'keyGain', 'fillGain', 'violet', 'cream', 'driveRange', 'curvature',
   'pigQ', 'pigLevels', 'grain', 'blockSize', 'blockTone', 'fissure', 'fissureFreq',
   'blotch', 'blotchScale', 'toothScale', 'spec', 'weave', 'mapFlat', 'mapDrive',
-  'shadowSoften', 'subsurface', 'hatchSpacing', 'emissive', 'emissiveIntensity',
+  'shadowSoften', 'shadowFloor', 'subsurface', 'hatchSpacing', 'emissive', 'emissiveIntensity',
   // round 5: the pigment-quantiser leash, the granulating boundary rim, the
   // sub-metre pigment field and the sage/olive clamp. See applyNprOpts.
   'pigWarp', 'wetRim', 'mottle', 'pasture',
@@ -979,7 +1014,25 @@ export function makeTerrainSurfaceMaterial(opts = {}) {
       // deliberately LOW (1.18): the range remap has already done the
       // stretching and a second one on top of it clips both ends into flat
       // slabs, which is the failure mode the round-3 masonry had.
-      driveRange: opts.driveRange ?? [0.29, 0.93],
+      // ROUND 16 — 0.29..0.93 -> 0.34..0.96, and the reason is WHERE THE
+      // BOUNDARIES LAND rather than how wide the window is. The round-15
+      // `bridge` bank measured 160-175 LSB from 8 m to 120 m with no boundary in
+      // it, because the sunlit ground is a near-flat plane: its half-Lambert
+      // spans about 0.80..0.85 of the raw drive, which 0.29..0.93 maps to
+      // 0.80..0.88 — comfortably INSIDE band 3, so the whole bank is one wash no
+      // matter how the window is stretched.
+      //
+      // The round-15 finding prescribed narrowing to 0.18..0.62 by analogy with
+      // tank.js's running gear. That analogy does not hold here and it was not
+      // taken: the gear occupies the BOTTOM of the drive, so pulling its ceiling
+      // down spreads it; open ground occupies the TOP, so a 0.62 ceiling clamps
+      // every sunlit square metre in all twelve shots to exactly 1.0 and makes
+      // the flat wash flatter. What a flat plane needs is not more stretch, it
+      // is a boundary moved under it. 0.34..0.96 maps the same 0.80..0.85 to
+      // 0.74..0.82, straddling the 0.75 band edge, so a bank now has a
+      // terminator that wanders with the ground's own slope and haze — and cast
+      // shadow (0.38) still lands at 0.065, i.e. the darks did not move.
+      driveRange: opts.driveRange ?? [0.34, 0.96],
       contrast: opts.contrast ?? 1.10,
       lightBias: opts.lightBias ?? 0.0,
       // ...and the boundary has to WANDER, or four hard bands on a heightfield

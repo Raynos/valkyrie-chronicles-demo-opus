@@ -832,6 +832,57 @@ const NPR_SHADE_BODY = /* glsl */`
   // It also fixes the flat-ground collapse the command shot showed: under a
   // near-vertical camera the geometric term is constant, so without this the
   // whole map lands inside one band.
+  // ---- ROUND 16: PHASE-LOCK THE TONAL FIELD TO THE BLOCK -------------------
+  // Round 15 put honest joints on the wall (bed pitch autocorrelates at lag 31
+  // on the bridge, which is real) and the masonry still did not read as laid
+  // stone. The reason is that the joint grid and the TONAL field were two
+  // independent fields: uBlotch's ~12 m/~5 m wash and uMottle's ~0.9 m/~0.31 m
+  // dye lot are continuous in world space, so a pale patch spans three
+  // stretchers and runs straight through a perpend. The eye takes continuity of
+  // tone as the primitive and the joints as scratches on top — a stained flat
+  // panel, which is exactly the "metric passes, picture doesn't" case.
+  //
+  // A mason's wall is tonally QUANTISED to the block, because each stone came
+  // out of the quarry and weathered as its own piece. So on any surface that
+  // asks for coursing (uPigment.x > 0) the wash / granulation / mottle lookups
+  // are evaluated from a hash of the BLOCK CELL the joints already define
+  // instead of from a continuous coordinate — same amplitude budget, same terms,
+  // but each face gets ONE value and no field survives to cross a joint. The
+  // cell is the identical (colI, row) pair the joint branch below builds, so the
+  // tone step lands exactly on the mortar line where a real stone's edge is.
+  //
+  // Amplitudes come down to 0.45 of their world-field values at the same time:
+  // three per-block hashes stacked on top of blockTone measured a block-to-block
+  // swing of ~35 LSB, a random quilt of near-white and dark stones. Weathered
+  // limestone does 10-14. blockTone's own spread is halved below for the same
+  // reason; the JOINT depth is deliberately NOT scaled, so what is being traded
+  // is quilt for coursing rather than contrast for flatness.
+  //
+  // MEASURED AFTERWARDS, AND THE NEXT ROUND SHOULD NOT SPEND ITSELF HERE: on the
+  // 'bridge' cold frame this whole change is worth ~0.5 LSB mean over the frame,
+  // and the spandrel's block-to-block swing (mean of 10x10 windows over
+  // 400,420-900,490, p95-p5) moved 24.9 -> 25.1 LSB. It is not wrong — nothing in
+  // this file now lets a tonal field cross a joint — it is simply not where the
+  // bridge's quilt comes from. The masonry terms this file owns are small there
+  // (blotch 0.42*0.062 and mottle 0.022*0.55 in drive) next to two things it
+  // cannot reach: world/structures.js ashlarCourseBlocks() gives every stone a
+  // per-vertex albedo of 0.90 + rng()*0.21 (±15%, ~±25 LSB — a random quilt by
+  // construction, and neighbouring pale stones are exactly the "blob spanning
+  // three stretchers" the critique crops), plus its ±15 mm face-projection
+  // jitter. A per-vertex attribute has no reference in the fragment stage to core
+  // against, so that amplitude has to come down at the source.
+  float mCell = 0.0;                        // 1.0 = coursed surface
+  vec2  mCellId = vec2( 0.0 );
+  if ( uPigment.x > 0.0 ) {
+    float bsE = uPigment.x;
+    float rowE = floor( vWorldPos.y / bsE );
+    float latE = mix( vWorldPos.x, vWorldPos.z,
+                      step( abs( vWorldNormal.z ), abs( vWorldNormal.x ) ) );
+    mCellId = vec2( floor( latE / ( bsE * 2.2 ) + fract( rowE * 0.5 ) ), rowE );
+    mCell = 1.0;
+  }
+  float pigAmp = mix( 1.0, 0.45, mCell );
+
   float wash = 0.5, gran = 0.5;
   #if !defined( VC_LOW ) && !defined( VC_CHEAP )
   {
@@ -857,6 +908,11 @@ const NPR_SHADE_BODY = /* glsl */`
                      texture2D( uBlotchTex, bv * 2.3 + 0.31 ).rgb, vert );
     wash = blot.r * 0.79 + fine.r * 0.21;
     gran = blot.b * 0.66 + fine.b * 0.34;
+    // coursed surfaces: one value per stone, not a field across the wall
+    if ( mCell > 0.0 ) {
+      wash = vcHash21( mCellId + 11.3 );
+      gran = vcHash21( mCellId * 1.7 + 29.7 );
+    }
   }
   #elif defined( VC_CHEAP )
   // One fetch instead of four. A blade needs a per-blade tonal offset, not a
@@ -869,8 +925,8 @@ const NPR_SHADE_BODY = /* glsl */`
   // the lighting, which is the definition of the blotch defect. 0.062/0.026
   // still crosses a boundary on a broad face — that is the term's job — but only
   // where the broad octave is genuinely loaded.
-  drive += ( wash - 0.5 ) * uBlotch * 0.062;
-  drive += ( gran - 0.5 ) * uBlotch * 0.026;
+  drive += ( wash - 0.5 ) * uBlotch * 0.062 * pigAmp;
+  drive += ( gran - 0.5 ) * uBlotch * 0.026 * pigAmp;
 
   // ---- sub-metre pigment structure -----------------------------------------
   // The blotch fetches above run at uBlotchScale — a ~12 m broad tile and a
@@ -934,8 +990,15 @@ const NPR_SHADE_BODY = /* glsl */`
       vec2 mu = vcSurfUV( vWorldPos, vWorldNormal );
       float m1 = vcFbm3( mu * 1.15 );           // ~0.9 m lobes — the dye lot
       float m2 = vcNoise2( mu * 3.2 + 4.7 );    // ~0.31 m — weathering inside it
+      // coursed stone quantises this too (see the block-cell note above): a
+      // 0.9 m dye lot on 0.42 m courses is precisely a patch that straddles two
+      // stretchers, which is what made the wall read as stained rather than laid.
+      if ( mCell > 0.0 ) {
+        m1 = vcHash21( mCellId * 2.3 + 53.1 );
+        m2 = vcHash21( mCellId * 0.7 + 71.9 );
+      }
       drive += ( ( m1 - 0.5 ) * 0.86 + ( m2 - 0.5 ) * 0.14 )
-             * uMottle * mFade * 0.55;
+             * uMottle * mFade * 0.55 * pigAmp;
     }
   }
 
@@ -973,7 +1036,12 @@ const NPR_SHADE_BODY = /* glsl */`
       float bh = vcHash21( vec2( colI, row ) + 0.5 );
       // a course is not one flat tone either: a slow wash across the block
       float bw = vcNoise2( vec2( lat, vWorldPos.y ) * ( 1.4 / bs ) );
-      drive += ( bh - 0.5 ) * uPigment.y + ( bw - 0.5 ) * uPigment.y * 0.45;
+      // spread halved (round 16): blockTone stays at its authored 0.135 so the
+      // wall keeps the same tonal ENERGY, but the block-to-block SWING comes down
+      // from a ~35 LSB quilt of near-white and near-black stones to the 10-14 LSB
+      // weathered limestone actually shows. The per-block hashes now arriving from
+      // the wash/gran/mottle terms above are the rest of that budget.
+      drive += ( bh - 0.5 ) * uPigment.y * 0.5 + ( bw - 0.5 ) * uPigment.y * 0.30;
 
       // ---- THE JOINT ITSELF, and why it has to exist (round 15) -------------
       // Everything above this is a per-block TONE. A random tone per block is
