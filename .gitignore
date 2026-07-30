@@ -4,3 +4,10 @@ shots/
 .DS_Store
 .vercel
 .env*
+
+# round-19 auditor scratch
+.play-audit.mjs
+.play2-audit.mjs
+.motion-audit/
+.*-audit.mjs
+.*-audit/
