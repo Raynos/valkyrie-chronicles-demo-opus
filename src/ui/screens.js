@@ -85,7 +85,17 @@ function pageOut(s) {
 
 // --------------------------------------------------------------------------
 
-/** A red ribbon button. Returns the element; `setEnabled` hangs off it. */
+/**
+ * A red ribbon button. Returns the element; `setEnabled` hangs off it.
+ *
+ * ROUND 22 — A DISABLED RIBBON MUST LOOK DISABLED. `off` was a class with no
+ * declaration in style.js, so a dead control was pixel-identical to a live one:
+ * the Deploy ribbon printed an "Enter" keycap on itself, swallowed every Enter
+ * and every click, and cost a playtester an entire session before they worked out
+ * the button was not the problem. The greying is done inline here on purpose —
+ * the `.off` rule lives in whoever owns style.js, and a control's *enabled state*
+ * is too load-bearing to be readable only if some other file agrees to style it.
+ */
 export function ribbonButton(text, onClick, { w = 15, key = '', seed = 21 } = {}) {
   const root = h('div', { class: 'vc-rbtn', style: { width: w + 'em' } });
   root.appendChild(ribbon({ w: 240, h: 58, seed }));
@@ -98,8 +108,74 @@ export function ribbonButton(text, onClick, { w = 15, key = '', seed = 21 } = {}
   }
   root.appendChild(t);
   clickable(root, () => { if (!root.classList.contains('off')) onClick?.(); });
-  root.setEnabled = (on) => root.classList.toggle('off', !on);
+  root.setEnabled = (on) => {
+    root.classList.toggle('off', !on);
+    root.style.opacity = on ? '' : '0.34';
+    root.style.filter = on ? '' : 'grayscale(1)';
+    root.style.cursor = on ? '' : 'default';
+    root.setAttribute('aria-disabled', on ? 'false' : 'true');
+  };
   return root;
+}
+
+// --------------------------------------------------------------------------
+// Nothing in this book may sit forever with no prompt.
+//
+// ROUND 22. Two spreads were dead ends for a keyboard: the briefing waited on a
+// click it never advertised, and deployment waited on one it refused to accept.
+// Measured on a live session, a stranger who only ever presses Enter reached the
+// battlefield in zero of five attempts.
+//
+// `autoGo` gives a spread the two things that fixes it: its own Enter/Space
+// binding (so the spread does not depend on the HUD's key poll being alive), and
+// a countdown that fires the same action unattended, printed on the sheet in
+// words so the timer is never a surprise. `fire` is guarded to run exactly once.
+// --------------------------------------------------------------------------
+
+const GO_KEYS = new Set(['Enter', 'NumpadEnter', ' ', 'Spacebar']);
+
+function autoGo(s, { hint, secs, verb = 'Continuing', fire }) {
+  autoGoStop(s);
+  // A screenshot must not contain a number that counts down: the harness's
+  // contract is "same shot => same frame count => same pixels", and a 1 Hz timer
+  // makes the sheet a function of wall clock. No capture shot opens one of these
+  // spreads today; this keeps it that way if one ever does.
+  if (CFG.capture) { if (hint) hint.textContent = ''; return; }
+  let left = Math.max(0, Math.round(secs));
+  const go = () => { autoGoStop(s); fire(); };
+  const paint = () => {
+    if (!hint) return;
+    hint.textContent = left > 0
+      ? `press Enter — ${verb} in ${left} s`
+      : 'press Enter';
+  };
+  paint();
+  s._goKey = (e) => {
+    if (!s.visible || e.defaultPrevented || e.repeat) return;
+    if (!GO_KEYS.has(e.key)) return;
+    go();
+  };
+  addEventListener('keydown', s._goKey);
+  if (secs > 0) {
+    s._goT = setInterval(() => {
+      left--;
+      paint();
+      if (left <= 0) go();
+    }, 1000);
+  }
+}
+
+function autoGoStop(s) {
+  if (s._goKey) { removeEventListener('keydown', s._goKey); s._goKey = null; }
+  if (s._goT) { clearInterval(s._goT); s._goT = 0; }
+}
+
+/** The dim italic line that carries the countdown, in the book's own hand. */
+function goHint() {
+  return h('div', {
+    class: 'vc-label vc-dim',
+    style: 'align-self:center;margin-left:1.1em;font-size:.62em;letter-spacing:.06em',
+  });
 }
 
 function statRow(k, v, cls = '') {
@@ -283,20 +359,37 @@ export class BriefingScreen {
     in_.appendChild(cols);
 
     const row = h('div', { class: 'vc-btnrow' });
-    row.appendChild(ribbonButton(d.beginText || 'Begin Mission', () => {
-      this.hide();
-      this.onBegin?.();
-      Bus.emit('ui:briefingDone', {});
-    }, { w: 15, key: 'Enter', seed: seed + 9 }));
+    row.appendChild(ribbonButton(d.beginText || 'Begin Mission',
+      () => this._begin(), { w: 15, key: 'Enter', seed: seed + 9 }));
+    const hint = goHint();
+    row.appendChild(hint);
     in_.appendChild(row);
 
     p.content.appendChild(in_);
     this.root.appendChild(p.root);
     pageIn(this);
+
+    // The briefing used to be the end of the road for a keyboard: it drew an
+    // Enter keycap and bound nothing, and unattended it never handed over at all
+    // (a tester sat here 44 s with the battle still in phase 'briefing').
+    this._fired = false;
+    autoGo(this, {
+      hint, secs: d.autoBegin != null ? d.autoBegin : 20, verb: 'moving out',
+      fire: () => this._begin(),
+    });
   }
 
-  hide() { pageOut(this); }
-  dispose() { clearTimeout(this._outT); this.root.remove(); }
+  _begin() {
+    if (this._fired) return;             // Enter reaches this from two places
+    this._fired = true;
+    autoGoStop(this);
+    this.hide();
+    this.onBegin?.();
+    Bus.emit('ui:briefingDone', {});
+  }
+
+  hide() { autoGoStop(this); pageOut(this); }
+  dispose() { autoGoStop(this); clearTimeout(this._outT); this.root.remove(); }
 }
 
 function defaultMarkers() {
@@ -347,7 +440,8 @@ export class DeploymentScreen {
 
   /**
    * @param {{camps?:Array<{id,name,slots}>, squad?:Array, seed?:number,
-   *          title?:string, minDeploy?:number}} d
+   *          title?:string, minDeploy?:number, autoPost?:boolean,
+   *          deployMax?:number, autoConfirm?:number}} d
    */
   show(d = {}) {
     this.data = d;
@@ -358,8 +452,42 @@ export class DeploymentScreen {
     this.activeCamp = this.camps[0].id;
     this.squad = (d.squad || []).filter((u) => !u || u.alive !== false);
     this.minDeploy = d.minDeploy != null ? d.minDeploy : 1;
+    this.deployMax = d.deployMax != null ? d.deployMax : 99;
+    // THE SQUAD IS ALREADY POSTED. `mission.autoDeploy` has been true the whole
+    // time and Battle.startDeployment() has always honoured it — the screen just
+    // never knew, so it opened at "0 / 9" with the Deploy ribbon disabled and no
+    // way for a keyboard to enable it. Posting the roll here is what makes Enter
+    // work from the state the spread opens in; touching a chip still hands the
+    // whole arrangement back to the player.
+    this.autoPost = d.autoPost !== false;
+    this.touched = false;
+    this._fired = false;
     this._build();
+    if (this.autoPost) this._postAll();
     pageIn(this);
+    autoGo(this, {
+      hint: this._hint, secs: d.autoConfirm != null ? d.autoConfirm : 20,
+      verb: 'moving out', fire: () => this._confirm(),
+    });
+  }
+
+  /** Fill the camps in order with the roll, up to slots and up to deployMax. */
+  _postAll() {
+    let n = 0;
+    for (const c of this.camps) {
+      const arr = this.assign.get(c.id);
+      const slots = c.slots || 6;
+      for (const u of this.squad) {
+        if (n >= this.deployMax) break;
+        if (arr.length >= slots) break;
+        let placed = false;
+        for (const a of this.assign.values()) if (a.includes(u)) placed = true;
+        if (placed) continue;
+        arr.push(u);
+        n++;
+      }
+    }
+    this._refresh();
   }
 
   _build() {
@@ -373,7 +501,10 @@ export class DeploymentScreen {
     in_.appendChild(inkRule({ w: 900, seed: seed + 1 }));
     in_.appendChild(h('div', {
       class: 'vc-body', style: 'margin-top:.5em',
-      text: 'Choose a camp, then tap a soldier to post them there. Tap again to withdraw.',
+      text: this.autoPost
+        ? 'Your squad is already posted at the staging post — press Enter to move out. '
+          + 'Or tap a soldier to pull them back off the line first.'
+        : 'Choose a camp, then tap a soldier to post them there. Tap again to withdraw.',
     }));
 
     // camps
@@ -405,6 +536,8 @@ export class DeploymentScreen {
     const row = h('div', { class: 'vc-btnrow' });
     this._btn = ribbonButton('Deploy', () => this._confirm(), { w: 13, key: 'Enter', seed: seed + 9 });
     row.appendChild(this._btn);
+    this._hint = goHint();
+    row.appendChild(this._hint);
     in_.appendChild(row);
 
     p.content.appendChild(in_);
@@ -441,6 +574,7 @@ export class DeploymentScreen {
     const arr = this.assign.get(camp.id);
     if (arr.length >= (camp.slots || 6)) return;
     arr.push(unit);
+    this.touched = true;
     this._refresh();
     Bus.emit('sfx', { name: 'ui_place' });
   }
@@ -450,19 +584,35 @@ export class DeploymentScreen {
       const i = arr.indexOf(unit);
       if (i >= 0) { arr.splice(i, 1); break; }
     }
+    this.touched = true;
     this._refresh();
   }
 
+  /**
+   * `auto` says the player never rearranged anything, so the battle should place
+   * the roll with its own weighting (heavy classes toward the objective) instead
+   * of taking the screen's left-to-right order as an instruction.
+   */
   _confirm() {
+    if (this._fired) return;             // Enter reaches this from two places
+    // A player who pulled the whole line off does not get a soft-lock: the roll
+    // goes back where it started rather than the mission opening with nobody on
+    // the field. This is the only path that can reach here under the minimum,
+    // because the ribbon itself is disabled (and now LOOKS disabled).
+    let total = 0;
+    for (const arr of this.assign.values()) total += arr.length;
+    if (total < this.minDeploy) { this._postAll(); this.touched = false; }
+    this._fired = true;
+    autoGoStop(this);
     const out = {};
     for (const [k, v] of this.assign) out[k] = v.slice();
     this.hide();
     this.onConfirm?.(out);
-    Bus.emit('ui:deployConfirm', { assignments: out });
+    Bus.emit('ui:deployConfirm', { assignments: out, auto: this.autoPost && !this.touched });
   }
 
-  hide() { pageOut(this); }
-  dispose() { clearTimeout(this._outT); this.root.remove(); }
+  hide() { autoGoStop(this); pageOut(this); }
+  dispose() { autoGoStop(this); clearTimeout(this._outT); this.root.remove(); }
 }
 
 // --------------------------------------------------------------------------
@@ -717,6 +867,12 @@ export class PauseMenu {
 // Dialogue bar — portrait + name plate + typewriter
 // --------------------------------------------------------------------------
 
+/** Seconds a line stays up once it has finished typing, if nobody said. */
+function readSecs(text) {
+  const n = String(text || '').length;
+  return Math.max(2.2, Math.min(7, 1.4 + n * 0.045));
+}
+
 export class DialogueBar {
   constructor(host, { onDone = null } = {}) {
     this.host = host;
@@ -756,7 +912,10 @@ export class DialogueBar {
     body.appendChild(this.textEl);
     in_.appendChild(body);
     p.content.appendChild(in_);
-    this.next = h('div', { class: 'vc-dlg-next', text: 'space' });
+    // The prompt names a key that actually advances the line. It used to say
+    // "space" only, and space is the ONE key a player watching a cutscene has
+    // just been told (by every ribbon in the game) not to press.
+    this.next = h('div', { class: 'vc-dlg-next', text: 'Enter ▸' });
     p.content.appendChild(this.next);
     clickable(p.root, () => this.advance());
     this.root.appendChild(p.root);
@@ -800,7 +959,11 @@ export class DialogueBar {
       cps: line.cps || 44,
       onDone: () => {
         this.next.style.opacity = '';
-        if (line.hold) this._auto = setTimeout(() => this.advance(), line.hold * 1000);
+        // EVERY line advances on a timer, not only the ones an author remembered
+        // to give a `hold`. A beat with no hold used to sit on screen for the rest
+        // of the session; reading time is a better default than forever.
+        const hold = line.hold != null ? line.hold : readSecs(line.text);
+        this._auto = setTimeout(() => this.advance(), hold * 1000);
       },
     });
     replay(this.panel, 'vc-dlg');

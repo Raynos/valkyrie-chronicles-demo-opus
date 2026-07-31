@@ -11,6 +11,19 @@ export const CFG = {
   capture: qs.has('capture'),
   captureShot: qs.get('shot') || null,
 
+  // ?pin — veto vite's HMR *full reload* for the life of the page.
+  //
+  // A played-build harness (perf, playtest, AI-behaviour) has to hold one live
+  // session for minutes. Any other agent editing any module in that window makes
+  // vite's HMR client fall back to `location.reload()`, which silently restarts
+  // the game from the title card in the middle of the measurement — round 21 saw
+  // 14 of them in one 190 s session, and round 22's first perf run recorded a
+  // 4025 ms frame and then measured the pre-battle orbit while believing it was
+  // measuring action mode. `?capture` already vetoes this (pinModulesForCapture
+  // in main.js); ?pin is the same veto for the played build, where there is no
+  // shot to protect but a whole run to protect instead.
+  pinModules: qs.has('pin'),
+
   render: {
     maxPixelRatio: 2,
 
@@ -37,11 +50,11 @@ export const CFG = {
     // Override with ?rs=<n> — ?rs=1 restores the old 2x behaviour.
     renderScale: 0.5,
     minPixelRatio: 1,
-    // Runtime-only emergency knob, driven by the dynamic-resolution ratchet in
-    // main.js. Authored policy lives in renderScale; this is what a machine that
-    // still cannot hold the budget gets to turn down, and the product is floored
-    // at 0.75 device pixels per CSS pixel because below that the ink lines start
-    // to break up and the cure is worse than the disease.
+    // ROUND 22 — pinned at 1 and no longer written by anything. This used to be
+    // the dynamic-resolution ratchet's lever; the ratchet is retired (see
+    // Engine.setDynScale for the measurements that killed it). The knob survives
+    // only as the multiplier ?ds=<n> writes, so a machine that genuinely cannot
+    // hold the budget still has a way down that is a DECISION rather than a drift.
     dynScale: 1,
 
     // ROUND 21 TRIED 4096 -> 2048 at ultra AND PUT IT BACK. Turning the sun's
@@ -62,6 +75,26 @@ export const CFG = {
     bloomStrength: 0.52,
     bloomRadius: 0.62,
     bloomThreshold: 0.72,
+    // ROUND 22 — the bloom chain's shape, and the smallest of the round's three
+    // cuts. It used to start at half the buffer with six mips at ultra, so at
+    // 1512x945 the first mip was 756x472 — and the first mip is where nearly all
+    // of a dual-filter chain's cost lives.
+    //
+    // MEASURED, GPU-synced on a live command view with the resolution pinned,
+    // 9 interleaved rounds: switching this pair alone from (2, 6) to (4, 5) took
+    // the frame from 28.5 ms to 27.8 ms. 0.7 ms. That is the honest number; the
+    // chain's TOTAL cost bracketed at 2.4 ms, so ÷4 hands back about a third of
+    // it and the rest is the upsample and the composite's read, which are not
+    // resolution-bound in the same way.
+    //
+    // The coarsest mip is 23x14 either way, so the bleed's RADIUS in screen space
+    // is unchanged — what is gone is fine structure INSIDE the glow, which the
+    // wash quantiser in the composite was already collapsing into three steps.
+    // Checked on cold bridge/closeup/action plates: the frame's mean RGB moves by
+    // at most 1.5 LSB and the plates are indistinguishable side by side, with the
+    // ÷4 version very slightly crisper for having less bloom veil over the darks.
+    bloomStartDiv: 4,
+    bloomMips: 5,
     vignette: 0.34,
     chroma: 0.0016,
     exposure: 1.06,
@@ -90,6 +123,14 @@ export const CFG = {
 if (qs.has('rs')) {
   const rs = parseFloat(qs.get('rs'));
   if (Number.isFinite(rs) && rs > 0) CFG.render.renderScale = rs;
+}
+if (qs.has('mpr')) {
+  const m = parseFloat(qs.get('mpr'));
+  if (Number.isFinite(m) && m > 0) CFG.render.minPixelRatio = m;
+}
+if (qs.has('ds')) {
+  const d = parseFloat(qs.get('ds'));
+  if (Number.isFinite(d) && d > 0) CFG.render.dynScale = Math.min(1, d);
 }
 
 // Convenience: quality-indexed pick

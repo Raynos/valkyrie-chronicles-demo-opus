@@ -197,6 +197,41 @@ export class NavGrid {
     return -1;
   }
 
+  /**
+   * Nearest cell that is walkable, cheap to stand on, AND has all eight neighbours walkable —
+   * i.e. ground you can actually walk OFF in any direction.
+   *
+   * `nearestWalkable` answers "can a body exist here", which is not the same question. A cell
+   * on a shell-crater rim or in the mouth of a ruin passes it while being a pocket: every
+   * heading out of it is blocked, so a soldier placed there holds W and travels 0.00 m. That
+   * pocket is what "a third of the squad cannot leave the staging post" looked like from the
+   * outside. Anything that PLACES a unit — deployment slots, spawns — wants this one.
+   */
+  nearestOpen(x, z, maxRings = 12, maxCost = 2.6) {
+    const open = (jx, jz) => {
+      if (!this.inBounds(jx, jz)) return false;
+      const i = this.idx(jx, jz);
+      if (this.flags[i] !== WALK || this.cost[i] > maxCost) return false;
+      for (let k = 0; k < 8; k++) {
+        const nx = jx + NX[k], nz = jz + NZ[k];
+        if (!this.inBounds(nx, nz) || this.flags[this.idx(nx, nz)] !== WALK) return false;
+      }
+      return true;
+    };
+    const ix = clamp(this.cellX(x), 0, this.w - 1);
+    const iz = clamp(this.cellZ(z), 0, this.h - 1);
+    if (open(ix, iz)) return this.idx(ix, iz);
+    for (let r = 1; r <= maxRings; r++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+          if (open(ix + dx, iz + dz)) return this.idx(ix + dx, iz + dz);
+        }
+      }
+    }
+    return this.nearestWalkable(x, z, maxRings);
+  }
+
   // -- A* -----------------------------------------------------------------
 
   /**
@@ -458,10 +493,25 @@ export function moveWithCollision(pos, dx, dz, radius, nav, world, height = 1.7)
   if (world?.resolvePosition) {
     const total = Math.hypot(dx, dz);
     const n = total > 0.4 ? Math.min(8, Math.ceil(total / 0.4)) : 1;
+    const ux = dx / n, uz = dz / n;
     for (let i = 0; i < n; i++) {
-      const nx = pos.x + dx / n, nz = pos.z + dz / n;
-      if (nav && !nav.walkableAt(nx, nz)) break;
-      pos.x = nx; pos.z = nz;
+      // SLIDE ALONG WALLS ON THE FAST PATH TOO.
+      //
+      // This loop used to `break` the instant the next sub-step landed on a nav-blocked cell,
+      // with no axis fallback at all — so walking into blocked ground at ANY angle stopped the
+      // soldier dead rather than sliding him along it, and held W bought literally zero metres
+      // whenever the very first sub-step was blocked. That is the "a third of the squad cannot
+      // leave the staging post" report: probing eight headings out of the real deploy slots in
+      // a live game, one soldier returned 0.00 m on three of them against 6 m of intent, and
+      // 0.00 m is what you get from a dead stop, not from a slow squeeze.
+      //
+      // The slow path below (`stepMove`) has always had this fallback and the function's own
+      // doc comment has always promised it. The fast path is the one the game actually takes,
+      // because World.resolvePosition exists.
+      if (!nav || nav.walkableAt(pos.x + ux, pos.z + uz)) { pos.x += ux; pos.z += uz; }
+      else if (ux !== 0 && nav.walkableAt(pos.x + ux, pos.z)) pos.x += ux;
+      else if (uz !== 0 && nav.walkableAt(pos.x, pos.z + uz)) pos.z += uz;
+      else break;
       world.resolvePosition(pos, radius);
     }
     return Math.hypot(pos.x - sx, pos.z - sz);

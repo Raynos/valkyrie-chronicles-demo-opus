@@ -155,6 +155,36 @@ const MUSIC_GAIN = { Off: 0, Quiet: 0.28, Normal: 0.62, Loud: 0.95 };
 const SFX_GAIN = { Off: 0, Quiet: 0.45, Normal: 1, Loud: 1.45 };
 const AMBIENCE_GAIN = { Off: 0, Quiet: 0.34, Normal: 0.72, Loud: 0.92 };
 
+// Why a trigger pull did nothing, in words. See HUD._fireBlock() for the handoff
+// contract these keys come off (`fire:blocked` / `aim:blocked` .reason).
+const BLOCK_TEXT = {
+  range: 'Out of range',
+  outOfRange: 'Out of range',
+  los: 'No line of sight',
+  noLineOfSight: 'No line of sight',
+  attacks: 'No attacks left — Enter to end',
+  noAttacks: 'No attacks left — Enter to end',
+  ammo: 'Out of ammo — reload (R)',
+  noAmmo: 'Out of ammo — reload (R)',
+  noTarget: 'No target in the sights',
+  cover: 'Target is behind cover',
+};
+
+/**
+ * A THREE-shaped scratch point that is not a THREE.Vector3.
+ * `Unit.muzzlePoint(out)` / `centerPoint(out)` call `out.set()` and `out.copy()`,
+ * and `World.lineOfSight(a, b)` only reads x/y/z — so eleven lines of object
+ * literal buy the HUD a world raycast without importing the maths library or the
+ * game layer into a file that is meant to observe both.
+ */
+function mutablePoint() {
+  return {
+    x: 0, y: 0, z: 0,
+    set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; },
+    copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; },
+  };
+}
+
 const LEGENDS = {
   command: [
     ['Drag', 'Pan Map'], ['LMB', 'Select Unit'], ['Q', 'Orders'],
@@ -765,6 +795,20 @@ export class HUD {
     amP.content.appendChild(this.ammoNum);
     this.ammoPips = h('div', { class: 'vc-ammo-pips' });
     amP.content.appendChild(this.ammoPips);
+    // THE WEAPON'S REACH, ON SCREEN, ALWAYS.
+    //
+    // A playtester fired 41 rounds for 0 hits and reported the game as broken. He
+    // was not wrong about what he saw: his SMG reaches 30 m and every Imperial he
+    // could see was 37 m or further, and NOTHING anywhere on the page carried that
+    // number. The reticle tightened, the trigger worked, the rounds went out, and
+    // they could not arrive. One line of small caps under the magazine is the
+    // difference between an unfair game and a game that wants you to close.
+    //
+    // It lives on the ammunition slip rather than the firing chit on purpose: the
+    // chit only exists when there is a dossier to hang it on, which is exactly when
+    // the player does NOT need telling.
+    this.reachEl = h('div', { class: 'vc-label vc-tight', text: '' });
+    amP.content.appendChild(this.reachEl);
     this.reloadEl = h('div', { class: 'vc-reload vc-hidden', text: 'Reloading' });
     amP.content.appendChild(this.reloadEl);
     L.appendChild(amP.root);
@@ -884,6 +928,20 @@ export class HUD {
     hp.content.appendChild(hitIn);
     this.hitSub = h('div', { class: 'vc-hit-sub', text: '' });
     hp.content.appendChild(this.hitSub);
+    // WHY THE TRIGGER DOES NOTHING.
+    //
+    // Out of range, no line of sight and no attacks left all rendered as "nothing
+    // happens" — one playtester got 0 locks in 10 attempts and 0 hits from 41
+    // rounds and concluded the game was broken. It was not: his SMG could not
+    // reach 32 m. A single red line under the hit reading, in the same chit the
+    // player is already reading, is the whole difference between a hard game and
+    // a broken one.
+    this.hitWhy = h('div', {
+      class: 'vc-hit-sub',
+      style: 'display:none; color:var(--red); max-width:11em; white-space:normal; line-height:1.18',
+      text: '',
+    });
+    hp.content.appendChild(this.hitWhy);
     this.hitPanel = hp.root;
     L.appendChild(hp.root);
 
@@ -904,9 +962,54 @@ export class HUD {
     this.bodyFig = h('div', { class: 'vc-body-fig' });
     this.bodyFig.appendChild(bodyFigure({ part: 'torso', size: 112 }));
     tc.content.appendChild(this.bodyFig);
+    // The damage struck off the dossier's health, written in the margin of the
+    // card the way a scorer marks a hit. Lives on the card so it cannot be
+    // confused with the world-space damage number over the soldier himself.
+    this.tcardHit = h('div', {
+      style: 'position:absolute; right:.65em; top:.5em; font-size:1.15em; ' +
+        'color:var(--red); opacity:0; pointer-events:none',
+      text: '',
+    });
+    tc.root.appendChild(this.tcardHit);
     L.appendChild(tc.root);
 
     this.root.appendChild(L);
+    this._buildHitMark();
+  }
+
+  /**
+   * THE HIT MARKER.
+   *
+   * A landed round produced no acknowledgement anywhere near the sights: the
+   * damage number floats in world space over the soldier, which at 40 m is a
+   * smudge behind the reticle, and the dossier's gauge moved by a few pixels.
+   * Both playtesters could not tell a hit from a miss.
+   *
+   * Four short nibbed strokes struck around the reticle — a red pen mark over an
+   * ink one, so it reads as a correction made on the plate rather than a video
+   * game crit. It lives OUTSIDE the targeting layer on purpose: a hip-fired round
+   * lands with the sights down, and it has to acknowledge that shot too.
+   */
+  _buildHitMark() {
+    const S = (x0, y0, x1, y1, seed) =>
+      wobblyPath(x0, y0, x1, y1, { seed, amp: 1.1, segs: 4, overshoot: 1.2 });
+    const strokes = S(13, 13, 24, 24, 71) + ' ' + S(47, 13, 36, 24, 72) + ' ' +
+      S(13, 47, 24, 36, 73) + ' ' + S(47, 47, 36, 36, 74);
+    const el = h('div', {
+      style: 'position:absolute; left:50%; top:50%; width:3.6em; height:3.6em; ' +
+        'transform:translate(-50%,-50%); pointer-events:none; opacity:0; z-index:15',
+    });
+    el.innerHTML =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60" ' +
+      'style="width:100%;height:100%;overflow:visible">' +
+      '<path d="' + strokes + '" fill="none" stroke="#2a231e" stroke-width="4.2" ' +
+      'stroke-linecap="round" opacity="0.4"/>' +
+      '<path d="' + strokes + '" fill="none" stroke="#a32f34" stroke-width="2.0" ' +
+      'stroke-linecap="round"/></svg>';
+    this.hitMark = el;
+    this.root.appendChild(el);
+    this._hitMarkT = 0;
+    this._hitMarkBig = false;
   }
 
   // ======================================================================
@@ -992,7 +1095,33 @@ export class HUD {
       if (!u) return;
       if (u.pos) this.labels.banner(u.pos, 'DOWNED', { life: 2.2, color: '#77202a' });
       this.toast(((u.name || 'Soldier') + ' is down').toUpperCase());
+      // A MAN GOING DOWN IS AN EVENT, NOT A LINE OF SMALL CAPS.
+      //
+      // A 0.8em toast is what the page uses for "ATTACK BOOST ISSUED"; a soldier
+      // leaving the field was announced at the same weight, three seconds after
+      // the shot that did it, with nothing else on screen changing. Both sides of
+      // it now take the centre of the page in the type the alert is set in — with
+      // OUR casualty and THEIR casualty saying plainly which it was, since the
+      // wording is the exact thing this HUD used to get wrong.
+      const foe = (u.team | 0) === 1;
+      this.alert(foe ? 'Imperial Down' : 'Man Down',
+        (u.name || 'Soldier') + (foe ? ' — routed' : ' — evacuate'));
+      // Our own casualty is felt as well as read: the same red vignette a hit on
+      // the selected soldier already drives, at a weight nothing else reaches.
+      if (!foe) this.dmgFlash = Math.max(this.dmgFlash, 0.85);
       this._rosterKey = '';   // force a rebuild so the stamp appears
+    });
+    // A LANDED ROUND, ACKNOWLEDGED AT THE SIGHTS.
+    // `shot:hit` fires per round with `shooter` and a `unit` when it struck a
+    // body, so this is the only signal in the game that means "your bullet hit
+    // that man" — the burst summary in `attack:resolved` arrives after the whole
+    // volley and the world damage number is 40 m away behind the reticle.
+    this._on('shot:hit', (p) => {
+      if (!p || !p.unit || !p.shooter) return;
+      if ((p.shooter.team | 0) !== 0) return;
+      if (this.phase !== 'action') return;
+      this._hitMarkT = 0.36;
+      this._hitMarkBig = !!p.crit;
     });
     this._on('interception', (p) => {
       replay(this.iceptEl, 'on');
@@ -1045,6 +1174,8 @@ export class HUD {
     this._on('ui:target', (p) => this.setTarget(p));
     this._on('ui:aim', (p) => {
       this.aiming = !!(p && p.aiming);
+      this._aimActive = this.aiming;
+      if (!this.aiming) this._clearAim();
       if (p && p.spread != null) this.spread = clamp01(p.spread);
       if (p && p.hit != null) this.hitChance = clamp01(p.hit > 1 ? p.hit / 100 : p.hit);
     });
@@ -1084,17 +1215,20 @@ export class HUD {
     this._on('action:enter', (p) => {
       if (p?.unit) { this.selected = p.unit; this._syncSelection(); }
       this.apShown = p?.ap != null ? p.ap : (this.selected?.ap || 0);
-      this.aiming = false;
-      this.target = null;
+      this._attacksLeft = null;
+      this._clearAim();
     });
-    this._on('action:exit', () => { this.aiming = false; this.target = null; });
+    this._on('action:exit', () => this._clearAim());
     this._on('action:end', (p) => {
-      this.aiming = false;
-      this.target = null;
+      this._clearAim();
       if (p?.reason && p.reason !== 'turnEnded') this.toast(String(p.reason).toUpperCase());
     });
-    this._on('aim:enter', () => { this.aiming = true; this.setControls('aim'); });
-    this._on('aim:exit', () => { this.aiming = false; this.target = null; });
+    this._on('aim:enter', () => {
+      this._aimActive = true;
+      this.aiming = true;
+      this.setControls('aim');
+    });
+    this._on('aim:exit', () => this._clearAim());
     this._on('aim:target', (p) => this._onAimTarget(p));
     this._on('weapon:switch', (p) => {
       const w = p?.weapon;
@@ -1102,10 +1236,47 @@ export class HUD {
     });
     this._on('attack:resolved', (p) => {
       if (!p) return;
-      if (p.kills) this.toast(p.kills > 1 ? p.kills + ' ENEMIES ROUTED' : 'ENEMY ROUTED');
+      // TEAM CHECK, AND IT IS THE WHOLE DEFECT.
+      //
+      // `attack:resolved` is emitted by EVERY shooter — ours, theirs, and the AI's
+      // — and an Imperial who kills one of our soldiers carries `kills: 1` exactly
+      // like our own kill does. So the page toasted "ENEMY ROUTED" directly
+      // underneath "ISARA GUNTHER IS DOWN", in the first enemy turn, every single
+      // game. Two independent playtesters filed it, and it is the same mis-credit
+      // round 19 found in the stats layer — units.js and the results screen were
+      // fixed then ("Enemies Routed 0" is already correct); this toast was not.
+      //
+      // Congratulating the player for his own casualty is worse than saying
+      // nothing: it tells him the readouts cannot be trusted.
+      const mine = (p.unit ? (p.unit.team | 0) : 0) === 0;
+      if (p.kills && mine) this.toast(p.kills > 1 ? p.kills + ' ENEMIES ROUTED' : 'ENEMY ROUTED');
+      // The legend and the shot report belong to OUR attack too — an Imperial
+      // firing must not rewrite the strip under the player's own hands.
+      if (!mine) return;
+      if (p.attacksLeft != null) this._attacksLeft = p.attacksLeft;
+      this._reportShot(p);
       if (p.attacksLeft === 0) this.setControls('action');
     });
     this._on('interception:shot', () => { this.dmgFlash = Math.max(this.dmgFlash, 0.22); });
+
+    // --- why the trigger did nothing (see _fireBlock for the contract) --------
+    // actionMode.js exports AIM_STATUS and emits `aim:denied {unit, reason, target,
+    // distance, maxRange, needCloser}` when it refuses to raise the weapon or to
+    // let the shot go. That is the authoritative account — it knows which weapon,
+    // which ray and how much short — so it wins for two seconds.
+    this._on('aim:denied', (p) => { this._deniedAt = this._time; this._noteBlock(p); });
+    // BELT AND BRACES. `fire()` also emits `sfx {name:'dryFire'}` — a click nobody
+    // hears over a firefight — and it does so BEFORE `aim:denied`, so this defers
+    // by a microtask and stands down if the proper announcement arrived. It is
+    // what covers any refusal path that has no `aim:denied` of its own.
+    this._on('sfx', (p) => {
+      if (!p || p.name !== 'dryFire' || this.phase !== 'action') return;
+      const at = this._deniedAt;
+      Promise.resolve().then(() => {
+        if (this._deniedAt !== at) return;
+        this._sayBlock(this._fireBlock() || BLOCK_TEXT.noTarget);
+      });
+    });
 
     // --- command mode ------------------------------------------------------
     this._on('command:enter', () => { this._rosterKey = ''; this.cpShown = -1; this._renderCp(); });
@@ -1192,7 +1363,29 @@ export class HUD {
       });
     }
     if (!p) return;
+    // THE SIGHTS ARE RAISED BY aim:enter AND LOWERED BY aim:exit. NEVER BY THIS.
+    //
+    // actionMode.exitAim() emits `aim:exit` and then, on the very next line,
+    // `aim:target {target:null}` to clear the dossier. This handler used to set
+    // `aiming = true` unconditionally, so the second event relatched the overlay
+    // that the first had just taken down — and `_updateTargeting`'s soft-target
+    // fallback then refilled the dossier from whoever was still inside the
+    // reticle. Measured in a played session with mode=MOVE, attacksLeft=0 and
+    // aimTarget=null: crosshair, dispersion brackets, "42% Hit" and a full
+    // Imperial dossier all still on screen, over a soldier who was walking.
+    //
+    // A target update that arrives while the weapon is down is stale by
+    // definition, so it clears the dossier and returns.
+    if (!this._aimActive) { this.target = null; return; }
     this.aiming = true;
+    // actionMode publishes WHY the sight picture looks the way it does, every
+    // 0.06 s, alongside the solution: `status` (an AIM_STATUS), `canFire`, and a
+    // `nearest {name, distance, maxRange, needCloser}` for the man it can name but
+    // not reach. Stashed before the null-target return, because "nobody in the
+    // cone" and "the sortie's attack is spent" both arrive with target: null.
+    this._aimStatus = p.status || null;
+    this._canFire = p.canFire !== false;
+    this._aimNearest = p.nearest || null;
     if (p.reticlePx != null && isFinite(p.reticlePx)) this.reticlePx = p.reticlePx;
     if (p.chance != null) this.hitChance = clamp01(p.chance > 1 ? p.chance / 100 : p.chance);
     if (!p.target) { this.target = null; return; }
@@ -1420,7 +1613,186 @@ export class HUD {
     }
     if (t.hit != null) this.hitChance = clamp01(t.hit > 1 ? t.hit / 100 : t.hit);
     if (t.spread != null) this.spread = clamp01(t.spread);
-    this.aiming = t.aiming !== false;
+    // THE SECOND LATCH. This read `t.aiming !== false`, i.e. "any dossier at all
+    // raises the sights" — and `_onAimTarget` and `_applySoftTarget` both call
+    // through here without an `aiming` field. So even with _onAimTarget fixed, a
+    // stale target update would have put the overlay straight back up. Only an
+    // EXPLICIT `aiming` in the payload moves it now; aim:enter / aim:exit own the
+    // state, and an external `ui:target` can still force it by saying so.
+    if (t.aiming != null) this.aiming = !!t.aiming;
+    else if (this._aimActive) this.aiming = true;
+  }
+
+  /**
+   * Lower the weapon and take the whole sight picture off the page.
+   *
+   * `_updateTargeting()` early-returns when `aiming` is false, which means it
+   * cannot be the thing that tidies up: whatever the last aiming frame left in
+   * the hit chit and the dossier stays in the DOM at whatever display it had.
+   * The layer's own `opacity:0` hid it — until the latch above put `aiming` back
+   * to true, at which point the stale frame was simply revealed again. So
+   * exiting aim now clears the STATE as well as the class.
+   */
+  _clearAim() {
+    this._aimActive = false;
+    this.aiming = false;
+    this.target = null;
+    this.reticlePx = 0;
+    this.hitChance = 0;
+    this.hitShown = 0;
+    this._hitLast = -1;
+    this._hitSubLast = null;
+    this._whyLast = null;
+    this._blockUntil = 0;
+    this._shotReportUntil = 0;
+    this._aimStatus = null;
+    this._aimNearest = null;
+    this._canFire = true;
+    this._tgtShown = false;
+    this._cardShown = false;
+    this._softTimer = 0;
+    this._tcardHpFor = null;
+    this.tgtLayer.classList.remove('on');
+    if (this.hitPanel) this.hitPanel.style.display = 'none';
+    if (this.tcard) this.tcard.style.display = 'none';
+    if (this.hitSub) this.hitSub.textContent = '';
+    if (this.hitWhy) { this.hitWhy.textContent = ''; this.hitWhy.style.display = 'none'; }
+  }
+
+  /**
+   * WHY THE SHOT IS NOT AVAILABLE — the reason, in words, in the chit the player
+   * is already reading. Returns '' when the shot is on.
+   *
+   * THE HANDOFF, AS IT ACTUALLY LANDED. actionMode.js (another agent's file this
+   * round) now exports `AIM_STATUS` and publishes it on two channels:
+   *
+   *   aim:target { status, canFire, nearest:{name,distance,maxRange,needCloser},
+   *                blockedBy }                       — every 0.06 s while aiming
+   *   aim:denied { unit, reason, target, distance, maxRange, needCloser }
+   *                                                  — the moment it refuses
+   *   AIM_STATUS: locked | outOfRange | noLineOfSight | noTarget | noAttacks | noAmmo
+   *
+   * The published status wins, because the game knows which weapon, which ray and
+   * how much short. Below it everything is DERIVED from state the HUD can read on
+   * its own — `unit.attackUsed`, `unit.ammo`, `weapon.maxRange` and the world's own
+   * `lineOfSight()` — so the player is told either way, and the page does not go
+   * silent again if those events are ever renamed. Nothing here mutates the battle.
+   */
+  _fireBlock() {
+    if (this._blockUntil && this._time < this._blockUntil) return this._blockText || '';
+    const u = this.selected;
+    if (!u) return '';
+    const published = this._statusText(this._aimStatus, this._aimNearest);
+    if (published) return published;
+    if (u.ammo != null && u.ammo <= 0) return 'Out of ammo — reload (R)';
+    if (u.attackUsed || (this._attacksLeft != null && this._attacksLeft <= 0)) {
+      return 'No attacks left — Enter to end';
+    }
+    const t = this.target;
+    const tu = t && t.unit;
+    if (!tu || !tu.pos) return '';
+    const w = (u.usingAlt && u.altAmmo) ? u.altAmmo : u.weapon;
+    const d = t.distance != null ? t.distance : null;
+    if (w && w.maxRange && d != null && d > w.maxRange) {
+      return 'Out of range — ' + Math.round(d) + ' m, ' +
+        (w.name ? w.name + ' reaches ' : 'weapon reaches ') + Math.round(w.maxRange) + ' m';
+    }
+    // Only ever asked of a DESIGNATED target. A hard lock came from the game's own
+    // ray landing on the man, so line of sight is true by construction and asking
+    // again could only produce a false negative — and a false "no line of sight"
+    // over a soldier the player can plainly shoot is worse than saying nothing.
+    if (t.soft && this._noLineOfSight(u, tu)) return 'No line of sight';
+    return '';
+  }
+
+  /** Throttled world raycast, muzzle to centre of mass, using the world's own rule. */
+  _noLineOfSight(u, tu) {
+    const w = this.battle && this.battle.world;
+    if (!w || typeof w.lineOfSight !== 'function') return false;
+    if (this._losFor === tu && this._time < (this._losAt || 0) + 0.2) return !!this._losBad;
+    this._losFor = tu;
+    this._losAt = this._time;
+    const a = this._losA || (this._losA = mutablePoint());
+    const b = this._losB || (this._losB = mutablePoint());
+    if (typeof u.muzzlePoint === 'function') u.muzzlePoint(a);
+    else a.set(u.pos.x, (u.pos.y || 0) + 1.5, u.pos.z);
+    if (typeof tu.centerPoint === 'function') tu.centerPoint(b);
+    else b.set(tu.pos.x, (tu.pos.y || 0) + 1.1, tu.pos.z);
+    this._losBad = !w.lineOfSight(a, b);
+    return this._losBad;
+  }
+
+  /**
+   * An AIM_STATUS (or an `aim:denied` reason) rendered as the line the player reads.
+   * `noTarget` deliberately returns '' — the empty dossier already says the sights
+   * are on grass, and a red warning for pointing a rifle at a field is noise.
+   */
+  _statusText(status, info) {
+    if (!status || status === 'locked') return '';
+    // Measured in a played session: the sights spend most of a sortie on grass, so
+    // rendering `noTarget` as a warning pins a permanent red line to the chit and
+    // trains the player to stop reading it. Silence is the correct reading here.
+    if (status === 'noTarget') return '';
+    if (status === 'outOfRange' || status === 'range') {
+      const d = info && info.distance, m = info && info.maxRange;
+      if (d != null && m != null) {
+        const closer = Math.max(1, Math.round(info.needCloser != null ? info.needCloser : d - m));
+        return 'Out of range — ' + Math.round(d) + ' m, weapon reaches ' + Math.round(m) +
+          ' m · close ' + closer + ' m';
+      }
+      return BLOCK_TEXT.range;
+    }
+    return BLOCK_TEXT[status] || '';
+  }
+
+  /** Latch a refusal announced by the game layer, and say it once out loud. */
+  _noteBlock(p) {
+    const key = (p && p.reason) || 'noTarget';
+    // `aim:denied` puts the numbers at the top level; `aim:target` nests them under
+    // `nearest`. Accept either, so neither side has to reshape its payload.
+    const text = this._statusText(key, p && p.distance != null ? p : (p && p.nearest)) ||
+      BLOCK_TEXT[key] || prettyId(key);
+    this._blockText = text;
+    this._blockUntil = this._time + 2;
+    this._sayBlock(text);
+  }
+
+  /** A refusal the player pulled the trigger for deserves a toast, not just a line. */
+  _sayBlock(text) {
+    if (!text) return;
+    if (this._blockSaid === text && this._time - (this._blockSaidAt || -9) < 2.5) return;
+    this._blockSaid = text;
+    this._blockSaidAt = this._time;
+    this.toast(text.toUpperCase());
+  }
+
+  /**
+   * The shot report: what the volley actually did, on the chit, for a beat.
+   * "2 of 3 hits · 54 damage" is the sentence a player wants after pulling the
+   * trigger, and until now the only trace of a burst was a world-space number
+   * behind the reticle and an enemy health bar moving four pixels.
+   */
+  _reportShot(p) {
+    const shots = p.shots || 1;
+    const hits = p.hits | 0;
+    const dmg = Math.round(p.damage || 0);
+    this._shotReport = !hits ? 'Missed' + (shots > 1 ? ' — ' + shots + ' rounds' : '')
+      : (shots > 1 ? hits + ' of ' + shots + ' hits · ' : 'Hit · ') + dmg + ' damage';
+    this._shotReportUntil = this._time + 2.2;
+    this._hitSubLast = null;
+    if (hits) { this._hitMarkT = Math.max(this._hitMarkT, 0.36); this._hitMarkBig = !!p.crits; }
+    // AND SAID SOMEWHERE THAT SURVIVES THE SHOT.
+    //
+    // Measured, and it is why the first cut of this did not land: a soldier with
+    // one attack spends it, actionMode drops the sights on the same tick
+    // (`attack:resolved` then `aim:exit`, 0 ms apart in the played log), and
+    // `_clearAim()` wipes the chit the report was written on before a single frame
+    // has drawn it. So the outcome of the ONE shot the player gets per sortie is
+    // also the one thing the sight picture cannot tell him. A slip at the head of
+    // the page outlives the overlay — and a miss is announced as plainly as a hit,
+    // because "nothing happened" is precisely the reading that made a playtester
+    // call the game broken.
+    this.toast(this._shotReport.replace('·', '·').toUpperCase());
   }
 
   /** @param {{ammo?:number, mag?:number, reloading?:boolean}} a */
@@ -1482,6 +1854,19 @@ export class HUD {
       // A world shot: the battle is in the command phase but the frame carries
       // the battle HUD, so its readouts have to be driven from here.
       this._updateField();
+    }
+
+    // Hit marker: struck on large, settling and fading over a third of a second.
+    // Driven from here rather than a CSS keyframe because the keyframe sheet lives
+    // in style.js, which belongs to another agent this round.
+    if (this._hitMarkT > 0) {
+      this._hitMarkT -= dt;
+      const k = clamp01(this._hitMarkT / 0.36);
+      this.hitMark.style.opacity = (k * 0.95).toFixed(3);
+      this.hitMark.style.transform = 'translate(-50%,-50%) scale(' +
+        ((this._hitMarkBig ? 1.28 : 1) * (1 + 0.34 * k)).toFixed(3) + ')';
+    } else if (this.hitMark.style.opacity !== '0') {
+      this.hitMark.style.opacity = '0';
     }
 
     // damage vignette decay
@@ -1782,6 +2167,11 @@ export class HUD {
     if (m == null && a != null) m = Math.max(1, a | 0);
     this._ammo = a;
     this._mag = m;
+    // The reach of whatever he is actually holding, alt ammunition included.
+    const held = (u.usingAlt && u.altAmmo) ? u.altAmmo : w;
+    this._reach = held && held.maxRange
+      ? (held.name ? held.name + ' · ' : '') + 'reaches ' + Math.round(held.maxRange) + ' m'
+      : '';
   }
 
   _flashSelected() {
@@ -2051,6 +2441,9 @@ export class HUD {
     const slug = dry ? 'Out of Ammo' : (this._reloading ? 'Reloading' : '');
     this.reloadEl.textContent = slug;
     this.reloadEl.classList.toggle('vc-hidden', !slug);
+    if (this.reachEl && this.reachEl.textContent !== (this._reach || '')) {
+      this.reachEl.textContent = this._reach || '';
+    }
   }
 
   // World convention (src/world/layout.js): +X is east, **-Z is north**. The
@@ -2161,12 +2554,61 @@ export class HUD {
       }
     }
 
+    // THE DOSSIER'S HEALTH READS THE LIVE SOLDIER, AND FLINCHES WHEN IT DROPS.
+    //
+    // The gauge was written once, by setTarget(), from the hp in the payload — so
+    // putting 54 damage into a man moved nothing on the card until the next
+    // 0.06 s aim:target happened to carry a fresher number, and a soft-designated
+    // target never got one at all. Reading it here makes the health bar the thing
+    // that visibly answers a hit, and the struck-off amount is written in the
+    // card's margin for a beat.
+    const tu = this.target && this.target.unit;
+    if (tu && tu.maxHp) {
+      const hp = Math.max(0, tu.hp || 0);
+      if (this._tcardHpFor !== tu) { this._tcardHpFor = tu; this._tcardHpWas = hp; }
+      if (hp !== this._tcardHpWas) {
+        const lost = this._tcardHpWas - hp;
+        this._tcardHpWas = hp;
+        if (lost > 0) {
+          this.tcardHit.textContent = '−' + Math.round(lost);
+          this._tcardHitT = 1.1;
+        }
+      }
+      const k = Math.round(clamp01(hp / tu.maxHp) * 200);
+      if (k !== this._tcardHpKey) {
+        this._tcardHpKey = k;
+        const f = k / 200;
+        this.tcardHp.set(f, f <= 0.25 ? 'crit' : f <= 0.55 ? 'warn' : 'foe');
+      }
+    }
+    if (this._tcardHitT > 0) {
+      this._tcardHitT -= dt;
+      // Struck on, then fading — the mark a scorer makes, not a number that flies.
+      this.tcardHit.style.opacity = clamp01(this._tcardHitT / 0.5).toFixed(3);
+    } else if (this.tcardHit.style.opacity !== '0') {
+      this.tcardHit.style.opacity = '0';
+    }
+
+    // Why the shot is off, if it is. Recomputed every frame, written only on change.
+    const why = this._fireBlock();
+    if (why !== this._whyLast) {
+      this._whyLast = why;
+      this._hitLast = -1;                       // force the reading to be restated
+      this.hitWhy.textContent = why;
+      this.hitWhy.style.display = why ? '' : 'none';
+      this.hitArc.style.opacity = why ? '0.3' : '1';
+    }
+
     this.hitShown = damp(this.hitShown, this.hitChance, 9, dt);
     const pct = Math.round(this.hitShown * 100);
     if (pct !== this._hitLast) {
       this._hitLast = pct;
-      this.hitNum.textContent = pct + '%';
-      this.hitNum.style.color = pct >= 70 ? '#55603a' : pct >= 40 ? '#8a6a24' : '#8d3730';
+      // A percentage is a PROMISE. When the shot cannot be taken there is no
+      // promise to make, and "42% Hit" beside "Out of range" is the same lie in a
+      // smaller font.
+      this.hitNum.textContent = why ? '—' : pct + '%';
+      this.hitNum.style.color = why ? 'var(--ink-3)'
+        : pct >= 70 ? '#55603a' : pct >= 40 ? '#8a6a24' : '#8d3730';
       if (this.hitArcPath) {
         const len = parseFloat(this.hitArcPath.getAttribute('stroke-dasharray')) || 1;
         this.hitArcPath.setAttribute('stroke-dashoffset', (len * (1 - this.hitShown)).toFixed(2));
@@ -2177,16 +2619,34 @@ export class HUD {
       }
     }
     const t = this.target;
-    const sub = !t ? '' : t.lethal ? 'Lethal' :
-      t.expectedDamage ? Math.round(t.expectedDamage) + ' expected' :
-        (t.part ? partName(t.part) : '');
+    // The shot report holds the line for a couple of seconds after the trigger,
+    // because what the volley DID beats what the next one might do.
+    const reporting = this._shotReportUntil && this._time < this._shotReportUntil;
+    const sub = reporting ? this._shotReport
+      : !t ? '' : t.lethal ? 'Lethal' :
+        t.expectedDamage ? Math.round(t.expectedDamage) + ' expected' :
+          (t.part ? partName(t.part) : '');
     if (sub !== this._hitSubLast) { this._hitSubLast = sub; this.hitSub.textContent = sub; }
     // Guarded: writing display every frame forces a style recalc for nothing.
-    const shown = !!t;
+    //
+    // The chit stays up for two more reasons than "there is a target". It stays up
+    // while it is REPORTING a shot, because "Hit · 54 damage" vanishing on the
+    // frame the man falls is the report being withdrawn at the moment it was
+    // earned. And it stays up while the shot is REFUSED, because — measured, this
+    // is the gap the first cut shipped — a soldier 44 m from a man his SMG reaches
+    // 30 m to has no dossier, so the panel carrying "close 14 m" was hidden by the
+    // very condition it exists to explain.
+    const shown = !!t || !!reporting || !!why;
     if (shown !== this._tgtShown) {
       this._tgtShown = shown;
       this.hitPanel.style.display = shown ? '' : 'none';
-      this.tcard.style.display = shown ? '' : 'none';
+    }
+    // The dossier follows the TARGET, not the report: a card describing a soldier
+    // the sights have left is a stale dossier, and it is exactly what defect 2 was.
+    const card = !!t;
+    if (card !== this._cardShown) {
+      this._cardShown = card;
+      this.tcard.style.display = card ? '' : 'none';
     }
   }
 
@@ -2271,7 +2731,7 @@ export class HUD {
     this.cmdLayer.classList.toggle('vc-hidden', !cmd);
     this.actLayer.classList.toggle('vc-hidden', to !== 'action');
     this.tgtLayer.classList.toggle('on', false);
-    if (to !== 'action') this.aiming = false;
+    if (to !== 'action') this._clearAim();
     this.endTurnBtn.classList.toggle('vc-hidden', to !== 'command');
     this.ordersEl.classList.toggle('vc-hidden', to !== 'command');
     this.ordersTab.classList.toggle('vc-hidden', to !== 'command');

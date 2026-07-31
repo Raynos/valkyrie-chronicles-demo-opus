@@ -338,7 +338,7 @@ export class CommandMode {
     if (!CFG.capture) Input.exitLock();
     // Frame the player's centre of mass on entry.
     if (!this._entered) {
-      this.frameTeam(0, true);
+      this.frameTeam(0, true, true);
       this._entered = true;
     }
     this._ensureSheet();
@@ -575,14 +575,47 @@ export class CommandMode {
     if (immediate) this.target.copy(this.targetWant);
   }
 
-  frameTeam(team, immediate = false) {
+  /**
+   * Centre the map on `team`'s centre of mass. With `fit`, also put the rig back to the default
+   * map attitude and pull it far enough back to hold the whole squad in shot.
+   *
+   * `fit` is what a turn change wants. The Imperial phase walks `focusOn` across the valley
+   * after whichever soldier is acting and the player is free to orbit, zoom and pan anywhere,
+   * so by the time the turn comes back the lens can be anywhere at any angle at any distance —
+   * round 21 shipped a command frame that was a close-up of two village roofs with the whole
+   * roster off-screen. Re-framing without also resetting distance and attitude would fix the
+   * centre and leave a 20 m close-up, which is the same unreadable frame with a soldier in it.
+   */
+  frameTeam(team, immediate = false, fit = false) {
     let n = 0;
     _v0.set(0, 0, 0);
     for (const u of this.battle.units) {
       if (u.team !== team || !u.active) continue;
       _v0.add(u.pos); n++;
     }
-    if (n) { _v0.multiplyScalar(1 / n); this.focusOn(_v0, immediate); }
+    if (!n) return;
+    _v0.multiplyScalar(1 / n);
+    if (fit) {
+      let r = 0;
+      for (const u of this.battle.units) {
+        if (u.team !== team || !u.active) continue;
+        r = Math.max(r, Math.hypot(u.pos.x - _v0.x, u.pos.z - _v0.z));
+      }
+      this.yawWant = 0.35;
+      this.pitchWant = -0.98;
+      this.fovWant = 34;
+      // 2.9x the squad's radius plus a 12 m margin — at the mission's opening spread (r ~ 8 m)
+      // that lands on 58 m, the authored default, and it opens out gently from there. Held to a
+      // 46-96 m band on purpose: the exact geometric fit for a squad strung 60 m across the
+      // valley is 150 m, where a soldier is 14 px and the frame is technically correct and
+      // practically useless. Better to frame the centre of mass well and let the player pan.
+      this.distWant = clamp(2.9 * (r + 12), 46, 96);
+      if (immediate) {
+        this.yaw = this.yawWant; this.pitch = this.pitchWant;
+        this.dist = this.distWant; this.fov = this.fovWant;
+      }
+    }
+    this.focusOn(_v0, immediate);
   }
 
   updateCamera(dt) {

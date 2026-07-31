@@ -14,7 +14,7 @@ import { Bus } from '../core/bus.js';
 import { CFG } from '../core/config.js';
 import { clamp01, damp, dampAngle, lerp, shortestAngle } from '../core/math.js';
 import {
-  CombatFlags, GRENADE, attackForecast, explode, fireBurst, hasLOS, solveArc, unitsHaveLOS,
+  CombatFlags, GRENADE, attackForecast, canSee, explode, fireBurst, hasLOS, solveArc,
 } from './combat.js';
 import { moveWithCollision, truncatePath } from './nav.js';
 import { STANCE } from './units.js';
@@ -37,6 +37,24 @@ const STATE = {
 
 // How badly the AI wants each class dead, independent of raw damage.
 const TARGET_VALUE = { sniper: 1.55, engineer: 1.45, lancer: 1.3, scout: 1.15, shock: 1.0, tank: 1.6 };
+
+/**
+ * How far this soldier may ENGAGE — which is not how far its bullet flies.
+ *
+ * The game spots with `unit.sight` (`combat.canSee`) and the player's fog of war is drawn from
+ * the same number, so `weapon.maxRange` is not a licence to shoot. Gating acquisition on
+ * maxRange alone is what let an Imperial Scharfschütze (sight 62, maxRange 120) delete a 48 HP
+ * sniper from 96 m, and an Imperial Medium (sight 34, maxRange 90) kill an engineer from 88 m —
+ * both through fog the player could not see into, on the first enemy turn, against soldiers who
+ * had not left their own deployment zone. ONE rule for both sides: nobody shoots what they
+ * cannot see. `canSee` is the authority at the trigger; this is the same rule made cheap enough
+ * to run inside the planner's candidate loop, where the shot is evaluated from a cell the
+ * soldier has not walked to yet.
+ */
+function engageReach(u, w, target) {
+  const stance = target.stance === 2 ? 0.65 : target.stance === 1 ? 0.85 : 1;
+  return Math.min(w.maxRange, u.sight * stance);
+}
 
 export class EnemyAI {
   constructor(battle, opts = {}) {
@@ -312,7 +330,7 @@ export class EnemyAI {
       if (e.downed) continue;
       const d = u.pos.distanceTo(e.pos);
       if (d > u.weapon.range * 0.6) continue;
-      if (!unitsHaveLOS(u, e, this.world)) continue;
+      if (!canSee(u, e, this.world)) continue;
       const f = attackForecast(u, e, { aimed: true, bloom: 0.6, battle: this.battle, world: this.world });
       const v = f.expectedDamage * (TARGET_VALUE[e.cls] || 1);
       if (v > bestV) { bestV = v; best = e; }
@@ -335,7 +353,10 @@ export class EnemyAI {
     if (this.stateT < 0.05) this.doArrivalActions(u, p);
 
     const target = p?.target;
-    if (!target || !target.active || u.attackUsed || u.ammo <= 0) {
+    // Lost sight of him while we were walking? Then there is nothing to swivel onto. Holding
+    // the sights on a man the shooter can no longer see is how the fog kills got aimed.
+    if (target && !canSee(u, target, this.world)) p.target = null;
+    if (!p?.target || !target.active || u.attackUsed || u.ammo <= 0) {
       if (this.stateT > 0.5) { this.state = STATE.RECOVER; this.stateT = 0; }
       return;
     }
@@ -382,6 +403,11 @@ export class EnemyAI {
     if (!u || !p?.target) { this.state = STATE.RECOVER; this.stateT = 0; return; }
     const target = p.target;
     const w = u.usingAlt && u.altAmmo ? u.altAmmo : u.weapon;
+
+    // Last word before the trigger, and the one that actually holds: the planner gates on the
+    // same rule, but a man can break contact while we swivel, and a plan built two states ago
+    // must never turn into a shot through fog.
+    if (!canSee(u, target, this.world)) { this.state = STATE.RECOVER; this.stateT = 0; return; }
 
     u.muzzlePoint(_muzzle);
     target.centerPoint(_aim);
@@ -591,7 +617,7 @@ export class EnemyAI {
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
       const d = Math.hypot(pos.x - e.pos.x, pos.z - e.pos.z);
-      if (d > w.maxRange) continue;
+      if (d > engageReach(u, w, e)) continue;
       e.centerPoint(_v1);
       if (!hasLOS(pos.x, eyeY, pos.z, _v1.x, _v1.y, _v1.z, this.world)) continue;
       out.losCount++;
@@ -630,7 +656,7 @@ export class EnemyAI {
     for (let i = 0; i < enemies.length; i++) {
       const c = enemies[i];
       const d = Math.hypot(from.x - c.pos.x, from.z - c.pos.z);
-      if (d > 24 || d < 6) continue;
+      if (d > Math.min(24, u.sight) || d < 6) continue;
       if (!hasLOS(from.x, from.y + 1.5, from.z, c.pos.x, c.pos.y + 1.0, c.pos.z, this.world)) continue;
       let v = 0, n = 0;
       for (let k = 0; k < enemies.length; k++) {
@@ -683,7 +709,7 @@ export class EnemyAI {
       let t = null, bd = 1e9;
       for (const e of enemies) {
         const d = e.pos.distanceTo(u.pos);
-        if (d < bd && d < u.weapon.maxRange) { bd = d; t = e; }
+        if (d < bd && d < Math.min(u.weapon.maxRange, u.sight)) { bd = d; t = e; }
       }
       if (t) return { x: lerp(u.pos.x, t.pos.x, 0.12), z: lerp(u.pos.z, t.pos.z, 0.12), isCamp: false };
       return { x: u.pos.x, z: u.pos.z, isCamp: false };

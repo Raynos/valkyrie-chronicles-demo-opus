@@ -676,6 +676,15 @@ function playFlow(S) {
   // Deployment: the screen hands back { campId: [unit, ...] }.
   Bus.on('ui:deployConfirm', (p) => {
     if (battle.phase !== 'deploy') return;
+    // `auto`: the screen posted the roll itself and the player did not rearrange
+    // it, so let the battle keep the placement IT chose at startDeployment()
+    // (heavy classes nearest the objective) rather than re-laying the squad out
+    // in the screen's left-to-right chip order.
+    if (p && p.auto) {
+      if (!battle.deployment.size) battle.autoDeploy();
+      battle.confirmDeployment();
+      return;
+    }
     const slots = battle.deploySlots();
     const assignments = (p && p.assignments) || {};
     const used = new Set();
@@ -718,6 +727,49 @@ function playFlow(S) {
   // Skip the cutscene.
   addEventListener('keydown', (e) => {
     if (script && script.running && (e.key === 'Enter' || e.key === 'Escape')) script.skip();
+  });
+
+  // ENTER SORTIES — FROM THE STATE THE MAP OPENS IN.
+  //
+  // The HUD legend has advertised "Enter — Sortie" for twenty rounds and
+  // CommandMode has always implemented it, but only for a soldier who was ALREADY
+  // selected, and nothing ever selected one: the map opened with no selection, so
+  // a keyboard player who reached the command phase pressed Enter forever and
+  // never took control of anybody. (Tab cycles the selection. Nothing says so.)
+  //
+  // This handler only ever SELECTS. It must not call battle.selectUnit() itself:
+  // this runs on the keydown, so the sortie would land BEFORE the frame in which
+  // ActionMode polls, and ActionMode reads the very same Enter as "end action" —
+  // measured, that produced six clean command -> action -> command round trips in
+  // five seconds, one per press. Handing CommandMode a selection instead lets it
+  // confirm inside its own update, where the phase has already switched by the
+  // time anything else could read the key.
+  const cmd = battle.commandMode;
+  // Who "go" means when the player has not picked anybody: the first soldier on
+  // the roll who can still act, and only the Edelweiss if there is nobody else.
+  // The tank is the commander — lose it and the mission is over — so it is the
+  // wrong thing to hand a stranger on their first press of a key.
+  const firstReady = () => battle.units.find((u) => !u.isVehicle && battle.canSelect(u, 0))
+    || battle.units.find((u) => battle.canSelect(u, 0));
+  addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || battle.phase !== 'command' || !cmd || !cmd.active) return;
+    if (hud.pause.visible || hud.dialogue.visible) return;         // those own Enter
+    if (hud.briefing.visible || hud.deployment.visible) return;
+    if (cmd.selected && battle.canSelect(cmd.selected, 0)) return;  // CommandMode has it
+    const u = firstReady();
+    if (u) { cmd.select(u); cmd.focusOn(u.pos); }
+  });
+
+  // A turn opens ON YOUR SQUAD. The command camera used to resume wherever the
+  // last Imperial actor left it — one playtest handed the player a close-up of two
+  // village roofs with the whole roster off screen — and the roster opened with
+  // nobody highlighted, so there was nothing to press Enter on either.
+  Bus.on('turn:changed', (p) => {
+    if (!p || p.team !== 0 || !cmd) return;
+    const u = firstReady();
+    if (!u) return;
+    cmd.select(u);
+    cmd.focusOn(u.pos);
   });
 
   // Tab-out shouldn't burn a laptop battery or fast-forward the fight on return.

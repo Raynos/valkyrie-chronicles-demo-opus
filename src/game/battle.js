@@ -283,6 +283,8 @@ export class Battle {
 
   deploySlots() {
     const out = [];
+    const off = this.startLineOffset();
+    const used = new Set();
     // The world author knows where the ground is flat and walkable; prefer its zone.
     if (this.world?.deployPositions && !this._deployDirty) {
       const n = (this.mission.deployMax ?? 6) + 3;
@@ -290,7 +292,8 @@ export class Battle {
       try { pts = this.world.deployPositions(0, n, 2.7); } catch { pts = null; }
       if (pts && pts.length) {
         for (let i = 0; i < pts.length; i++) {
-          out.push({ camp: this.camps[0]?.id ?? 'hq', index: i, pos: pts[i].clone ? pts[i].clone() : pts[i] });
+          const p = pts[i].clone ? pts[i].clone() : new THREE.Vector3(pts[i].x, pts[i].y, pts[i].z);
+          out.push({ camp: this.camps[0]?.id ?? 'hq', index: i, pos: this.snapSlot(p.add(off), used) });
         }
         return out;
       }
@@ -301,12 +304,98 @@ export class Battle {
       for (let i = 0; i < n; i++) {
         const a = (i / n) * Math.PI * 2 + 0.4;
         const r = c.radius * 0.62;
-        const x = c.pos.x + Math.sin(a) * r;
-        const z = c.pos.z + Math.cos(a) * r;
-        out.push({ camp: c.id, index: out.length, pos: new THREE.Vector3(x, this.groundY(x, z), z) });
+        const x = c.pos.x + Math.sin(a) * r + off.x;
+        const z = c.pos.z + Math.cos(a) * r + off.z;
+        out.push({ camp: c.id, index: out.length, pos: this.snapSlot(new THREE.Vector3(x, 0, z), used) });
       }
     }
     return out;
+  }
+
+  /**
+   * Put a start-line slot on ground a soldier can walk OFF, and back on the terrain.
+   *
+   * `nearestOpen`, not `nearestWalkable`: the Vasel approach is peppered with shell craters and
+   * a walkable cell on a crater rim is a pocket a soldier cannot leave — held W buys 0.00 m,
+   * which is precisely the symptom that got reported as "a third of the squad is stuck at the
+   * staging post". Deployment is the one place in the game where the engine, not the player,
+   * chooses where a body stands, so it owes the player open ground.
+   */
+  snapSlot(p, used) {
+    const nav = this.nav;
+    if (nav?.built) {
+      // Snapping quantises to the 1.5 m cell grid, so two slots that were 2.7 m apart can land
+      // on the same cell and stack two soldiers in one place. Walk a short spiral off the first
+      // choice until we find open ground nobody else has claimed.
+      for (let k = 0; k < 12; k++) {
+        const a = k * 2.39996;                            // golden-angle spiral
+        const r = k === 0 ? 0 : 1.6 * Math.sqrt(k);
+        const ci = nav.nearestOpen(p.x + Math.cos(a) * r, p.z + Math.sin(a) * r, 14);
+        if (ci < 0) continue;
+        if (used && used.has(ci) && k < 11) continue;
+        p.x = nav.worldX(ci % nav.w);
+        p.z = nav.worldZ((ci / nav.w) | 0);
+        used?.add(ci);
+        break;
+      }
+    }
+    p.y = this.groundY(p.x, p.z);
+    return p;
+  }
+
+  /**
+   * THE START LINE — the offset from the authored deployment zone to where Squad 7 actually
+   * forms up, measured along the real route to the objective.
+   *
+   * WHY THIS EXISTS. Measured in a played session: the nav path from the authored Gallian zone
+   * to the Imperial flag is 116-130 m. A scout's ENTIRE first sortie is 1062 AP at 20 AP per
+   * metre = 53 m, and over that ground a soldier averages 2.6 m/s, so one sortie is 21 seconds
+   * of held W — and it stops 10 m SHORT OF THE RIVER. The nearest Imperial is 76 m from the
+   * zone and no enemy on the map has a sight radius over 62 m, so nothing was visible and
+   * nothing was shootable for two entire sorties. That was the demo's first ninety seconds:
+   * holding W across an empty pasture.
+   *
+   * The fix is the start line, not the AP. Advancing the whole zone 22 m along the route puts
+   * the bridge inside the first sortie and the far bank in contact at the end of it, and leaves
+   * every other number in the economy exactly where it was — AP, AP_DECAY, CP, walk speed. The
+   * CAMP does not move: the flag, its capture ring, the minimap marker, the campDefender bonus
+   * and the reinforcement spawn all stay where the mission authored them. Only where the squad
+   * is standing when the mission opens moves.
+   *
+   * Walking the nav PATH rather than lerping toward the objective matters: the river is
+   * crossable only at the bridge, and a straight line toward the flag puts the start line in
+   * the water.
+   *
+   * WHY 22 m AND NOT MORE. 32 m was tried and measured first: it puts the squad 19-20 m from
+   * the Imperial Späher across the river with FIVE Imperials already spotted before the player
+   * has pressed a key, which hands the garrison a free opening volley and re-creates the
+   * turn-1 wipe by geometry instead of by bug. At 22 m the front rank sits 28-31 m out — past
+   * every Sturmtruppe's 26 m sight, inside only the enemy scout's 36 m — so the squad opens the
+   * mission SEEN but not yet shot at, with the bridge in the near field, and the player still
+   * chooses the moment of contact. That is the trade: keep the crossing, delete the pasture.
+   */
+  startLineOffset() {
+    if (this._startOffset) return this._startOffset;
+    const off = new THREE.Vector3();
+    this._startOffset = off;
+    const advance = this.mission.startLineAdvance ?? 22;
+    if (!(advance > 0) || !this.nav?.built) return off;
+    const home = this.camps.find((c) => c.deploy && c.owner === 0) || this.camps[0];
+    const goal = this.camps.find((c) => c.owner === 1);
+    if (!home || !goal) return off;
+    const path = this.nav.findPath(home.pos, goal.pos, {});
+    if (!path || path.length < 2) return off;
+    let left = advance;
+    for (let i = 1; i < path.length; i++) {
+      const seg = path[i].distanceTo(path[i - 1]);
+      if (seg >= left) {
+        off.copy(path[i - 1]).lerp(path[i], left / Math.max(1e-6, seg)).sub(home.pos);
+        off.y = 0;
+        break;
+      }
+      left -= seg;
+    }
+    return off;
   }
 
   /** Place a unit on a deployment slot. */
@@ -391,16 +480,18 @@ export class Battle {
     this.publishObjectives();
     if (this.checkObjectives()) return;
 
-    if (team === 0) {
-      this.setPhase('command');
-      this.commandMode?.enter();
-      this.commandMode?.markDirty();
-    } else {
-      this.setPhase('enemy');
-      this.commandMode?.enter();
-      this.commandMode?.markDirty();
-      this.ai.begin(1);
-    }
+    // OPEN EVERY TURN ON THE PLAYER'S SQUAD.
+    //
+    // The Imperial phase drags the map camera after whichever soldier is acting, and
+    // CommandMode.enter() only framed the team ONCE per session, so a turn used to open
+    // wherever the last Imperial left the lens: round 21 captured a command frame that is a
+    // close-up of two village roofs with the entire roster off-screen. A turn you cannot read
+    // is a turn you cannot play, so both phases now re-frame the squad and fit it in shot.
+    this.setPhase(team === 0 ? 'command' : 'enemy');
+    this.commandMode?.enter();
+    this.commandMode?.frameTeam(0, false, true);
+    this.commandMode?.markDirty();
+    if (team !== 0) this.ai.begin(1);
   }
 
   computeCp(team) {
@@ -498,6 +589,10 @@ export class Battle {
     }
     this.setPhase('command');
     this.commandMode?.enter();
+    // Come back out of the sortie looking at where the soldier ENDED. CommandMode keeps its own
+    // camera target across the action phase, so without this the map snaps back to the ground
+    // he started from and the player loses the one thing they just spent a Command Point on.
+    if (u?.active) this.commandMode?.focusOn(u.pos);
     this.commandMode?.markDirty();
   }
 
@@ -943,7 +1038,10 @@ export class Battle {
       }
       if (paced && this.phase === 'enemy' && this._enemyT > ENEMY_PACE.hard) this.drainEnemyTurn(sub);
       this.commandMode?.update(dt);
-      if (this.aiFocus) this.commandMode?.focusOn(this.aiFocus.pos);
+      // Only chase an Imperial the player can actually SEE. An unspotted actor is already
+      // fast-forwarded at ENEMY_PACE.fast, so following it was pure waste — and it is how the
+      // camera ended the turn pointing at a rooftop somewhere in the fog.
+      if (this.aiFocus?.spotted) this.commandMode?.focusOn(this.aiFocus.pos);
     } else {
       this.commandMode?.update(dt);
       this.interception.update(gdt);

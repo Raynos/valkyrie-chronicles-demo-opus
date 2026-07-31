@@ -17,8 +17,8 @@ import { CFG } from '../core/config.js';
 import { Input } from '../core/input.js';
 import { clamp, clamp01, damp, dampAngle, lerp, TAU } from '../core/math.js';
 import {
-  GRENADE, attackForecast, bloomFor, coverFor, effectiveAccuracy, explode, fireBurst,
-  hasLOS, predictArc, shotSigma, solveArc, traceScene, traceWorld,
+  GRENADE, attackForecast, bloomFor, canSee, coverFor, effectiveAccuracy, explode, fireBurst,
+  friendlyInLine, hasLOS, predictArc, shotSigma, solveArc, traceScene, traceWorld,
 } from './combat.js';
 import { moveWithCollision } from './nav.js';
 import { STANCE } from './units.js';
@@ -45,6 +45,24 @@ const MODE = { MOVE: 0, AIM: 1, GRENADE: 2, INTERACT: 3, FIRING: 4, DONE: 5 };
 // of angular error at 14 m (see the round-21 notes). Generous on purpose — the nearest man to the
 // crosshair wins, so width costs forgiveness, not accuracy.
 const MAGNET_SCREEN_FRAC = 0.26;
+
+// How far past the weapon's own reach the reticle will still NAME a man. Inside maxRange he is
+// a target; between maxRange and this he is named with the metres you are short and the trigger
+// is refused, because the alternative — measured — is that the game does nothing at all and the
+// player cannot tell "too far" from "broken". 3x covers the worst case in the mission: a
+// shocktrooper's SMG reaches 30 m into engagements that start at 37 m.
+const NAME_RANGE_MUL = 3;
+
+// Aim states published on `aim:target.status`. Three different failures used to be one silent
+// nothing; the HUD needs to say which.
+export const AIM_STATUS = {
+  LOCKED: 'locked',              // a man, in range, with a clear muzzle line. Chance is real.
+  OUT_OF_RANGE: 'outOfRange',    // named, `nearest.needCloser` metres short, trigger refused
+  NO_LOS: 'noLineOfSight',       // something solid between the muzzle and him
+  NO_TARGET: 'noTarget',         // nobody in the cone at all
+  NO_ATTACKS: 'noAttacks',       // the sortie's one attack is spent
+  NO_AMMO: 'noAmmo',
+};
 
 export class ActionMode {
   /**
@@ -104,6 +122,11 @@ export class ActionMode {
     this.reticleRadiusPx = 0;
     this.attacksLeft = 1;
     this.postFire = 0;                // cinematic hold after the shot
+    this.aimStatus = AIM_STATUS.NO_TARGET;
+    this.aimNearest = null;           // { unit, distance, maxRange, needCloser }
+    this.aimBlockedBy = null;         // a squadmate standing in the lane
+    this.aimOutOfRange = false;       // the trigger is refused while this is true
+    this._spotT = 0;
 
     // --- grenade ----------------------------------------------------------
     this.grenades = [];
@@ -139,6 +162,11 @@ export class ActionMode {
     this.postFire = 0;
     this.interactProgress = 0;
     this.timeScale = this.timeScaleTarget = 1;
+    this.aimStatus = AIM_STATUS.NO_TARGET;
+    this.aimNearest = null;
+    this.aimBlockedBy = null;
+    this.aimOutOfRange = false;
+    this._spotT = 0;
     this.camYaw = unit.yaw;
     this.camPitch = -0.08;
     this.armLength = this.armTarget = unit.isVehicle ? 8.5 : 3.45;
@@ -196,6 +224,7 @@ export class ActionMode {
     else if (this.ladder) this.updateLadder(gdt);
     else this.updateLocomotion(gdt);
 
+    this.sweepSpotting(dt);
     this.updateModeInput(dt, gdt);
     this.updateInteraction(gdt);
     this.updateCamera(dt);
@@ -482,6 +511,12 @@ export class ActionMode {
     if (Input.pressed('q') && this.attacksLeft > 0 && u.ammo > 0 && this.mode !== MODE.GRENADE) {
       this.aimToggled = !this.aimToggled;
     }
+    // Raising the weapon with nothing to fire used to be a silent nothing — no sound, no
+    // message, no state change. Say which of the two it is.
+    if ((Input.pressed('q') || Input.mouse.rightJust) && this.mode !== MODE.GRENADE
+        && (this.attacksLeft <= 0 || u.ammo <= 0)) {
+      this.denyAim(this.attacksLeft <= 0 ? AIM_STATUS.NO_ATTACKS : AIM_STATUS.NO_AMMO);
+    }
     const wantAim = (Input.mouse.right || this.aimToggled)
       && this.attacksLeft > 0 && u.ammo > 0 && this.mode !== MODE.GRENADE;
     if (wantAim && this.mode !== MODE.AIM) this.enterAim();
@@ -496,7 +531,14 @@ export class ActionMode {
     } else {
       this.aimHold = 0;
       this.bloom = 1;
-      if (this.aimTarget) { this.aimTarget = null; Bus.emit('aim:target', { unit: u, target: null }); }
+      this.aimStatus = AIM_STATUS.NO_TARGET;
+      this.aimNearest = null;
+      this.aimBlockedBy = null;
+      this.aimOutOfRange = false;
+      if (this.aimTarget) {
+        this.aimTarget = null;
+        Bus.emit('aim:target', { unit: u, target: null, status: AIM_STATUS.NO_TARGET, canFire: true });
+      }
     }
 
     if (Input.pressed('e')) this.beginInteract();
@@ -511,6 +553,49 @@ export class ActionMode {
       Bus.emit('weapon:switch', { unit: u, weapon: u.usingAlt ? u.altAmmo : u.weapon });
       Bus.emit('sfx', { name: 'uiSelect' });
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Spotting, while the man is actually walking
+  // -------------------------------------------------------------------------
+
+  /**
+   * MEASURED BUG THIS EXISTS FOR: `Battle.refreshFog()` runs at turn boundaries and at the end
+   * of a sortie — never during one. So across the 30 m a soldier walks to contact, `spotted` is
+   * whatever it was when he set off. Headless, real play: Rosie Stark walked 65.7 m -> 36.8 m
+   * towards an Imperial Späher and the Späher stayed `spotted:false` for every sample, with
+   * zero `enemy:spotted` events. No HUD marker, no world label, and the aim magnet's fog gate
+   * vetoed the lock — on a man whose mesh was on screen the whole time, because
+   * commandMode.exit() re-shows every unit it hid.
+   *
+   * This ADDS spots and never takes one away. Calling refreshFog from here would be worse than
+   * the bug: it would hide the man you are walking towards mid-stride. Fog still closes at the
+   * turn boundary, which is where a fog-of-war concept belongs.
+   */
+  sweepSpotting(dt) {
+    if (CFG.capture) return;                  // capture frames own their own visibility
+    this._spotT -= dt;
+    if (this._spotT > 0) return;
+    this._spotT = 0.25;                       // 4 Hz; 11 foes x one LOS trace is nothing
+    const u = this.unit;
+    if (!u || u.team !== 0) return;
+    const units = this.battle.units;
+    for (let i = 0; i < units.length; i++) {
+      const o = units[i];
+      if (o.team === u.team || o.spotted || !o.alive || !o.deployed) continue;
+      if (canSee(u, o, this.world)) this.revealFoe(o);
+    }
+  }
+
+  /** Flip one Imperial out of the fog, with the same bookkeeping Battle.refreshFog does. */
+  revealFoe(o) {
+    if (!o || o.spotted) return false;
+    o.spotted = true;
+    o.lastKnown?.copy(o.pos);
+    o.lastKnownTurn = this.battle.turn;
+    if (o.root) o.root.visible = true;
+    Bus.emit('enemy:spotted', { unit: o });
+    return true;
   }
 
   enterAim() {
@@ -553,34 +638,63 @@ export class ActionMode {
    *   * the cone is in PIXELS, so a scope narrows it in world terms exactly as much as it
    *     magnifies, and it is never smaller than the accuracy circle the HUD is drawing —
    *     anything inside that circle is already a plausible hit;
-   *   * it never snaps onto a friendly (deliberate blue-on-blue still works: point at him
-   *     and the ray hits him);
+   *   * it never snaps onto a friendly (rounds pass through your own side since Round 21, so a
+   *     mate in the way is a blocked lane to report, not a target to lock);
    *   * it needs a clear line from the MUZZLE, so it cannot promise a shot through a wall.
+   *
+   * THE FOG GATE IS GONE, and that was the whole defect. It required `o.spotted`, which
+   * `Battle.refreshFog` only recomputes between sorties (see sweepSpotting), so a man standing
+   * in the open 30 m down your own sights could not be aimed at. Spotting is a fog-of-war
+   * concept for the tactical map; it has no business vetoing a shot the player is physically
+   * taking. A clear muzzle line IS the player seeing him — so the lock also marks him spotted.
+   *
+   * @returns {{target: Unit|null, reject: Unit|null, why: string, distance: number}}
+   *   `reject` is the nearest-to-crosshair man the shot CANNOT be taken against, with `why`
+   *   saying which of the two reasons it was, so the HUD can print it.
    */
-  magnetTarget(camPos, dir, weapon, radiusPx) {
+  magnetScan(camPos, dir, weapon, radiusPx) {
+    const out = this._magOut || (this._magOut = { target: null, reject: null, why: '', distance: 0 });
+    out.target = null; out.reject = null; out.why = ''; out.distance = 0;
     const u = this.unit;
-    if (!u) return null;
+    if (!u) return out;
     const h = typeof innerHeight === 'number' ? innerHeight : 1080;
     const focal = (h * 0.5) / Math.tan((this.camera.fov * Math.PI) / 360);
     const cone = Math.min(0.16, Math.atan2(Math.max(radiusPx || 0, h * MAGNET_SCREEN_FRAC), focal));
     const units = this.battle.units;
-    let best = null, bestDot = Math.cos(cone);
+    const minDot = Math.cos(cone);
+    let bestDot = minDot, bestD = 0;
+    let rejDot = minDot, rejD = 0;
     u.muzzlePoint(_muzzle);
     for (let i = 0; i < units.length; i++) {
       const o = units[i];
       if (o === u || !o.alive || !o.deployed || o.downed) continue;
       if (o.team === u.team) continue;
-      if (o.spotted === false) continue;      // fog of war: never lock onto a man you cannot see
       o.centerPoint(_v1);
       _v2.subVectors(_v1, camPos);
       const d = _v2.length();
-      if (d < 0.6 || d > weapon.maxRange * 1.05) continue;
+      if (d < 0.6 || d > weapon.maxRange * NAME_RANGE_MUL) continue;
       const dot = _v2.dot(dir) / d;
-      if (dot <= bestDot) continue;               // further off the crosshair than the best so far
-      if (!hasLOS(_muzzle.x, _muzzle.y, _muzzle.z, _v1.x, _v1.y, _v1.z, this.world)) continue;
-      bestDot = dot; best = o;
+      if (dot <= minDot) continue;                // outside the cone: not being pointed at
+      // The CONE is measured from the camera (it is a screen-space rule); RANGE is measured
+      // from the muzzle, because that is the distance combat.hitProbability scores and it is
+      // up to 3.45 m shorter over the shoulder. Mixing the two gave a band around maxRange
+      // where the magnet promised a lock and the forecast scored it 0.
+      const dm = _muzzle.distanceTo(_v1);
+      const inRange = dm <= weapon.maxRange;
+      if (inRange && dot <= bestDot) continue;    // a better lock already found
+      if (!inRange && dot <= rejDot && out.reject) continue;
+      const los = hasLOS(_muzzle.x, _muzzle.y, _muzzle.z, _v1.x, _v1.y, _v1.z, this.world);
+      if (inRange && los) { bestDot = dot; bestD = dm; out.target = o; continue; }
+      // Not a shot — but it is the answer to "why did nothing happen?".
+      // Out of range beats no-line-of-sight: it is the one the player can act on.
+      const why = !los ? AIM_STATUS.NO_LOS : AIM_STATUS.OUT_OF_RANGE;
+      const better = !out.reject
+        || (why === AIM_STATUS.OUT_OF_RANGE && out.why === AIM_STATUS.NO_LOS)
+        || (why === out.why && dot > rejDot);
+      if (better) { rejDot = dot; rejD = dm; out.reject = o; out.why = why; }
     }
-    return best;
+    out.distance = out.target ? bestD : rejD;
+    return out;
   }
 
   /** Trace the reticle, size the accuracy circle, publish the hit-% readout. */
@@ -603,18 +717,39 @@ export class ActionMode {
     else _aimPoint.copy(_camPos).addScaledVector(_dir, w.maxRange);
 
     const prev = this.aimTarget;
-    this.aimTarget = hit && hit.kind === 'unit' ? hit.unit : null;
-    this.aimPart = hit && hit.kind === 'unit' ? hit.partLabel : null;
-    this._magnet = this.aimTarget ? 'ray' : 'none';
+    // A squadmate under the crosshair is NOT a target: since Round 21 rounds pass straight
+    // through your own side, so locking him showed "99% Hit" on a shot that could only ever
+    // do nothing. Measured in ten played attempts: 2 of them latched a mate and burned the
+    // sortie's one attack for 0 damage. Report him as a blocked lane and look past him.
+    const rayUnit = hit && hit.kind === 'unit' ? hit.unit : null;
+    const rayFoe = rayUnit && rayUnit.team !== u.team ? rayUnit : null;
+    this.aimBlockedBy = rayUnit && rayUnit.team === u.team ? rayUnit : null;
+    this.aimTarget = rayFoe;
+    this.aimPart = rayFoe ? hit.partLabel : null;
+    this._magnet = rayFoe ? 'ray' : 'none';
+    this.aimNearest = null;
+    this.aimStatus = AIM_STATUS.NO_TARGET;
     if (!this.aimTarget) {
-      const snap = this.magnetTarget(_camPos, _dir, w, this.reticleRadiusPx);
-      if (snap) {
-        this.aimTarget = snap;
+      const scan = this.magnetScan(_camPos, _dir, w, this.reticleRadiusPx);
+      if (scan.target) {
+        this.aimTarget = scan.target;
         this.aimPart = 'body';
         this._magnet = 'magnet';
         // The round has to go where the lock says it goes, or the readout is a lie: fire()
         // converges the muzzle onto _aimPoint.
-        snap.centerPoint(_aimPoint);
+        scan.target.centerPoint(_aimPoint);
+      } else if (scan.reject) {
+        // Name him and say what is wrong. A man out of reach with a clear line is one the
+        // player is plainly looking at, so he comes out of the fog too; a man behind a wall
+        // stays hidden unless he was already spotted.
+        const nameHim = scan.why === AIM_STATUS.OUT_OF_RANGE || scan.reject.spotted;
+        if (scan.why === AIM_STATUS.OUT_OF_RANGE) this.revealFoe(scan.reject);
+        this.aimStatus = scan.why;
+        this.aimNearest = {
+          unit: scan.reject, name: scan.reject.name, distance: scan.distance,
+          maxRange: w.maxRange, needCloser: Math.max(0, scan.distance - w.maxRange),
+        };
+        if (nameHim) { this.aimTarget = scan.reject; this.aimPart = 'body'; this._magnet = scan.why; }
       }
     }
 
@@ -629,11 +764,31 @@ export class ActionMode {
         weapon: w, aimed: true, bloom: this.bloom, battle: this.battle, world: this.world,
       });
       this._sigma = shotSigma(u, w, acc, this.bloom, this.speedSmoothed);
+      // A man the reticle names is out of the fog: the player is looking down his sights at him.
+      if (this.aimStatus === AIM_STATUS.NO_TARGET) {
+        this.aimStatus = this.forecast.range > w.maxRange ? AIM_STATUS.OUT_OF_RANGE
+          : this.forecast.blocked ? AIM_STATUS.NO_LOS : AIM_STATUS.LOCKED;
+        if (this.aimStatus !== AIM_STATUS.NO_LOS) this.revealFoe(this.aimTarget);
+      }
+      if (this.aimStatus === AIM_STATUS.OUT_OF_RANGE && !this.aimNearest) {
+        this.aimNearest = {
+          unit: this.aimTarget, name: this.aimTarget.name, distance: this.forecast.range,
+          maxRange: w.maxRange, needCloser: Math.max(0, this.forecast.range - w.maxRange),
+        };
+      }
+      // A squadmate in the lane is worth saying even when the lock itself is good.
+      if (!this.aimBlockedBy) {
+        this.aimBlockedBy = friendlyInLine(u, _muzzle, _aimPoint, this.battle.units) || null;
+      }
     } else {
       this.forecast = null;
       const acc = effectiveAccuracy(u, w, { aimed: true, range: 25, cover: 0, target: null, battle: this.battle });
       this._sigma = shotSigma(u, w, acc, this.bloom, this.speedSmoothed);
     }
+    // Refusing the trigger is only ever about reach: a 0% shot spends the sortie's one attack
+    // for nothing, and the player was never told he was short. Blocked line, cover, a bad
+    // angle — those stay the player's call, with an honest number on them.
+    this.aimOutOfRange = this.aimStatus === AIM_STATUS.OUT_OF_RANGE;
 
     // Angular sigma -> pixels: r = tan(sigma) * focalPx, focalPx = (h/2)/tan(fov/2).
     // Clamped at both ends because the circle is a PROMISE the player aims with: a quarter
@@ -652,9 +807,28 @@ export class ActionMode {
         distance: this.forecast ? this.forecast.range : _aimPoint.distanceTo(_camPos),
         reticlePx: this.reticleRadiusPx, bloom: this.bloom,
         point: _aimPoint,
+        // --- why nothing is happening. See AIM_STATUS. ------------------------
+        status: this.aimStatus,             // 'locked' | 'outOfRange' | 'noLineOfSight' | 'noTarget'
+        canFire: !this.aimOutOfRange,       // false => the trigger will be refused
+        nearest: this.aimNearest,           // { unit, name, distance, maxRange, needCloser }
+        blockedBy: this.aimBlockedBy,       // a squadmate in the lane, or null
       });
-      if (this.aimTarget && prev !== this.aimTarget) Bus.emit('sfx', { name: 'targetLock' });
+      if (this.aimTarget && prev !== this.aimTarget && this.aimStatus === AIM_STATUS.LOCKED) {
+        Bus.emit('sfx', { name: 'targetLock' });
+      }
     }
+  }
+
+  /**
+   * Tell the player why the weapon did not go up, or did not go off. `aim:denied` carries
+   * `reason` (an AIM_STATUS) plus whatever numbers make it actionable.
+   */
+  denyAim(reason, extra = null, dropAim = true) {
+    // Out-of-range keeps the sights up on purpose: the readout that says how much closer he
+    // needs to be is only on screen while the weapon is up.
+    if (dropAim) this.aimToggled = false;
+    Bus.emit('aim:denied', Object.assign({ unit: this.unit, reason }, extra || {}));
+    Bus.emit('sfx', { name: 'uiDeny' });
   }
 
   /** The one attack. */
@@ -662,6 +836,18 @@ export class ActionMode {
     const u = this.unit;
     if (this.attacksLeft <= 0 || u.ammo <= 0) {
       Bus.emit('sfx', { name: 'dryFire' });
+      this.denyAim(this.attacksLeft <= 0 ? AIM_STATUS.NO_ATTACKS : AIM_STATUS.NO_AMMO);
+      return;
+    }
+    // A shot at a man past the weapon's reach is a 0% shot (combat.hitProbability zeroes it),
+    // and it spends the sortie's ONE attack. Refuse it and say how much closer he needs to be.
+    // Measured: a shocktrooper's SMG reaches 30 m and the mission's engagements open at 37 m,
+    // so this is the difference between "the game is broken" and "I have to close".
+    if (this.aimOutOfRange && this.aimNearest) {
+      this.denyAim(AIM_STATUS.OUT_OF_RANGE, {
+        target: this.aimNearest.unit, distance: this.aimNearest.distance,
+        maxRange: this.aimNearest.maxRange, needCloser: this.aimNearest.needCloser,
+      }, false);
       return;
     }
     const w = u.usingAlt && u.altAmmo ? u.altAmmo : u.weapon;
