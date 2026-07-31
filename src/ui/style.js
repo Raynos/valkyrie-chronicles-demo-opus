@@ -443,6 +443,11 @@ function css() {
 .vc-cp-tok.fresh{ animation:vc-stamp .42s cubic-bezier(.2,1.5,.4,1) both; }
 .vc-cp-count{ display:flex; align-items:baseline; gap:.4em; }
 .vc-cp-count b{ font-size:2.05em; font-weight:400; line-height:.9; }
+/* The rule of the game in the margin, in the journal's own pencilled hand.
+   Italic, ink-3, .58em: subordinate to every number on the panel, present the
+   whole time, and never a pop-up. */
+.vc-cp-note{ margin-top:.42em; font-size:.66em; font-style:italic; line-height:1.42;
+  color:var(--ink-2); letter-spacing:.02em; max-width:15em; }
 .vc-turn{ padding:.5em .95em .55em; text-align:center; }
 .vc-turn b{ font-size:1.7em; font-weight:400; display:block; line-height:1; }
 
@@ -497,6 +502,13 @@ function css() {
 .vc-ru-st svg{ width:.86em; height:.86em; }
 .vc-ru-st .warn{ color:var(--red); }
 .vc-ru-st .ok{ color:#5d6b3c; }
+/* Rounds left, tallied in the right margin of the class line. maxAmmo counts
+   ATTACKS in this game, so this is trigger pulls remaining — the number the fire
+   plan is made of, and the roster showed nothing about it for 22 rounds. */
+.vc-ru-rd{ flex:0 0 auto; margin-left:.34em; font-size:.62em; font-variant:small-caps;
+  letter-spacing:.09em; color:var(--ink-2); white-space:nowrap; }
+.vc-ru-rd b{ font-weight:400; font-size:1.24em; color:var(--ink); }
+.vc-ru-rd.out, .vc-ru-rd.out b{ color:var(--red); }
 /* Gauge rows: a drawn glyph, the gauge itself, then a tabular figure. */
 .vc-ru-gr{ display:flex; align-items:center; gap:.3em; }
 .vc-ru-gr > svg{ width:.82em; height:.82em; flex:0 0 auto; color:var(--ink-2); }
@@ -775,7 +787,20 @@ function css() {
   font-variant:small-caps; letter-spacing:.34em; font-size:2.0em; color:var(--red-deep);
   filter:url(#vc-bleed);
 }
-.vc-alert-sub{ font-size:.72em; letter-spacing:.24em; font-variant:small-caps; color:var(--ink-2); }
+/* THE SUB-LINE IS NOW THE WHOLE CASUALTY NOTICE, so it has to survive the map.
+   With the "DOWNED" banner and the "X IS DOWN" toast deleted (three notices for
+   one death — both playtesters filed it), the only place the game says WHOSE man
+   fell is this line. Measured at .72em ink-2 with no substrate it was unreadable
+   over the command map's foliage. It now carries the paper itself: a soft wash of
+   the sheet's own cream bled out from behind the letters, which is how a caption
+   sits on a page, and full ink weight on top of it. */
+.vc-alert-sub{ font-size:.92em; letter-spacing:.20em; font-variant:small-caps; color:var(--ink);
+  display:inline-block; position:relative; padding:.14em 1.1em .18em; margin-top:.1em; }
+.vc-alert-sub::before{
+  content:''; position:absolute; inset:-.1em -.2em; z-index:-1; pointer-events:none;
+  background:radial-gradient(58% 130% at 50% 52%,
+    rgba(246,238,217,.95) 0%, rgba(246,238,217,.86) 54%, rgba(246,238,217,0) 100%);
+}
 
 /* A wash of madder flooded in from the edges of the sheet, carrying the paper's
    own fibre — not a clean CSS radial gradient. */
@@ -1086,10 +1111,57 @@ function css() {
 .vc-legend .vc-paper{ filter:none; box-shadow:none; opacity:.66; }
 
 /* ---------- toast -------------------------------------------------------- */
-.vc-toasts{ position:absolute; top:6.4em; left:50%; transform:translateX(-50%);
-  display:flex; flex-direction:column; gap:.35em; align-items:center; }
-.vc-toast{ padding:.28em .9em .34em; font-size:.8em; font-variant:small-caps; letter-spacing:.16em;
+/* A DISPATCH SLIP THAT CAN BE READ OVER ANYTHING.
+   Round 22's toast was 157 x 24 px of 12.5 px cream small-caps on a soft sheet:
+   measured, and both playtesters reported that "HIT · 92 DAMAGE" — the one piece
+   of feedback that says the game's best mechanic worked — was unreadable over
+   pale sky and over sunlit cream masonry. Cream type on cream paper over a cream
+   background is three values within a few LSB of each other.
+   The fix is a substrate, not a colour: a bigger sheet, an INKED edge (a real
+   1.5 px dark ring, not an inset glow), a full two-stage drop shadow so the slip
+   detaches from whatever is behind it, and a saturated 5 px rule down the left
+   margin whose hue says what kind of dispatch this is. The rule and the ring are
+   the contrast guarantee — they are dark or saturated against sky, road and
+   masonry alike, so the slip's own edge is always findable even where the paper
+   and the background agree. */
+.vc-toasts{ position:absolute; top:6.0em; left:50%; transform:translateX(-50%);
+  display:flex; flex-direction:column; gap:.42em; align-items:center;
+  width:max-content; max-width:min(46em, 92vw); }
+/* One line per slip. A wrapped dispatch put "4 rounds" alone on a second line and
+   turned a receipt into a paragraph; a slip is a slip. */
+.vc-toast{ padding:.40em .95em .44em 1.15em; font-size:1.02em; font-variant:small-caps;
+  letter-spacing:.10em; line-height:1.18; color:var(--ink); text-align:center;
+  white-space:nowrap;
   animation:vc-toast 2.6s cubic-bezier(.2,.9,.3,1) both; position:relative; }
+.vc-toast .vc-paper{
+  box-shadow:
+    inset 0 0 0 1.5px rgba(40,31,23,.62),
+    inset 0 0 20px rgba(128,96,58,.26),
+    inset 0 1px 0 rgba(255,250,236,.6);
+  filter: drop-shadow(0 1px 0 rgba(40,31,23,.34)) drop-shadow(0 6px 13px rgba(40,31,23,.52));
+}
+/* The marginal rule: inked with a wobble at each end so it reads as a stroke laid
+   down with a nib, not as a CSS border. */
+.vc-toast .vc-content::before{
+  content:''; position:absolute; left:-.62em; top:.06em; bottom:.06em; width:.30em;
+  background:var(--ink-2);
+  clip-path:polygon(12% 0%,100% 2%,88% 34%,100% 66%,90% 100%,4% 97%,14% 62%,0% 30%);
+}
+/* THE LANDED ROUND IS THE LOUDEST SLIP ON THE PAGE, because it is the one piece
+   of feedback that says the best mechanic in the game just worked. */
+.vc-toast.hit .vc-content::before{ background:var(--red); left:-.66em; width:.40em; }
+.vc-toast.hit{ letter-spacing:.13em; font-size:1.16em; padding-left:1.25em; }
+.vc-toast.hit .vc-paper{
+  box-shadow:
+    inset 0 0 0 1.7px rgba(40,31,23,.72),
+    inset 0 0 22px rgba(128,96,58,.30),
+    inset 0 1px 0 rgba(255,250,236,.6);
+}
+.vc-toast.good .vc-content::before{ background:var(--olive); }
+.vc-toast.block .vc-content::before{ background:var(--red-deep); }
+.vc-toast.block{ color:var(--red-deep); }
+.vc-toast.miss .vc-content::before{ background:var(--ink-3); }
+.vc-toast.note .vc-content::before{ background:var(--gold); }
 
 /* ---------- keyframes ---------------------------------------------------- */
 /* Capture mode: the harness freezes animation *mid-flight*, so a roster or an

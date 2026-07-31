@@ -21,6 +21,65 @@ const _aim = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _jit = new THREE.Vector3();
 
+/**
+ * INTERCEPTION TUNING — retuned in round 23, with the numbers it was retuned against.
+ *
+ * Round 22's playtest lost FOUR of six soldiers during the PLAYER'S OWN TURN, mid-run, on the
+ * bridge deck, to guns dug in 14-22 m away, with no cover reachable and no decision available.
+ * Measured on the deck section of that crossing (25.3 m, scout, 62 HP, six trials each):
+ *
+ *     open ground          24.3 damage   10.7 rounds at you   15.6% hit rate
+ *     Caution (1 CP)       11.7 damage    5.5 rounds          18.2%
+ *     crouched in cover     4.0 damage    8.0 rounds           4.2%
+ *     both guns SUPPRESSED 21.3 damage   10.0 rounds          16.7%   <- the whole problem
+ *
+ * That is 0.96 damage per metre in the open, so the real 80-91 m crossing costs about 82 HP
+ * and a 62 HP scout simply does not arrive. And suppressing the guns covering the crossing —
+ * the classic answer, and the one a playtester independently named as "the game" — bought
+ * THREE DAMAGE, because interception never read `unit.suppression` at all.
+ *
+ * So: the raw rate comes down about 40%, and the rest of the fix is counterplay, not safety.
+ *   - burst gap 0.55-1.35 s -> 0.95-2.05 s. The single biggest lever, and it costs nothing in
+ *     menace: the gap is where you hear the bolt work and decide whether to run for it.
+ *   - acquire 0.45 -> 0.70 s, so breaking cover buys you a beat, and Caution (x2.8 -> x3.6)
+ *     buys you two and a half seconds of it for one Command Point.
+ *   - maxConcurrent 6 -> 4. Six tracer streams was never readable, and it is a straight
+ *     multiplier on damage.
+ *   - SMG burst 6 -> 5, MG 8 -> 6.
+ *   - SUPPRESSION now throttles the shooter: slower acquire, longer gaps, shorter bursts, and
+ *     above `duckAt` he simply keeps his head down. Combined with units.js holding suppression
+ *     instead of forgetting it in two seconds, a Command Point spent on the man covering the
+ *     bridge is now the correct play.
+ *   - COVER now makes a shooter hold fire against a MOVING target too, not only a stationary
+ *     one, and throws the burst wider when he does fire.
+ *
+ * It is still lethal: run the open deck in front of four guns and a scout arrives on a third
+ * of his health, stop out there and he dies, and a second crossing in the same turn kills him.
+ */
+export const INTERCEPT = {
+  acquire: 0.70,
+  gapMin: 0.95,
+  gapMax: 2.05,
+  stationaryScale: 0.28,     // cadence multiplier when the target is not moving
+  maxConcurrent: 4,
+  cautionAcquire: 3.6,       // x acquire time vs a soldier under the Caution order
+  proneAcquire: 1.7,
+  crouchAcquire: 1.3,
+  // These four stack multiplicatively, so they are deliberately mild on their own. The first
+  // pass ran them at 1.5 / 1.6 / 0.5 / 0.9 and fully suppressing the guns took a crossing from
+  // 10.3 damage to 0.0 — which is the false-fix twin of the bug: a mechanic that switches
+  // interception OFF is no better drama than one you cannot answer.
+  supAcquire: 1.0,           // x acquire time per point of SHOOTER suppression
+  supGap: 1.0,               // x burst gap per point of shooter suppression
+  supBurst: 0.4,             // fraction of burst length lost at full shooter suppression
+  duckAt: 0.45,              // shooter suppression above which he starts refusing to fire
+  duckChance: 0.6,           // x suppression = chance he ducks instead of firing
+  coverHold: 0.5,            // x cover = chance he holds fire against a RUNNER in cover
+  coverSigma: 1.4,           // dispersion added by the target's cover (was 0.6)
+  moverSuppression: 0.05,    // suppression a round in your direction puts on YOU
+  moverSuppressionCap: 0.55, // ...and the ceiling, so being shot at never blinds you outright
+};
+
 // Per-shooter interception state, lazily attached to the unit.
 function icp(u) {
   let s = u._icp;
@@ -52,20 +111,26 @@ export class InterceptionSystem {
     this._refreshAt = 0;
     this.refreshEvery = 0.22;            // seconds between LOS re-checks (LOS traces are the cost)
     this.rng = battle?.rng || Math.random;
-    // Tuning
-    this.acquireTime = 0.45;             // seconds before a shooter can open fire on a new target
-    this.burstGapMin = 0.55;
-    this.burstGapMax = 1.35;
-    this.stationaryScale = 0.28;         // cadence multiplier when the target is not moving
-    this.maxConcurrent = 6;              // readability cap — the nearest N shooters engage
+    // Tuning — see INTERCEPT above for what every number is worth and what it was measured
+    // against. Kept as instance fields so a mission or a difficulty setting can override one.
+    this.acquireTime = INTERCEPT.acquire;
+    this.burstGapMin = INTERCEPT.gapMin;
+    this.burstGapMax = INTERCEPT.gapMax;
+    this.stationaryScale = INTERCEPT.stationaryScale;
+    this.maxConcurrent = INTERCEPT.maxConcurrent;   // readability cap — nearest N engage
   }
 
-  /** Seconds a shooter needs to draw a bead. Caution (and a prone target) buys you time. */
-  acquireTimeFor(m) {
+  /**
+   * Seconds a shooter needs to draw a bead. Caution and a low stance buy the RUNNER time;
+   * fire on the shooter buys it too, which is the point of suppressing the gun that covers
+   * the crossing before you cross it.
+   */
+  acquireTimeFor(m, shooter = null) {
     let t = this.acquireTime;
-    if (m.stealth) t *= 2.8;
-    if (m.stance === 2) t *= 1.6;
-    else if (m.stance === 1) t *= 1.25;
+    if (m.stealth) t *= INTERCEPT.cautionAcquire;
+    if (m.stance === 2) t *= INTERCEPT.proneAcquire;
+    else if (m.stance === 1) t *= INTERCEPT.crouchAcquire;
+    if (shooter) t *= 1 + (shooter.suppression || 0) * INTERCEPT.supAcquire;
     return t;
   }
 
@@ -134,7 +199,7 @@ export class InterceptionSystem {
         st.target = m;
         st.acquireT = 0;
         st.roundsLeft = 0;
-        st.nextBurstAt = this.time + this.acquireTimeFor(m) * (0.6 + this.rng() * 0.9);
+        st.nextBurstAt = this.time + this.acquireTimeFor(m, e) * (0.6 + this.rng() * 0.9);
         Bus.emit('interception', { shooter: e, target: m, first: true });
         Bus.emit('sfx', { name: 'interceptWarn', pos: e.pos });
       }
@@ -200,19 +265,34 @@ export class InterceptionSystem {
         st.roundsLeft--;
         st.nextRoundAt = this.time + 60 / Math.max(60, e.weapon.rpm);
         if (st.roundsLeft <= 0) {
-          const gap = lerp(this.burstGapMin, this.burstGapMax, this.rng());
+          const gap = lerp(this.burstGapMin, this.burstGapMax, this.rng())
+            * (1 + (e.suppression || 0) * INTERCEPT.supGap);
           st.nextBurstAt = this.time + gap * (targetMoving ? 1 : 1 / this.stationaryScale);
         }
       }
       return;
     }
 
-    if (!aligned || st.acquireT < this.acquireTimeFor(m)) return;
+    if (!aligned || st.acquireT < this.acquireTimeFor(m, e)) return;
     if (this.time < st.nextBurstAt) return;
-    // Stationary, well-covered targets get shot at far less — VC rewards hugging sandbags.
+
+    // A SUPPRESSED MAN KEEPS HIS HEAD DOWN. This is the counterplay the crossing was missing:
+    // one Command Point spent shooting the gun that covers the bridge now buys the bridge.
+    const sup = e.suppression || 0;
+    if (sup > INTERCEPT.duckAt && this.rng() < sup * INTERCEPT.duckChance) {
+      st.nextBurstAt = this.time + 0.8 + this.rng() * 0.9;
+      return;
+    }
+
+    // Cover. VC rewards hugging sandbags, and it now rewards it while you are still moving:
+    // a runner behind the bridge parapet is a bad shot, so the shooter waits for the gap
+    // instead of stitching the stonework.
+    const cov = coverFor(m, e.pos.x, e.pos.y + 1.4, e.pos.z, this.battle.world);
     if (!targetMoving) {
-      const cov = coverFor(m, e.pos.x, e.pos.y + 1.4, e.pos.z, this.battle.world);
       if (cov > 0.6 && this.rng() > 0.25) { st.nextBurstAt = this.time + 1.2; return; }
+    } else if (cov > 0.3 && this.rng() < cov * INTERCEPT.coverHold) {
+      st.nextBurstAt = this.time + 0.6 + this.rng() * 0.7;
+      return;
     }
 
     // HOLD FIRE THROUGH A SQUADMATE. Interception is the one place in the game where a
@@ -222,7 +302,8 @@ export class InterceptionSystem {
     if (this._blocked(e, m)) { st.nextBurstAt = this.time + 0.35; return; }
 
     const w = e.isVehicle && e.secondary ? e.secondary : e.weapon;
-    st.roundsLeft = Math.max(1, Math.round(interceptBurstSize(w) * (targetMoving ? 1 : 0.6)));
+    const shrink = (targetMoving ? 1 : 0.6) * (1 - sup * INTERCEPT.supBurst);
+    st.roundsLeft = Math.max(1, Math.round(interceptBurstSize(w) * shrink));
     st.nextRoundAt = this.time;
     Bus.emit('interception', { shooter: e, target: m, first: false });
   }
@@ -255,7 +336,7 @@ export class InterceptionSystem {
     const eva = clamp01(m.evasion + dmods.eva + clamp01(m.speed / 5.5) * 0.26 + m.stanceCover() * 0.35);
     let sigma = shotSigma(e, w, acc, lerp(1.0, 0.62, clamp01(st.acquireT / 2.2)), 0);
     sigma *= 1 + eva * 1.9;
-    sigma *= 1 + cover * 0.6;
+    sigma *= 1 + cover * INTERCEPT.coverSigma;
 
     jitterDirection(_dir, sigma, this.rng, _jit);
     const res = fireRound(e, _muzzle, _jit, {
@@ -267,7 +348,9 @@ export class InterceptionSystem {
       maxDist: w.maxRange * 1.2, tracerForce: this.rng() < 0.5,
     });
 
-    if (!m.suppressionImmune) m.suppression = clamp01(m.suppression + 0.08);
+    // Being shot at rattles you too — but capped, so a runner under fire still has a shot to
+    // take when he reaches the far side. Symmetric with what the player does to them.
+    m.applySuppression?.(INTERCEPT.moverSuppression, 1.2, INTERCEPT.moverSuppressionCap);
     Bus.emit('interception:shot', {
       shooter: e, target: m, hit: res.hit, damage: res.damage, part: res.part,
       point: res.point.clone(),
@@ -294,7 +377,7 @@ export class InterceptionSystem {
       if (e.pos.distanceToSquared(unit.pos) > 60 * 60) continue;
       if (!unitsHaveLOS(e, unit, this.battle.world)) continue;
       const st = icp(e);
-      st.acquireT = Math.max(st.acquireT, this.acquireTimeFor(unit));
+      st.acquireT = Math.max(st.acquireT, this.acquireTimeFor(unit, e));
       if (st.target === unit) st.nextBurstAt = Math.min(st.nextBurstAt, this.time + 0.15);
     }
   }
@@ -328,8 +411,8 @@ export class InterceptionSystem {
 /** Rounds per interception burst — SMGs hose, rifles double-tap. */
 export function interceptBurstSize(w) {
   switch (w.kind) {
-    case 'smg': return 6;
-    case 'mg': return 8;
+    case 'smg': return 5;
+    case 'mg': return 6;
     case 'rifle': return 2;
     case 'cannon': return 1;
     default: return 2;
@@ -346,7 +429,10 @@ export function expectedInterceptionDamage(shooter, mover, metres, world = Ctx.w
   const w = shooter.isVehicle && shooter.secondary ? shooter.secondary : shooter.weapon;
   const speed = Math.max(1.5, mover.classDef.speed.walk);
   const seconds = metres / speed;
-  const burstGap = 0.95;
+  // Must track the live cadence or the command-mode threat overlay lies to the player about
+  // the crossing it is drawing.
+  const burstGap = (INTERCEPT.gapMin + INTERCEPT.gapMax) * 0.5
+    * (1 + (shooter.suppression || 0) * INTERCEPT.supGap);
   const bursts = Math.max(0, seconds / burstGap - 0.5);
   const rounds = bursts * interceptBurstSize(w);
   const dist = shooter.pos.distanceTo(mover.pos);

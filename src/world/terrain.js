@@ -131,6 +131,16 @@ export class Terrain {
           const infl = 1 - smoothstep(bank * 0.78, bank * 1.42, r.d);
           h = lerp(h, prof, infl);
         }
+
+        // The ford — a gravel bar laid across the channel 19 m upstream of the
+        // bridge, so the crossing is a choice instead of a queue (see
+        // layout.js `this.ford`). It RAISES ONLY: where the bar is already
+        // below the surrounding bank the lerp is a no-op, so the shoal fairs
+        // itself into whatever the channel profile did rather than punching a
+        // disc through it.
+        const fm = layout.fordMask(x, z);
+        if (fm > 0 && h < layout.ford.bedY) h = lerp(h, layout.ford.bedY, fm);
+
         HA[j * N + i] = h;
       }
     }

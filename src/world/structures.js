@@ -917,9 +917,22 @@ export function buildBridge(rng, length, width, deckY, riverBedY, waterY) {
       bins.stone.push(f);
     }
 
+    // THE COLLIDER STOPS 1.7 m SHORT OF EACH END, though the stonework does not.
+    //
+    // Full-length, the parapet is a 26 m rail with a hard cap on both ends, and the ground
+    // immediately outside it is walkable bank. Measured in a live sortie: a scout who came up
+    // the road 1.5 m west of centre never found the deck at all — she walked NORTH past the
+    // mouth on the wrong side of the rail, into the 0.4 m slot between the parapet and the
+    // riverbank, and wedged there with 960 AP unspent. That is the same failure the
+    // chevaux-de-frise belt used to cause, one metre further west.
+    //
+    // Cutting the last 1.7 m off each end turns the two abutments into open mouths: anyone
+    // who arrives beside the bridge can step onto it instead of grinding along it. The
+    // stonework, the coping and the shadow line are untouched — this is a collision-only
+    // relief, and the deck edge it exposes is over water, which the nav grid already refuses.
     colliders.push({
       cx: side * (half - 0.26), cy: 0.57, cz: 0,
-      hx: 0.34, hy: 0.57, hz: length * 0.5, yaw: 0,
+      hx: 0.34, hy: 0.57, hz: Math.max(1, length * 0.5 - 1.7), yaw: 0,
       opts: { cover: 1, solid: true, blocksLos: false, tag: 'parapet', destructible: true, hp: 220 },
     });
   }

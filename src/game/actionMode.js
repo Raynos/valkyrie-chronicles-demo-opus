@@ -35,6 +35,9 @@ const _aimPoint = new THREE.Vector3();
 const _camPos = new THREE.Vector3();
 const _muzzle = new THREE.Vector3();
 const _dir = new THREE.Vector3();
+const _head = new THREE.Vector3();
+const _off = new THREE.Vector3();
+const _up = new THREE.Vector3();
 const _arcOut = [];
 
 const MODE = { MOVE: 0, AIM: 1, GRENADE: 2, INTERACT: 3, FIRING: 4, DONE: 5 };
@@ -45,6 +48,54 @@ const MODE = { MOVE: 0, AIM: 1, GRENADE: 2, INTERACT: 3, FIRING: 4, DONE: 5 };
 // of angular error at 14 m (see the round-21 notes). Generous on purpose — the nearest man to the
 // crosshair wins, so width costs forgiveness, not accuracy.
 const MAGNET_SCREEN_FRAC = 0.26;
+
+// ---------------------------------------------------------------------------
+// THE CLOSE-RANGE LOCK, AND WHY IT USED TO BE IMPOSSIBLE. Round-23 measurement.
+//
+// A screen-space cone is a fixed ANGLE, so the slack it grants in WORLD metres grows with
+// range: 4.68 deg is 0.36 m of forgiveness at 4.5 m and 3.39 m at 41 m. Meanwhile the aim
+// camera used to converge on a point a flat 40 m ahead of the soldier, so the crosshair only
+// coincided with the weapon's aim line at 40 m; nearer than that the shoulder offset threw the
+// crosshair sideways off the line by
+//        0.43 m at 3 m   0.41 at 5   0.39 at 8   0.33 at 17   0.16 at 40   0.03 at 58
+// Two curves that cross at about 4.5 m. Past the crossing the magnet swallows the parallax and
+// you cannot miss; inside it the parallax is bigger than the entire forgiveness envelope and
+// you cannot hit. MEASURED, same build, same session: sniper five for five at 40.5-58.5 m,
+// scout/shocktrooper ZERO for ten at 2.9-19.8 m, every failure `noTarget` with a man filling a
+// third of the screen. The sniper was never immune because he is a sniper — he was immune
+// because at 44 m the parallax is 0.15 m.
+//
+// Two fixes, and both are needed: the camera now converges on the thing you are aiming AT
+// (see updateCamera, `convergeDist`), which deletes the parallax at every range; and the
+// magnet gets a floor in METRES so a man three paces away is at least as forgiving as a man
+// at thirty.
+//
+// NEAR_FORGIVE_M is "a man's shoulders plus half a stride". MAGNET_MAX_RAD caps the whole
+// thing at 18 deg off the crosshair so the floor can never reach round a corner for someone
+// the player is plainly not pointing at — below ~2.9 m the cap takes over and the envelope
+// tightens back to pure angle, which is right: at arm's length you ARE pointing precisely.
+const NEAR_FORGIVE_M = 0.9;
+const MAGNET_MAX_RAD = 0.32;
+
+// Where the camera axis crosses the soldier's aim line. Free-look keeps the old far
+// convergence (the shoulder offset is what makes a third-person camera read as third-person);
+// aim mode converges on the thing under the reticle, floored so a wall at arm's length cannot
+// swing the lens round in front of the man.
+const CONVERGE_FAR = 40;
+const CONVERGE_MIN = 3.2;
+// With no man locked, converge no nearer than this. Converging on whatever surface the reticle
+// happens to rest on swings the lens hard when you point at a sandbag two paces away — measured,
+// it put 26% of one bridge-deck frame under the soldier's own back. A man always wins over a
+// surface, and the magnet's near-field floor (0.9 m) comfortably covers the residual parallax
+// this leaves at 3 m (0.33 m), so the lock still happens and the convergence then snaps to him.
+const CONVERGE_IDLE = 14;
+
+// Camera anti-clip. CAM_RADIUS is the half-width of the cheap sphere-cast that keeps the lens
+// out of masonry the single centre ray used to slip past; HEAD_CLEAR is how far the lens must
+// stay off the subject's own head, which is what "40% of the frame is his green helmet" was.
+const CAM_RADIUS = 0.26;
+const CAM_PAD = 0.3;
+const HEAD_CLEAR = 0.72;
 
 // How far past the weapon's own reach the reticle will still NAME a man. Inside maxRange he is
 // a target; between maxRange and this he is named with the metres you are short and the trigger
@@ -127,6 +178,10 @@ export class ActionMode {
     this.aimBlockedBy = null;         // a squadmate standing in the lane
     this.aimOutOfRange = false;       // the trigger is refused while this is true
     this._spotT = 0;
+    this.aimFocus = new THREE.Vector3();  // world point the reticle is on, for camera convergence
+    this.aimFocusValid = false;
+    this.aimFocusIsMan = false;           // a man wins over a surface: converge all the way in
+    this.convergeDist = CONVERGE_FAR;     // where the camera axis meets the soldier's aim line
 
     // --- grenade ----------------------------------------------------------
     this.grenades = [];
@@ -166,6 +221,8 @@ export class ActionMode {
     this.aimNearest = null;
     this.aimBlockedBy = null;
     this.aimOutOfRange = false;
+    this.aimFocusValid = false;
+    this.convergeDist = CONVERGE_FAR;
     this._spotT = 0;
     this.camYaw = unit.yaw;
     this.camPitch = -0.08;
@@ -621,6 +678,7 @@ export class ActionMode {
     this.shoulderTarget = 0.62;
     this.aimTarget = null;
     this.aimToggled = false;
+    this.aimFocusValid = false;
     this._lastClip = null;
     Bus.emit('aim:exit', { unit: u });
     Bus.emit('aim:target', { unit: u, target: null });
@@ -660,10 +718,13 @@ export class ActionMode {
     const h = typeof innerHeight === 'number' ? innerHeight : 1080;
     const focal = (h * 0.5) / Math.tan((this.camera.fov * Math.PI) / 360);
     const cone = Math.min(0.16, Math.atan2(Math.max(radiusPx || 0, h * MAGNET_SCREEN_FRAC), focal));
+    const tanCone = Math.tan(cone);
+    const tanCap = Math.tan(MAGNET_MAX_RAD);
     const units = this.battle.units;
-    const minDot = Math.cos(cone);
-    let bestDot = minDot, bestD = 0;
-    let rejDot = minDot, rejD = 0;
+    // Score is the miss measured in FRACTIONS OF THE ENVELOPE (0 = dead centre, 1 = the edge),
+    // not a dot product, because the envelope is no longer the same width at every range.
+    let bestScore = 1, bestD = 0;
+    let rejScore = 1, rejD = 0;
     u.muzzlePoint(_muzzle);
     for (let i = 0; i < units.length; i++) {
       const o = units[i];
@@ -673,25 +734,49 @@ export class ActionMode {
       _v2.subVectors(_v1, camPos);
       const d = _v2.length();
       if (d < 0.6 || d > weapon.maxRange * NAME_RANGE_MUL) continue;
-      const dot = _v2.dot(dir) / d;
-      if (dot <= minDot) continue;                // outside the cone: not being pointed at
-      // The CONE is measured from the camera (it is a screen-space rule); RANGE is measured
-      // from the muzzle, because that is the distance combat.hitProbability scores and it is
-      // up to 3.45 m shorter over the shoulder. Mixing the two gave a band around maxRange
-      // where the magnet promised a lock and the forecast scored it 0.
+      const along = _v2.dot(dir);
+      if (along <= 0.3) continue;                 // behind the lens
+      // Perpendicular miss from the crosshair ray to his chest, in metres, against an envelope
+      // that is the screen-space cone OR the near-field floor, whichever is more generous —
+      // capped so it never opens wider than MAGNET_MAX_RAD off the crosshair.
+      const perp = Math.sqrt(Math.max(0, d * d - along * along));
+      const allow = Math.min(Math.max(along * tanCone, NEAR_FORGIVE_M), along * tanCap);
+      if (perp >= allow) continue;                // not being pointed at
+      const score = perp / allow;
+      // RANGE is measured from the muzzle, because that is the distance combat.hitProbability
+      // scores and it is up to 3.45 m shorter over the shoulder. Mixing the two gave a band
+      // around maxRange where the magnet promised a lock and the forecast scored it 0.
       const dm = _muzzle.distanceTo(_v1);
       const inRange = dm <= weapon.maxRange;
-      if (inRange && dot <= bestDot) continue;    // a better lock already found
-      if (!inRange && dot <= rejDot && out.reject) continue;
-      const los = hasLOS(_muzzle.x, _muzzle.y, _muzzle.z, _v1.x, _v1.y, _v1.z, this.world);
-      if (inRange && los) { bestDot = dot; bestD = dm; out.target = o; continue; }
+      if (inRange && score >= bestScore) continue;   // a better lock already found
+      if (!inRange && score >= rejScore && out.reject) continue;
+      // Chest OR head: a man behind a sandbag with his shoulders over the top is a shot, and
+      // fireBurst agrees — measured, a chest-only probe reported 'noLineOfSight' on two shots
+      // that then did 67 and 40 damage. Probing one point made the readout pessimistic and the
+      // player distrust it.
+      let los = hasLOS(_muzzle.x, _muzzle.y, _muzzle.z, _v1.x, _v1.y, _v1.z, this.world);
+      if (!los) {
+        o.headPoint(_v3);
+        los = hasLOS(_muzzle.x, _muzzle.y, _muzzle.z, _v3.x, _v3.y, _v3.z, this.world);
+      }
+      if (!los) {
+        // Last word goes to the round itself: if the first thing a bullet leaving this muzzle
+        // would hit IS him, there is a shot, whatever the sight-line heuristic thinks of the
+        // bush in between. hasLOS calls anything over 0.35 cover "blocked", which is how the
+        // HUD came to print 'noLineOfSight' over a shot that then did 57 damage.
+        _v3.subVectors(_v1, _muzzle).normalize();
+        const sh = traceScene(_muzzle, _v3, dm + 0.6,
+          { ignore: u, units: this.battle.units, world: this.world });
+        los = !!sh && sh.kind === 'unit' && sh.unit === o;
+      }
+      if (inRange && los) { bestScore = score; bestD = dm; out.target = o; continue; }
       // Not a shot — but it is the answer to "why did nothing happen?".
       // Out of range beats no-line-of-sight: it is the one the player can act on.
       const why = !los ? AIM_STATUS.NO_LOS : AIM_STATUS.OUT_OF_RANGE;
       const better = !out.reject
         || (why === AIM_STATUS.OUT_OF_RANGE && out.why === AIM_STATUS.NO_LOS)
-        || (why === out.why && dot > rejDot);
-      if (better) { rejDot = dot; rejD = dm; out.reject = o; out.why = why; }
+        || (why === out.why && score < rejScore);
+      if (better) { rejScore = score; rejD = dm; out.reject = o; out.why = why; }
     }
     out.distance = out.target ? bestD : rejD;
     return out;
@@ -796,6 +881,14 @@ export class ActionMode {
     const h = typeof innerHeight === 'number' ? innerHeight : 1080;
     const focal = (h * 0.5) / Math.tan((this.camera.fov * Math.PI) / 360);
     this.reticleRadiusPx = clamp(Math.tan(this._sigma * 2.146) * focal, 7, h * 0.155);
+
+    // What the camera should converge on. A LOCKED man beats the traced surface: converging on
+    // him is what puts the crosshair on the aim line at his range and kills the parallax that
+    // made close shots impossible. Otherwise use whatever the reticle is resting on.
+    if (this.aimTarget) this.aimTarget.centerPoint(this.aimFocus);
+    else this.aimFocus.copy(_aimPoint);
+    this.aimFocusIsMan = !!this.aimTarget;
+    this.aimFocusValid = true;
 
     if (prev !== this.aimTarget || this._pubTimer === undefined || (this._pubTimer -= dt) <= 0) {
       this._pubTimer = 0.06;
@@ -1101,15 +1194,50 @@ export class ActionMode {
       .add(_v0.set(0, this.armLength * 0.06, 0));
 
     // --- collision avoidance: sweep the pivot->camera segment ---------------
+    // A single centre ray is not a camera. It slips past the corner of a slab and parks the
+    // lens INSIDE the bridge abutment (measured: 60% of one aim frame was flat cream masonry
+    // with the tank invisible underneath it), and when it does pull in it pulls in to 0.45 m
+    // of the soldier's own eye line, which is the frame that came back 40% green helmet.
+    // So: cast four offset rays as well as the centre one, then check from the OUTSIDE in for
+    // the tunnelling case, then hold the lens off the man's own head.
     _v1.subVectors(_camWant, _pivot);
     const want = _v1.length();
     if (want > 1e-4) {
       _v1.multiplyScalar(1 / want);
-      const h = traceWorld(_pivot.x, _pivot.y, _pivot.z, _v1.x, _v1.y, _v1.z, want + 0.35, this.world);
-      if (h) {
-        const safe = Math.max(0.45, h.t - 0.32);
-        _camWant.copy(_pivot).addScaledVector(_v1, safe);
+      let safe = want;
+      _up.crossVectors(_rgt, _v1);
+      if (_up.lengthSq() < 1e-6) _up.set(0, 1, 0); else _up.normalize();
+      for (let i = 0; i < 5; i++) {
+        // centre, then +/- right, then +/- up: a poor man's sphere cast, four extra traces.
+        const sx = i === 1 ? CAM_RADIUS : i === 2 ? -CAM_RADIUS : 0;
+        const sy = i === 3 ? CAM_RADIUS : i === 4 ? -CAM_RADIUS : 0;
+        _off.copy(_pivot).addScaledVector(_rgt, sx).addScaledVector(_up, sy);
+        const h = traceWorld(_off.x, _off.y, _off.z, _v1.x, _v1.y, _v1.z, safe + CAM_PAD, this.world);
+        if (h) safe = Math.min(safe, h.t - CAM_PAD);
       }
+      // Tunnelling: the outward cast can pass over a low wall and land the lens inside the far
+      // side of it. Look back down the arm — anything hit on the way home is a surface the
+      // camera is behind, so come in to just this side of it.
+      if (safe > 0.5) {
+        _off.copy(_pivot).addScaledVector(_v1, safe);
+        const back = traceWorld(_off.x, _off.y, _off.z, -_v1.x, -_v1.y, -_v1.z, safe - 0.2, this.world);
+        if (back) safe = Math.min(safe, safe - back.t - CAM_PAD);
+      }
+      _camWant.copy(_pivot).addScaledVector(_v1, Math.max(0.2, safe));
+    }
+    // The lens must clear the subject's own head. When the wall behind squeezes it in, go OVER
+    // the helmet rather than through it — climbing is nearly always free, and the aim line
+    // still passes through the target because the camera now converges on him.
+    u.headPoint(_head);
+    _off.subVectors(_camWant, _head);
+    const dHead = _off.length();
+    const clear = u.isVehicle ? 1.2 : HEAD_CLEAR;
+    if (dHead < clear) {
+      if (dHead < 1e-3) _off.copy(_fwd).multiplyScalar(-1);
+      _off.y += 0.55;                                   // bias the escape upward
+      _off.normalize();
+      const hb = traceWorld(_head.x, _head.y, _head.z, _off.x, _off.y, _off.z, clear + CAM_PAD, this.world);
+      _camWant.copy(_head).addScaledVector(_off, hb ? Math.max(0.2, hb.t - 0.12) : clear);
     }
     // Never dip below the terrain.
     if (this.nav) {
@@ -1120,8 +1248,21 @@ export class ActionMode {
     const lag = this.mode === MODE.AIM ? 22 : 12;
     cam.position.lerp(_camWant, 1 - Math.exp(-lag * dt));
 
-    // Look target sits a little ahead of the soldier so the reticle is on the world, not the head.
-    _v2.copy(_pivot).addScaledVector(_fwd, 40).addScaledVector(_rgt, this.shoulder * 0.35);
+    // --- where the camera axis crosses the aim line -------------------------
+    // Free-look converges far away, which is what gives a third-person camera its shoulder
+    // offset. AIM converges on what the reticle is over, so the crosshair sits ON the soldier's
+    // aim line at the target's own range instead of only at 40 m. Without this a man three
+    // metres away renders 0.43 m — 137 px, a body's width — to the shoulder side of the
+    // crosshair, which is the whole reason close-range locks failed.
+    const wantConv = this.mode === MODE.AIM && this.aimFocusValid
+      ? clamp(_pivot.distanceTo(this.aimFocus),
+        this.aimFocusIsMan ? CONVERGE_MIN : CONVERGE_IDLE, CONVERGE_FAR)
+      : CONVERGE_FAR;
+    this.convergeDist = damp(this.convergeDist, wantConv, 12, dt);
+
+    // Look target sits ahead of the soldier so the reticle is on the world, not the head.
+    _v2.copy(_pivot).addScaledVector(_fwd, this.convergeDist)
+      .addScaledVector(_rgt, this.mode === MODE.AIM ? 0 : this.shoulder * 0.35);
     if (this.shake > 0.001) {
       const s = this.shake * this.shake * 0.10;
       _v2.x += (this.rng() - 0.5) * s;

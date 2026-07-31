@@ -263,6 +263,11 @@ export function colliderNormal(c, x, y, z, out) {
 // broadphase: uniform grid over the map footprint
 // ---------------------------------------------------------------------------
 
+/** Tags a tracked vehicle drives straight over. See ColliderGrid.resolve. */
+const VEHICLE_CRUSHES = new Set([
+  'sandbag', 'crate', 'crates', 'drum', 'barrel', 'fence', 'debris', 'rubble', 'bush', 'hedge',
+]);
+
 export class ColliderGrid {
   /** @param {number} size map extent (metres, centred on origin) */
   constructor(size = 180, cell = 8) {
@@ -396,12 +401,22 @@ export class ColliderGrid {
   /**
    * Push a capsule-ish agent (radius r, standing at y) out of solid colliders.
    * Mutates `pos`. Returns true if any correction was applied.
+   *
+   * A TRACKED VEHICLE FLATTENS LIGHT CLUTTER. `r >= 1.2` is a vehicle (infantry ask for 0.36),
+   * and a 13-tonne Edelweiss is not stopped by a sandbag line, a stack of crates or an oil
+   * drum. This is a fun-over-simulation call and it is load-bearing: the Edelweiss is a named
+   * mission objective, the bridge is its road, and a 2.9 m sandbag revetment parked across the
+   * deck left a 30 cm lane between it and the parapet — measured, the tank could not cross its
+   * own bridge. What still stops armour is what should: hedgehogs (that is what they are FOR),
+   * parapets, walls, wrecks and buildings.
    */
   resolve(pos, r, height = 1.75) {
     let moved = false;
+    const crushes = r >= 1.2;
     const cy = pos.y + height * 0.5;
     this.query(pos.x, pos.z, r + 1.5, (c) => {
       if (!c.solid) return;
+      if (crushes && VEHICLE_CRUSHES.has(c.tag)) return;
       if (c.max.y < pos.y + 0.25 || c.min.y > pos.y + height) return; // steppable / overhead
       closestPoint(c, pos.x, cy, pos.z, V1);
       V2.set(pos.x - V1.x, 0, pos.z - V1.z);

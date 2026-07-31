@@ -27,6 +27,31 @@ export const MISSION_VASEL = {
   bounds: { minX: -88, maxX: 88, minZ: -88, maxZ: 88 },
   navCell: 1.5,
 
+  // THE START LINE. Battle.startLineOffset() walks the real nav path from the staging post
+  // toward the flag and slides the whole squad this far along it, leaving the camp, the flag,
+  // the capture ring and the reinforcement spawn exactly where they are authored.
+  //
+  // It was 22 m, and 22 m put the front rank at z ~ 40 — 22 m short of the deck. A scout's
+  // ENTIRE sortie is 1062 AP at 20 AP/m = 53 m, so the first sortie went 22 m of empty pasture
+  // + the 26 m deck and ran dry ON THE NORTH ABUTMENT, in the open, 14 m from two dug-in
+  // Sturmtruppen. That is not a hard crossing, it is a rigged one: the AP always died at the
+  // worst square on the map. 38 m puts the front rank at the south bridgehead, so ONE sortie
+  // buys the whole deck plus most of the far bank — enough to reach the abutment cover in
+  // props.js `_buildCrossingCover()` and go to ground there. The crossing becomes one decision
+  // you can afford instead of three you cannot.
+  //
+  // 38 was measured first and is TOO FAR: the slots fan out over the camp's 9 m radius, so at
+  // 38 three of the nine landed ON THE DECK — the squad opens the mission standing in the
+  // middle of the span with no cover and the whole ruins line looking at it. 30 puts the front
+  // rank at the south bridgehead and the rear rank 20 m behind it, which is the picture the
+  // opening shot is already framing.
+  //
+  // Round 21 tried 32 m and rejected it because the squad opened inside five Imperials' sight
+  // with a free volley coming. That was measured BEFORE the bridgehead picket was pulled back
+  // to the ruins line (below), which moved the nearest Sturmtruppe from 14 m off the deck exit
+  // to 42 m off the start line — outside its 26 m sight entirely.
+  startLineAdvance: 30,
+
   cpPlayer: 7,
   cpEnemy: 6,
   deployMax: 6,
@@ -39,9 +64,12 @@ export const MISSION_VASEL = {
   // How far an objective is allowed to pull a soldier. Squad 7 must cross the whole valley;
   // the Imperials only chase what comes within reach of the ground they are holding.
   pushRange: { 0: 999, 1: 52 },
-  // Where a side falls back to when it has no reachable objective: the north bridgehead,
-  // the point where the road leaves the span and enters the ruins.
-  holdPoints: { 1: [8, -14] },
+  // Where a side falls back to when it has no reachable objective. This used to be the north
+  // bridgehead (8,-14) — i.e. the AI's standing order was to go and stand in the doorway the
+  // player has to come through, at point-blank range, with no cover for either side. It is now
+  // the RUINS LINE, 8 m further back, where their own parapets are: the abutment is a lodgement
+  // to be contested rather than a plug.
+  holdPoints: { 1: [10, -22] },
   baseExp: 1120,
   baseDucats: 5200,
   timeOfDay: 0.34,               // late morning, long soft shadows toward the north-east
@@ -53,8 +81,11 @@ export const MISSION_VASEL = {
     intel: [
       'The Vasel bridge is the last intact crossing for forty kilometres.',
       'Imperial infantry hold the mill town in company strength with one medium tank.',
+      'There is a gravel ford about twenty metres upstream. Knee deep. Slower, and it puts you '
+      + 'on their flank instead of in front of them.',
+      'Sandbags on the deck and at the far abutment. Bound from one to the next — do not run the '
+      + 'whole span in the open.',
       'A marksman has been reported in the church tower — do not cross the open square standing up.',
-      'The riverbank scrub gives good cover. Use it.',
       'Their camp falls the moment one of you ends a sortie on the flag with no Imperial beside it.',
     ],
     text:
@@ -131,14 +162,28 @@ export const MISSION_VASEL = {
   // Imperial garrison — 10 infantry + 1 medium tank
   // -------------------------------------------------------------------------
   enemies: [
-    // Bridgehead picket, dug in on the north bank where the road leaves the bridge.
-    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [3, -6], yaw: 0, potentials: ['campDefender'] },
-    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [10, -10], yaw: 0, potentials: ['braveHeart'] },
-    { cls: 'scout', name: 'Imperial Späher', team: 1, pos: [-6, -3], yaw: 0, potentials: ['natureLover'] },
+    // THE RUINS LINE — the far bank's defence, pulled back off the bridge mouth.
+    //
+    // These two Sturmtruppen used to stand at (3,-6) and (10,-10): the first of them 1.7 m from
+    // the north end of the deck, both of them ON the road the player must use, at 14-22 m from
+    // a 26 m stretch of open masonry. Measured: four of six soldiers died there during the
+    // PLAYER'S OWN turn, mid-run, with no cover reachable and no decision available. A picket in
+    // the doorway is not difficulty, it is a coin flip you lose.
+    //
+    // At (3,-19.5) and (14,-20.5) they still cover the whole deck and the abutment — 12-28 m,
+    // which is well inside a shocktrooper's reach — but they are dug in behind their own
+    // parapets (props.js `_buildEmplacements` builds them there so the danger READS), they can
+    // be answered from the abutment cover, and taking the far bank is now a lodgement fight
+    // instead of a sprint into a muzzle.
+    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [3, -19.5], yaw: 0, potentials: ['campDefender'] },
+    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [14, -20.5], yaw: 0, potentials: ['braveHeart'] },
+    // The west-bank picket, who is now the man watching the FORD (layout.js `this.ford`) as
+    // well as the bridge. He is the reason the second route is a decision and not a freebie.
+    { cls: 'scout', name: 'Imperial Späher', team: 1, pos: [-9, -4], yaw: 0, potentials: ['natureLover'] },
 
     // The mill-town line: the first row of ruins along the road into the village.
-    { cls: 'lancer', name: 'Imperial Lanzentruppe', team: 1, pos: [15, -21], yaw: 0, potentials: ['tankHunter'] },
-    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [6, -24], yaw: 0 },
+    { cls: 'lancer', name: 'Imperial Lanzentruppe', team: 1, pos: [17, -25], yaw: 0, potentials: ['tankHunter'] },
+    { cls: 'shock', name: 'Imperial Sturmtruppe', team: 1, pos: [6.5, -26], yaw: 0 },
     { cls: 'scout', name: 'Imperial Späher', team: 1, pos: [27, -17], yaw: -0.6, potentials: ['fancyFootwork'] },
 
     // Marksman on the eastern rise, looking straight down the village approach.
@@ -218,8 +263,11 @@ export const MISSION_VASEL = {
     // Their camp, in the ruins — standing height in the square, not hovering over it.
     { t: 8.4, type: 'camera', pos: [44, 12.4, -62], look: [24, 12.2, -40], fov: 38, dur: 4.2 },
     { t: 8.8, type: 'line', who: 'Imperial officer', text: 'Halten Sie die Brücke. Niemand kommt durch.' },
-    // Back to the squad on the start line, low over the staging post.
-    { t: 12.0, type: 'camera', pos: [-6, 15.0, 86], look: [-2, 8.0, 62], fov: 34, dur: 3.0 },
+    // Back to the squad on the start line. `startLineAdvance` slides the squad 30 m up the
+    // road from the authored camp, so the last beat has to frame the SOUTH BRIDGEHEAD, not
+    // the staging post 30 m behind it — the old beat (86 -> look 62) now looks at an empty
+    // pasture with the squad out of shot.
+    { t: 12.0, type: 'camera', pos: [-12, 14.5, 50], look: [3, 8.5, 27], fov: 34, dur: 3.0 },
     { t: 12.4, type: 'line', who: 'Welkin', text: 'Squad 7 — take that camp. Watch the square.' },
     { t: 15.0, type: 'end' },
   ],

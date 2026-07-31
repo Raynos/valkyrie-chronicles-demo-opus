@@ -157,17 +157,54 @@ const AMBIENCE_GAIN = { Off: 0, Quiet: 0.34, Normal: 0.72, Loud: 0.92 };
 
 // Why a trigger pull did nothing, in words. See HUD._fireBlock() for the handoff
 // contract these keys come off (`fire:blocked` / `aim:blocked` .reason).
+//
+// FOUR REFUSALS THAT ALL READ AS "NOTHING HAPPENED" IS WHY A PLAYTESTER CONCLUDED
+// THE GAME WAS BROKEN. Out of range, no line of sight, no attacks left and an
+// empty magazine are four different states, and every one of them has to say its
+// own name. Anything the game layer invents that is not in this table falls
+// through to prettyId() — a reason code nobody wrote a sentence for still reads
+// as English rather than as `noLineOfSight`.
 const BLOCK_TEXT = {
   range: 'Out of range',
   outOfRange: 'Out of range',
   los: 'No line of sight',
   noLineOfSight: 'No line of sight',
+  blocked: 'No line of sight',
+  obstructed: 'No line of sight',
   attacks: 'No attacks left — Enter to end',
   noAttacks: 'No attacks left — Enter to end',
   ammo: 'Out of ammo — reload (R)',
   noAmmo: 'Out of ammo — reload (R)',
+  empty: 'Out of ammo — reload (R)',
+  reloading: 'Reloading',
   noTarget: 'No target in the sights',
   cover: 'Target is behind cover',
+  tooClose: 'Too close — back off a pace',
+  minRange: 'Too close — back off a pace',
+  close: 'Too close — back off a pace',
+  friendly: 'That is one of ours',
+  friendlyFire: 'That is one of ours',
+  unspotted: 'Not spotted — nobody has eyes on him',
+  notSpotted: 'Not spotted — nobody has eyes on him',
+  downed: 'That man is already down',
+  noCp: 'No Command Points left',
+  cp: 'No Command Points left',
+  smoke: 'Smoke — no clear shot',
+};
+
+// A SORTIE ENDS FOR A REASON, AND THE REASON IS NOT A VARIABLE NAME.
+// actionMode.js calls finish('manual') / finish('spent'); the page printed those
+// two words at the player verbatim. Empty string = say nothing, because something
+// louder is already announcing it.
+const ACTION_END_TEXT = {
+  manual: 'Sortie ended',
+  spent: 'Out of movement — sortie over',
+  outOfAp: 'Out of movement — sortie over',
+  ap: 'Out of movement — sortie over',
+  turnEnded: '',
+  downed: '',
+  killed: '',
+  dead: '',
 };
 
 /**
@@ -511,6 +548,17 @@ export class HUD {
     cpP.content.appendChild(cpHead);
     this.cpRow = h('div', { class: 'vc-cp-row' });
     cpP.content.appendChild(this.cpRow);
+    // THE RULE OF THE GAME, PENCILLED UNDER THE TOKENS.
+    //
+    // A playtester played two whole turns before working out that a shot costs a
+    // Command Point and a round and NOT movement — which is the difference between
+    // "hold W across a bridge" and "spend three bullets buying that bridge". Two
+    // lines of marginal hand in the journal idiom is the cheapest possible way to
+    // put the fire plan in front of him; it is not a tutorial pop-up and it never
+    // moves.
+    cpP.content.appendChild(h('div', { class: 'vc-cp-note' },
+      h('div', { text: 'One point sends one soldier out.' }),
+      h('div', { text: 'Firing spends a round, not march.' })));
     top.appendChild(cpP.root);
 
     const tP = panel({ seed: 812, cls: 'vc-turn', tilt: -0.5 });
@@ -697,7 +745,7 @@ export class HUD {
         clickable(p.root, () => {
           Bus.emit('ui:order', { order: o, unit: this.selected });
           Bus.emit('sfx', { name: 'ui_order', vol: 0.8 });
-          this.toast(o.name.toUpperCase() + ' ISSUED');
+          this.toast(o.name + ' — order issued', 'good');
           this._toggleOrders(false);
         });
       }
@@ -732,7 +780,7 @@ export class HUD {
         if (!locked && !c.root.classList.contains('clickable')) {
           clickable(c.root, () => {
             Bus.emit('ui:order', { order: c.o, unit: this.selected });
-            this.toast(c.o.name.toUpperCase() + ' ISSUED');
+            this.toast(c.o.name + ' — order issued', 'good');
           });
         }
       }
@@ -1093,8 +1141,14 @@ export class HUD {
     this._on('unit:downed', (p) => {
       const u = p?.unit;
       if (!u) return;
-      if (u.pos) this.labels.banner(u.pos, 'DOWNED', { life: 2.2, color: '#77202a' });
-      this.toast(((u.name || 'Soldier') + ' is down').toUpperCase());
+      // ONE CASUALTY, ONE NOTICE. Round 22 shipped three announcements for a
+      // single death and both playtesters filed the same complaint: a world-space
+      // "DOWNED" banner at the body, a toast reading "ISARA GUNTHER IS DOWN" at
+      // the top of the page, and the centre-screen alert below — all alive at
+      // once, overlapping, saying the same thing three ways. The alert is the one
+      // that is legible and the one that carries WHOSE casualty it was, so the
+      // banner and the toast are deleted rather than restyled.
+      //
       // A MAN GOING DOWN IS AN EVENT, NOT A LINE OF SMALL CAPS.
       //
       // A 0.8em toast is what the page uses for "ATTACK BOOST ISSUED"; a soldier
@@ -1146,7 +1200,7 @@ export class HUD {
       this.setControls('result');
     });
     this._on('order:used', (p) => {
-      if (p?.order?.name) this.toast(String(p.order.name).toUpperCase());
+      if (p?.order?.name) this.toast(String(p.order.name) + ' — order issued', 'good');
     });
     this._on('explosion', (p) => {
       if (!p?.pos || !this.camera) return;
@@ -1181,7 +1235,8 @@ export class HUD {
     });
     this._on('ui:ammo', (p) => this.setAmmo(p || {}));
     this._on('ui:alert', (p) => this.alert(p?.text || 'Enemy Sighted', p?.sub || ''));
-    this._on('ui:toast', (p) => this.toast(typeof p === 'string' ? p : (p?.text || '')));
+    this._on('ui:toast', (p) => this.toast(typeof p === 'string' ? p : (p?.text || ''),
+      (p && p.kind) || ''));
     this._on('ui:capture', (p) => {
       if (!p) return;
       if (p.remove) this.labels.clearCapture(p.id);
@@ -1217,11 +1272,16 @@ export class HUD {
       this.apShown = p?.ap != null ? p.ap : (this.selected?.ap || 0);
       this._attacksLeft = null;
       this._clearAim();
+      this._sayWhatTheCpBought(p?.unit || this.selected, this.apShown);
     });
     this._on('action:exit', () => this._clearAim());
     this._on('action:end', (p) => {
       this._clearAim();
-      if (p?.reason && p.reason !== 'turnEnded') this.toast(String(p.reason).toUpperCase());
+      const r = p?.reason;
+      if (!r) return;
+      const t = Object.prototype.hasOwnProperty.call(ACTION_END_TEXT, r)
+        ? ACTION_END_TEXT[r] : prettyId(r);
+      if (t) this.toast(t, 'note');
     });
     this._on('aim:enter', () => {
       this._aimActive = true;
@@ -1232,7 +1292,7 @@ export class HUD {
     this._on('aim:target', (p) => this._onAimTarget(p));
     this._on('weapon:switch', (p) => {
       const w = p?.weapon;
-      if (w) this.toast(String(w.name || 'WEAPON').toUpperCase());
+      if (w) this.toast(String(w.name || 'Weapon') + ' up', 'note');
     });
     this._on('attack:resolved', (p) => {
       if (!p) return;
@@ -1249,7 +1309,11 @@ export class HUD {
       // Congratulating the player for his own casualty is worse than saying
       // nothing: it tells him the readouts cannot be trusted.
       const mine = (p.unit ? (p.unit.team | 0) : 0) === 0;
-      if (p.kills && mine) this.toast(p.kills > 1 ? p.kills + ' ENEMIES ROUTED' : 'ENEMY ROUTED');
+      // The single-kill toast is GONE: `unit:downed` already throws "Imperial
+      // Down — <name> routed" across the middle of the page, so this was a fourth
+      // notice for the same corpse. Only a multiple — one burst, two men — says
+      // something the casualty alerts cannot.
+      if (mine && p.kills > 1) this.toast(p.kills + ' Imperials routed', 'good');
       // The legend and the shot report belong to OUR attack too — an Imperial
       // firing must not rewrite the strip under the player's own hands.
       if (!mine) return;
@@ -1280,11 +1344,20 @@ export class HUD {
 
     // --- command mode ------------------------------------------------------
     this._on('command:enter', () => { this._rosterKey = ''; this.cpShown = -1; this._renderCp(); });
-    this._on('command:denied', (p) => this.toast(String(p?.reason || 'Not permitted').toUpperCase()));
+    // A REFUSED ORDER IS THE SAME CLASS OF EVENT AS A REFUSED TRIGGER PULL, and it
+    // has to look like one — a barred slip, not another cream notice. battle.js
+    // writes these in English already ("Not enough Command Points"); anything that
+    // arrives as an id gets prettified rather than shouted.
+    this._on('command:denied', (p) => {
+      const r = p?.reason;
+      this.toast((r && (BLOCK_TEXT[r] || (/ /.test(String(r)) ? String(r) : prettyId(r))))
+        || 'Not permitted', 'block');
+    });
     this._on('camp:captured', (p) => {
       const c = p?.camp;
       if (!c) return;
-      this.toast(((c.name || 'CAMP') + (p.by?.team === 0 ? ' secured' : ' lost')).toUpperCase());
+      this.toast((c.name || 'Camp') + (p.by?.team === 0 ? ' secured' : ' lost'),
+        p.by?.team === 0 ? 'good' : 'block');
       if (c.pos) this.labels.banner(c.pos, p.by?.team === 0 ? 'CAMP SECURED' : 'CAMP LOST', { life: 2.2 });
       this._campEvent?.delete(c.id);
       this._campAlert = false;
@@ -1473,7 +1546,7 @@ export class HUD {
     }
     if (anyContested !== this._campAlert) {
       this._campAlert = anyContested;
-      if (anyContested) this.toast('Base camp contested');
+      if (anyContested) this.toast('Base camp contested', 'block');
     }
   }
 
@@ -1559,14 +1632,36 @@ export class HUD {
     this._alertTimer = 2.1;
   }
 
-  /** Transient small notice near the top of the page. */
-  toast(text) {
+  /**
+   * A DISPATCH SLIP, NOT A LINE OF TEXT OVER THE SKY.
+   *
+   * Measured before this change: the "HIT · 92 DAMAGE" slip — the one piece of
+   * feedback that tells the player the best mechanic in the game just worked —
+   * was 157 x 24 px of 12.5 px cream small-caps at the top of a 1600 x 900 frame,
+   * on paper light enough to vanish into pale sky and sunlit masonry. Both
+   * playtesters said they could not read it.
+   *
+   * So: bigger type, a heavier sheet with an inked edge, and a ruled stripe down
+   * the left margin whose colour says what KIND of dispatch it is — red for a
+   * landed round, ink for a refusal, olive for a rout. That stripe is also the
+   * contrast guarantee: whatever the background, a saturated 4 px rule and a
+   * 1.6 px ink border sit against it. See `.vc-toast` in style.js.
+   *
+   * @param {string} text sentence case; the sheet sets it as small capitals
+   * @param {''|'hit'|'miss'|'block'|'good'|'note'} kind picks the marginal rule
+   */
+  toast(text, kind = '') {
     if (!text) return;
-    const p = panel({ seed: 950 + (text.length * 13), cls: 'vc-toast', tilt: 0.6, soft: true });
-    p.content.textContent = text;
+    const s = String(text);
+    const p = panel({
+      seed: 950 + (s.length * 13), cls: 'vc-toast' + (kind ? ' ' + kind : ''),
+      tilt: 0.6, amp: 0.7,
+    });
+    p.content.textContent = s;
     this.toastsEl.appendChild(p.root);
     setTimeout(() => p.root.remove(), 2700);
-    while (this.toastsEl.childElementCount > 4) this.toastsEl.firstChild.remove();
+    // Three, not four. A taller sheet stacked four deep reached the reticle.
+    while (this.toastsEl.childElementCount > 3) this.toastsEl.firstChild.remove();
   }
 
   /**
@@ -1745,6 +1840,25 @@ export class HUD {
     return BLOCK_TEXT[status] || '';
   }
 
+  /**
+   * WHAT THE COMMAND POINT BOUGHT, SAID AT THE MOMENT IT IS SPENT.
+   *
+   * A playtester found the game that is already in here: a sniper does not need
+   * AP to pull a trigger, she needs a Command Point and a round in the magazine,
+   * and she carries three — so turn 1 is a fire plan, not a walk. Nothing in the
+   * HUD said that. A point goes, and now the receipt goes with it: whose sortie,
+   * how far he can march on it, and how many rounds he brought.
+   */
+  _sayWhatTheCpBought(u, ap) {
+    if (!u) return;
+    const bits = [(u.freeAction ? 'Free sortie' : '1 point') + ' · ' + (u.name || 'Soldier')];
+    const m = u.apPerMetre ? (ap || 0) / u.apPerMetre : (ap || 0);
+    if (m >= 1) bits.push(Math.round(m) + ' m march');
+    const rd = u.ammo;
+    if (rd != null) bits.push(rd === 1 ? '1 round' : rd + ' rounds');
+    this.toast(bits.join(' · '), 'note');
+  }
+
   /** Latch a refusal announced by the game layer, and say it once out loud. */
   _noteBlock(p) {
     const key = (p && p.reason) || 'noTarget';
@@ -1763,7 +1877,7 @@ export class HUD {
     if (this._blockSaid === text && this._time - (this._blockSaidAt || -9) < 2.5) return;
     this._blockSaid = text;
     this._blockSaidAt = this._time;
-    this.toast(text.toUpperCase());
+    this.toast(text, 'block');
   }
 
   /**
@@ -1792,7 +1906,7 @@ export class HUD {
     // the page outlives the overlay — and a miss is announced as plainly as a hit,
     // because "nothing happened" is precisely the reading that made a playtester
     // call the game broken.
-    this.toast(this._shotReport.replace('·', '·').toUpperCase());
+    this.toast(this._shotReport, this._shotReport.startsWith('Missed') ? 'miss' : 'hit');
   }
 
   /** @param {{ammo?:number, mag?:number, reloading?:boolean}} a */
@@ -1989,6 +2103,17 @@ export class HUD {
       }));
       const st = h('div', { class: 'vc-ru-st' });
       clsRow.appendChild(st);
+      // ROUNDS, IN THE RIGHT MARGIN OF THE CLASS LINE.
+      //
+      // The fire plan is the game — three bullets, a 2 CP resupply, two more
+      // bullets — and until now the roster showed health and metres of march and
+      // NOTHING about ammunition, so a player could not count his shots without
+      // sortieing each soldier one at a time to read the pip strip. This adds no
+      // height to the card: it takes the empty right end of the class line, set as
+      // a quartermaster's tally rather than a floating game number.
+      const rd = h('div', { class: 'vc-ru-rd vc-num' },
+        h('b', { text: '' }), h('span', { text: '' }));
+      clsRow.appendChild(rd);
       body.appendChild(clsRow);
 
       // HP: a drawn gauge with segment ticks. AP: a surveyor's march line, so
@@ -2051,8 +2176,8 @@ export class HUD {
 
       this.rosterEl.appendChild(p.root);
       this._rosterCards.set(u, {
-        root: p.root, hpG, apM, hpNum, apNum, st, stamp, rib,
-        hpKey: -1, apKey: -1, stKey: '',
+        root: p.root, hpG, apM, hpNum, apNum, st, stamp, rib, rd,
+        hpKey: -1, apKey: -1, stKey: '', rdKey: -2,
       });
     });
     this._syncSelection();
@@ -2098,6 +2223,19 @@ export class HUD {
           // AP is a distance in this game — report it as one.
           const m = u.apPerMetre ? u.ap / u.apPerMetre : u.ap;
           c.apNum.firstChild.textContent = String(Math.max(0, Math.round(m)));
+        }
+      }
+      // Rounds left, as a tally in the class line's right margin. `maxAmmo` counts
+      // ATTACKS, not loose cartridges (a scout has 5, a lancer 2, a sniper 3), so
+      // this is the number of trigger pulls the soldier has left this battle — the
+      // one number the fire plan is made of.
+      if (c.rd) {
+        const n = u.ammo == null ? -1 : Math.max(0, u.ammo | 0);
+        if (n !== c.rdKey) {
+          c.rdKey = n;
+          c.rd.firstChild.textContent = n < 0 ? '' : String(n);
+          c.rd.lastChild.textContent = n < 0 ? '' : (n === 1 ? ' rd' : ' rds');
+          c.rd.classList.toggle('out', n === 0);
         }
       }
       const marks = this._statusOf(u);

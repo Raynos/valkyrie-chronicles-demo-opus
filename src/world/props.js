@@ -474,6 +474,7 @@ export class Props {
     this._materials();
     this._buildEmplacements();
     this._buildObstacles();
+    this._buildCrossingCover();
     this._buildWire();
     this._buildTelegraph();
     this._buildCraterDebris();
@@ -615,25 +616,183 @@ export class Props {
 
   // -----------------------------------------------------------------------
 
+  /**
+   * THE CROSSING LANE — the one strip of ground this mission cannot afford to
+   * garnish, and the one it was garnishing hardest.
+   *
+   * MEASURED, live, before this guard existed: the nav grid north of the bridge
+   * exit had a SINGLE 1.5 m walkable cell at (5, -15), and it was walled again
+   * 2 m further on. Four different soldiers wedged at the identical coordinate
+   * (7.6, -11.4) and paid for it — 450 AP bought 10.1 m, 287 AP bought 10.4 m,
+   * 131 AP bought 2.4 m, against a clean 20 AP/m on open ground — because
+   * `moveWithCollision` charges the metres a man SLIDES along an obstacle, not
+   * the metres he gains. The Edelweiss returned 0.0 m for four consecutive
+   * sorties. None of that was authored: seven chevaux-de-frise, two sandbag
+   * revetments, a crate stack, an oil drum and a burnt-out lorry were each
+   * placed relative to the bridge, the bridge got 7.5 m shorter when the span
+   * layout became adaptive, and the whole belt slid onto the road.
+   *
+   * So the lane is now defended by a PREDICATE rather than by arithmetic that
+   * has to stay in sync: nothing scattered may sit within `clear` metres of the
+   * road centreline between the south approach and the ruins. Cover on that
+   * lane is authored by hand in `_buildCrossingCover()`, where the gaps can be
+   * checked. If you add a new scatter pass to this module, filter it through
+   * here.
+   */
+  _onCrossingLane(x, z, clear = 5.0) {
+    // The ford's approach corridor counts as the crossing too: a wire belt laid
+    // across the north bank there would quietly delete the second route.
+    const f = this.layout.ford;
+    if (f && Math.abs(x - f.x) < clear + 1.5 && z > f.z - 15 && z < f.z + 11) return true;
+    if (z > 27 || z < -30) return false;
+    return this.layout.roadSDF(x, z).d < clear;
+  }
+
+  /** The road centreline and its normal at the polyline sample nearest to `z`. */
+  _roadAtZ(zWant) {
+    const r = this.layout.road;
+    let bi = 1, best = Infinity;
+    for (let i = 1; i < r.n - 1; i++) {
+      const d = Math.abs(r.z[i] - zWant);
+      if (d < best) { best = d; bi = i; }
+    }
+    let fx = r.x[bi + 1] - r.x[bi - 1], fz = r.z[bi + 1] - r.z[bi - 1];
+    const l = Math.hypot(fx, fz) || 1;
+    fx /= l; fz /= l;
+    // The road runs south -> north, i.e. toward -Z. Force the tangent that way
+    // so "forward" is always toward the objective.
+    if (fz > 0) { fx = -fx; fz = -fz; }
+    return { x: r.x[bi], z: r.z[bi], fx, fz, nx: -fz, nz: fx };
+  }
+
+  /**
+   * BOUNDING COVER ON THE CROSSING.
+   *
+   * A crossing under fire is a great game only if there is something to get
+   * behind. This mission had nothing: 26 m of open masonry deck, then 12 m of
+   * open abutment, with a dug-in Sturmtruppe 14 m off the exit. Both
+   * playtesters lost four of six soldiers ON THE DECK, during their own turn,
+   * mid-run — 62 HP buys about 15 seconds of interception and the deck takes
+   * longer than that. There was no decision in it: you ran and you died.
+   *
+   * Nine pieces, hand-placed, every 7-9 m along the route, which is one third
+   * of a scout's sortie — so every leg of the crossing is a bound from cover to
+   * cover that a player can afford. All of it is sandbag or crate: `cover 1`
+   * but `blocksLos:false`, so you can shoot back over the parapet. That is the
+   * only kind of cover worth having.
+   *
+   * THE CLEAR LANE IS THE DESIGN. All three deck pieces are 1.8 m of a 7.3 m
+   * carriageway and all three are bedded against the SAME (west) parapet, which
+   * leaves one unobstructed 5.4 m lane up the east half of the span from end to
+   * end. Hold W and you cross without touching anything, including in the
+   * Edelweiss (1.6 m collision radius, 3.2 m of hull). Want cover, step left.
+   *
+   * IT TOOK FOUR GOES AND EVERY FAILURE WAS MEASURED IN A LIVE SORTIE:
+   *   2.9 m walls        -> a 2.9 m slot to the parapet, one nav cell wide: the
+   *                         same death funnel this mission already had, rebuilt
+   *                         by hand.
+   *   2.2 m, alternating -> the scout crossed the span cleanly at 19-21 AP/m and
+   *                         then burned 564 AP and DIED grinding past the third
+   *                         wall on her way to the abutment.
+   *   1.8 m, alternating -> identical, to the metre. Staggering the walls forces
+   *                         a diagonal across the carriageway at exactly the
+   *                         point the far bank is shooting at you.
+   * Cover you can wedge on is worse than no cover: it charges AP at the rate of
+   * a sprint and returns no ground. Do not lengthen these, do not move them
+   * toward the crown, and do not re-stagger them, without re-running a sortie
+   * and reading the AP-per-metre.
+   */
+  _buildCrossingCover() {
+    const rng = this.rng;
+    const b = this.layout.bridge;
+    const deckY = b.deckY + 0.07;                      // platform top, see structures
+    // lat > 0 is west across the carriageway, along > 0 is north toward the ruins
+    const deckPos = (lat, along) => ({
+      x: b.x + lat * Math.cos(b.yaw) + along * Math.sin(b.yaw),
+      z: b.z - lat * Math.sin(b.yaw) + along * Math.cos(b.yaw),
+    });
+    // yaw + PI puts the parapet's battered face toward the north bank, because
+    // that is where the fire comes from.
+    const deckYaw = b.yaw + Math.PI;
+    const halfLen = b.length * 0.5;
+    for (const [lat, along] of [[2.75, -halfLen + 5.0], [2.75, -1.0], [2.75, halfLen - 4.5]]) {
+      const p = deckPos(lat, along);
+      const built = buildSandbagWall(rng, 1.8, 4, 0.16);
+      this._placeDestructible(built, p.x, p.z, deckYaw, 'sandbag', 480, deckY);
+    }
+
+    // --- the abutment lodgement and the ruins approach.
+    // Off the centreline by 3.4 m: close enough to reach from the lane in one
+    // step, far enough that nobody running the lane ever touches it.
+    const beats = [
+      { z: -12.5, lat: 3.4, kind: 'sandbag', len: 3.2 },
+      { z: -16.0, lat: -3.4, kind: 'crates' },
+      { z: -21.5, lat: 3.6, kind: 'sandbag', len: 3.4 },
+      { z: -27.0, lat: -3.6, kind: 'sandbag', len: 3.2 },
+      { z: -33.0, lat: 3.6, kind: 'crates' },
+      { z: -38.0, lat: -3.4, kind: 'sandbag', len: 3.2 },
+    ];
+    for (const s of beats) {
+      const r = this._roadAtZ(s.z);
+      const x = r.x + r.nx * s.lat, z = r.z + r.nz * s.lat;
+      if (!this.terrain.inBounds(x, z)) continue;
+      if (this.terrain.heightAt(x, z) < WATER_Y + 0.5) continue;
+      // Facing the objective: local -Z is the parapet's front, so aim it up the
+      // road. (`_place` maps local +Z to (sin yaw, cos yaw).)
+      const yaw = Math.atan2(-r.fx, -r.fz);
+      if (s.kind === 'crates') {
+        this._placeDestructible(buildCrateStack(rng), x, z, yaw + rngRange(rng, -0.3, 0.3), 'crates', 45);
+        continue;
+      }
+      const lvl = this._levelBehind(x, z, yaw, s.len);
+      this._placeDestructible(buildSandbagWall(rng, s.len, 4, rngRange(rng, 0.12, 0.24)),
+        x, z, yaw, 'sandbag', 480, lvl.y);
+    }
+  }
+
   /** Where a defender would actually dig in: bridgeheads, the village edge. */
   _buildEmplacements() {
     const rng = this.rng;
     const b = this.layout.bridge;
     const specs = [];
 
-    // both bridgeheads, facing across the river
-    for (const side of [-1, 1]) {
-      const dx = Math.sin(b.yaw) * side * (b.length * 0.5 + 5.5);
-      const dz = Math.cos(b.yaw) * side * (b.length * 0.5 + 5.5);
+    // The SOUTH bridgehead only — the firing line the player starts behind, on
+    // his own bank, where a marksman lying up can reach the far abutment at
+    // 40 m. The NORTH bridgehead pair used to be built here too, and that is
+    // where the mission went wrong: two parapets, two crate stacks and two oil
+    // drums landed 5-7 m off the deck exit, on the road, in the one place the
+    // player has to be. The far bank's defences are now dug in on the RUINS
+    // LINE below, 10-14 m further back, which leaves a lodgement at the
+    // abutment worth fighting for instead of a wall to die against.
+    {
+      const dx = Math.sin(b.yaw) * -(b.length * 0.5 + 5.5);
+      const dz = Math.cos(b.yaw) * -(b.length * 0.5 + 5.5);
       for (const lateral of [-1, 1]) {
         specs.push({
           x: b.x + dx + Math.cos(b.yaw) * lateral * 5.5,
           z: b.z + dz - Math.sin(b.yaw) * lateral * 5.5,
-          yaw: b.yaw + (side > 0 ? Math.PI : 0),
+          yaw: b.yaw,
           len: rngRange(rng, 3.4, 5.2),
           courses: 4,
         });
       }
+    }
+    // The ruins line: the far bank's actual defence, dug in where the garrison
+    // now stands (see mission.js `enemies`) so that a player LOOKING at the
+    // crossing can see where the danger is before he commits to it. Sandbags at
+    // the mouth of a street read as "someone is in that street".
+    for (const [ex, ez] of [[3.0, -19.5], [14.2, -20.5], [6.5, -25.0]]) {
+      const r = this._roadAtZ(ez);
+      specs.push({
+        x: ex, z: ez + 1.1,
+        yaw: Math.atan2(r.fx, r.fz),         // facing back down the road, at the bridge
+        len: rngRange(rng, 3.6, 4.8), courses: 4,
+        // Hand-placed to match a garrison position, so it is not allowed to be
+        // silently dropped by the scatter guards: two of these three vanished
+        // into `occupiedTest` on the first cut and the ruins line stopped
+        // reading as a defended line.
+        authored: true,
+      });
     }
     // the northern camp perimeter, facing the road
     const V = this.layout.village;
@@ -653,12 +812,12 @@ export class Props {
     for (const s of specs) {
       if (!this.terrain.inBounds(s.x, s.z)) continue;
       if (this.terrain.heightAt(s.x, s.z) < WATER_Y + 0.5) continue;
-      if (this.occupiedTest(s.x, s.z)) continue;
+      if (!s.authored && this.occupiedTest(s.x, s.z)) continue;
       // Troops dig in on ground they can actually revet: reject anything the
       // parapet would either float over or bury itself in.
       const lvl = this._levelBehind(s.x, s.z, s.yaw, s.len);
-      if (lvl.spread > 0.85) continue;
-      if (this.terrain.slopeAt(s.x, s.z) > 0.42) continue;
+      if (!s.authored && lvl.spread > 0.85) continue;
+      if (!s.authored && this.terrain.slopeAt(s.x, s.z) > 0.42) continue;
       const built = buildSandbagWall(rng, s.len, s.courses, rngRange(rng, 0.10, 0.26));
       this._placeDestructible(built, s.x, s.z, s.yaw, 'sandbag', 120 * s.courses, lvl.y);
 
@@ -680,14 +839,21 @@ export class Props {
   _buildObstacles() {
     const rng = this.rng;
     const b = this.layout.bridge;
-    // hedgehogs strewn across the southern bridge approach
-    for (let i = 0; i < 7; i++) {
-      const t = rngRange(rng, 0.5, 1.9);
-      const lat = rngRange(rng, -4.6, 4.6);
+    // Chevaux-de-frise FLANKING the bridge exit, never across it. Six of these
+    // used to be scattered at +-4.6 m of the bridge axis and they sealed the
+    // north abutment into a single 1.5 m nav cell — see `_onCrossingLane`. They
+    // are worth keeping, because a bridge nobody bothered to block reads as a
+    // bridge nobody was defending; they just have to be beside the road, where
+    // they narrow the approach instead of plugging it.
+    for (let i = 0; i < 8; i++) {
+      const t = rngRange(rng, 0.3, 2.4);
+      const side = i % 2 ? 1 : -1;
+      const lat = side * rngRange(rng, 5.6, 10.5);
       const x = b.x + Math.sin(b.yaw) * (b.length * 0.5 + 2.5 + t * 4) + Math.cos(b.yaw) * lat;
       const z = b.z + Math.cos(b.yaw) * (b.length * 0.5 + 2.5 + t * 4) - Math.sin(b.yaw) * lat;
       if (!this.terrain.inBounds(x, z)) continue;
       if (this.terrain.heightAt(x, z) < WATER_Y + 0.3) continue;
+      if (this._onCrossingLane(x, z)) continue;
       this._place(buildHedgehog(rng), x, z, rng() * TAU);
       this.footprints.push({ x, z, r: 1.6 });
     }
@@ -700,6 +866,7 @@ export class Props {
       if (!this.terrain.inBounds(x, z)) continue;
       if (this.terrain.slopeAt(x, z) > 0.45) continue;
       if (this.occupiedTest(x, z)) continue;
+      if (this._onCrossingLane(x, z)) continue;
       this._place(buildDragonTooth(rng), x, z, rng() * TAU);
       this.footprints.push({ x, z, r: 1.2 });
     }
@@ -754,6 +921,7 @@ export class Props {
       for (const p of pts) {
         if (!this.terrain.inBounds(p.x, p.z) ||
           this.terrain.heightAt(p.x, p.z) < WATER_Y + 0.4 ||
+          this._onCrossingLane(p.x, p.z, 7.0) ||
           this.occupiedTest(p.x, p.z)) { prev = null; continue; }
         const y = this.terrain.heightAt(p.x, p.z);
         // picket: an angle iron leaning slightly, with a corkscrew foot

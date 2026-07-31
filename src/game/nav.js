@@ -127,6 +127,14 @@ export class NavGrid {
           if (!hadQuery && s > this.maxSlope) walk = false;
           else cost *= 1 + s * 1.9;
         }
+        // PROPS. navQuery knows terrain and building footprints; it does not know that a
+        // chevaux-de-frise is parked on this cell. A router that plans through solid props
+        // sends soldiers into them (and the range preview promises ground nobody can reach).
+        if (walk) {
+          const pen = this._propPen(x, z, y);
+          if (pen > 0.5) walk = false;                 // cell centre is inside the prop
+          else if (pen > 0.02) cost *= 2.2;            // clipped: passable, but not the lane
+        }
         this.flags[i] = walk ? WALK : BLOCK;
         this.cost[i] = Math.max(0.25, cost);
         this.cover[i] = clamp01(cover);
@@ -135,6 +143,46 @@ export class NavGrid {
     }
     this.built = true;
     return this;
+  }
+
+  /**
+   * Penetration depth of a standing soldier-sized body at this cell centre against SOLID
+   * props (the collider set), or 0. Uses the World's broadphase when it has one — the linear
+   * fallback is O(colliders) and this runs once per cell at build.
+   */
+  _propPen(x, z, y, r = 0.36, height = 1.75) {
+    const grid = this.world?.grid;
+    const yTop = y + height;
+    let depth = 0;
+    // `solid` is the flag that gates BODIES (src/world/collider.js). It is NOT the same as
+    // blocksLos or blocksProjectile: tall grass and bushes are collider volumes a man walks
+    // straight through, and treating them as obstacles here would block half the map.
+    const test = (c) => {
+      if (c.solid === false || c.destroyed || c.walkOver || c.noBlock) return;
+      const half = c.half || c.halfExtents;
+      if (c.type === 'sphere') {
+        const rad = (c.radius ?? 0.5) + r;
+        if (c.center.y > yTop || c.center.y + (c.radius ?? 0.5) < y + 0.12) return;
+        const d = Math.hypot(x - c.center.x, z - c.center.z);
+        if (d < rad) depth = Math.max(depth, rad - d);
+        return;
+      }
+      if (!half) return;
+      if (c.center.y - half.y > yTop || c.center.y + half.y < y + 0.12) return;  // kerb / overhead
+      let lx = x - c.center.x, lz = z - c.center.z;
+      const yaw = c.yaw || 0;
+      if (yaw !== 0) {
+        const cs = Math.cos(-yaw), sn = Math.sin(-yaw);
+        const nx = lx * cs - lz * sn; lz = lx * sn + lz * cs; lx = nx;
+      }
+      const ex = half.x + r, ez = half.z + r;
+      const ax = Math.abs(lx), az = Math.abs(lz);
+      if (ax >= ex || az >= ez) return;
+      depth = Math.max(depth, Math.min(ex - ax, ez - az));
+    };
+    if (grid?.query) grid.query(x, z, r + 2.5, test);
+    else if (Array.isArray(this.world?.colliders)) for (const c of this.world.colliders) test(c);
+    return depth;
   }
 
   /** Refresh a rectangular patch — used when destructible cover collapses. */
@@ -150,8 +198,17 @@ export class NavGrid {
         let q = null;
         try { q = this.world?.navQuery?.(x, z); } catch { q = null; }
         if (q) {
-          this.flags[i] = q.walkable === false ? BLOCK : WALK;
-          this.cost[i] = Math.max(0.25, q.cost || 1);
+          let walk = q.walkable !== false;
+          let cost = Math.max(0.25, q.cost || 1);
+          if (walk) {
+            // Same prop test as build(): blowing a barricade open must OPEN the lane, and
+            // dropping a wall into it must close it.
+            const pen = this._propPen(x, z, this.height[i]);
+            if (pen > 0.5) walk = false;
+            else if (pen > 0.02) cost *= 2.2;
+          }
+          this.flags[i] = walk ? WALK : BLOCK;
+          this.cost[i] = cost;
           this.cover[i] = clamp01(q.cover || 0);
         }
       }
@@ -482,50 +539,177 @@ const NZ = new Int8Array([0, 0, 1, -1, 1, -1, 1, -1]);
 const _push = new THREE.Vector3();
 
 /**
- * Move `pos` by (dx,dz) with wall sliding: full move, then each axis alone, then a
- * penetration push-out. Snaps Y to the ground. Mutates and returns `pos`.
- * @returns metres actually travelled in XZ
+ * Move `pos` by (dx,dz) with wall sliding: full move, then a slide along the surface we
+ * actually hit, then each axis alone. Snaps Y to the ground. Mutates `pos`.
+ *
+ * @returns metres to CHARGE for — see `billMove`. This is the number every caller feeds to
+ *          `Unit.spendMove`, so it must be ground the man has actually covered.
  */
 export function moveWithCollision(pos, dx, dz, radius, nav, world, height = 1.7) {
   const sx = pos.x, sz = pos.z;
+  const want = Math.hypot(dx, dz);
   // Preferred path: the World has a grid broadphase and a penetration resolver that also
   // snaps to platform tops. Far cheaper than our linear collider scan in a built-up village.
   if (world?.resolvePosition) {
-    const total = Math.hypot(dx, dz);
-    const n = total > 0.4 ? Math.min(8, Math.ceil(total / 0.4)) : 1;
+    const n = want > 0.4 ? Math.min(8, Math.ceil(want / 0.4)) : 1;
     const ux = dx / n, uz = dz / n;
+    const len = want / n;
     for (let i = 0; i < n; i++) {
-      // SLIDE ALONG WALLS ON THE FAST PATH TOO.
-      //
-      // This loop used to `break` the instant the next sub-step landed on a nav-blocked cell,
-      // with no axis fallback at all — so walking into blocked ground at ANY angle stopped the
-      // soldier dead rather than sliding him along it, and held W bought literally zero metres
-      // whenever the very first sub-step was blocked. That is the "a third of the squad cannot
-      // leave the staging post" report: probing eight headings out of the real deploy slots in
-      // a live game, one soldier returned 0.00 m on three of them against 6 m of intent, and
-      // 0.00 m is what you get from a dead stop, not from a slow squeeze.
-      //
-      // The slow path below (`stepMove`) has always had this fallback and the function's own
-      // doc comment has always promised it. The fast path is the one the game actually takes,
-      // because World.resolvePosition exists.
-      if (!nav || nav.walkableAt(pos.x + ux, pos.z + uz)) { pos.x += ux; pos.z += uz; }
-      else if (ux !== 0 && nav.walkableAt(pos.x + ux, pos.z)) pos.x += ux;
-      else if (uz !== 0 && nav.walkableAt(pos.x, pos.z + uz)) pos.z += uz;
-      else break;
-      world.resolvePosition(pos, radius);
+      if (!subStep(pos, ux, uz, len, radius, nav, world)) break;
     }
-    return Math.hypot(pos.x - sx, pos.z - sz);
+    return billMove(pos, sx, sz, want);
   }
   // Sub-step so a single large frame delta can never tunnel past — or be rejected by —
   // a wall it would only have clipped. 0.25 m is well under any collider we author.
-  const want = Math.hypot(dx, dz);
   const steps = want > 0.25 ? Math.min(12, Math.ceil(want / 0.25)) : 1;
   const ux = dx / steps, uz = dz / steps;
   for (let i = 0; i < steps; i++) {
     if (!stepMove(pos, ux, uz, radius, nav, world, height)) break;
   }
   if (nav) pos.y = nav.heightAt(pos.x, pos.z);
-  return Math.hypot(pos.x - sx, pos.z - sz);
+  return billMove(pos, sx, sz, want);
+}
+
+/**
+ * ONE collision-resolved sub-step on the fast path. @returns false when wedged.
+ *
+ * THE NAV GRID AND THE COLLIDER SET DISAGREE, AND THIS IS WHERE THAT COST THE PLAYER HIS SQUAD.
+ *
+ * The grid is built from `World.navQuery`, which knows about water, cliffs and building
+ * footprints — it knows NOTHING about props. A chevaux-de-frise, a wrecked cart, a sandbag
+ * revetment are colliders only. So `nav.walkableAt` said yes, the body stepped into the beam,
+ * `resolvePosition` ejected it back out along the surface normal, and the next frame did the
+ * same thing forever: the two axis fallbacks below could never fire, because the cell was never
+ * nav-blocked in the first place. Measured live, four different soldiers walking north off the
+ * bridge came to rest at the SAME coordinate (7.58, -11.46) — the eject from the hedgehog at
+ * (8.5, -12.3) exactly cancelling their intent — with seven metres of clear ground two metres to
+ * their left, and were billed 4 m of AP for 0.13 m over the following 25 seconds.
+ *
+ * So: when the step is eaten, slide along the surface we HIT — using the resolver's own push-out
+ * as the contact normal for props, and the local gradient of blockedness for nav cells (a body
+ * walking square north into a blocked row has NO x component for the old axis fallback to
+ * salvage, so it stopped dead there too). That is the funnel behaviour a barricade belt needs: a
+ * body pressed into a beam walks sideways off it and through the gap.
+ *
+ * A head-on hit still stops: the tangent of an intent parallel to the normal is zero. You cannot
+ * slide along a wall you are facing squarely, and you never pass through one.
+ */
+function subStep(pos, ux, uz, len, radius, nav, world) {
+  const bx = pos.x, bz = pos.z;
+  // A body standing on ground the grid calls blocked is DIGGING OUT: nav cannot be allowed to
+  // veto its escape (see the note below). `gate` is nav wherever nav is entitled to an opinion.
+  const gate = !nav || nav.walkableAt(bx, bz) ? nav : null;
+  let dx = ux, dz = uz;
+  if (gate) {
+    // LOOK AHEAD A BODY WIDTH, NOT ONE SUB-STEP.
+    //
+    // The grid quantises to 1.5 m cells and a sub-step at walking pace is 5 cm, so a veto on
+    // "is the cell 5 cm ahead walkable" can never be escaped: every deflection lands in the
+    // SAME blocked cell and is rejected in turn. Measured on the deck barricade at z=-4.5 (a
+    // 2.9 m sandbag revetment with a clear lane beside it): the soldier stopped 4 m into the
+    // crossing and held there, 26 m short of the north bank, because his 3 cm sidestep could
+    // not reach the free cell. Probing at radius+0.12 m and then steering the whole sub-step
+    // along the chosen heading is what accumulates the lateral metres that get him round it.
+    const probe = Math.max(len, radius + 0.12);
+    const ihx = ux / len, ihz = uz / len;
+    if (!gate.walkableAt(bx + ihx * probe, bz + ihz * probe)) {
+      // Fan out to either side, nearest heading first. Capped at 67.5 deg so a body that walks
+      // SQUARE into a wall still stops dead instead of skating along it — the tester's
+      // "walked into a wall and lost the sortie" must not become "walked into a wall and got
+      // steered somewhere I never asked to go".
+      let found = false;
+      for (let k = 1; k <= 3 && !found; k++) {
+        const a = k * 0.3927;                       // 22.5 deg steps
+        const ca = Math.cos(a), sa = Math.sin(a);
+        for (let sgn = -1; sgn <= 1 && !found; sgn += 2) {
+          const cx2 = ihx * ca - ihz * sa * sgn, cz2 = ihx * sa * sgn + ihz * ca;
+          if (gate.walkableAt(bx + cx2 * probe, bz + cz2 * probe)) {
+            dx = cx2 * len; dz = cz2 * len; found = true;
+          }
+        }
+      }
+      if (!found) return false;
+    }
+  }
+  pos.x = bx + dx; pos.z = bz + dz;
+  const cx = pos.x, cz = pos.z;
+  world.resolvePosition(pos, radius);
+  if (((pos.x - bx) * dx + (pos.z - bz) * dz) / len >= len * 0.35) return true;
+
+  // Blocked by geometry the grid has no opinion about. The eject IS the contact normal.
+  if (slide(pos, bx, bz, dx, dz, len, pos.x - cx, pos.z - cz, radius, gate, world)) return true;
+  // Genuinely wedged (walked square into a wall). Stay put — and, because we bill realised
+  // displacement, stay put for free.
+  pos.x = bx; pos.z = bz;
+  world.resolvePosition(pos, radius);
+  return false;
+}
+
+/**
+ * Try the sub-step again with the component INTO the contact removed, at unchanged speed.
+ * `(nx,nz)` need not be normalised. @returns true if it bought real ground.
+ */
+function slide(pos, bx, bz, ux, uz, len, nx, nz, radius, nav, world) {
+  const nl = Math.hypot(nx, nz);
+  if (nl < 1e-5) return false;
+  const inx = nx / nl, inz = nz / nl;
+  const dot = ux * inx + uz * inz;
+  let sx = ux - inx * dot, sz = uz - inz * dot;
+  const sl = Math.hypot(sx, sz);
+  if (sl < 0.12 * len) return false;          // facing it squarely — stop, do not skate
+  const probe = Math.max(len, radius + 0.12) / sl;
+  if (nav && !nav.walkableAt(bx + sx * probe, bz + sz * probe)) return false;
+  sx = sx / sl * len; sz = sz / sl * len;
+  pos.x = bx + sx; pos.z = bz + sz;
+  world.resolvePosition(pos, radius);
+  if (Math.hypot(pos.x - bx, pos.z - bz) > len * 0.2) return true;
+  pos.x = bx; pos.z = bz;
+  return false;
+}
+
+// --- movement billing -------------------------------------------------------
+//
+// DO NOT CHARGE FOR DISTANCE NOT TRAVELLED. This is a rule, not a per-obstacle patch.
+//
+// `spendMove` used to be handed the per-frame |Δpos|, which is not the same quantity as ground
+// covered: a body grinding into a collider is ejected out and shoved back in every frame, so it
+// bills 0.16 m/s of AP while its net position never changes. Measured live: 450 AP bought 10.1 m
+// through the barricade belt, 131 AP bought 2.4 m, against 20 AP/m on open ground; the Edelweiss
+// returned 0.0 m for 210 AP three sorties running while the HUD counted 16 m of march down to 6.
+//
+// The rule: you pay for displacement from an anchor, the anchor advances every 1.5 m (one nav
+// cell) of progress, and scuffling inside a chunk is allowed 0.4 m of slack. Consequences,
+// stated plainly because both directions are a real failure:
+//   - walking straight bills exactly the path length (net == raw), so nothing gets cheaper;
+//   - RUBBING along a wall bills full price, because lateral displacement is real travel;
+//   - GRINDING into a wall is nearly free — capped at 0.4 m (~8 AP) no matter how long you hold
+//     W. That is the failure I chose. The alternative (bill the push-out) is what robbed four
+//     soldiers of a whole sortie at one coordinate, and a body that cannot be blocked at all
+//     would walk through walls — the resolver above still stops it dead.
+//   - a body can shuttle back and forth inside a 1.5 m chunk for less than list price. Nothing
+//     tactical fits in 1.5 m, so that is a fair trade for not robbing the player.
+const BILL_CHUNK = 1.5;      // re-anchor after this much billed progress (one nav cell)
+const BILL_SLACK = 0.4;      // scuffling allowance per chunk
+const _ledgers = new WeakMap();
+
+function billMove(pos, sx, sz, want) {
+  let L = _ledgers.get(pos);
+  if (!L) { L = { ax: sx, az: sz, px: sx, pz: sz, billed: 0, raw: 0 }; _ledgers.set(pos, L); }
+  // Anything that moved the body other than us — deploy, spawn, a snap-back, a new turn —
+  // invalidates the anchor. Re-anchor rather than bill the jump.
+  if (Math.abs(sx - L.px) > 0.5 || Math.abs(sz - L.pz) > 0.5) {
+    L.ax = sx; L.az = sz; L.billed = 0; L.raw = 0;
+  }
+  const raw = Math.hypot(pos.x - sx, pos.z - sz);
+  L.raw += raw;
+  const net = Math.hypot(pos.x - L.ax, pos.z - L.az);
+  let bill = Math.min(L.raw, net + BILL_SLACK) - L.billed;
+  if (bill < 0) bill = 0;
+  if (bill > want + 0.05) bill = want + 0.05;      // never charge more than was asked for
+  L.billed += bill;
+  L.px = pos.x; L.pz = pos.z;
+  if (net >= BILL_CHUNK) { L.ax = pos.x; L.az = pos.z; L.billed = 0; L.raw = 0; }
+  return bill;
 }
 
 /** One collision-resolved micro-step. @returns false when fully blocked. */

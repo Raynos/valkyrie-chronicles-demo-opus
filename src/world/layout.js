@@ -164,6 +164,27 @@ export class MissionLayout {
       riverT: cross.riverT,
     };
 
+    // --- THE FORD.
+    //
+    // ONE ROUTE IS NOT A TACTIC, IT IS A QUEUE. For twenty-two rounds the stone
+    // bridge was the only dry way north: 26 m of elevated deck covered by a
+    // dug-in picket at 14 m. Two playtesters lost four of six soldiers on that
+    // deck without ever being offered a choice, which is not a hard crossing,
+    // it is a corridor with a queue in it.
+    //
+    // So the locals get their ford back — the shallow crossing the `pathCtrl`
+    // desire line has claimed existed since round 1 while the heightfield
+    // carried 2.06 m of water under it. It is a gravel bar 19 m upstream of the
+    // bridge: knee deep, wadeable, and about 20 m of extra walking.
+    // World.navQuery() has always passed anything under 0.55 m of water at a
+    // 3.4x path cost — the only missing piece was a shoal for it to find.
+    //
+    // It is deliberately NOT balanced against the bridge. It is longer, it is
+    // slow, it is in the open, and it lands you on the WEST FLANK of the
+    // bridgehead picket instead of in front of it. It exists so that "which
+    // way" is a question a player can answer well or badly.
+    this.ford = this._makeFord(-15, 8, 6.0, WATER_Y - 0.30);
+
     // --- the village pad on the north bank
     this.village = { x: 30, z: -40, r: 26, y: 0 };
 
@@ -238,6 +259,50 @@ export class MissionLayout {
       }
     }
     return { x: bx, z: bz, tx: btx, tz: btz, riverT: brt };
+  }
+
+  /**
+   * Snap a ford onto the river centreline, so the shoal cannot end up half on
+   * the bank if the spline is ever re-authored.
+   * @param {number} nearX @param {number} nearZ  wanted crossing point
+   * @param {number} r     shoal radius, metres
+   * @param {number} bedY  bar height — WATER_Y minus this is the wading depth
+   */
+  _makeFord(nearX, nearZ, along, bedY) {
+    let best = Infinity, bi = 0;
+    for (let i = 0; i < this.river.n; i++) {
+      const d = Math.hypot(this.river.x[i] - nearX, this.river.z[i] - nearZ);
+      if (d < best) { best = d; bi = i; }
+    }
+    const j = Math.max(1, Math.min(this.river.n - 2, bi));
+    let tx = this.river.x[j + 1] - this.river.x[j - 1];
+    let tz = this.river.z[j + 1] - this.river.z[j - 1];
+    const l = Math.hypot(tx, tz) || 1;
+    return {
+      x: this.river.x[bi], z: this.river.z[bi], bedY,
+      tx: tx / l, tz: tz / l,
+      along,                       // half-length of the bar ALONG the flow
+      // ...and across it. THE ACROSS FIGURE IS LOAD-BEARING, not dressing. A
+      // shoal that stops short of the banks is not a ford, it is an island
+      // with a moat: measured at 8.6 m radius the bar itself was 0.30 m deep
+      // and walkable, and it was ringed by a 2 m band of 0.65 m water that
+      // navQuery correctly refused (its limit is 0.55 m). The bar has to reach
+      // ground the channel profile already left shallower than that.
+      across: 11.5,
+      t: this.river.length > 0 ? this.river.cum[bi] / this.river.length : 0,
+    };
+  }
+
+  /** Ford influence 0..1 — 1 on the gravel bar, 0 out in the open channel. */
+  fordMask(x, z) {
+    const f = this.ford;
+    if (!f) return 0;
+    const dx = x - f.x, dz = z - f.z;
+    const a = (dx * f.tx + dz * f.tz) / f.along;      // along the flow
+    const b = (-dx * f.tz + dz * f.tx) / f.across;    // across it
+    const u = Math.hypot(a, b);
+    if (u >= 1) return 0;
+    return 1 - smoothstep(0.72, 1, u);
   }
 
   // --- SDF accessors (each uses its own scratch so callers can nest) --------

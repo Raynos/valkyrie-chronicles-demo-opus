@@ -610,12 +610,15 @@ export class Unit {
 
     this.hasActed = false;
     this.actionsThisTurn = 0;
+    this._didAct = false;                  // see actionWasSpent
+    this._actionSnap = null;
     this.attackUsed = false;               // VC: one attack per selection
     this.extraAttacks = 0;                 // granted by the Stormy Attack order
     this.freeAction = false;               // granted by Direct Command
     this.stealth = false;                  // granted by Caution
     this.movedThisAction = 0;              // metres
-    this.suppression = 0;                  // 0..1, decays
+    this.suppression = 0;                  // 0..1, holds then decays — see applySuppression()
+    this.suppressHold = 0;                 // seconds before suppression starts to bleed off
     this.lastAttacker = null;
     this.lastDamageTime = -99;
     this.tracksDisabled = false;
@@ -774,6 +777,46 @@ export class Unit {
     return false;
   }
 
+  // -- suppression ----------------------------------------------------------
+
+  /**
+   * PUT FIRE ON A MAN AND HE STOPS SHOOTING STRAIGHT.
+   *
+   * The number always existed and combat.js always read it (effectiveAccuracy -0.30 per point,
+   * shotSigma x1.85 at full) — but it bled off at a flat 0.42/second, so a hit was forgotten
+   * in two and a half seconds and interception.js never looked at it at all. Round 22's
+   * playtest measured the consequence: fully suppressing the two guns covering the bridge
+   * changed a crossing from 24.3 damage to 21.3. That is not a mechanic, it is a rounding
+   * error, and it left the player with no answer to the crossing except walking into it.
+   *
+   * So suppression now HOLDS for `hold` seconds and then drains four times slower, and
+   * interception.js throttles a suppressed shooter's rate, burst length and acquire time.
+   * "Spend a Command Point shooting the man who covers the bridge, then cross" is now
+   * mechanically the right play as well as the obvious one — which is the loop a playtester
+   * pointed at and called the game.
+   *
+   * It does not last forever: beginTurn() still wipes 65% of it, so suppression buys the rest
+   * of THIS turn and nothing more.
+   *
+   * @param {number} n     0..1 to add
+   * @param {number} hold  seconds before it begins to bleed off
+   * @param {number} cap   ceiling this source may raise it to (never lowers it)
+   * @returns the amount actually added
+   */
+  applySuppression(n, hold = 2.5, cap = 1) {
+    if (this.suppressionImmune || !(n > 0)) return 0;
+    const before = this.suppression;
+    this.suppression = Math.min(clamp01(before + n), Math.max(before, cap));
+    this.suppressHold = Math.max(this.suppressHold, hold);
+    if (before < SUPPRESSED_AT && this.suppression >= SUPPRESSED_AT) {
+      Bus.emit('unit:suppressed', { unit: this, level: this.suppression });
+    }
+    return this.suppression - before;
+  }
+
+  /** Heavy enough to spoil this unit's aim and slow its interception fire. */
+  get suppressed() { return this.suppression >= SUPPRESSED_AT; }
+
   // -- combat --------------------------------------------------------------
 
   /**
@@ -792,7 +835,7 @@ export class Unit {
     this.hp -= amount;
     this.stats.damageTaken += amount;
     if (source) { this.lastAttacker = source; source.stats.damageDealt += amount; }
-    if (!this.suppressionImmune) this.suppression = clamp01(this.suppression + 0.34);
+    this.applySuppression(0.34, 3.0);
 
     const wp = opts?.worldPos || this.centerPoint(_wp);
     Bus.emit('unit:damaged', {
@@ -890,7 +933,7 @@ export class Unit {
     this.bleedTurns = 0;
     const m = by ? by.evalPotentials('rescue', EMPTY_CTX) : null;
     this.hp = Math.max(1, Math.round(this.maxHp * (0.34 + (m?.rescueHeal || 0))));
-    if (by) by.stats.rescues++;
+    if (by) { by.stats.rescues++; by.markActed(); }
     Bus.emit('unit:rescued', { unit: this, by });
     Bus.emit('sfx', { name: 'rescue', pos: this.pos });
     return true;
@@ -900,6 +943,7 @@ export class Unit {
   capture(by = null) {
     if (!this.downed || !this.alive) return false;
     this.captured = true;
+    by?.markActed?.();
     this.die('captured', by);
     Bus.emit('unit:captured', { unit: this, by });
     return true;
@@ -927,6 +971,7 @@ export class Unit {
     this.actionsThisTurn = 0;
     this.hasActed = false;
     this.suppression *= 0.35;
+    this.suppressHold = 0;
     this.tickBuffs();
   }
 
@@ -940,7 +985,32 @@ export class Unit {
     this.movedThisAction = 0;
     this.hasActed = true;
     this.actionsThisTurn++;
+    // Snapshot for "did this sortie actually DO anything?" — Battle.endAction() hands the
+    // Command Point back when the answer is no. See Battle.refundEmptySortie().
+    this._didAct = false;
+    this._actionSnap = {
+      shots: this.stats.shotsFired, rescues: this.stats.rescues, grenades: this.grenades,
+    };
     return this.ap;
+  }
+
+  /** Something happened this sortie that a Command Point can fairly be charged for. */
+  markActed() { this._didAct = true; }
+
+  /**
+   * Did this sortie do anything at all? Metres walked, a round fired, a grenade thrown, a
+   * body reached — repair/resupply/rebuild all bill AP through spendMove(), so they show up
+   * as metres. Anything else is a player who selected a soldier to find out whether the shot
+   * existed, discovered it did not, and backed out.
+   */
+  get actionWasSpent() {
+    if (this._didAct) return true;
+    if (this.movedThisAction > MIN_SORTIE_METRES) return true;
+    const s = this._actionSnap;
+    if (!s) return true;                                  // no snapshot: assume it counted
+    return this.stats.shotsFired > s.shots
+      || this.stats.rescues > s.rescues
+      || this.grenades < s.grenades;
   }
 
   /** AP this unit WOULD receive if selected right now. Side-effect free. */
@@ -986,7 +1056,11 @@ export class Unit {
   stanceAccuracy() { return this.isVehicle ? 0 : STANCE_ACC_BONUS[this.stance]; }
 
   update(dt) {
-    if (this.suppression > 0) this.suppression = Math.max(0, this.suppression - dt * 0.42);
+    if (this.suppression > 0) {
+      // Hold, then bleed. See applySuppression() for why this is not a flat decay.
+      if (this.suppressHold > 0) this.suppressHold = Math.max(0, this.suppressHold - dt);
+      else this.suppression = Math.max(0, this.suppression - dt * SUPPRESS_DECAY);
+    }
     this.actor?.update?.(dt);
   }
 
@@ -1005,6 +1079,16 @@ export class Unit {
 
 // nth-selection AP multipliers — VC punishes re-selecting the same soldier.
 export const AP_DECAY = [1.0, 0.5, 0.32, 0.22, 0.16, 0.12];
+
+// Suppression: how fast it bleeds off ONCE THE HOLD EXPIRES (it was a flat 0.42/s with no
+// hold, which is why nobody could ever act on it), and the level at which a unit reads as
+// suppressed to the HUD and to interception.js.
+export const SUPPRESS_DECAY = 0.11;
+export const SUPPRESSED_AT = 0.5;
+
+// A sortie that walked less than this and did nothing else was not a sortie. See
+// Unit.actionWasSpent and Battle.refundEmptySortie().
+export const MIN_SORTIE_METRES = 0.75;
 
 const EMPTY_CTX = Object.freeze({});
 const _wp = new THREE.Vector3();

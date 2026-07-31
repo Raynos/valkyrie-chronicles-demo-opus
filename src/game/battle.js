@@ -30,6 +30,28 @@ import { MISSION_VASEL } from './mission.js';
 
 export const PHASES = ['briefing', 'deploy', 'command', 'action', 'enemy', 'result'];
 
+/**
+ * The failure condition no mission declares, because it is true of all of them.
+ *
+ * Round 22's playtest lost all six soldiers and the mission cheerfully offered EIGHTEEN more
+ * turns of one immobile tank, with the objective panel still reading "Twenty turns". The tank
+ * cannot capture a camp (CLASSES.tank.canCapture === false) and cannot rescue a body
+ * (canRescue === false), so at that point there was no way left to win and no way left to
+ * lose. A mission that cannot be won must end. See Battle.squadWiped().
+ */
+export const SQUAD_LOST = Object.freeze({
+  id: 'squad-lost', type: 'squadLost', fail: true, label: 'The squad must not be wiped out',
+});
+
+// Beat between the last soldier falling and the results screen, so the fall reads.
+const WIPE_GRACE = 1.5;
+
+// Near-miss suppression: radius squared, amount per round, and the ceiling misses alone can
+// reach. See Battle.onNearMiss().
+const NEAR_MISS_R2 = 1.7 * 1.7;
+const NEAR_MISS_SUP = 0.11;
+const NEAR_MISS_CAP = 0.8;
+
 // ---------------------------------------------------------------------------
 // Camp capture geometry — the reason this mission was unwinnable for 20 rounds.
 //
@@ -123,6 +145,14 @@ export class Battle {
 
     this._transition = 0;
     this._pendingPhase = null;
+    this._wipeT = 0;                  // seconds the squad has been wiped out (see update())
+    this._actionCharge = null;        // what the current sortie cost (see refundEmptySortie())
+
+    // NEAR MISSES SUPPRESS. Without this, "shoot the man covering the bridge" only worked if
+    // you HIT him, and a miss at 40 m bought nothing at all — so the counterplay the crossing
+    // needs would have been a coin flip. A round that cracks past a soldier's head puts a
+    // little suppression on him; takeDamage() handles the ones that land.
+    this._offShotHit = Bus.on('shot:hit', (p) => this.onNearMiss(p));
   }
 
   // -------------------------------------------------------------------------
@@ -556,7 +586,10 @@ export class Battle {
       Bus.emit('command:denied', { unit, reason: this.selectDenyReason(unit) });
       return false;
     }
+    const cost = this.selectCost(unit);
     if (!this.spendCpFor(unit, 0)) return false;
+    // Remember the price so an empty sortie can hand it back. See refundEmptySortie().
+    this._actionCharge = { unit, cost };
 
     this.activeUnit = unit;
     unit.beginAction();
@@ -571,6 +604,7 @@ export class Battle {
   endAction(reason = 'manual') {
     const u = this.activeUnit;
     if (u) {
+      this.refundEmptySortie(u, reason);
       u.endAction();
       this.onUnitActionEnd(u);
     }
@@ -594,6 +628,46 @@ export class Battle {
     // he started from and the player loses the one thing they just spent a Command Point on.
     if (u?.active) this.commandMode?.focusOn(u.pos);
     this.commandMode?.markDirty();
+  }
+
+  /**
+   * A SORTIE THAT DID NOTHING COSTS NOTHING.
+   *
+   * Selecting a soldier is the only way to find out whether the shot you wanted even exists:
+   * the range readout, the target dossier and the hit dial all live inside Action Mode.
+   * Round 22's playtest spent 4 of 7 Command Points finding that out — one sortie for a
+   * target 88 m away behind a building, then trigger pulls on an empty magazine — and the
+   * game charged full price for every one of them. A demo must not bill the player for an
+   * action it then refuses to perform.
+   *
+   * So: no metres walked, no round fired, no grenade, no rescue, no capture => the point goes
+   * back and the AP-decay counter does not tick. Backing out is free. Acting is not, and
+   * acting badly is still your problem.
+   *
+   * @returns true if a refund was made.
+   */
+  refundEmptySortie(u, reason) {
+    const charge = this._actionCharge;
+    this._actionCharge = null;
+    if (!charge || charge.unit !== u) return false;
+    if (this.over || reason === 'turnEnded' || reason === 'downed') return false;
+    if (!u.active || u.actionWasSpent) return false;
+
+    if (u.actionsThisTurn > 0) u.actionsThisTurn--;
+    if (u.actionsThisTurn === 0) u.hasActed = false;
+    if (charge.cost > 0) {
+      this.cp[0] += charge.cost;
+      this.stats.cpSpent = Math.max(0, this.stats.cpSpent - charge.cost);
+      Bus.emit('cp:changed', { team: 0, cp: this.cp[0] });
+    } else {
+      u.freeAction = true;              // a free action spent on nothing is still free
+    }
+    Bus.emit('cp:refunded', { unit: u, cp: charge.cost, team: 0, reason: 'noAction' });
+    Bus.emit('ui:alert', {
+      text: 'NO ACTION TAKEN',
+      sub: charge.cost > 0 ? 'Command Point refunded' : 'free action kept',
+    });
+    return true;
   }
 
   /** Shared post-action housekeeping for both sides. */
@@ -789,6 +863,16 @@ export class Battle {
       }
       out.push(e);
     }
+    // The built-in failure, published so the panel stops implying you have twenty turns to
+    // play with when you have two soldiers left. See SQUAD_LOST.
+    if (this.turn >= 1) {
+      const standing = this.infantryStanding(0);
+      const total = this.infantryTotal(0) || standing;
+      out.push({
+        id: SQUAD_LOST.id, type: SQUAD_LOST.type, fail: true, done: standing === 0,
+        label: total ? `Keep the squad alive — ${standing} of ${total} standing` : SQUAD_LOST.label,
+      });
+    }
     Bus.emit('ui:objectives', { objectives: out });
   }
 
@@ -883,6 +967,9 @@ export class Battle {
   checkObjectives() {
     if (this.over) return true;
     const M = this.mission;
+    // The squad resolves before anything a mission declares: with no infantry on the field
+    // there is no win condition left to reach. See SQUAD_LOST.
+    if (this.squadWiped()) { this.finish(false, SQUAD_LOST); return true; }
     // Failure conditions resolve first: losing the Edelweiss ends the mission even if you
     // stepped into their camp on the same frame.
     for (const o of M.objectives) {
@@ -931,6 +1018,31 @@ export class Battle {
     return this.units.find((u) => u.team === team && u.commander && u.alive) || null;
   }
 
+  /** Infantry of `team` still on their feet on the field. */
+  infantryStanding(team = 0) {
+    let n = 0;
+    for (const u of this.units) if (u.team === team && !u.isVehicle && u.active) n++;
+    return n;
+  }
+
+  /** Infantry of `team` that were ever on the field, for the "N of M standing" readout. */
+  infantryTotal(team = 0) {
+    let n = 0;
+    for (const u of this.units) if (u.team === team && !u.isVehicle && u.deployed) n++;
+    return n;
+  }
+
+  /**
+   * Every soldier is down. Downed bodies do not save you: the only unit left that could reach
+   * one is the Edelweiss, and a tank cannot rescue (CLASSES.tank.canRescue === false), so a
+   * bleed-out is the only thing left to watch. See SQUAD_LOST for the round-22 measurement.
+   */
+  squadWiped() {
+    if (this.turn < 1 || this.phase === 'briefing' || this.phase === 'deploy') return false;
+    if (this.infantryStanding(0) > 0) return false;
+    return this._sawInfantry === true;      // never fire before anybody deployed
+  }
+
   finish(victory, objective) {
     if (this.over) return;
     this.over = true;
@@ -949,7 +1061,10 @@ export class Battle {
       dealt += u.team === 0 ? u.stats.damageDealt : 0;
       taken += u.team === 0 ? u.stats.damageTaken : 0;
       if (u.team === 0) {
-        if (!u.alive) losses++;
+        // A soldier lying on the field when the mission ends is a casualty. Counting only
+        // `!alive` is why the wipe-out results screen read "No Casualties" over six bodies:
+        // downed soldiers are still `alive` until they bleed out or are taken prisoner.
+        if (!u.alive || u.downed) losses++;
         if (u.rescued) rescued++;
         kills += u.stats.kills;
         roster.push({
@@ -968,6 +1083,10 @@ export class Battle {
       kills, losses, rescued, damageDealt: dealt, damageTaken: taken,
       campsTaken: this.stats.campsTaken, ordersUsed: this.stats.ordersUsed,
       cpSpent: this.stats.cpSpent, exp, ducats, roster,
+      // Named explicitly because the HUD's fallback is `roster.filter(r => !r.alive)`, and a
+      // soldier left face-down on the bridge is still `alive` — which is how a six-body wipe
+      // printed "No Casualties" over the withdrawal report.
+      casualties: roster.filter((r) => !r.alive || r.downed).map((r) => ({ name: r.name, cls: r.cls })),
       mission: M.id, title: M.name,
     };
     Bus.emit('mission:end', { victory, turns: this.turn, stats: this.result });
@@ -1050,6 +1169,21 @@ export class Battle {
     }
 
     if (this.phase !== 'result') this.checkBodies(gdt);
+
+    // THE LAST MAN CAN FALL AT ANY MOMENT OF THE IMPERIAL PHASE, and checkObjectives() only
+    // runs on a turn boundary, a capture and the end of a sortie. Watching it per frame is
+    // what turns "eighteen more turns of one immobile tank" into a mission that ends. The
+    // grace beat is so the player sees him go down before the results screen arrives.
+    if (!this.over && this.phase !== 'result') {
+      if (this.infantryStanding(0) > 0) { this._sawInfantry = true; this._wipeT = 0; }
+      else if (this.squadWiped()) {
+        if (this._wipeT === 0) {
+          Bus.emit('ui:alert', { text: 'SQUAD WIPED OUT', sub: 'no infantry left on the field' });
+        }
+        this._wipeT += dt;
+        if (this._wipeT >= WIPE_GRACE) this.finish(false, SQUAD_LOST);
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1133,6 +1267,29 @@ export class Battle {
     }
   }
 
+  /**
+   * A round that cracked past somebody. `shot:hit` carries the impact point of every traced
+   * round in the game, and one that lands within a stride of a hostile rattles him: a little
+   * suppression, held briefly, capped well below what a real hit gives (units.js: 0.34).
+   *
+   * This exists so that FIRING AT the gun covering the bridge is worth a Command Point even
+   * on the shots that miss. Without it the counterplay in interception.js only pays out on a
+   * hit, and at 40 m that is a coin flip — which is not a decision, it is a gamble.
+   */
+  onNearMiss(p) {
+    if (!p || p.unit || !p.shooter || !p.point) return;   // a hit is takeDamage's business
+    const units = this.units;
+    for (let i = 0; i < units.length; i++) {
+      const u = units[i];
+      if (!u.active || u.team === p.shooter.team || u.isVehicle) continue;
+      const dx = u.pos.x - p.point.x, dz = u.pos.z - p.point.z;
+      if (dx * dx + dz * dz > NEAR_MISS_R2) continue;
+      const dy = p.point.y - u.pos.y;
+      if (dy < -0.6 || dy > 2.6) continue;
+      u.applySuppression(NEAR_MISS_SUP, 2.0, NEAR_MISS_CAP);
+    }
+  }
+
   /** An enemy who stands over a downed soldier for a beat takes them prisoner. */
   checkBodies(dt) {
     for (const u of this.units) {
@@ -1150,6 +1307,8 @@ export class Battle {
   // -------------------------------------------------------------------------
 
   dispose() {
+    this._offShotHit?.();
+    this._offShotHit = null;
     this.ai.dispose();
     this.interception.dispose();
     this.actionMode?.dispose();
