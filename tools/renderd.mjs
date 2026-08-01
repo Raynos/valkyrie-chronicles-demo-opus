@@ -218,6 +218,26 @@ const IN_PAGE_RUN = async ({ name, margin, settle }) => {
     }
   }
 
+  // LAND EVERY CSS ENTRANCE ANIMATION ON ITS END STATE BEFORE THE SHUTTER.
+  //
+  // main.js appends a permanent `#hud *{animation-play-state:paused}` style at the
+  // end of captureFlow() (see its own comment for why). The daemon then re-poses
+  // THE SAME PAGE forever, so any HUD animation that RESTARTS after that point —
+  // `resetShotState()` drops `.on`, the next shot re-adds it — is pinned at t=0 and
+  // can never play. `@keyframes vc-sight` starts at `opacity:0`, and the crosshair,
+  // accuracy ring, hit chit, target dossier and the r24 damage table are all
+  // children of `.vc-tgt`. One paused animation therefore deleted the ENTIRE sight
+  // picture from every fast-path `aim` plate, while `--cold` (which goes through
+  // main.js once, in order) showed all of it. That is the r24 "the damage table is
+  // done" claim being reviewed against a frame that could not contain it.
+  //
+  // finish() rather than un-pause: it lands each animation on its END state, which
+  // is exactly where a cold boot's >1 s settle leaves a 0.22 s entrance, so the fast
+  // path CONVERGES to cold instead of drifting from it. Infinite animations throw
+  // and stay paused, which is today's behaviour — hence the try/catch.
+  document.getAnimations().forEach((a) => { try { a.finish(); } catch { /* infinite */ } });
+  await raf();
+
   // Restore the frozen-shutter state main.js leaves behind, so a screenshot taken
   // now is the same draw every time and nothing advances between requests.
   v.engine.clock.getDelta = () => 0;
@@ -267,21 +287,49 @@ const main = async () => {
   await ensureVite();
 
   const bootT = Date.now();
-  const browser = await chromium.launch({
-    args: ['--use-gl=angle', '--use-angle=metal', '--enable-gpu',
-           '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--disable-frame-rate-limit'],
-  });
-  const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
 
   // Console errors are collected PER REQUEST, not for the life of the daemon —
   // otherwise shot 12 inherits shot 1's errors and every plate looks broken.
   let errors = [];
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
-  page.on('pageerror', (e) => errors.push(String(e)));
+  let browser = null;
+  let page = null;
+  let relaunches = 0;
 
-  await page.goto(`http://127.0.0.1:${vitePort}/?capture&shot=overview`, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction('window.__READY__ === true', { timeout: 90000 });
+  /**
+   * Launch (or RE-launch) the browser and its posed page.
+   *
+   * Factored out of main() so `doShoot` can recover from a crashed page. Chromium
+   * under a GPU-bound load — eight agents queueing renders through one daemon —
+   * does sometimes lose its page, and until this existed the daemon stayed alive
+   * around the corpse: the port stayed open, `ensureDaemon()` saw it and never
+   * restarted, and EVERY render in the session then failed with "Target page,
+   * context or browser has been closed". A crashed page is recoverable and costs
+   * one 7 s boot; the alternative cost this round its whole fast path.
+   */
+  async function launchPage() {
+    if (browser) { try { await browser.close(); } catch { /* already gone */ } }
+    browser = await chromium.launch({
+      args: ['--use-gl=angle', '--use-angle=metal', '--enable-gpu',
+             '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--disable-frame-rate-limit'],
+    });
+    page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await page.goto(`http://127.0.0.1:${vitePort}/?capture&shot=overview&_l=${relaunches}`,
+      { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction('window.__READY__ === true', { timeout: 90000 });
+  }
+
+  await launchPage();
   const bootMs = Date.now() - bootT;
+
+  /** Is the page actually able to run script, or is it a corpse behind an open port? */
+  async function pageAlive() {
+    try { return (await page.evaluate(() => 1)) === 1; } catch { return false; }
+  }
+
+  /** True when an error means "the page/browser is gone", i.e. a relaunch may fix it. */
+  const isDead = (e) => /Target page, context or browser has been closed|Target closed|browser has been closed|Protocol error/i.test(String(e && e.message || e));
 
   // Serialise: one page cannot serve two poses at once.
   let chain = Promise.resolve();
@@ -338,12 +386,25 @@ const main = async () => {
   async function doShoot({ shot, out }) {
     const t = Date.now();
     errors = [];
+    let relaunched = false;
+    // A dead page fails every request forever unless somebody rebuilds it. Probe
+    // BEFORE the reload check so a corpse is replaced rather than navigated.
+    if (!(await pageAlive())) { relaunches++; await launchPage(); relaunched = true; errors = []; }
     const reloaded = await reloadIfStale();
     // A reload re-pays world generation and shader compilation, so it is the one
     // request that is not ~1.6 s. Report it rather than let a caller conclude the
     // daemon got slow.
     if (reloaded) errors = [];
-    const stats = await page.evaluate(IN_PAGE_RUN, { name: shot, margin: MARGIN, settle: SETTLE });
+    let stats;
+    try {
+      stats = await page.evaluate(IN_PAGE_RUN, { name: shot, margin: MARGIN, settle: SETTLE });
+    } catch (e) {
+      // The page can die DURING a render too. One relaunch-and-retry, then give up
+      // honestly rather than looping.
+      if (!isDead(e) || relaunched) throw e;
+      relaunches++; await launchPage(); relaunched = true; errors = [];
+      stats = await page.evaluate(IN_PAGE_RUN, { name: shot, margin: MARGIN, settle: SETTLE });
+    }
     const outPath = resolve(out || `shots/${shot}.png`);
     if (!existsSync(dirname(outPath))) mkdirSync(dirname(outPath), { recursive: true });
     await page.screenshot({ path: outPath });
@@ -352,7 +413,7 @@ const main = async () => {
       shot, out: outPath, ms: Date.now() - t,
       drawCalls: stats?.drawCalls, triangles: stats?.triangles,
       convergedAt: stats?.convergedAt, settleFrames: stats?.settleFrames,
-      poseMs: stats?.poseMs, reloaded, errors: errors.slice(),
+      poseMs: stats?.poseMs, reloaded, relaunched, errors: errors.slice(),
     };
   }
 
@@ -363,8 +424,21 @@ const main = async () => {
       res.end(JSON.stringify(body));
     };
 
+    // /health MUST PROBE THE PAGE, not just prove the process is running.
+    //
+    // It used to return a hardcoded `ok: true`. When chromium's page crashed under
+    // load the daemon kept answering "healthy" around a corpse, `ensureDaemon()`
+    // saw an open port and never restarted it, and every render in the session
+    // failed. A liveness claim that cannot fail is not a liveness claim.
     if (u.pathname === '/health') {
-      return send(200, { ok: true, bootMs, served, vitePort, w: W, h: H, margin: MARGIN, settle: SETTLE, shots: ALL });
+      return queue(async () => {
+        const alive = await pageAlive();
+        send(alive ? 200 : 503, {
+          ok: alive, bootMs, served, relaunches, vitePort,
+          w: W, h: H, margin: MARGIN, settle: SETTLE, shots: ALL,
+          ...(alive ? {} : { error: 'page is not responding; next /shoot will relaunch it' }),
+        });
+      });
     }
     if (u.pathname === '/quit') {
       send(200, { ok: true, served });
