@@ -243,15 +243,32 @@ export class RigidBodySim {
       // still be a shell casing afterwards, not a bullet.
       const dv = Math.min(j * b.invMass, 16);
       b.vel.addScaledVector(_v, dv);
-      // Tumble: the blast strikes one face off-centre. The lever arm is
+      // Tumble: the blast front arrives across the whole facing side, so its
+      // centre of pressure sits a little off the centre of mass. The offset is
       // derived from the body id so repeated runs match exactly.
+      //
+      // This used to cross the FULL linear impulse with a 0.35 r lever and push
+      // it through the inverse inertia, which is dw = 0.35 dv / (k r) — a 1/r
+      // singularity. For the fragment sizes explosions actually produce that is
+      // one to two orders of magnitude past MAX_SPIN: measured on a grenade
+      // (r 6.75 m, power 46.75), 24/40 brick chips, 34/40 splinters and 39/40
+      // shell casings came out at *exactly* 40.000 rad/s, so every piece of
+      // light debris in a blast spun at an identical rate. The hash was still
+      // choosing an offset; saturation was throwing the variance away, and that
+      // uniformity is what reads as mechanical rather than physical.
+      //
+      // Regularise the length scale instead: a pressure front has an eddy size
+      // of its own (TUMBLE_LENGTH), and a fragment smaller than that cannot be
+      // spun as if the whole impulse landed on one edge of it. Spin then scales
+      // with the velocity the blast imparted — so mass and falloff still drive
+      // it — and stays monotone in body size without ever hitting the clamp.
       const s = ((Math.imul(b.id, 2654435761) >>> 0) / 4294967296) - 0.5;
       _tmp.set(-_v.z, 0, _v.x);
       if (_tmp.lengthSq() < 1e-8) _tmp.set(1, 0, 0);
-      _tmp.normalize().multiplyScalar(b.radius * 0.7 * s * 2);
-      _tmp2.copy(_v).multiplyScalar(Math.min(j, 16 / Math.max(1e-6, b.invMass)));
-      _tmp.cross(_tmp2);
-      b._applyAngularImpulse(_tmp);
+      _tmp2.crossVectors(_tmp.normalize(), _v);      // spin axis: offset x push
+      if (_tmp2.lengthSq() < 1e-8) _tmp2.set(0, 1, 0);
+      b.angVel.addScaledVector(
+        _tmp2.normalize(), (s * 2) * dv / (TUMBLE_LENGTH + 2 * b.radius));
       clampSpin(b);
     }
   }
@@ -578,6 +595,15 @@ export class RigidBodySim {
  * 40 rad/s (that is 380 rpm) for more than an instant.
  */
 const MAX_SPIN = 40;
+
+/**
+ * Length scale of the blast front's rotational coupling, in metres. A fragment
+ * this size or smaller cannot be spun as if the whole impulse landed on one
+ * edge of it, which is what the old lever-arm form assumed (see the note in
+ * applyRadialImpulse). Bigger => lazier tumble across the board.
+ */
+const TUMBLE_LENGTH = 0.5;
+
 function clampSpin(b) {
   const w2 = b.angVel.lengthSq();
   if (w2 > MAX_SPIN * MAX_SPIN) b.angVel.multiplyScalar(MAX_SPIN / Math.sqrt(w2));

@@ -33,6 +33,12 @@ const GRIP = {
   dirt: 1.05, grass: 0.95, rock: 0.78, mud: 0.52, stone: 0.8, brick: 0.85,
   wood: 0.75, metal: 0.6, sandbag: 0.7, water: 0.45, flesh: 0.9,
 };
+/**
+ * Squared distance above which followKinematic() calls a move a TELEPORT
+ * rather than a drive. 2.5 m in one frame is 150 m/s — a deploy or a re-pose,
+ * never locomotion (a vehicle Unit walks at ~2.4 m/s).
+ */
+const KIN_SNAP_D2 = 2.5 * 2.5;
 
 export class TankPhysics {
   /**
@@ -107,6 +113,15 @@ export class TankPhysics {
     this.steer = 0;
     this.brake = 0;
     this.handbrake = false;
+    /**
+     * True while the GAME LAYER, not this simulation, owns x/z/yaw — see
+     * followKinematic(). Nothing in the game ever touches setThrottle/setSteer:
+     * a vehicle Unit is walked along a nav path exactly like a soldier, and
+     * Unit.syncActor writes the result straight onto `root`. So the drivetrain
+     * solve is not the source of the tank's motion and must not fight it.
+     */
+    this.kinematic = false;
+    this._prevLocalVz = 0;
     /** 0..1 per side; 0 = thrown track, no drive and heavy drag. */
     this.trackHealth = [1, 1];
     this.engineRpm = 0.15;                   // 0..1, drives audio + exhaust
@@ -178,12 +193,102 @@ export class TankPhysics {
     this.prevPos.copy(this.pos);
     this.renderPos.copy(this.pos);
     this.yaw = this.prevYaw = this.renderYaw = yaw;
-    this.pitch = this.roll = 0;
+    // THE *RENDER* POSE MUST BE RESET TOO, NOT JUST THE SIMULATION POSE.
+    //
+    // This used to clear `pitch`/`roll` and leave `prevPitch`/`prevRoll`/
+    // `renderPitch`/`renderRoll` holding the LAST shot's attitude, and
+    // applyToRoot draws the render pose. interpolate() would normally wash that
+    // out within a frame — but the resident capture harness settles at dt = 0,
+    // so no fixed step ever runs, alpha stays ~0, and renderRoll = lerp(prev,
+    // 0, ~0) = prev FOREVER. Measured: booting `overview` (which walks the
+    // Edelweiss onto a 28-degree cross-slope) and then re-posing `tank` drew
+    // the tank lying on its side at roll -0.495 rad on the flat road, in every
+    // fast-path plate, while a cold boot showed it upright.
+    this.pitch = this.prevPitch = this.renderPitch = 0;
+    this.roll = this.prevRoll = this.renderRoll = 0;
     this.vel.set(0, 0, 0);
     this.yawRate = this.pitchRate = this.rollRate = this.heaveVel = 0;
+    this._prevLocalVz = 0;
+    this.accelLocal.set(0, 0, 0);
     for (const p of this.probes) { p.compression = 0.11; p.prevLength = this.rideHeight; }
+    this._settleRide();
     return this;
   }
+
+  /**
+   * Sit the hull down on the ground it has just been dropped onto.
+   *
+   * A teleport leaves the ride model flat, and the attitude then converges over
+   * ~0.6 s of simulation. The resident capture harness settles at dt = 0, so
+   * that convergence NEVER HAPPENS on the fast path: a tank posed on a bank was
+   * drawn perfectly level, cutting into the slope, while `--cold` (which runs
+   * the shot script at 1/60) showed it leaning correctly. Run the ride model
+   * here instead, so the pose is right the instant it is set. Deterministic —
+   * it is a pure function of (x, z, yaw) and the heightfield.
+   */
+  _settleRide(steps = 48, h = 1 / 60) {
+    for (let i = 0; i < steps; i++) this._suspension(h);
+    this.pitchRate = this.rollRate = this.heaveVel = 0;
+    this.prevPitch = this.renderPitch = this.pitch;
+    this.prevRoll = this.renderRoll = this.roll;
+    this.prevPos.y = this.renderPos.y = this.pos.y;
+    return this;
+  }
+
+  /**
+   * ADOPT A POSITION THE GAME LAYER OWNS.
+   *
+   * The Edelweiss is not driven — `setThrottle`/`setSteer` have no caller
+   * outside the capture harness. The Unit is walked along a nav path and
+   * `Unit.syncActor()` writes `pos`/`yaw` onto `root`, while this simulation
+   * kept integrating its own hull from the DEPLOY POINT for the whole mission.
+   * MEASURED before this call existed: 12 m of game-layer travel left
+   * `physics.pos` exactly where it spawned (desync 12.00 m), `Tank.speed` 0,
+   * `engineRpm` pinned at its 0.16 idle, `trackSpeed` [0, 0] and the track-mark
+   * ring buffer still empty — i.e. the suspension was reading the terrain, the
+   * surface, the imprints and the dust somewhere the tank is not, and the two
+   * consumers of `Tank.speed` (engine audio, exhaust plume) saw a parked tank.
+   *
+   * Velocity is MEASURED from the displacement rather than integrated, because
+   * under this mode it is an OUTPUT (it feeds load transfer, track speed, the
+   * engine model, dust and audio) and no longer an input to position.
+   *
+   * @returns {boolean} true if the move was treated as a teleport.
+   */
+  followKinematic(x, z, yaw, dt) {
+    this.kinematic = true;
+    const dx = x - this.pos.x, dz = z - this.pos.z;
+    // A deploy, a re-pose or a mission restart is not a 300 m/s drive. Snap,
+    // and do not let the resulting velocity spike reach the ride model.
+    if (dx * dx + dz * dz > KIN_SNAP_D2) {
+      this.teleport(x, z, yaw);
+      this.kinematic = true;
+      return true;
+    }
+    const inv = dt > 1e-5 ? 1 / dt : 0;
+    // Nav paths are polylines: raw per-frame displacement is spiky at corners.
+    // A short filter keeps the derived velocity usable without lagging a start
+    // or a stop enough to be heard.
+    const k = dt > 0 ? 1 - Math.exp(-16 * dt) : 1;
+    this.vel.x += (dx * inv - this.vel.x) * k;
+    this.vel.z += (dz * inv - this.vel.z) * k;
+    this.yawRate += (shortest(this.yaw, yaw) * inv - this.yawRate) * k;
+    this.pos.x = x;
+    this.pos.z = z;
+    this.yaw = yaw;
+    // x/z/yaw are AUTHORITATIVE under this mode, so pin the interpolation
+    // endpoints to them. interpolate() blends prev -> current by the physics
+    // accumulator's alpha, and a harness that never takes a fixed step (the
+    // resident capture path settles at dt = 0) would otherwise leave the drawn
+    // hull sitting at a stale alpha somewhere behind the Unit.
+    this.prevPos.x = x; this.prevPos.z = z;
+    this.renderPos.x = x; this.renderPos.z = z;
+    this.prevYaw = this.renderYaw = yaw;
+    return false;
+  }
+
+  /** Hand x/z/yaw back to the drivetrain solve. */
+  releaseKinematic() { this.kinematic = false; }
 
   _height(x, z) {
     const t = this.world && this.world.terrain;
@@ -217,9 +322,13 @@ export class TankPhysics {
     this.prevRoll = this.roll;
 
     this._suspension(h);
-    this._drivetrain(h);
+    if (this.kinematic) this._kinematicDrive(h);
+    else this._drivetrain(h);
     this._integrate(h);
-    this._collide(h);
+    // Under kinematic follow the game layer's nav mesh already owns where the
+    // hull may be; pushing it out of colliders here would fight that and walk
+    // the sim off the Unit again, which is the bug this mode exists to fix.
+    if (!this.kinematic) this._collide(h);
     this._wheels(h);
     this._groundFx(h);
   }
@@ -533,7 +642,66 @@ export class TankPhysics {
     this.trackSpeed[1] = this.trackHealth[1] > 0.05 ? cmdR * 0.35 + actR * 0.65 : 0;
   }
 
+  /**
+   * The same outputs `_drivetrain` produces — hull-frame velocity, load
+   * transfer, track surface speeds, engine rpm/load — derived from the motion
+   * the game layer has ALREADY applied, instead of from a force solve.
+   *
+   * This is what makes the audio and the exhaust honest: rpm and track clatter
+   * now answer to the tank's real speed over the real surface.
+   */
+  _kinematicDrive(h) {
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
+    const vz = this.vel.x * sy + this.vel.z * cy;
+    const vx = this.vel.x * cy - this.vel.z * sy;
+    this.localVel.set(vx, this.vel.y, vz);
+
+    // Load transfer, from measured motion instead of a force solve.
+    //   z: longitudinal acceleration — squat and dive.
+    //   x: the centripetal term that leans a vehicle OUT of a turn (+ω turns
+    //      the nose toward the hull's right axis, so the reaction is +vz·ω),
+    //      plus the lateral scrub of a hull that is sliding sideways.
+    // Both are clamped: a game-layer path is a polyline and its corners are
+    // discontinuous, and an unclamped spike here pins the hull at its 0.5 rad
+    // roll limit for a whole corner.
+    const az = h > 1e-6 ? (vz - this._prevLocalVz) / h : 0;
+    this._prevLocalVz = vz;
+    const ax = clamp(vz * this.yawRate - vx * 2.0, -6, 6);
+    this.accelLocal.set(
+      damp(this.accelLocal.x, ax, 14, h),
+      0,
+      damp(this.accelLocal.z, clamp(az, -8, 8), 14, h)
+    );
+
+    // Contact-patch speeds follow rigidly from the body motion.
+    const half = this.gauge * 0.5;
+    this.trackSpeed[0] = this.trackHealth[0] > 0.05 ? vz - this.yawRate * half : 0;
+    this.trackSpeed[1] = this.trackHealth[1] > 0.05 ? vz + this.yawRate * half : 0;
+
+    // Engine model. `demand` stands in for the throttle nobody is holding: a
+    // tank moving at all is a tank whose engine is pulling, and a neutral-steer
+    // turn is high load at low road speed.
+    const speedFrac = clamp01(Math.abs(vz) / this.maxSpeed);
+    const turnFrac = clamp01(Math.abs(this.yawRate) / this.pivotRate);
+    const demand = clamp01(speedFrac * 1.25 + turnFrac * 0.55);
+    const targetRpm = clamp01(0.16 + demand * 0.55 + speedFrac * 0.4);
+    this.engineRpm = damp(this.engineRpm, targetRpm, 3.4, h);
+    this.engineLoad = damp(
+      this.engineLoad, clamp01(demand + Math.max(0, this.gradeFwd) * 2.2), 2.2, h
+    );
+  }
+
   _integrate(h) {
+    if (this.kinematic) {
+      // x/z/yaw came from followKinematic(); `vel` is a measurement of that
+      // motion, so integrating it here would double-count it.
+      this.trackDistance[0] += this.trackSpeed[0] * h;
+      this.trackDistance[1] += this.trackSpeed[1] * h;
+      const iR = 1 / this.wheelRadius;
+      this.wheelSpin[0] += this.trackSpeed[0] * iR * h;
+      this.wheelSpin[1] += this.trackSpeed[1] * iR * h;
+      return;
+    }
     this.pos.x += this.vel.x * h;
     this.pos.z += this.vel.z * h;
     this.yaw += this.yawRate * h;

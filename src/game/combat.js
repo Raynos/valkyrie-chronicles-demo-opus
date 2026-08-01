@@ -5,6 +5,20 @@
 // hit-% readout the player sees is the analytic prediction of the same dispersion that is
 // actually simulated. No hidden dice, no "AI always hits" fudge.
 //
+// That claim was false for a long time and Round 26 measured how false. hitProbability widened
+// the PREDICTED sigma by evasion and shrank the PREDICTED target disc by cover, while
+// ActionMode.fire() traced a round with neither term — 12 m prone read 29.0% against a real
+// 66.4%. It is true now, and it is kept true structurally rather than by care:
+//
+//   * There is one sigma. hitProbability computes it; attackForecast returns it; ActionMode
+//     fires it. Evasion lives in effectiveAccuracy, the single funnel every path already used.
+//   * Cover and line of sight are not ratings applied to the answer, they are RAYS — the same
+//     projectile-filtered trace the round runs, sampled across the target's silhouette. See
+//     sampleLane.
+//   * The hitzone mix behind expectedDamage is measured off those same rays instead of a
+//     hard-coded constant, and it carries fireRound's long-range energy shed.
+//   * maxRange is a real wall in fireRound, so the forecast's 0%-beyond-reach is a fact.
+//
 // Adapter note: ARCHITECTURE.md does not specify src/physics. If the integrator calls
 // setPhysics(mod) with anything exposing `raycast(origin, dir, maxDist, opts)` we delegate world
 // tracing to it; otherwise we trace terrain + World.colliders ourselves.
@@ -543,14 +557,40 @@ export function coverFor(target, fromX, fromY, fromZ, world = Ctx.world) {
 // ---------------------------------------------------------------------------
 
 /**
+ * How much harder a target's own evasion makes him to hit. Additive on accuracy, NOT a
+ * multiplier on the predicted sigma.
+ *
+ * Round 26 measured the reason for the distinction. hitProbability used to widen the
+ * PREDICTED sigma by (1 + eva * 1.7) while ActionMode.fire() handed fireBurst a sigma with
+ * no such term, so a scout's 0.18 evasion moved the readout by 30% of sigma and moved the
+ * bullet by nothing: 12 m standing forecast 87.6%, observed 79.1%. Evasion belongs in the
+ * ONE function every fire path already funnels through — this one — because then the
+ * prediction and the round are computed from the same number by construction.
+ *
+ * The coefficient is deliberately small. Going the other way (feeding the old 1.7x sigma
+ * term into the traced round) would have cut the player's real hit rate at 20 m from 63.6%
+ * to ~48% in a mission that only became winnable in Round 21; this is the conservative
+ * choice, and it is a balance judgement, not a correctness one.
+ *
+ * interception.js applies its own evasion term to the sigma it fires with — that model is
+ * untouched and stays authoritative for reaction fire.
+ */
+const EVA_ACC = 0.30;
+export function evasionOf(target, extraEva = 0, targetSpeed = 0) {
+  if (!target) return 0;
+  return clamp01((target.evasion || 0) + extraEva + clamp01(targetSpeed / 6) * 0.20);
+}
+
+/**
  * Effective marksmanship 0..1 for this shot, before dispersion is derived from it.
- * ctx: { aimed, range, cover, targetSpeed, battle, target, underFire }
+ * ctx: { aimed, range, cover, targetSpeed, targetEva, battle, target, underFire }
  */
 export function effectiveAccuracy(shooter, weapon, ctx) {
   let a = weapon.accuracy * (0.58 + 0.72 * shooter.aim);
   a += shooter.stanceAccuracy();
   if (ctx.aimed) a += 0.10;
   a -= shooter.suppression * 0.30;
+  a -= evasionOf(ctx.target, ctx.targetEva || 0, ctx.targetSpeed || 0) * EVA_ACC;
   // Range falloff: perfect up to weapon.range, degrading to 0.28 at maxRange, then hard off.
   const r = ctx.range || 0;
   if (r > weapon.range) {
@@ -584,78 +624,311 @@ export function bloomFor(weapon, holdSeconds, movedRecently = 0) {
   return clamp(conv + movedRecently * 0.55, weapon.settled, 1.6);
 }
 
+// ---------------------------------------------------------------------------
+// Lane sampling — the readout, measured off the geometry the round will really see
+// ---------------------------------------------------------------------------
+//
+// The old model made two abstractions the trace does not share. It shrank the target disc by
+// (1 - cover * 0.82) using World.coverAt's PROXIMITY rating, and it multiplied the whole
+// answer by a flat 0.12 whenever one centre-line ray was blocked. Neither is what a bullet
+// does: a bullet either clears the parapet or buries itself in it, per round, per bearing.
+// Round 26 measured what that cost — behind a wall the forecast said 0.5% where 27.6% of
+// rounds connected, behind a crate stack 3.0% where 52.9% connected, and behind a building
+// 0.3% where the true rate is 0.0%.
+//
+// So sample it. Thirty-five bearings spread over the target, each asking the two questions the
+// round asks: does this bearing land on the man (rayHitUnit, which knows the stance-squashed
+// capsules), and does anything stop it first (traceWorld with the PROJECTILE filter).
+//
+// The pattern reaches out to 2.4 * theta rather than stopping at the disc of targetRadius(),
+// because that disc is not the man: he is about four times taller than it and narrower, and
+// prone he is a squashed ellipse, so a round landing a disc-radius high still takes him in the
+// chest. Against a 2560-ray reference the plain disc under-read a prone man at 20 m by 12
+// points; this pattern is within ~3.
+//
+// Rings carry the Gaussian mass of the annulus they stand for, so the estimator is right in
+// both limits with no special cases: a settled reticle is answered by the centre ray alone,
+// and a wide one degrades to (solid angle of the silhouette) / (2 pi sigma^2). Every ring
+// carries a straight-up and a straight-down sample on purpose, because cover edges are
+// horizontal. It costs at most 35 traces and usually 17 — three spread rings are probed first,
+// and if nothing clips those, nothing clips the shot. Measured cost of a whole forecast on the
+// real map: 3.4 us before, 66 us now; the Imperial phase's worst frame moved 1.5 ms -> 16.7 ms
+// and its mean stayed at 0.4 ms.
+const LANE_R = [0, 0.35, 0.70, 1.05, 1.45, 2.00];     // sample radius / theta
+const LANE_EDGE = [0.175, 0.525, 0.875, 1.25, 1.70, 2.40];  // outer edge of the ring's mass band
+const LANE_AZ = [1, 6, 8, 6, 8, 6];
+const LANE_PROBE = [1, 0, 1, 0, 1, 0];                // rings traced before the early-out
+// The two probed rings run 8 bearings from phase 0, which puts a sample dead vertical AND dead
+// horizontal: cover edges are horizontal, but a building corner is a vertical edge, and a
+// pattern with only vertical samples walked straight past one. Measured before this: a scout
+// at 20 m read 99% while 12% of the burst buried itself in a wall corner nobody sampled.
+const LANE_PHI0 = [0, Math.PI / 2, 0, Math.PI / 2, 0, Math.PI / 2];
+const LANE_RINGS = LANE_R.length;
+const LANE_N = 35;
+const _laneDir = new THREE.Vector3();
+const _laneRt = new THREE.Vector3();
+const _laneUp = new THREE.Vector3();
+const _laneDX = new Float64Array(LANE_N);
+const _laneDY = new Float64Array(LANE_N);
+const _laneDZ = new Float64Array(LANE_N);
+const _laneT = new Float64Array(LANE_N);        // < 0 => this bearing misses the man entirely
+const _laneMult = new Float64Array(LANE_N);
+const _laneRing = new Int32Array(LANE_N);
+const _laneBlocked = new Uint8Array(LANE_N);
+const _laneW = new Float64Array(LANE_RINGS);
+const _lane = { n: 0, theta: 0, fallbackVisible: 1, traces: 0 };
+const _laneOut = { p: 0, visible: 1, zone: 1 };
+
 /**
- * Analytic hit probability for ONE round. Rayleigh CDF of a circular 2-D Gaussian against a
- * disc of angular radius theta:  P = 1 - exp(-theta^2 / (2 sigma^2)).
- * Returns { p, sigma, theta, range, cover, accuracy }.
+ * Trace the sample pattern once. The answers (is this bearing body, what part, does the world
+ * stop it) do not depend on sigma, so a whole burst re-weights these same rays.
  */
-const _hp = { p: 0, sigma: 0, theta: 0, range: 0, cover: 0, accuracy: 0, blocked: false };
+function sampleLane(ox, oy, oz, cx, cy, cz, target, theta, world) {
+  _lane.n = 0; _lane.theta = theta; _lane.fallbackVisible = 1; _lane.traces = 0;
+  _laneDir.set(cx - ox, cy - oy, cz - oz);
+  const L = _laneDir.length();
+  if (L < 1e-4) return _lane;
+  _laneDir.multiplyScalar(1 / L);
+  _laneRt.set(_laneDir.z, 0, -_laneDir.x);
+  if (_laneRt.lengthSq() < 1e-8) _laneRt.set(1, 0, 0);
+  _laneRt.normalize();
+  _laneUp.crossVectors(_laneRt, _laneDir).normalize();
+  const reach = L + unitBoundRadius(target) + 1;
+
+  // 1. which bearings land on the man, and on what
+  let n = 0;
+  for (let ring = 0; ring < LANE_RINGS; ring++) {
+    const rad = theta * LANE_R[ring];
+    const az = LANE_AZ[ring];
+    for (let k = 0; k < az; k++) {
+      const phi = LANE_PHI0[ring] + (k * Math.PI * 2) / az;
+      const cu = rad * Math.cos(phi), su = rad * Math.sin(phi);
+      let dx = _laneDir.x + _laneRt.x * cu + _laneUp.x * su;
+      let dy = _laneDir.y + _laneRt.y * cu + _laneUp.y * su;
+      let dz = _laneDir.z + _laneRt.z * cu + _laneUp.z * su;
+      const inv = 1 / Math.max(1e-9, Math.hypot(dx, dy, dz));
+      dx *= inv; dy *= inv; dz *= inv;
+      _laneDX[n] = dx; _laneDY[n] = dy; _laneDZ[n] = dz;
+      _laneRing[n] = ring; _laneBlocked[n] = 0;
+      const hu = rayHitUnit(ox, oy, oz, dx, dy, dz, target, reach);
+      // Muzzle inside the hitbox: there is no segment left to trace, so call it clear rather
+      // than handing traceWorld a negative maxDist.
+      _laneT[n] = hu ? Math.max(0.06, hu.t) : -1;
+      _laneMult[n] = hu ? hu.mult : 0;
+      n++;
+    }
+  }
+  _lane.n = n;
+
+  // 2. what the world stops. Trace three spread rings first; if nothing clips those, nothing
+  //    clips the shot, and the rest cost no traces at all.
+  let probed = 0, blocked = 0;
+  for (let i = 0; i < n; i++) {
+    if (_laneT[i] < 0 || !LANE_PROBE[_laneRing[i]]) continue;
+    probed++; _lane.traces++;
+    if (traceWorld(ox, oy, oz, _laneDX[i], _laneDY[i], _laneDZ[i], _laneT[i] - 0.05, world)) {
+      _laneBlocked[i] = 1; blocked++;
+    }
+  }
+  if (blocked > 0) {
+    for (let i = 0; i < n; i++) {
+      if (_laneT[i] < 0 || LANE_PROBE[_laneRing[i]]) continue;
+      _lane.traces++;
+      if (traceWorld(ox, oy, oz, _laneDX[i], _laneDY[i], _laneDZ[i], _laneT[i] - 0.05, world)) {
+        _laneBlocked[i] = 1;
+      }
+    }
+  }
+  // Nothing on the pattern reaches him (downed, or a degenerate hitbox). Fall back to the one
+  // question we can still answer.
+  if (probed === 0) _lane.fallbackVisible = hasFireLane(ox, oy, oz, cx, cy, cz, world) ? 1 : 0;
+  return _lane;
+}
+
+/** Re-weight the sampled pattern for one round's dispersion. @returns shared { p, visible, zone } */
+function laneProbability(sigma, vehicle) {
+  const n = _lane.n;
+  if (n === 0) { _laneOut.p = 0; _laneOut.visible = _lane.fallbackVisible; _laneOut.zone = vehicle ? 1.05 : 1; return _laneOut; }
+  const s2 = 2 * sigma * sigma;
+  let prev = 1;
+  for (let ring = 0; ring < LANE_RINGS; ring++) {
+    const e = _lane.theta * LANE_EDGE[ring];
+    const cur = Math.exp(-(e * e) / s2);
+    _laneW[ring] = prev - cur;
+    prev = cur;
+  }
+  let hitMass = 0, clearMass = 0, multMass = 0;
+  for (let i = 0; i < n; i++) {
+    if (_laneT[i] < 0) continue;
+    const w = _laneW[_laneRing[i]] / LANE_AZ[_laneRing[i]];
+    hitMass += w;
+    if (!_laneBlocked[i]) { clearMass += w; multMass += w * _laneMult[i]; }
+  }
+  _laneOut.p = clamp01(clearMass);
+  _laneOut.visible = hitMass > 1e-12 ? clamp01(clearMass / hitMass) : _lane.fallbackVisible;
+  _laneOut.zone = clearMass > 1e-12 ? multMass / clearMass : (vehicle ? 1.05 : 1);
+  return _laneOut;
+}
+
+/**
+ * Hit probability for ONE ROUND OF THIS ATTACK, averaged over the burst — which is exactly
+ * what the observed hits/rounds rate is, and what the HUD's "Hit %" has always meant.
+ *
+ * The 2-D Gaussian of 1-sigma `sigma` is integrated over the silhouette the round will really
+ * see, by re-weighting the sampled bearings from sampleLane(). fireBurst opens the group up on
+ * each successive round (`sigma * (1 + i * recoil * 8)`) and this now follows it: an 11-round
+ * SMG burst is eleven different dispersions, not one repeated eleven times.
+ *
+ * `sigma` is the sigma the round will be fired with. ActionMode.fire() and the AI both take
+ * it from here rather than deriving their own — that is what makes the header's claim true.
+ *
+ * Returns { p, expectedHits, sigma, theta, range, cover, accuracy, blocked, visible, zone }.
+ */
+const _hp = {
+  p: 0, expectedHits: 0, sigma: 0, theta: 0, range: 0, cover: 0, accuracy: 0,
+  blocked: false, visible: 1, zone: 1, traces: 0,
+};
 export function hitProbability(shooter, target, opts = {}) {
   const weapon = opts.weapon || (shooter.usingAlt && shooter.altAmmo ? shooter.altAmmo : shooter.weapon);
   shooter.muzzlePoint(_a);
   target.centerPoint(_b);
   const range = _a.distanceTo(_b);
   const cover = opts.cover !== undefined ? opts.cover : coverFor(target, _a.x, _a.y, _a.z, opts.world);
+  // The muzzle/centre components must be read out BEFORE any trace: traceWorld reuses
+  // _a.._d as collider scratch.
+  const ax = _a.x, ay = _a.y, az = _a.z, bx = _b.x, by = _b.y, bz = _b.z;
+
+  const battle = opts.battle || Ctx.battle;
+  const dctx = _defCtx;
+  dctx.cover = cover; dctx.battle = battle; dctx.underFire = true; dctx.attacker = shooter;
+  // evalPotentials hands back a SHARED mods object; read the one field we want now, because
+  // the attack eval below resets it.
+  const evaMod = target.evalPotentials('defend', dctx, CombatFlags.silent).eva;
 
   const ctx = _accCtx;
   ctx.aimed = !!opts.aimed; ctx.range = range; ctx.cover = cover;
-  ctx.target = target; ctx.battle = opts.battle || Ctx.battle;
-  ctx.underFire = !!opts.underFire; ctx.targetSpeed = target.speed;
+  ctx.target = target; ctx.battle = battle;
+  ctx.underFire = !!opts.underFire; ctx.targetSpeed = target.speed; ctx.targetEva = evaMod;
   const acc = effectiveAccuracy(shooter, weapon, ctx);
 
-  const dctx = _defCtx;
-  dctx.cover = cover; dctx.battle = ctx.battle; dctx.underFire = true; dctx.attacker = shooter;
-  const dm = target.evalPotentials('defend', dctx, CombatFlags.silent);
-  const eva = clamp01(target.evasion + dm.eva + clamp01(target.speed / 6) * 0.20);
+  // ONE sigma. No prediction-only widening: whatever else is true of this shot, the round
+  // that gets fired is jittered by exactly this number.
+  const sigma = shotSigma(shooter, weapon, acc, opts.bloom ?? weapon.settled, shooter.speed);
 
-  const sigma = shotSigma(shooter, weapon, acc, opts.bloom ?? weapon.settled, shooter.speed) * (1 + eva * 1.7);
-  // Exposed silhouette: cover eats the disc.
-  const rr = target.targetRadius() * (1 - cover * 0.82);
-  const theta = Math.atan2(Math.max(0.02, rr), Math.max(0.5, range));
-  let p = 1 - Math.exp(-(theta * theta) / (2 * sigma * sigma));
-  if (range > weapon.maxRange) p = 0;
+  // Cover does NOT shrink the target here, and stance does not either. Cover is rays (below);
+  // stance is already in the geometry twice over — targetRadius() scales with stanceScale and
+  // rayHitUnit squashes the capsules by it. That double count is what put a prone man in the
+  // open at a forecast 29.0% while 66.4% of the rounds hit him.
+  const theta = Math.atan2(Math.max(0.02, target.targetRadius()), Math.max(0.5, range));
+  // Centre the dispersion where the round is REALLY going. ActionMode.fire() converges the
+  // muzzle on the point the reticle is resting on, which the shoulder offset can put a third
+  // of a metre off the man's centre; predicting a centred shot then reads 99% on a burst that
+  // measured 89.6% (and a 2560-ray reference along the true aim line said 87.6%). Callers that
+  // do aim at the centre — the AI does — simply pass nothing.
+  const ap = opts.aimPoint;
+  const px = ap ? ap.x : bx, py = ap ? ap.y : by, pz = ap ? ap.z : bz;
+  // When the aim line is off the man's centre the sample pattern has to reach far enough to
+  // still cover him, or the quadrature resolves an offset silhouette with the wrong rings.
+  // Widening theta widens the mass bands with it, so the weighting stays consistent.
+  let thetaPattern = theta;
+  if (ap) {
+    let ux = px - ax, uy = py - ay, uz = pz - az;
+    const ul = Math.hypot(ux, uy, uz);
+    if (ul > 1e-4) {
+      ux /= ul; uy /= ul; uz /= ul;
+      const cxv = bx - ax, cyv = by - ay, czv = bz - az;
+      const along = cxv * ux + cyv * uy + czv * uz;
+      const perp = Math.sqrt(Math.max(0, cxv * cxv + cyv * cyv + czv * czv - along * along));
+      thetaPattern = theta + Math.atan2(perp, Math.max(0.5, Math.abs(along)));
+    }
+  }
+  sampleLane(ax, ay, az, px, py, pz, target, thetaPattern, opts.world);
 
-  _hp.p = clamp(p, 0, 0.99);
+  const shots = weapon.shots || 1;
+  const recoil = (weapon.recoil || 0) * 8;
+  // fireRound stops the round at weapon.maxRange, so this cliff is now a fact rather than a
+  // claim: before Round 26 a round fired past the stated reach connected normally, and a
+  // lancer whose lance reads 19 m hit 99.9% of the time at 20 m against a forecast 0%.
+  const reaches = range <= weapon.maxRange;
+  let expHits = 0, zoneMass = 0, visible = 1;
+  for (let i = 0; i < shots; i++) {
+    const lane = laneProbability(sigma * (1 + i * recoil), target.isVehicle);
+    if (i === 0) visible = lane.visible;
+    if (!reaches) continue;
+    expHits += lane.p;
+    zoneMass += lane.p * lane.zone;
+  }
+
+  _hp.expectedHits = expHits;
+  _hp.p = clamp(expHits / shots, 0, 0.99);
   _hp.sigma = sigma; _hp.theta = theta; _hp.range = range; _hp.cover = cover; _hp.accuracy = acc;
-  // The muzzle/centre components must be read out BEFORE the trace: traceWorld
-  // reuses _a.._d as collider scratch.
-  const ax = _a.x, ay = _a.y, az = _a.z, bx = _b.x, by = _b.y, bz = _b.z;
-  _hp.blocked = !hasFireLane(ax, ay, az, bx, by, bz, opts.world);
-  if (_hp.blocked) _hp.p *= 0.12;
+  _hp.visible = visible; _hp.traces = _lane.traces;
+  _hp.zone = expHits > 1e-9 ? zoneMass / expHits : (target.isVehicle ? 1.05 : 1);
+  _hp.blocked = visible < 0.03;
   return _hp;
 }
 
-const _accCtx = { aimed: false, range: 0, cover: 0, target: null, battle: null, underFire: false, targetSpeed: 0 };
+const _accCtx = {
+  aimed: false, range: 0, cover: 0, target: null, battle: null,
+  underFire: false, targetSpeed: 0, targetEva: 0,
+};
 const _defCtx = { cover: 0, battle: null, underFire: false, attacker: null };
+const _edOpts = { aimed: false, battle: null, cover: 0, range: 0, zone: undefined };
 
 /** Whole-attack expectation used by the HUD readout and the AI's expected-value sort. */
 export function attackForecast(shooter, target, opts = {}) {
   const weapon = opts.weapon || (shooter.usingAlt && shooter.altAmmo ? shooter.altAmmo : shooter.weapon);
   const hp = hitProbability(shooter, target, opts);
-  const perShot = expectedDamage(shooter, target, weapon, opts);
+  // Hand expectedDamage the range and the hitzone mix this shot really has, not the caller's
+  // (usually absent) guess at them.
+  _edOpts.aimed = !!opts.aimed; _edOpts.battle = opts.battle || Ctx.battle;
+  _edOpts.cover = hp.cover; _edOpts.range = hp.range; _edOpts.zone = hp.zone;
+  const perShot = expectedDamage(shooter, target, weapon, _edOpts);
   const shots = weapon.shots || 1;
-  const expHits = hp.p * shots;
+  const expHits = hp.expectedHits;
   const expDmg = expHits * perShot;
   return {
     chance: hp.p, shots, expectedHits: expHits, expectedDamage: expDmg,
     range: hp.range, cover: hp.cover, accuracy: hp.accuracy, sigma: hp.sigma,
-    lethal: expDmg >= target.hp, blocked: hp.blocked, weapon,
+    lethal: expDmg >= target.hp, blocked: hp.blocked, visible: hp.visible, zone: hp.zone,
+    weapon,
   };
 }
 
-/** Mean damage of a single connecting round, averaged over the hitzone distribution. */
+/**
+ * Mean damage of a single connecting round, averaged over the hitzone distribution.
+ *
+ * `opts.zone` is the measured mean part multiplier for this shot (attackForecast takes it off
+ * the same rays it uses for the lane test). Without it the fallback is the flat-on-the-torso
+ * value a tight group produces — 1.00. The 1.12 that used to be hard-coded here was a guess
+ * at "mean of the part multipliers weighted by area"; measurement put it at 1.00 and the HUD
+ * consequently promised 70 damage where 57.2 landed.
+ */
 export function expectedDamage(shooter, target, weapon, opts = {}) {
   const raw = target.isVehicle ? weapon.aaDamage : weapon.apDamage;
   const ctx = _accCtx;
   ctx.target = target; ctx.battle = opts.battle || Ctx.battle; ctx.aimed = !!opts.aimed;
   ctx.range = opts.range || 0; ctx.cover = opts.cover || 0;
+  ctx.targetSpeed = target.speed; ctx.targetEva = 0;
+  // evalPotentials returns ONE shared mods object, so the attacker's numbers have to come out
+  // before the defender's eval resets them. Reading am.dmg after evaluating dm — which both
+  // this and fireRound used to do — silently read back the reset 1.
   const am = shooter.evalPotentials('attack', ctx, CombatFlags.silent);
+  const amDmg = am.dmg, amAa = am.aa, amCrit = am.crit;
   _defCtx.cover = opts.cover || 0; _defCtx.battle = ctx.battle;
   _defCtx.underFire = true; _defCtx.attacker = shooter;
-  const dm = target.evalPotentials('defend', _defCtx, CombatFlags.silent);
-  const zone = target.isVehicle ? 1.05 : 1.12;   // mean of the part multipliers weighted by area
+  const dmDef = target.evalPotentials('defend', _defCtx, CombatFlags.silent).def;
+  const zone = opts.zone !== undefined ? opts.zone : (target.isVehicle ? 1.05 : 1.0);
   const mit = mitigation(target, weapon);
-  return raw * zone * am.dmg * (target.isVehicle ? am.aa : 1) * mit * dm.def;
+  let d = raw * zone * amDmg * (target.isVehicle ? amAa : 1) * mit * dmDef;
+  // The same energy shed fireRound applies past the weapon's effective range. Omitting it is
+  // the other half of the overstated damage readout.
+  const r = opts.range || 0;
+  if (r > weapon.range) {
+    d *= lerp(1, 0.72, clamp01((r - weapon.range) / Math.max(1, weapon.maxRange - weapon.range)));
+  }
+  if (amCrit > 0) d *= 1 + amCrit * 0.6;   // fireRound rolls am.crit for a 1.6x
+  return d;
 }
 
 /**
@@ -719,7 +992,12 @@ const _shotRes = {
 
 export function fireRound(shooter, origin, dir, opts = {}) {
   const weapon = opts.weapon || (shooter.usingAlt && shooter.altAmmo ? shooter.altAmmo : shooter.weapon);
-  const maxDist = opts.maxDist || weapon.maxRange * 1.5;
+  // A round dies at the weapon's stated reach. It used to fly 1.5x past it, which made the
+  // forecast's 0%-beyond-maxRange cliff a lie in the player's favour: measured, a VB lance
+  // (maxRange 19) connected on 99.9% of rounds at 20 m while the HUD read 0%, and an SMG
+  // (maxRange 30) still landed 8.6% at 45 m. Callers that want the old overshoot — reaction
+  // fire does, deliberately — still pass their own maxDist.
+  const maxDist = opts.maxDist || weapon.maxRange;
   const rng = opts.rng || Ctx.rng;
 
   _shotRes.hit = false; _shotRes.unit = null; _shotRes.part = null; _shotRes.partLabel = '';
@@ -767,14 +1045,19 @@ export function fireRound(shooter, origin, dir, opts = {}) {
     const ctx = _accCtx;
     ctx.target = target; ctx.battle = opts.battle || Ctx.battle; ctx.aimed = !!opts.aimed;
     ctx.range = h.t; ctx.cover = 0;
+    ctx.targetSpeed = target.speed; ctx.targetEva = 0;
+    // Shared mods object: take the attacker's numbers out before the defender's eval resets
+    // them, or am.dmg/am.aa/am.crit read back the neutral 1/1/0. expectedDamage does the
+    // same, so the prediction and the round see the same potentials.
     const am = shooter.evalPotentials('attack', ctx);
+    const amDmg = am.dmg, amAa = am.aa, amCrit = am.crit;
     _defCtx.cover = 0; _defCtx.battle = ctx.battle; _defCtx.underFire = true; _defCtx.attacker = shooter;
-    const dm = target.evalPotentials('defend', _defCtx);
+    const dmDef = target.evalPotentials('defend', _defCtx).def;
 
     let crit = h.crit;
-    if (!crit && am.crit > 0 && rng() < am.crit) crit = true;
+    if (!crit && amCrit > 0 && rng() < amCrit) crit = true;
 
-    let dmg = raw * h.mult * am.dmg * (target.isVehicle ? am.aa : 1) * mitigation(target, weapon) * dm.def;
+    let dmg = raw * h.mult * amDmg * (target.isVehicle ? amAa : 1) * mitigation(target, weapon) * dmDef;
     if (crit && !h.crit) dmg *= 1.6;
     // Long-range rounds shed a little energy.
     if (h.t > weapon.range) dmg *= lerp(1, 0.72, clamp01((h.t - weapon.range) / Math.max(1, weapon.maxRange - weapon.range)));
@@ -821,9 +1104,17 @@ export function fireBurst(shooter, origin, aimDir, opts = {}) {
   const weapon = opts.weapon || (shooter.usingAlt && shooter.altAmmo ? shooter.altAmmo : shooter.weapon);
   const rng = opts.rng || Ctx.rng;
   const shots = opts.shots ?? weapon.shots ?? 1;
+  // Callers that predicted the shot pass the forecast's own sigma (ActionMode.fire does).
+  // The fallback has to reach the same number from the same terms — including the target's
+  // evasion, which effectiveAccuracy now owns — so the AI's expected-value sort and the AI's
+  // rounds cannot drift apart either.
   const sigma = opts.sigma ?? shotSigma(
     shooter, weapon,
-    effectiveAccuracy(shooter, weapon, { aimed: !!opts.aimed, range: opts.range || 20, cover: 0, target: opts.target, battle: opts.battle }),
+    effectiveAccuracy(shooter, weapon, {
+      aimed: !!opts.aimed, range: opts.range || 20, cover: 0,
+      target: opts.target, battle: opts.battle,
+      targetSpeed: opts.target ? opts.target.speed : 0,
+    }),
     opts.bloom ?? weapon.settled, shooter.speed,
   );
   const summary = { hits: 0, damage: 0, kills: 0, crits: 0, target: null };

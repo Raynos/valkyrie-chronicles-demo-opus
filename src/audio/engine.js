@@ -20,8 +20,9 @@
 import { Bus } from '../core/bus.js';
 import { CFG, byQ } from '../core/config.js';
 import {
-  SFX_DEFS, MATERIAL_IMPACT, WEAPON_SFX, resolveSfxName, renderSfx,
+  SFX_DEFS, SFX_ALIASES, MATERIAL_IMPACT, WEAPON_SFX, resolveSfxName, renderSfx,
   renderIR, IR_PRESETS, renderEngineLoop, renderTrackLoop, TankEngineVoice,
+  isFootSfx,
 } from './sfx.js';
 import { MusicEngine } from './music.js';
 import { Ambience } from './ambience.js';
@@ -227,6 +228,15 @@ export class AudioEngine {
     this._listenerReady = false;
     this._baked = 0;
     this._bakeTotal = 0;
+
+    // The world, once a Battle announces it. Nothing hands the AudioEngine a
+    // World (main.js builds both and introduces neither), which is why the
+    // footstep surface, the ambience time-of-day and the ambience wind were all
+    // constants. `battle:ready` already carries it.
+    this.world = null;
+    this._envAccum = 0;              // env poll is control-rate, not per-frame
+    this._shotFrom = { x: 0, y: 0, z: 0, speed: 0, ok: false };
+    this._enclosedFor = 0;           // hysteresis on the reverb space
 
     if (this.autoWire) this._wire();
   }
@@ -481,7 +491,17 @@ export class AudioEngine {
     // whatever survives fires in a lump the instant it resumes.
     if (!this.ready || this._suspended) return null;
     const o = opts || EMPTY;
-    const key = resolveSfxName(name, o.material);
+    let material = o.material;
+    // A FOOTSTEP IS A PROPERTY OF THE GROUND, NOT OF THE EMITTER.
+    // actionMode/ai emit the bare name `footstep`, which aliases to `footGrass`
+    // — so four of the five baked foot surfaces had no reachable caller and the
+    // stone bridge sounded like a meadow. The emitter knows where the boot
+    // landed; only we know what is under it.
+    if (material === undefined && o.pos && this.world && name) {
+      const pre = SFX_DEFS[name] ? name : SFX_ALIASES[name];
+      if (pre && isFootSfx(pre)) material = this.groundMaterialAt(o.pos);
+    }
+    const key = resolveSfxName(name, material);
     if (!key) {
       if (name && !this._warned.has(name)) {
         this._warned.add(name);
@@ -689,6 +709,30 @@ export class AudioEngine {
     return voice;
   }
 
+  /**
+   * Fire a bullet-crack for the round that just landed at `to`, using the
+   * muzzle stashed by the matching `shot:fired`.
+   *
+   * Two guards, both necessary:
+   *   * A round fired from ON TOP of the listener is your own weapon. Its
+   *     supersonic crack is inside the muzzle report you are already hearing,
+   *     and whizzBy's closest-approach solve clamps to the muzzle end, so
+   *     without this every shot the player takes cracks in his own ear.
+   *   * A burst of MG fire is 8 rounds in 0.6 s down one line. They are one
+   *     sound to the ear and eight voices to the pool.
+   */
+  _maybeWhizz(to) {
+    const s = this._shotFrom;
+    if (!s.ok || !to) return null;
+    s.ok = false;                                   // consume: one hit per shot
+    if (this._dist(s) < 9) return null;             // that is your own rifle
+    const now = this.ctx.currentTime;
+    if (now - (this._lastWhizz || -1) < 0.075) return null;
+    const v = this.whizzBy(s, to, { speed: s.speed || 780 });
+    if (v) this._lastWhizz = now;
+    return v;
+  }
+
   /** Continuous tank engine. `id` keys the voice so repeat calls address the
    *  same vehicle. Returns a TankEngineVoice (setRpm/setLoad/setTrackSpeed). */
   tankEngine(id, opts = {}) {
@@ -804,6 +848,96 @@ export class AudioEngine {
 
   setMusicIntensity(x) { this.music?.setIntensity(x); }
 
+  // -------------------------------------------------------------------------
+  // The world
+  // -------------------------------------------------------------------------
+
+  /**
+   * Introduce the AudioEngine to the World. Wired off `battle:ready`; safe to
+   * call again (a mission restart builds a new World).
+   */
+  attachWorld(world) {
+    this.world = world || null;
+    this._enclosedFor = 0;
+    if (!this.ready || !world) return this;
+    this._applyEnvironment(0, true);
+    return this;
+  }
+
+  /**
+   * What is under this point: a walkable platform's tag (the bridge deck) if
+   * there is one, otherwise the terrain splat's dominant material.
+   * @returns {string|undefined}
+   */
+  groundMaterialAt(p) {
+    const w = this.world;
+    if (!w || !p) return undefined;
+    const plat = w.onPlatform ? w.onPlatform(p.x, p.z) : null;
+    if (plat) return plat.tag || 'stone';
+    const t = w.terrain;
+    return (t && t.materialAt) ? t.materialAt(p.x, p.z) : undefined;
+  }
+
+  /**
+   * Push the world's ACTUAL weather and hour into the ambience bed, and pick
+   * the reverb space from what is standing around the listener.
+   *
+   * Ambience shipped at a hardcoded noon and a hardcoded breeze while `dusk` is
+   * a shipped scene and World.update() computes a real two-rate gust every
+   * frame; setWind/setTimeOfDay/setRiver/setSpace all existed and none of them
+   * had a caller. Control-rate (4 Hz) — every one of these is a
+   * multi-second-fade setter, so a per-frame poll would be pure AudioParam
+   * traffic.
+   */
+  _applyEnvironment(dt, force = false) {
+    const w = this.world;
+    if (!w) return;
+    this._envAccum += dt;
+    if (!force && this._envAccum < 0.25) return;
+    this._envAccum = 0;
+
+    // The world's gust — the SAME number every blade of grass and every flag is
+    // bending to (World.update -> setWindGain) — runs about 0.28 .. 1.16 around
+    // a mean of 0.72. Ambience carries its own fine-grained OU gust model on
+    // top of `wind`, so this is deliberately mapped as a SWELL about the
+    // shipped 0.38 base rather than stretched over the full 0..1: the bed keeps
+    // the level it was tuned at and gains the world's slow breathing.
+    if (this.ambience && w._wind !== undefined) {
+      const g = 0.38 + (w._wind - 0.72) * 0.42;
+      if (Math.abs(g - this.ambience.wind) > 0.004) {
+        this.ambience.setWind(Math.max(0, Math.min(1, g)));
+      }
+    }
+
+    // (Time of day is not polled: it is an EVENT. `world:timeOfDay` is the same
+    //  signal main.js re-lights the whole scene from — see _wire.)
+
+    // The reverb space. A stone village street between shelled houses IS the
+    // `ruin` IR — short, dense, bright, hard early slap — and the valley bed is
+    // wrong there. Judged by how much solid masonry is standing within earshot
+    // of the listener, with hysteresis so a walk past one wall cannot chatter
+    // the cross-fade.
+    const cols = w.colliders;
+    if (cols && cols.length) {
+      let near = 0;
+      for (let i = 0; i < cols.length; i++) {
+        const c = cols[i];
+        if (c.destroyed || !c.solid) continue;
+        const tag = c.tag;
+        if (tag !== 'building' && tag !== 'wall' && tag !== 'rubble') continue;
+        const p = c.pos || c.position || c.center;
+        if (!p) continue;
+        const dx = p.x - _lp.x, dz = p.z - _lp.z;
+        if (dx * dx + dz * dz < 90) near++;          // within ~9.5 m
+      }
+      const want = near >= 3;
+      this._enclosedFor = want ? Math.min(3, this._enclosedFor + 1)
+        : Math.max(-3, this._enclosedFor - 1);
+      if (this._enclosedFor >= 2 && this._space !== 'ruin') this.setSpace('ruin');
+      else if (this._enclosedFor <= -2 && this._space !== 'outdoor') this.setSpace('outdoor');
+    }
+  }
+
   /** Cross-fade the reverb between the two rendered spaces. */
   setSpace(name, fade = 1.2) {
     if (!this.ready || name === this._space) return;
@@ -864,6 +998,9 @@ export class AudioEngine {
         if (moved || turned || !this._listenerReady) this._applyListener(ctx.currentTime, dt);
       }
     }
+
+    // The world's real wind and the space the listener is standing in.
+    this._applyEnvironment(dt);
 
     // Combat heat decays; it ducks ambience and lifts music intensity.
     this._heat = Math.max(0, this._heat - dt * 0.42);
@@ -938,7 +1075,48 @@ export class AudioEngine {
       this.play(p.name, p);
     });
 
+    // --- the world introduces itself ---------------------------------------
+    // main.js builds the World and the AudioEngine and introduces neither to
+    // the other. `battle:ready` already carries the Battle, and Battle owns the
+    // World — so this is the handshake that makes the footstep surface, the
+    // ambience hour and the reverb space knowable at all.
+    on('battle:ready', (p) => {
+      this.attachWorld(p?.battle?.world);
+      const t = p?.mission?.timeOfDay;
+      if (typeof t === 'number') this.ambience?.setTimeOfDay(t);
+    });
+
+    // The canonical time-of-day signal — the same event main.js re-lights the
+    // whole scene from. `dusk` is a shipped scene; the crickets belong in it.
+    on('world:timeOfDay', (p) => {
+      if (p && typeof p.t === 'number') this.ambience?.setTimeOfDay(p.t);
+    });
+
+    // --- the Edelweiss --------------------------------------------------
+    // Tank._updateAudio publishes rpm/load/track/position at ~20 Hz. The voice
+    // is created on the first message and keyed by the vehicle's id, so a
+    // second tank simply gets a second voice.
+    on('vehicle:engine', (p) => {
+      if (!p || !this.ready) return;
+      const t = this._tanks.get(p.id) || this.tankEngine(p.id, { pos: p.pos, vol: 0.5 });
+      if (!t) return;
+      t.setRpm(p.rpm);
+      t.setLoad(p.load);
+      t.setTrackSpeed(p.track);
+      this.setTankPosition(p.id, p.pos);
+    });
+    on('vehicle:engineStop', (p) => { if (p && this.ready) this.stopTank(p.id); });
+
     on('shot:fired', (p) => {
+      // Stash the muzzle for whizzBy(): `shot:hit` knows where the round
+      // stopped but not where it started, and combat.fireRound emits the pair
+      // synchronously, this one first.
+      if (p && p.origin) {
+        const s = this._shotFrom;
+        s.x = p.origin.x; s.y = p.origin.y; s.z = p.origin.z;
+        s.speed = p.speed || 0;
+        s.ok = true;
+      }
       if (!p || !this.ready || this._recent('gun')) return;
       const w = p.weapon;
       // A weapon definition names its own sound; combat.js emits that same
@@ -951,7 +1129,14 @@ export class AudioEngine {
     });
 
     on('shot:hit', (p) => {
-      if (!p || !this.ready || this._recent('impact')) return;
+      if (!p || !this.ready) return;
+      // THE CRACK OF A ROUND GOING PAST YOU.
+      //
+      // whizzBy() — a full Doppler sweep with the panner flown along the
+      // trajectory — had no caller anywhere. It needs both ends of the flight
+      // path: `shot:fired` gave the muzzle a moment ago, this gives the impact.
+      this._maybeWhizz(p.point);
+      if (this._recent('impact')) return;
       const name = MATERIAL_IMPACT[p.material] || (p.unit ? 'impactFlesh' : 'impactDirt');
       this.play(name, { pos: p.point });
       // Glancing hits on hard cover spark off.

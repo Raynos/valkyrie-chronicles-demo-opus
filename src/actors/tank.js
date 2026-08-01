@@ -3114,9 +3114,25 @@ export class Tank {
 
     // ---- chassis ----------------------------------------------------------
     if (this.physics) {
+      // RESYNC THE RIDE MODEL TO WHERE THE TANK ACTUALLY IS.
+      //
+      // `root` is written every frame by Unit.syncActor() from the gameplay
+      // Unit — a vehicle is walked down a nav path exactly like a soldier, and
+      // nothing in src/game ever calls setThrottle/setSteer. The simulation was
+      // therefore integrating its own hull from the DEPLOY POINT for the whole
+      // mission: the suspension probed the terrain there, the surface lookup,
+      // the track imprints and the dust were all stamped there, and `speed` —
+      // which drives the engine audio and the exhaust plume — read 0 forever.
+      // Measured: 12 m of game-layer travel, 12.00 m of desync, 0 track marks.
+      this.physics.followKinematic(
+        this.root.position.x, this.root.position.z, this.root.rotation.y, dt
+      );
       if (!this._externalStep) this.physics.update(dt);
       this.physics.applyToRoot(this.root, this.chassis);
     }
+
+    // ---- engine + track audio ---------------------------------------------
+    this._updateAudio(dt);
 
     // ---- turret / gun slew ------------------------------------------------
     const slew = this.turretJammed ? 0.12 : this.turretSlew;
@@ -3398,6 +3414,57 @@ export class Tank {
     if (this.pennant) this.pennant.rotation.y = Math.sin(this.time * 4.1) * 0.35;
   }
 
+  /**
+   * PUBLISH THE ENGINE NOTE.
+   *
+   * `AudioEngine.tankEngine()` / `setTankPosition()` / `stopTank()` build a
+   * complete, working continuous-vehicle voice — cylinder pulse train, intake
+   * hiss, firing-order sub, exhaust and hull formants, track clatter — and had
+   * NO CALLER anywhere outside src/audio. The hero unit of the demo was silent
+   * for the whole mission.
+   *
+   * The actor cannot reach the AudioEngine (it is built by main.js and handed
+   * to nobody), so this goes out over the Bus like every other sound in the
+   * game. The payload object is reused: this runs every frame.
+   *
+   * Cadence is ~20 Hz. `TankEngineVoice` runs its own 5.5/s follower on the rpm
+   * target and 4/s on the track, so a faster target rate buys nothing but
+   * AudioParam traffic.
+   */
+  _updateAudio(dt) {
+    const p = this.physics;
+    if (!p) return;
+    if (this.destroyed) {
+      if (this._audioLive) {
+        this._audioLive = false;
+        Bus.emit('vehicle:engineStop', { id: this._audioId });
+      }
+      return;
+    }
+    if (!this._audioId) {
+      this._audioId = `tank:${this.name}:${this.seed.toString(36)}`;
+      this._audioMsg = {
+        id: this._audioId, pos: this.root.position,
+        rpm: 0, load: 0, track: 0, speed: 0, surface: p.surface,
+      };
+    }
+    this._audioAccum = (this._audioAccum || 0) + dt;
+    if (this._audioAccum < 0.05) return;
+    this._audioAccum = 0;
+    const m = this._audioMsg;
+    // engineRpm is a 0..1 demand fraction; ENGINE_BASE_RPM in the voice is 900,
+    // so map it onto a plausible 620 rpm idle .. 2150 rpm pulling band.
+    m.rpm = 620 + p.engineRpm * 1530;
+    m.load = p.engineLoad;
+    m.track = clamp01(
+      Math.max(Math.abs(p.trackSpeed[0]), Math.abs(p.trackSpeed[1])) / p.maxSpeed
+    );
+    m.speed = Math.hypot(p.vel.x, p.vel.z);
+    m.surface = p.surface;
+    this._audioLive = true;
+    Bus.emit('vehicle:engine', m);
+  }
+
   _updateFx(dt) {
     const p = this.physics;
     // Down to `chassis`, not just `root`: every spawn point below is a hull
@@ -3592,6 +3659,12 @@ export class Tank {
   // ==========================================================================
 
   dispose() {
+    // The engine voice, its panner and its reverb send outlive the actor unless
+    // somebody says so — one leaked pair per vehicle for the life of the ctx.
+    if (this._audioLive) {
+      this._audioLive = false;
+      Bus.emit('vehicle:engineStop', { id: this._audioId });
+    }
     if (this._physicsHost) {
       this._physicsHost.removeStepper(this.physics);
       this._physicsHost = null;

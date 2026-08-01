@@ -93,7 +93,12 @@ function commonFlags(col, opts) {
   col.maxHp = opts.hp ?? 0;
   col.tag = opts.tag || 'prop';
   col.owner = opts.owner || null;
-  col.crouchOnly = opts.crouchOnly ?? false;
+  // NO `crouchOnly`. It was set here on every collider ever built and read by
+  // nothing — and no producer in src/world passed it, so it was `false` on all
+  // of them. "A crouching man passes under this" is a real mechanic, but it is
+  // one nobody has authored a single volume for; implementing a reader would
+  // have changed no collider's behaviour while adding a branch to the movement
+  // solver. If it comes back, it must arrive WITH the low volumes that need it.
   col.version = 0;
   return defineDestroyed(col);
 }
@@ -312,8 +317,20 @@ export class ColliderGrid {
     }
   }
 
-  /** Re-bucket a collider after its transform changed. */
+  /**
+   * Re-bucket a collider after its transform changed.
+   *
+   * The `version` bump is not optional. src/physics/collision.js caches a
+   * normalised copy of every collider (centre, half extents, orientation,
+   * bound radius) keyed on `collider.version`, and serves the cache whenever the
+   * version matches — exactly as the `destroyed` setter above already knows.
+   * Without the bump this method refreshed the AABB and the broadphase buckets
+   * while every src/physics query (bullets, swept spheres, the rigid solver)
+   * went on testing the collider's PREVIOUS shape, so anything moved at runtime
+   * was silently wrong in one half of the engine and right in the other.
+   */
   update(c) {
+    c.version = (c.version | 0) + 1;
     if (c._cells) {
       for (const k of c._cells) {
         const b = this.buckets[k];

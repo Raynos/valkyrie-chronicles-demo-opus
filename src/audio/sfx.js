@@ -605,6 +605,35 @@ export const MATERIAL_IMPACT = {
   water: 'impactWater', river: 'impactWater',
 };
 
+/**
+ * Ground material -> footstep sound.
+ *
+ * Five foot surfaces are baked (grass, dirt, stone, wood, water) and four of
+ * them were UNREACHABLE: the only footstep the game emits is the bare name
+ * `footstep`, which aliases to `footGrass`, so the player crossed a stone
+ * bridge, a cobbled street and a wooden deck to the sound of long grass.
+ * `resolveSfxName` now redirects the foot family by material exactly the way it
+ * already redirected the impact family; AudioEngine samples the material under
+ * the emitter when the caller does not name one.
+ */
+export const MATERIAL_FOOT = {
+  grass: 'footGrass', hay: 'footGrass', crop: 'footGrass',
+  dirt: 'footDirt', soil: 'footDirt', ground: 'footDirt', mud: 'footDirt',
+  gravel: 'footDirt', sand: 'footDirt', sandbag: 'footDirt',
+  stone: 'footStone', rock: 'footStone', concrete: 'footStone',
+  brick: 'footStone', masonry: 'footStone', cobble: 'footStone', metal: 'footStone',
+  // The Vasel crossing is a three-span MASONRY bridge (world/structures.js
+  // buildBridge) — its deck is stone, not planking.
+  bridge: 'footStone',
+  wood: 'footWood', plank: 'footWood', deck: 'footWood', timber: 'footWood',
+  water: 'footWater', river: 'footWater', shallow: 'footWater',
+};
+
+/** True when `key` is a resolved member of the footstep family. */
+export function isFootSfx(key) {
+  return key.charCodeAt(0) === 102 /* f */ && key.startsWith('foot');
+}
+
 /** Class -> primary weapon sound, for `shot:fired` auto-wiring. */
 export const WEAPON_SFX = {
   rifle: 'rifle', scout: 'rifle', smg: 'smg', shock: 'smg', mg: 'mg',
@@ -616,11 +645,13 @@ export function resolveSfxName(name, material) {
   if (!name) return material ? (MATERIAL_IMPACT[material] || 'impactDirt') : null;
   if (SFX_DEFS[name]) {
     if (material && name.startsWith('impact')) return MATERIAL_IMPACT[material] || name;
+    if (material && isFootSfx(name)) return MATERIAL_FOOT[material] || name;
     return name;
   }
   const a = SFX_ALIASES[name];
   if (a) {
     if (material && a.startsWith('impact')) return MATERIAL_IMPACT[material] || a;
+    if (material && isFootSfx(a)) return MATERIAL_FOOT[material] || a;
     return a;
   }
   if (material && MATERIAL_IMPACT[material]) return MATERIAL_IMPACT[material];

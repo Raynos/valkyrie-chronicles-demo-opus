@@ -17,6 +17,7 @@ import { makeRng } from '../core/rng.js';
 
 import { Character } from '../actors/character.js';
 import { Tank } from '../actors/tank.js';
+import { makeBox } from '../world/collider.js';
 
 import { AP_DECAY, Unit, bindWorldHooks } from './units.js';
 import { canSee, explode, setCombatContext } from './combat.js';
@@ -60,6 +61,24 @@ export const SQUAD_LOST = Object.freeze({
  */
 export const NO_CAPTURERS = Object.freeze({
   id: 'no-capturers', type: 'noCapturers', fail: true, label: 'Someone has to reach their flag',
+});
+
+/**
+ * SQUAD_LOST'S HONEST TWIN: the field is empty because everyone was CARRIED OFF IT.
+ *
+ * rescue() is a success — the casualty lives — but it clears `deployed`, so a squad that was
+ * downed and then fully evacuated reads identically to a squad that was killed:
+ * infantryStanding(0) === 0. Measured in the r26 sim audit: down all six, rescue all six, and
+ * the mission ends with the banner "SQUAD WIPED OUT" and a results screen listing ZERO
+ * casualties. The ending is still correct — nobody left on the field can take the flag, so the
+ * mission cannot be won and must end — but blaming the player for six deaths that did not
+ * happen is a lie the results screen then contradicts.
+ *
+ * So the loss stays and only the NAME changes. See squadEvacuated().
+ */
+export const SQUAD_WITHDRAWN = Object.freeze({
+  id: 'squad-withdrawn', type: 'squadWithdrawn', fail: true,
+  label: 'Someone has to stay on the field',
 });
 
 // Beat between the last soldier falling and the results screen, so the fall reads.
@@ -207,6 +226,10 @@ export class Battle {
 
     this.refreshFog();
     this.updateCamps();
+    // addUnit() registers a vehicle collider at the position the roster was authored with;
+    // deployment then moves the vehicle. Place them before anything queries cover or walks,
+    // rather than leaving them 20 m stale until the first update() frame.
+    this.syncVehicleColliders();
     Bus.emit('battle:ready', { battle: this, mission: M });
     // After battle:ready, so the live objective text wins over the static mission list.
     this.publishObjectives();
@@ -265,7 +288,102 @@ export class Battle {
     }
     this.units.push(u);
     if (spec.team === 1 || u.team === 1) u.spotted = false;
+    if (u.isVehicle) this.registerVehicleCollider(u);
     return u;
+  }
+
+  /**
+   * A TANK IS A BUILDING THAT MOVES, AND THE WORLD DID NOT KNOW IT WAS THERE.
+   *
+   * World.colliders was built from structures + props + vegetation and nothing else, so the
+   * Edelweiss — the 5 m vehicle the whole mission is written around — was a pure rendering.
+   * Measured in the r26 sim audit: a 0.35 m body walked clean through the hull without the
+   * resolver noticing, and `World.coverAt` (which only queries the collider grid) returned 0
+   * for a soldier standing behind it. The single largest piece of hard cover on the map
+   * granted none.
+   *
+   * THE THREE BLOCKING FLAGS ARE SET DELIBERATELY AND THEY ARE NOT ALL TRUE:
+   *
+   *   solid: true             — bodies stop. This is the whole point. combat.colliderPush()
+   *                             does not consult `solid`, but every other reader does, and it
+   *                             is the physical truth.
+   *   blocksProjectile: false — the tank's BALLISTIC presence is already its unit hitboxes
+   *                             (units.js TANK_PARTS). combat.traceScene() prefers the nearest
+   *                             hit and a box drawn round the vehicle is always nearer than
+   *                             the capsules inside it, so a `true` here would swallow every
+   *                             round aimed AT the tank and make it invulnerable to gunfire.
+   *   blocksLos: false        — same trap one level up: canSee() traces to the target, so a
+   *                             sight-blocking volume centred on the tank would make the tank
+   *                             permanently unspottable. Unit bodies never block LOS here.
+   *
+   * `cover` is what the fix is FOR, and cover is read from the collider independently of all
+   * three flags (World.coverAt), so it works.
+   *
+   * REGISTERED AFTER nav.build(). The nav grid is baked once in setup() from the collider
+   * grid; a vehicle collider present at bake time would carve a permanent hole in the walkable
+   * set at the tank's START position and never fill it back in when the tank drove away.
+   * addUnit() runs after nav.build(), so the bake never sees these. Verified with the standing
+   * gate: nav.findPath(start, imperial camp) is still non-null.
+   */
+  registerVehicleCollider(u) {
+    const grid = this.world?.grid;
+    const list = this.world?.colliders;
+    if (!grid?.insert || !Array.isArray(list)) return null;
+    // Armour envelope from src/actors/tank.js `hitDims.hull` + fenders, in world metres with
+    // the feet at y = 0: 2.42 wide over the tracks, 5.0 long, belly 0.46 to deck 1.36.
+    const col = makeBox(
+      { x: u.pos.x, y: u.pos.y + 0.91, z: u.pos.z },
+      { x: 1.24, y: 0.68, z: 2.52 },
+      u.yaw,
+      {
+        cover: 0.85, conceal: 0.2,
+        solid: true, blocksLos: false, blocksProjectile: false,
+        destructible: false, tag: 'vehicle', owner: u,
+      },
+    );
+    col.material = 'metal';
+    list.push(col);
+    grid.insert(col);
+    u.collider = col;
+    (this._vehicleColliders || (this._vehicleColliders = [])).push({ unit: u, col });
+    return col;
+  }
+
+  /**
+   * Keep each vehicle collider under its vehicle, and switch it off while that vehicle is the
+   * one being driven.
+   *
+   * NEITHER BODY RESOLVER TAKES AN "IGNORE THIS VOLUME" ARGUMENT, and they are two different
+   * resolvers reading two different flags:
+   *
+   *   World.resolvePosition -> ColliderGrid.resolve  skips only `!c.solid`
+   *   nav.stepMove          -> combat.colliderPush   skips `colInert` (noBlock/destroyed/
+   *                                                  disabled/dead) and `walkOver`
+   *
+   * A vehicle sits dead-centre inside its own volume, so a live one would eject the tank
+   * along the shortest axis every frame and it could never drive. The game is turn-based —
+   * exactly one unit moves at a time — so the acting vehicle's own volume is switched off for
+   * the length of its sortie, and it has to be switched off in BOTH vocabularies or the fast
+   * path (which is the one that actually runs) ignores the other one.
+   */
+  syncVehicleColliders() {
+    const v = this._vehicleColliders;
+    if (!v || !v.length) return;
+    const driving = this.activeUnit || this.ai?.actor || null;
+    for (let i = 0; i < v.length; i++) {
+      const { unit, col } = v[i];
+      const off = unit === driving || !unit.alive || !unit.deployed;
+      col.disabled = off;                     // combat.colInert()
+      col.solid = !off;                       // ColliderGrid.resolve()
+      const moved = Math.abs(col.center.x - unit.pos.x) > 1e-3
+        || Math.abs(col.center.z - unit.pos.z) > 1e-3
+        || Math.abs(col.center.y - (unit.pos.y + 0.91)) > 1e-3
+        || Math.abs((col.yaw || 0) - unit.yaw) > 1e-3;
+      if (!moved) continue;
+      col.center.set(unit.pos.x, unit.pos.y + 0.91, unit.pos.z);
+      col.yaw = unit.yaw;
+      this.world.grid.update(col);            // re-buckets and refreshes the AABB
+    }
   }
 
   /**
@@ -515,6 +633,7 @@ export class Battle {
       if (u.team === 0 && !this.deployment.has(u) && !u.isVehicle) u.deployed = false;
     }
     Bus.emit('deploy:end', { deployed: this.units.filter((u) => u.team === 0 && u.deployed).length });
+    this.syncVehicleColliders();          // deployment just moved the tank — see setup()
     this.turn = 0;
     this.startTurn(0);
   }
@@ -635,12 +754,21 @@ export class Battle {
     return 'Unavailable';
   }
 
-  /** Spend the CP for `unit` without entering Action Mode (used by the AI). */
+  /**
+   * Spend the CP for `unit` without entering Action Mode (used by the AI).
+   *
+   * `stats.cpSpent` IS THE PLAYER'S BILL, NOT THE WORLD'S. This counter goes straight to the
+   * results screen next to a three-turn player budget, and it used to increment for whichever
+   * side was spending — including every Imperial sortie. Measured in the r26 audit: the player
+   * took ONE sortie (cpSpent 1) and one Imperial phase later the same counter read 7. The
+   * winning run's screen billed the player 32 points against a budget of 21, which is a number
+   * no player can reconcile with anything they did.
+   */
   spendCpFor(unit, team = unit.team) {
     const cost = this.selectCost(unit);
     if (this.cp[team] < cost) return false;
     this.cp[team] -= cost;
-    this.stats.cpSpent += cost;
+    if (team === 0) this.stats.cpSpent += cost;
     unit.freeAction = false;
     Bus.emit('cp:changed', { team, cp: this.cp[team] });
     return true;
@@ -655,8 +783,9 @@ export class Battle {
     }
     const cost = this.selectCost(unit);
     if (!this.spendCpFor(unit, 0)) return false;
-    // Remember the price so an empty sortie can hand it back. See refundEmptySortie().
-    this._actionCharge = { unit, cost };
+    // Remember the price so an empty sortie can hand it back, and WHERE HE WAS STANDING when
+    // it was paid, so the refund can put him back. See refundEmptySortie().
+    this._actionCharge = { unit, cost, x: unit.pos.x, z: unit.pos.z };
 
     this.activeUnit = unit;
     unit.beginAction();
@@ -725,6 +854,28 @@ export class Battle {
     if (!charge || charge.unit !== u) return false;
     if (this.over || reason === 'turnEnded' || reason === 'downed') return false;
     if (!u.active || u.actionWasSpent) return false;
+
+    /**
+     * A REFUND IS A REWIND, NOT A DISCOUNT.
+     *
+     * `actionWasSpent` is false below MIN_SORTIE_METRES (0.75 m), and the refund hands the
+     * point back AND un-ticks the AP-decay counter. Measured in the r26 audit: that is an
+     * unlimited free-movement engine — select, shuffle 0.7 m, end, repeat, and a soldier
+     * crosses the whole map on nothing at all, arriving with every sortie still in hand.
+     *
+     * The hole is that the refund undid the PRICE but not the MOVE. Undo both: a sortie that
+     * "took no action" leaves the soldier exactly where he started. At under 0.75 m this is
+     * invisible — it is the same shuffle the game has already decided did not happen — and it
+     * removes the exploit at the mechanism rather than by tightening a threshold that would
+     * then just be shuffled up to.
+     */
+    if (charge.x !== undefined && (u.pos.x !== charge.x || u.pos.z !== charge.z)) {
+      u.pos.x = charge.x;
+      u.pos.z = charge.z;
+      u.pos.y = this.groundY(charge.x, charge.z);
+      u.movedThisAction = 0;
+      u.syncActor?.();
+    }
 
     if (u.actionsThisTurn > 0) u.actionsThisTurn--;
     if (u.actionsThisTurn === 0) u.hasActed = false;
@@ -795,13 +946,71 @@ export class Battle {
       Bus.emit('command:denied', { order: o, reason: 'Order failed' });
       return false;
     }
-    this.stats.ordersUsed++;
-    this.stats.cpSpent += o.cost;
+    // Both of these are read straight off the results screen, so both are the PLAYER's tally.
+    // See spendCpFor(): an Imperial order used to appear on the player's bill.
+    if (team === 0) { this.stats.ordersUsed++; this.stats.cpSpent += o.cost; }
     Bus.emit('cp:changed', { team, cp: this.cp[team] });
     Bus.emit('order:used', { order: o, unit: o.target === 'unit' ? target : null });
     Bus.emit('sfx', { name: 'orderUse' });
     this.commandMode?.markDirty();
     return true;
+  }
+
+  /**
+   * WHERE THE OFF-MAP BATTERY IS ALLOWED TO DROP, for a barrage `team` is calling in.
+   *
+   * ORDERS.fireSupport is `target: 'area'` and there has never been an area-picking UI. The
+   * order deck passes `{ unit: selectedUnit }` like every other card, so `apply()` took the
+   * SELECTED SOLDIER'S POSITION as the aim point and walked four 95-power shells across it.
+   * Measured in the r26 playtest: 4 of 6 squadmates hit, Alicia downed, zero Imperials
+   * touched, 3 CP spent. The deck was masked at the time; it is not any more.
+   *
+   * Until an area picker exists the order aims itself, and the rule is a HARD GUARANTEE
+   * rather than a heuristic: it will not fire at all unless there is a spotted enemy cluster
+   * with no friendly inside the danger footprint.
+   *
+   * THE FOOTPRINT IS BIGGER THAN THE BLAST RADIUS. queueBarrage() scatters each shell up to
+   * `radius * 1.1` from the aim point and each shell's blast reaches `radius`, so a shell can
+   * reach `radius * 2.1` — 13.65 m at the default 6.5. That, not 6.5, is the clearance every
+   * friendly (standing, downed, and the tank) must have. It is a large exclusion and it makes
+   * the card unavailable in a close-quarters fight. That is the conservative choice on
+   * purpose: a card that sometimes cannot fire beats a card that sometimes wipes your squad.
+   *
+   * @returns {THREE.Vector3|null} the aim point, or null if there is no safe cluster.
+   */
+  barrageAimPoint(team = 0, radius = 6.5) {
+    const danger = radius * 2.1;
+    const foes = [];
+    for (const u of this.units) {
+      if (u.team === team || !u.active) continue;
+      // Team 0 may only shell what it can SEE (`spotted` is only maintained for team 1; the
+      // AI is allowed the same courtesy against a player it has acquired).
+      if (team === 0 && !u.spotted) continue;
+      foes.push(u);
+    }
+    if (!foes.length) return null;
+
+    let best = null, bestScore = 0;
+    for (const c of foes) {
+      let safe = true;
+      for (const f of this.units) {
+        if (f.team !== team || !f.alive || !f.deployed) continue;
+        const dx = f.pos.x - c.pos.x, dz = f.pos.z - c.pos.z;
+        if (dx * dx + dz * dz < danger * danger) { safe = false; break; }
+      }
+      if (!safe) continue;
+      let n = 0;
+      for (const o of foes) {
+        const dx = o.pos.x - c.pos.x, dz = o.pos.z - c.pos.z;
+        if (dx * dx + dz * dz <= radius * radius) n++;
+      }
+      // Deterministic tie-break: densest cluster, then the northernmost (closest to the
+      // Imperial end of the valley), then by name, so the same board always aims the same way.
+      if (!best || n > bestScore || (n === bestScore && c.pos.z < best.pos.z)) {
+        best = c; bestScore = n;
+      }
+    }
+    return best ? best.pos.clone() : null;
   }
 
   /** Off-map artillery, walked across the ground over several seconds. */
@@ -1089,7 +1298,7 @@ export class Battle {
     const M = this.mission;
     // The squad resolves before anything a mission declares: with no infantry on the field
     // there is no win condition left to reach. See SQUAD_LOST.
-    if (this.squadWiped()) { this.finish(false, SQUAD_LOST); return true; }
+    if (this.squadWiped()) { this.finish(false, this.squadLossReason()); return true; }
     // ...and one notch earlier, the last soldier who could stand on the flag. See NO_CAPTURERS.
     if (this.captureLost()) { this.finish(false, NO_CAPTURERS); return true; }
     // Failure conditions resolve first: losing the Edelweiss ends the mission even if you
@@ -1177,6 +1386,26 @@ export class Battle {
     if (this.infantryStanding(0) > 0) return false;
     return this._sawInfantry === true;      // never fire before anybody deployed
   }
+
+  /**
+   * The field is empty and NOBODY DIED — every soldier who left it was carried off alive.
+   * See SQUAD_WITHDRAWN. The mission still ends (there is no one left to take the flag); this
+   * only decides which of the two banners and which failure record it ends with.
+   */
+  squadEvacuated() {
+    if (!this.squadWiped()) return false;
+    let rescued = 0;
+    for (const u of this.units) {
+      if (u.team !== 0 || u.isVehicle) continue;
+      if (!(u.deployed || u._wasOnField)) continue;
+      if (!u.alive || u.downed) return false;      // a body on the field or in the ground
+      if (u.rescued) rescued++;
+    }
+    return rescued > 0;
+  }
+
+  /** SQUAD_LOST or SQUAD_WITHDRAWN, whichever is true. */
+  squadLossReason() { return this.squadEvacuated() ? SQUAD_WITHDRAWN : SQUAD_LOST; }
 
   /** Soldiers of `team` still standing who could actually plant a flag. See NO_CAPTURERS. */
   capturersStanding(team = 0) {
@@ -1301,6 +1530,7 @@ export class Battle {
     }
 
     this.updateBarrages(gdt);
+    this.syncVehicleColliders();
 
     for (let i = 0; i < this.units.length; i++) {
       const u = this.units[i];
@@ -1371,11 +1601,16 @@ export class Battle {
     if (!this.over && this.phase !== 'result') {
       if (this.infantryStanding(0) > 0) { this._sawInfantry = true; this._wipeT = 0; }
       else if (this.squadWiped()) {
+        // "WIPED OUT" over six living, evacuated soldiers is a lie the results screen then
+        // contradicts with "No Casualties". See SQUAD_WITHDRAWN / squadEvacuated().
+        const evac = this.squadEvacuated();
         if (this._wipeT === 0) {
-          Bus.emit('ui:alert', { text: 'SQUAD WIPED OUT', sub: 'no infantry left on the field' });
+          Bus.emit('ui:alert', evac
+            ? { text: 'SQUAD WITHDRAWN', sub: 'every soldier evacuated — no one left to advance' }
+            : { text: 'SQUAD WIPED OUT', sub: 'no infantry left on the field' });
         }
         this._wipeT += dt;
-        if (this._wipeT >= WIPE_GRACE) this.finish(false, SQUAD_LOST);
+        if (this._wipeT >= WIPE_GRACE) this.finish(false, evac ? SQUAD_WITHDRAWN : SQUAD_LOST);
       }
       // Same watcher, one notch earlier: the last soldier who could take the flag. Largo and
       // Marina still standing is not a win path. See NO_CAPTURERS.
@@ -1519,6 +1754,14 @@ export class Battle {
   dispose() {
     this._offShotHit?.();
     this._offShotHit = null;
+    // The World outlives the Battle (probes and the shot harness build several against one
+    // world), so a vehicle collider left in the grid would keep blocking bodies forever.
+    for (const { col } of this._vehicleColliders || []) {
+      this.world?.grid?.remove?.(col);
+      const i = this.world?.colliders?.indexOf(col) ?? -1;
+      if (i >= 0) this.world.colliders.splice(i, 1);
+    }
+    this._vehicleColliders = null;
     this.ai.dispose();
     this.interception.dispose();
     this.actionMode?.dispose();

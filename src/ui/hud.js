@@ -32,6 +32,16 @@ import {
   unitBlip, keyCap, inkGauge, hpTone, marchLine, rankChevrons, marginBracket, contourMap,
   dialGauge, compassPip, compassTick, viewWedge,
 } from './icons.js';
+// THE ONE IMPORT FROM THE GAME LAYER, AND WHY IT IS WORTH IT.
+//
+// The deck used to be six hardcoded cards (DEFAULT_ORDERS) waiting for a `ui:orders`
+// push that NOTHING in src/ has ever emitted, so seven of the thirteen orders could
+// never be issued at all — including Medical Kit and Field Repair, i.e. there was no
+// way to heal a soldier or repair the Edelweiss, whose loss is a fail condition.
+// Duplicating the table a second time would only move the drift; this is a static
+// data table of ids, names, costs and predicates, and reading it keeps the HUD a pure
+// observer (it still never mutates a thing, and still reports intent over `ui:order`).
+import { ORDERS } from '../game/orders.js';
 import { AudioEngine } from '../audio/engine.js';
 import { portraitFor } from './portraits.js';
 import { WorldLabels } from './worldLabels.js';
@@ -45,26 +55,43 @@ const CLASS_NAME = {
   engineer: 'Engineer', sniper: 'Sniper', tank: 'Tank',
 };
 
-// Ids and costs mirror src/game/orders.js so the strip is truthful even before
-// the game pushes its own list over `ui:orders`. Icons/blurbs are ours.
-// `short` is the line printed ON the card — a hand of cards is read at a glance,
-// and a four-line paragraph set at 0.6em on a 160 px card is a grey smudge. The
-// full sentence stays as the card's tooltip.
-const DEFAULT_ORDERS = [
-  { id: 'caution', name: 'Caution', cost: 1, icon: 'shield', short: 'Evades fire, two turns.', desc: 'One soldier evades and shrugs off fire for two turns.' },
-  { id: 'resupply', name: 'Resupply', cost: 2, icon: 'ammo', short: 'Ammunition and Ragnaid.', desc: 'Restore ammunition and Ragnaid to one unit.' },
-  { id: 'attackBoost', name: 'Attack Boost', cost: 2, icon: 'shock', short: 'Damage and aim raised.', desc: 'Raise one soldier’s damage and accuracy.' },
-  { id: 'demolitionBoost', name: 'Demolition Boost', cost: 2, icon: 'lancer', short: 'Anti-armour raised.', desc: 'Anti-armour damage raised by seven tenths.' },
-  { id: 'enemyRecon', name: 'Enemy Recon', cost: 2, icon: 'eye', short: 'Every position revealed.', desc: 'Reveal every enemy position on the map.' },
-  { id: 'directCommand', name: 'Direct Command', cost: 3, icon: 'radio', short: 'A second sortie.', desc: 'Grant a soldier a second sortie.' },
-];
-
-const ORDER_ICON = {
-  resupply: 'ammo', attackBoost: 'shock', defenseBoost: 'shield', demolitionBoost: 'lancer',
-  doubleMovement: 'boot', caution: 'shield', awakenPotential: 'star', medicalKit: 'ragnaid',
-  enemyRecon: 'eye', fireSupport: 'mortar', directCommand: 'radio', stormyAttack: 'swords',
-  repairKit: 'engineer',
+// The plate and the ONE line printed on the card. The game owns the id, the name,
+// the cost and the rule; this table owns nothing that can contradict it. `short`
+// exists because a hand of cards is read at a glance and a four-line paragraph set
+// at 0.6em on a 160 px card is a grey smudge — the full sentence is the tooltip,
+// and it comes from ORDERS[id].desc, so it can never drift from the mechanic.
+const ORDER_TEXT = {
+  caution: { icon: 'shield', short: 'Evades fire, two turns.' },
+  resupply: { icon: 'ammo', short: 'Ammunition and grenades.' },
+  medicalKit: { icon: 'ragnaid', short: 'Field dressing — heals 45%.' },
+  attackBoost: { icon: 'shock', short: 'Damage and aim raised.' },
+  defenseBoost: { icon: 'shield', short: 'Takes a third less damage.' },
+  demolitionBoost: { icon: 'lancer', short: 'Anti-armour raised.' },
+  enemyRecon: { icon: 'eye', short: 'Every position revealed.' },
+  doubleMovement: { icon: 'boot', short: 'Double the sortie range.' },
+  directCommand: { icon: 'radio', short: 'A free sortie, at full AP.' },
+  stormyAttack: { icon: 'swords', short: 'Fires twice next sortie.' },
+  repairKit: { icon: 'engineer', short: 'Patches the tank — 35% hull.' },
+  awakenPotential: { icon: 'star', short: 'Every potential fires.' },
+  fireSupport: { icon: 'mortar', short: 'Four shells on marked ground.' },
 };
+
+// AN ORDER THIS INTERFACE CANNOT AIM IS AN ORDER IT MUST NOT OFFER.
+//
+// `fireSupport` is `target: 'area'`: it wants a point on the ground, and there is no
+// ground-targeting cursor in the HUD — the deck's click can only hand the game a
+// UNIT. In r26 that meant four 95-power shells centred on your own selected soldier:
+// 4 of 6 squadmates hit, Alicia downed, zero Imperials touched, 3 CP spent.
+//
+// So an area order is offered only when the GAME can aim it without a cursor, which
+// `Battle.barrageAimPoint()` is — it picks the densest SPOTTED enemy cluster with no
+// friendly inside 2.1 blast radii, and `ORDERS.fireSupport.filter` refuses the card
+// outright when there is no such point. Where that helper is absent (an older game
+// layer, a HUD under test) the card stays out of the hand rather than guessing, and
+// _playOrder sends `unit: null` for every non-unit order so a soldier can never be
+// mistaken for an aim point again. CommandMode.beginOrder/applyOrderAt still has the
+// two-step ground prompt a proper cursor would drive.
+const AREA_TARGET = { area: true, point: true, ground: true };
 
 // mission.objectives use game-side type names; map them onto our pin glyphs.
 const OBJ_TYPE = {
@@ -241,13 +268,31 @@ const LEGENDS = {
     ['Drag', 'Pan Map'], ['LMB', 'Select Unit'], ['Tab', 'Next Soldier'],
     ['Q', 'Orders'], ['Enter', 'Sortie'], ['E', 'End Turn'], ['Esc', 'Pause'],
   ],
+  // ROUND 26 — AN ADVERTISED CONTROL THAT DOES NOTHING IS WORSE THAN AN ABSENT
+  // ONE. Three rows here were fiction, checked against the only two places that
+  // read the keyboard in a sortie (actionMode.updateModeInput, commandMode.read*):
+  //   'R — Reload'        R exists, but it only plays the reload animation and
+  //                       resets the settle clock; it grants no ammunition (see
+  //                       actionMode.js ~602, "no ammo gained"), because ammo is
+  //                       restored by the Resupply order or an Engineer, not by a
+  //                       key. Its slot now carries G, which was a real, useful
+  //                       control that nothing on the page mentioned.
+  //   'Wheel — Magnify'   nothing reads Input.mouse.wheel in aim; the only reader
+  //                       in src/ is commandMode's map zoom, and the command
+  //                       legend is already full at seven pairs (an eighth wraps
+  //                       it onto a second line over the End Turn ribbon), so the
+  //                       row is simply gone rather than moved.
+  //   'Tab — Target Part' there is no part-cycling handler anywhere in src/. The
+  //                       aim point is wherever the ray lands (actionMode sets
+  //                       aimPart from hit.partLabel), and the dossier's "Aim
+  //                       Point" row already reports it. The HUD must not fake it:
+  //                       it observes the solve, it does not own it.
   action: [
     ['WASD', 'Move'], ['Shift', 'Sprint'], ['Ctrl', 'Crouch'], ['RMB / Q', 'Aim'],
-    ['LMB', 'Fire'], ['R', 'Reload'], ['Enter', 'End Action'], ['Esc', 'Pause'],
+    ['LMB', 'Fire'], ['G', 'Grenade'], ['Enter', 'End Action'], ['Esc', 'Pause'],
   ],
   aim: [
-    ['LMB', 'Fire'], ['RMB / Q', 'Lower Weapon'], ['Wheel', 'Magnify'],
-    ['Tab', 'Target Part'], ['Esc', 'Pause'],
+    ['LMB', 'Fire'], ['RMB / Q', 'Lower Weapon'], ['Esc', 'Pause'],
   ],
   enemy: [['—', 'Imperial Turn']],
   result: [['Enter', 'Continue']],
@@ -291,7 +336,13 @@ export class HUD {
     this.dmgFlash = 0;
     this.apShown = 0;
     this.markers = [];
-    this.orders = DEFAULT_ORDERS;
+    // The deck is whatever the battle would actually rule on right now — see
+    // _deckFromGame(). `_deckKey` is what stops it rebuilding every frame.
+    this._ordersPushed = false;
+    this._deckKey = '';
+    this._orderTick = 0;
+    this.orders = this._deckFromGame() || this._deckAll();
+    this._deckKey = this.orders.map((o) => o.id).join(',');
     // The hand is a HAND OF CARDS, not a toolbar: it sits in the lower-left
     // quadrant, arced about a pivot below the page, cards overlapping and
     // splayed, and Q deals it out and gathers it back in.
@@ -703,6 +754,132 @@ export class HUD {
     }
   }
 
+  /** One order, dressed for the hand. */
+  _card(id, o) {
+    const t = ORDER_TEXT[id] || {};
+    return {
+      id, name: o.name || prettyId(id), cost: o.cost | 0, target: o.target || 'unit',
+      icon: t.icon || 'star', short: t.short || '', desc: o.desc || '',
+    };
+  }
+
+  /** Can this order be pointed at something by a hand that has only a card to click? */
+  _canAim(o) {
+    if (!AREA_TARGET[o.target]) return true;
+    return typeof this.battle?.barrageAimPoint === 'function';
+  }
+
+  /** Every order this interface can aim, cheapest first. The battle-less fallback. */
+  _deckAll() {
+    const out = [];
+    for (const id of Object.keys(ORDERS)) {
+      const o = ORDERS[id];
+      if (!o || !this._canAim(o)) continue;
+      out.push(this._card(id, o));
+    }
+    out.sort((a, b) => (a.cost - b.cost) || a.name.localeCompare(b.name));
+    return out;
+  }
+
+  /**
+   * THE HAND THE GAME WOULD ACTUALLY HONOUR.
+   *
+   * Membership is `ORDERS[id].filter` — the same predicate battle.useOrder() will
+   * rule with — evaluated against the soldier the click will actually target, which
+   * is `this.selected` (see the `ui:order` emit below and main.js's handler). That
+   * is the difference between a hand of thirteen cards, seven of which silently
+   * refuse, and a hand of the orders that work: Demolition Boost is simply not in
+   * the hand while a scout is selected, Medical Kit appears the moment somebody is
+   * hurt, Field Repair the moment the Edelweiss is.
+   *
+   * COST IS DELIBERATELY NOT PART OF MEMBERSHIP. An unaffordable card is drawn
+   * locked (_refreshOrderLocks) rather than removed, so the hand does not reflow
+   * under the player's cursor every time a point is spent, and so he can see what
+   * four points would buy while he has three.
+   *
+   * Returns null when there is no battle to rule with, which leaves whatever the
+   * deck already holds alone.
+   */
+  _deckFromGame() {
+    const b = this.battle;
+    if (!b || !Array.isArray(b.units) || !b.units.length) return null;
+    const sel = this.selected && this.selected.team === 0 && this.selected.active
+      ? this.selected : null;
+    const out = [];
+    for (const id of Object.keys(ORDERS)) {
+      const o = ORDERS[id];
+      if (!o || !this._canAim(o)) continue;
+      let ok = false;
+      // A filter reads live battle state; a half-built battle must not take the
+      // page down with it.
+      try {
+        if (o.target === 'unit') {
+          ok = sel ? !!o.filter(sel, b)
+            : b.units.some((u) => u.team === 0 && o.filter(u, b));
+        } else {
+          ok = o.filter(null, b) !== false;
+        }
+      } catch (e) { ok = false; }
+      if (ok) out.push(this._card(id, o));
+    }
+    if (!out.length) return null;
+    out.sort((a, c) => (a.cost - c.cost) || a.name.localeCompare(c.name));
+    return out;
+  }
+
+  /**
+   * Re-deal the hand if — and only if — the set of legal orders has changed.
+   * Called on selection, on entering command, after an order lands, and on a
+   * six-frame poll (frame-counted, never wall-clocked: the capture harness settles
+   * at dt = 0 and the plate has to be the same plate on every machine).
+   */
+  _syncOrders() {
+    if (this._ordersPushed) return;          // an explicit `ui:orders` push wins
+    const list = this._deckFromGame();
+    if (!list) return;
+    const key = list.map((o) => o.id).join(',');
+    if (key === this._deckKey) return;
+    this._deckKey = key;
+    this.orders = list;
+    this._renderOrders();
+  }
+
+  /**
+   * How far RIGHT of the deck's centre line the fan may reach, in em.
+   *
+   * Measured off the live layout, not assumed: `.vc-orders` is positioned in em and
+   * three media queries move it, the roster and the survey map both share the band,
+   * and the only honest answer is where the map's left edge actually is. 1.9 em is
+   * the fan's own bleed — a card is cocked up to 2 deg about a pivot 240% of its
+   * height below itself (style.js), so its painted box reaches ~1.9 em past its
+   * untransformed edge, measured at 30 px against a 18.7 px root.
+   *
+   * Falls back to the fixed budget the six-card hand used when nothing is laid out
+   * yet (first build, or a detached HUD under test).
+   */
+  _fanLimit() {
+    const FALLBACK = 22.5;                     // the six-card hand's own budget
+    try {
+      const em = parseFloat(getComputedStyle(this.root).fontSize);
+      const rr = this.root.getBoundingClientRect();
+      if (!(em > 0) || !(rr.width > 0)) return FALLBACK;
+      // `.vc-orders.shut` is display:none — i.e. its RECT is zero exactly when the
+      // hand is most likely to be re-dealt, which silently pinned the fan to the
+      // fallback. Its COMPUTED left/width are absolutised to px either way, and
+      // .vc-layer is inset:0 on .vc-root, so they share the root's frame.
+      const cs = getComputedStyle(this.ordersEl);
+      const l = parseFloat(cs.left), w = parseFloat(cs.width);
+      if (!isFinite(l) || !(w > 0)) return FALLBACK;
+      const cx = rr.left + l + w / 2;
+      const mr = this.root.querySelector('.vc-map')?.getBoundingClientRect();
+      // The survey map's measured left edge; failing that its CSS berth
+      // (right:2em, width at most 22em) taken off the root's right edge.
+      const right = (mr && mr.width > 0) ? mr.left : (rr.right - 26 * em);
+      const lim = (right - cx) / em - 1.9;
+      return lim > FALLBACK ? lim : FALLBACK;
+    } catch (e) { return FALLBACK; }
+  }
+
   _renderOrders() {
     clear(this.ordersIn);
     this._orderCards = [];
@@ -722,15 +899,53 @@ export class HUD {
     // The same fan spread the six titles over ~100 px of baseline, which reads
     // as scatter rather than as a hand. Clamped to 2 deg and a third of the lift
     // the row still arcs, still overlaps, and stays inside its own gutter.
+    //
+    // THE HAND IS NO LONGER ALWAYS SIX, so it is ANCHORED, GROWN AND SCALED.
+    //
+    // The first card keeps exactly the place it has always had — 21.8 em left of the
+    // deck's centre line, which is where `(0 - 2.5) * 7.3 - 3.55` put it with six
+    // cards — so a six-card hand is laid out IDENTICALLY to before and the command
+    // plate's composition does not move. Every card past the sixth buys 3 em of extra
+    // reach to the right, up to the gutter _fanLimit() measures off the live layout
+    // (35.8 em at 1920x1080; narrower windows find their own). The hand grows as much
+    // as it needs and no more: taking the whole gutter at eight cards turned the
+    // dealt arc back into the full-width toolbar r25 spent a round getting rid of.
+    //
+    // What is left over is taken out of the CARD, and out of the WHOLE card — a
+    // font-size scale, not a width. Setting width alone was measured at eleven cards
+    // and it is the round-2 failure again: the title box narrows while its type does
+    // not, so `overflow-wrap:anywhere` breaks the words themselves — the plate read
+    // "DEMOLITI ON BOOST", "DIRECT COMMAN D", "AWAKEN POTENTIA L". Scaling the type
+    // with the box keeps every wrap exactly where it is on a full-size card.
+    //   n =  6  ->  card 7.10 em (x1.00), pitch 7.30 em   (the old hand, untouched)
+    //   n =  8  ->  card 6.20 em (x0.87), pitch 6.20 em
+    //   n = 10  ->  card 5.56 em (x0.78), pitch 5.56 em
+    //   n = 12  ->  card 4.64 em (x0.65), pitch 4.64 em
+    const CARD = 7.1;                          // .vc-card width in style.js
+    const ANCHOR = -21.8;                      // em: first card's LEFT edge from centre
     const step = Math.min(2.0, 11 / n);        // degrees of cock per card
-    const pitch = Math.min(7.3, 44 / n);       // em of hand advance per card
+    const span = Math.min(this._fanLimit() - ANCHOR, 43.6 + Math.max(0, n - 6) * 3.0);
+    const cardW = Math.min(CARD, span / n);
+    const scale = cardW / CARD;                // 1 for six cards or fewer
+    const pitch = Math.min(7.3, (span - cardW) / Math.max(1, n - 1));
+    // --fx and --lift are read in the CARD's own em, so a scaled card needs them
+    // divided back out; the width and the -50% margin in the sheet scale themselves.
+    const emOf = (v) => (v / scale).toFixed(2) + 'em';
     this.orders.forEach((o, i) => {
       const p = panel({ seed: 900 + i * 37, cls: 'vc-card', tilt: 0, under: false, amp: 1.1, soft: true });
-      p.root.style.setProperty('--fx', ((i - mid) * pitch).toFixed(2) + 'em');
+      if (scale !== 1) p.root.style.fontSize = scale.toFixed(3) + 'em';
+      p.root.style.setProperty('--fx', emOf(ANCHOR + cardW / 2 + i * pitch));
       p.root.style.setProperty('--fan', ((i - mid) * step).toFixed(2) + 'deg');
       // The middle of the hand stands proudest, as a fan of cards does.
-      p.root.style.setProperty('--lift', (-(mid - Math.abs(i - mid)) * 0.19).toFixed(2) + 'em');
-      p.root.style.zIndex = String(10 + (i <= mid ? i : n - 1 - i));
+      p.root.style.setProperty('--lift', emOf(-(mid - Math.abs(i - mid)) * 0.19));
+      const baseZ = 10 + (i <= mid ? i : n - 1 - i);
+      p.root.style.zIndex = String(baseZ);
+      // HOVER HAS TO WIN. style.js lifts and scales the hovered card but sets
+      // `z-index:9` on it — BELOW every card's resting 10+ — so on an overlapping
+      // hand the card you point at rose behind its neighbours. An inline z-index
+      // beats the sheet without touching it.
+      p.root.addEventListener('mouseenter', () => { p.root.style.zIndex = '40'; });
+      p.root.addEventListener('mouseleave', () => { p.root.style.zIndex = String(baseZ); });
       p.root.style.animationDelay = (i * 0.045).toFixed(3) + 's';
       const in_ = h('div', { class: 'vc-card-in' });
 
@@ -762,7 +977,7 @@ export class HUD {
         wobblyPath(98, 58, 2, 58, { seed: 420 + i, amp: 0.7, segs: 8, overshoot: 1.4 }) + ' ' +
         wobblyPath(2, 58, 2, 2, { seed: 430 + i, amp: 0.7, segs: 6, overshoot: 1.4 }) +
         '" fill="none" stroke="#4a3c2c" stroke-width="1" opacity="0.72" stroke-linecap="round"/></svg>';
-      const emblem = icon(o.icon || ORDER_ICON[o.id] || 'star', { size: 34, width: 1.5, rough: true });
+      const emblem = icon(o.icon || 'star', { size: 34, width: 1.5, rough: true });
       emblem.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#4a3c2c';
       art.appendChild(emblem);
       in_.appendChild(art);
@@ -777,19 +992,42 @@ export class HUD {
       cost.appendChild(h('span', { class: 'vc-num', text: String(o.cost) }));
       p.root.appendChild(cost);
 
-      const locked = o.cost > cp;
-      p.root.classList.toggle('locked', locked);
-      if (!locked) {
-        clickable(p.root, () => {
-          Bus.emit('ui:order', { order: o, unit: this.selected });
-          Bus.emit('sfx', { name: 'ui_order', vol: 0.8 });
-          this.toast(o.name + ' — order issued', 'good');
-          this._toggleOrders(false);
-        });
-      }
+      p.root.classList.toggle('locked', o.cost > cp);
+      // THE HANDLER IS ATTACHED ONCE, AT BUILD, AND ASKS ABOUT THE LOCK ITSELF.
+      // It used to be attached only to cards that happened to be affordable when
+      // the hand was dealt, with _refreshOrderLocks bolting a SECOND, different
+      // handler on later — the two emitted different payloads and toasted at
+      // different moments.
+      clickable(p.root, () => this._playOrder(o));
       this.ordersIn.appendChild(p.root);
       this._orderCards.push({ o, root: p.root });
     });
+  }
+
+  /**
+   * Play a card.
+   *
+   * IT DOES NOT ANNOUNCE THE ORDER. Every card used to toast "<Name> — order
+   * issued" the instant it was clicked, BEFORE battle.useOrder() had ruled on it,
+   * so a refused order (measured: Demolition Boost on a scout -> `command:denied`
+   * "Invalid target", no CP spent, nothing applied) was indistinguishable from a
+   * successful one — and a successful one toasted twice, because `order:used`
+   * announces it as well. The game's two answers are already wired: `order:used`
+   * (good) and `command:denied` (block). This only sends the intent.
+   */
+  _playOrder(o) {
+    if (!o) return;
+    if (o.cost > this.cp) {
+      this.toast('Needs ' + o.cost + ' Command Points', 'block');
+      Bus.emit('sfx', { name: 'uiDeny' });
+      return;
+    }
+    // A UNIT IS ONLY EVER SENT FOR A UNIT ORDER. `main.js` pipes whatever is here
+    // straight into `battle.useOrder(id, target)`, and for an area order that made
+    // the selected soldier the aim point of a four-shell barrage.
+    Bus.emit('ui:order', { order: o, unit: o.target === 'unit' ? this.selected : null });
+    Bus.emit('sfx', { name: 'ui_order', vol: 0.8 });
+    this._toggleOrders(false);
   }
 
   /**
@@ -809,19 +1047,12 @@ export class HUD {
     }
   }
 
+  /** Grey the cards the budget will not cover. Membership is _syncOrders's job. */
   _refreshOrderLocks() {
     if (!this._orderCards) return;
     for (const c of this._orderCards) {
       const locked = c.o.cost > this.cp;
-      if (c.root.classList.contains('locked') !== locked) {
-        c.root.classList.toggle('locked', locked);
-        if (!locked && !c.root.classList.contains('clickable')) {
-          clickable(c.root, () => {
-            Bus.emit('ui:order', { order: c.o, unit: this.selected });
-            this.toast(c.o.name + ' — order issued', 'good');
-          });
-        }
-      }
+      if (c.root.classList.contains('locked') !== locked) c.root.classList.toggle('locked', locked);
     }
   }
 
@@ -1259,6 +1490,9 @@ export class HUD {
     this._on('unit:selected', (p) => {
       this.selected = p?.unit || null;
       this._syncSelection();
+      // The hand is dealt FOR the selected soldier: which orders are legal is a
+      // function of who the click will target. See _deckFromGame().
+      this._syncOrders();
       if (this.selected) this._flashSelected();
     });
     this._on('unit:damaged', (p) => {
@@ -1335,8 +1569,14 @@ export class HUD {
       });
       this.setControls('result');
     });
+    // THE ONE ANNOUNCEMENT, AND IT COMES FROM THE GAME. battle.useOrder() emits
+    // this only after the CP is spent and `apply` has returned, so it cannot
+    // congratulate the player for an order that was refused.
     this._on('order:used', (p) => {
       if (p?.order?.name) this.toast(String(p.order.name) + ' — order issued', 'good');
+      // Playing a card changes what is legal next: Resupply leaves nothing to
+      // resupply, Medical Kit nothing to heal.
+      this._syncOrders();
     });
     this._on('explosion', (p) => {
       if (!p?.pos || !this.camera) return;
@@ -1381,8 +1621,14 @@ export class HUD {
       else this.labels.capture(p.id != null ? p.id : 'camp', p.pos, p);
     });
     this._on('ui:markers', (p) => { this.markers = (p && p.markers) || []; });
+    // An explicit push takes the deck over completely and permanently — the
+    // publisher has said it wants to choose the hand, so the automatic sync stands
+    // down. `{orders: null}` hands it back.
     this._on('ui:orders', (p) => {
-      this.orders = (p && p.orders) || DEFAULT_ORDERS;
+      const list = p && p.orders;
+      this._ordersPushed = Array.isArray(list) && list.length > 0;
+      this.orders = this._ordersPushed ? list : (this._deckFromGame() || this._deckAll());
+      this._deckKey = this.orders.map((o) => o.id).join(',');
       this._renderOrders();
     });
     // The pause menu reaches _applyOption through its `onOption` callback, so
@@ -1481,7 +1727,9 @@ export class HUD {
     });
 
     // --- command mode ------------------------------------------------------
-    this._on('command:enter', () => { this._rosterKey = ''; this.cpShown = -1; this._renderCp(); });
+    this._on('command:enter', () => {
+      this._rosterKey = ''; this.cpShown = -1; this._renderCp(); this._syncOrders();
+    });
     // A REFUSED ORDER IS THE SAME CLASS OF EVENT AS A REFUSED TRIGGER PULL, and it
     // has to look like one — a barred slip, not another cream notice. battle.js
     // writes these in English already ("Not enough Command Points"); anything that
@@ -1882,15 +2130,42 @@ export class HUD {
       const dmg = t.expectedDamage != null ? t.expectedDamage : 0;
       const kill = (dmg > 0 && hp != null) ? Math.max(1, Math.ceil(hp / dmg)) : null;
       const sh = t.shooter || {};
-      const wCls = String(sh.cls || '').toLowerCase();
       const set = (k, v) => { if (this.dmgCells[k]) this.dmgCells[k].textContent = v; };
       set('kill', kill != null ? String(kill).padStart(2, '0') : '--');
-      const mag = sh.maxAmmo ?? sh.ammo;
+      // ATTACKS LEFT, NOT THE MAGAZINE SIZE. `expectedDamage` is a whole-attack
+      // expectation (combat.js attackForecast: hit chance x rounds x per-round
+      // damage), so "To kill" counts ATTACKS \u2014 and the number beside it has to be
+      // in the same unit or the row cannot be read. `maxAmmo` printed 05 for a
+      // scout down to his last shot.
+      const mag = sh.ammo != null ? sh.ammo : sh.maxAmmo;
       set('shots', mag != null ? String(mag).padStart(2, '0') : '--');
-      // Circle = effective, cross = not. Matches the reference's glyph pair.
-      set('pers', wCls === 'lancer' ? '\u00d7' : '\u25cb');
-      set('armor', wCls === 'lancer' ? '\u25cb' : '\u00d7');
-      set('area', (wCls === 'lancer' || wCls === 'shock') ? '\u25cb' : '\u00d7');
+
+      // THE PROFILE IS THE WEAPON'S, AND IT IS READ OFF THE WEAPON.
+      //
+      // These three cells used to be switched on the SHOOTER'S CLASS STRING, so a
+      // Lancer read "x vs Personnel" while putting 92 a round into a scout, a
+      // Shocktrooper claimed an area effect its SMG does not have, and the tank \u2014
+      // whose class is 'tank', matching no branch \u2014 read exactly like a rifleman.
+      // Three of five cells contradicted units.js WEAPONS. The thresholds below
+      // are the game's own numbers, not taste:
+      //   personnel  a burst of `shots` rounds at `apDamage` against a soldier of
+      //              48-96 hp (units.js CLASSES); >= 24 downs the median man in
+      //              three attacks. Every weapon in the game clears it \u2014 a lance
+      //              IS lethal to infantry, which is the whole complaint.
+      //   armour     the same burst at `aaDamage` against the 1250 hp Edelweiss
+      //              hull; >= 100 is a hull kill inside the 6 attacks a tank
+      //              carries, below it you are scratching paint (a rifle's 4x4).
+      //   area       the weapon carries a `splash` radius at all.
+      const w = (sh.usingAlt && sh.altAmmo) ? sh.altAmmo : sh.weapon;
+      const YES = '\u25cb', NO = '\u00d7';       // circle = effective, cross = not
+      if (w) {
+        const burst = w.shots || 1;
+        set('pers', (w.apDamage || 0) * burst >= 24 ? YES : NO);
+        set('armor', (w.aaDamage || 0) * burst >= 100 ? YES : NO);
+        set('area', (w.splash || 0) > 0 ? YES : NO);
+      } else {
+        set('pers', '-'); set('armor', '-'); set('area', '-');
+      }
     }
     if (t.part !== this._bodyPart) {
       this._bodyPart = t.part || 'torso';
@@ -2216,6 +2491,13 @@ export class HUD {
   _updateCommand(dt) {
     const cp = this._readCp();
     if (cp !== this.cp) { this.cp = cp; this._renderCp(); this._refreshOrderLocks(); }
+    // What a card is allowed to do depends on live battle state — ammunition
+    // spent, a soldier wounded, the tank scratched, a squadmate walking inside
+    // the commander's 22 m — and not every one of those has an event the HUD
+    // listens to. Six-frame poll, COUNTED not timed, so the capture harness
+    // (which settles at dt = 0) produces the same hand on every machine.
+    // _syncOrders() rebuilds nothing unless the set of legal ids actually moved.
+    if ((this._orderTick = (this._orderTick + 1) % 6) === 0) this._syncOrders();
     if ((this.battle.turn || 1) !== this.turn) {
       this.turn = this.battle.turn || 1;
       this.turnNum.textContent = pad(this.turn);

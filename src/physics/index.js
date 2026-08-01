@@ -23,7 +23,7 @@ export { Explosions } from './explosions.js';
 import { Ballistics, WEAPON_BALLISTICS } from './ballistics.js';
 import { RigidBodySim } from './rigid.js';
 import { Explosions } from './explosions.js';
-import { capsuleVsWorld, rayVsHeightfield, sweptSphereVsBoxes, Hit } from './collision.js';
+import { rayVsHeightfield, sweptSphereVsBoxes, Hit } from './collision.js';
 
 export const FIXED_DT = 1 / 60;
 const MAX_SUBSTEPS = 5;          // beyond this we drop time rather than spiral
@@ -108,7 +108,6 @@ export class PhysicsWorld {
 // --------------------------------------------------------------- helpers ----
 
 const _seg0 = new THREE.Vector3();
-const _seg1 = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _hit = new Hit();
 const _rayHit = new Hit();
@@ -197,67 +196,46 @@ const _solidFilter = (c) => !c.destroyed && c.solid !== false;
  * the `ballistics` field the game table now carries; this accepts either that
  * table's entry, its id, or a raw ballistics id.
  *
+ * THIS FUNCTION IS THE BRIDGE AND IT IS NOT PLUGGED IN. src/game/combat.js
+ * ballisticsSpec() returns `Physics.ballisticsFor ? ... : null`, and the only
+ * caller of its setPhysics() — src/main.js — hands over `{ GRAVITY, groundUnder }`,
+ * so `ballisticsFor` is always undefined there and every weapon in the game
+ * resolves to a null profile. What that costs is real: structuralDamage() then
+ * takes its `16 + 120 * pierce` fallback, which ranks cover damage by
+ * ANTI-PERSONNEL pierce instead of by penetration — the exact inversion the
+ * penetration-driven design exists to prevent. See the handoff in the r26 report;
+ * the fix is one identifier in main.js's setPhysics call, not a change here.
+ *
  * @param {string|object} w
  * @returns {object|null} entry of WEAPON_BALLISTICS
  */
 export function ballisticsFor(w) {
   if (!w) return null;
   if (typeof w === 'string') {
-    return WEAPON_BALLISTICS[w] || WEAPON_BALLISTICS[GAME_WEAPON_BALLISTICS[w]] || null;
+    return WEAPON_BALLISTICS[w] || WEAPON_BALLISTICS[GAME_WEAPON_BALLISTICS[w]]
+      || WEAPON_BALLISTICS[KIND_BALLISTICS[w]] || null;
   }
   if (w.ballistics && WEAPON_BALLISTICS[w.ballistics]) return WEAPON_BALLISTICS[w.ballistics];
   if (w.id && GAME_WEAPON_BALLISTICS[w.id]) return WEAPON_BALLISTICS[GAME_WEAPON_BALLISTICS[w.id]];
   if (w.kind && WEAPON_BALLISTICS[w.kind]) return WEAPON_BALLISTICS[w.kind];
+  if (w.kind && KIND_BALLISTICS[w.kind]) return WEAPON_BALLISTICS[KIND_BALLISTICS[w.kind]];
   return null;
 }
 
 /**
- * Move a capsule (a walking unit, or the tank's collision proxy) through the
- * world with penetration resolution and a terrain floor. Mutates `pos`.
- *
- * @param {THREE.Vector3} pos     feet position, updated in place
- * @param {THREE.Vector3} delta   desired motion this step
- * @param {number} radius
- * @param {number} height         total capsule height (feet to top)
- * @param {object} world
- * @param {number} stepHeight     max ledge the mover can walk up
- * @returns {{grounded:boolean, blocked:boolean, groundNormal:THREE.Vector3}}
+ * Last-resort resolution by weapon CLASS, for the two `kind` values in
+ * src/game/units.js that name no flight model of their own. Without this a tank
+ * gun ('cannon') fell all the way through to null and was quoted a rifle's
+ * muzzle velocity by the FX layer.
  */
-const _moveOut = { grounded: false, blocked: false, groundNormal: new THREE.Vector3(0, 1, 0) };
-export function moveCapsule(pos, delta, radius, height, world, stepHeight = 0.45) {
-  const startY = pos.y;
-  pos.add(delta);
-  let blocked = false;
-  // Two relaxation passes: enough for corners, cheap enough for 20 units.
-  for (let i = 0; i < 2; i++) {
-    _seg0.set(pos.x, pos.y + radius, pos.z);
-    _seg1.set(pos.x, pos.y + height - radius, pos.z);
-    const r = capsuleVsWorld(_seg0, _seg1, radius, world);
-    if (!r.hit) { _moveOut.grounded = r.grounded; _moveOut.groundNormal.copy(r.groundNormal); break; }
-    // Vertical-only pushes below the step height are absorbed as a step-up.
-    if (r.mtv.y > 0 && r.mtv.y <= stepHeight && Math.abs(r.mtv.x) + Math.abs(r.mtv.z) < 0.02) {
-      pos.y += r.mtv.y;
-    } else {
-      pos.add(r.mtv);
-      if (Math.abs(r.mtv.x) + Math.abs(r.mtv.z) > 1e-4) blocked = true;
-    }
-    _moveOut.grounded = r.grounded;
-    _moveOut.groundNormal.copy(r.groundNormal);
-  }
-  // Hard floor clamp — nothing is ever allowed under the heightfield.
-  const terrain = world && world.terrain;
-  if (terrain && terrain.heightAt) {
-    const h = terrain.heightAt(pos.x, pos.z);
-    if (pos.y < h) { pos.y = h; _moveOut.grounded = true; }
-    // Don't let a single step teleport up a cliff.
-    if (pos.y - startY > stepHeight + Math.max(0, delta.y)) {
-      pos.y = startY + stepHeight + Math.max(0, delta.y);
-      if (pos.y < h) pos.y = h;
-    }
-  }
-  _moveOut.blocked = blocked;
-  return _moveOut;
-}
+const KIND_BALLISTICS = { cannon: 'tankAP', lance: 'lance', grenade: 'grenade' };
+
+// NO `moveCapsule` HERE. It was a second, never-imported character-movement
+// solver sitting next to the one the game uses: infantry move through
+// src/game/actionMode.js moveWithCollision() and the tank through
+// src/actors/tankPhysics.js, both of which call capsuleVsWorld() directly (still
+// exported above). Two solvers with two different step-up rules is a divergence
+// waiting to be found by a player, and this one had no callers to keep it honest.
 
 /**
  * Nearest surface point below `pos` — the universal "put this thing on the

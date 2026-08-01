@@ -510,6 +510,18 @@ const WEAPON_ALIAS = {
   grenade: 'thrown', throw: 'thrown', toolkit: 'tool',
 };
 
+/**
+ * `sfx` names that mean "a boot just hit the ground", and how hard.
+ * Keyed off the sound because that is the only per-step event the game emits —
+ * actionMode/ai raise `footstep` on each stride, `vault`/`ladder` on a landing.
+ */
+const DUST_SFX = {
+  footstep: 0.34, step: 0.34, foot: 0.34,
+  vault: 0.85, vaultOver: 0.85, ladder: 0.3, climb: 0.3,
+};
+// A body hitting the ground is handled off `unit:downed` instead — units.js
+// emits BOTH that and an `sfx` named `downed`, and one fall is one puff.
+
 export class FxSystem {
   /**
    * @param {THREE.Scene} scene
@@ -636,11 +648,48 @@ export class FxSystem {
     ];
     this._times = [smokeU.uTime, flashU.uTime, streakU.uTime, this.casingMat.uniforms.uTime];
 
+    /** The World, once a Battle announces it — see groundDust(). */
+    this.world = null;
+
     // Fire-and-forget wiring: anything that emits these events gets VFX free.
     this._off = [
       Bus.on('shot:hit', (p) => { if (p && p.point) this.impact(p.point, p.normal, p.material); }),
       Bus.on('explosion', (p) => { if (p && p.pos) this.explosion(p.pos, p.radius || 3); }),
+      // BOOTS AND LANDINGS. `dustKick` had no caller anywhere in the tree — the
+      // one FX in this file authored for a foot rather than a weapon, and it
+      // never ran. The events already exist; only the surface was missing, and
+      // `battle:ready` carries the World that knows it.
+      Bus.on('battle:ready', (p) => { this.world = p?.battle?.world || null; }),
+      Bus.on('sfx', (p) => {
+        if (!p || !p.pos) return;
+        const k = DUST_SFX[p.name];
+        if (k !== undefined) this.groundDust(p.pos, k);
+      }),
+      Bus.on('unit:downed', (p) => {
+        const pos = p?.unit?.pos || p?.pos;
+        if (pos) this.groundDust(pos, 0.7);
+      }),
     ];
+  }
+
+  /**
+   * dustKick(), but only where there is loose dry ground to kick. A boot on
+   * long grass, in the river shallows or on a wet mud bank does not raise dust,
+   * and a puff on every footstep of a mission fought across a water meadow
+   * would be worse than no puff at all.
+   */
+  groundDust(pos, strength = 1) {
+    if (!this.enabled || strength <= 0) return;
+    const w = this.world;
+    let dry = 0.55;                       // unknown ground: a restrained puff
+    if (w) {
+      if (w.onPlatform && w.onPlatform(pos.x, pos.z)) return;   // swept stone deck
+      const m = w.terrain?.materialAt?.(pos.x, pos.z);
+      if (m === 'water' || m === 'mud') return;
+      dry = m === 'dirt' ? 1 : m === 'rock' ? 0.7 : m === 'grass' ? 0.28 : 0.55;
+    }
+    if (dry < 0.3 && this.rng() > dry * 2) return;   // grass: an occasional scuff
+    this.dustKick(pos, strength * dry);
   }
 
   _mesh(geo, mat, order) {

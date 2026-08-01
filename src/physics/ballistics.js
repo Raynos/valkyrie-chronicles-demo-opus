@@ -4,6 +4,36 @@
 //
 // Everything is stepped on the shared fixed 60 Hz clock (see index.js) so
 // replays and the AI's shot prediction agree with what actually happens.
+//
+// ---------------------------------------------------------------------------
+// STATUS, r26 — READ THIS BEFORE AUDITING THIS FILE AGAIN.
+//
+// No projectile is ever spawned during play. MEASURED: `projectiles.length` is
+// 0 at rest and still 0 after 180 fixed steps of a live firefight. Every shot
+// in the game — the player's, the AI's, interception, the tank's — resolves
+// through the HITSCAN model in src/game/combat.js (fireRound/fireBurst), which
+// is the damage authority: it owns the BLiTZ stat integration, the accuracy
+// model, the friendly-fire rule and the numbers the HUD's forecast promises.
+//
+// This file is NOT orphaned, and deleting it would be deleting a design three
+// other modules are already built for:
+//   * PRODUCER, live:  src/actors/tank.js `fire()` / `fireCoax()` call
+//     `this.ballistics.fire(...)` on a reference main.js really does hand them.
+//     MEASURED: `edelweiss.actor.fire({owner, force:true})` spawns a tankAP
+//     round at 779.6 m/s into this sim right now. Nothing in src/game calls it.
+//   * CONSUMER, live:  src/main.js `updateTracers()` walks `projectiles` every
+//     frame and stamps `fx.tracerSegment()` head-to-tail — a curved-trail
+//     renderer that exists for nothing else and currently draws nothing.
+//
+// So the missing link is ONE call in the game layer, in files this round did
+// not own. What must NOT happen is a second damage authority: if a shell is
+// routed here, combat.js has to resolve the damage on the projectile's IMPACT
+// rather than at trigger-pull, or the forecast the player was shown and the
+// damage he gets stop being the same number. That is a game-layer redesign, not
+// a physics change. Everything below has been repaired so that call is safe to
+// add: the friendly-fire filter, cover penetration and the hit record all work
+// and are covered by the r26 probes.
+// ---------------------------------------------------------------------------
 
 import * as THREE from 'three';
 import { Bus } from '../core/bus.js';
@@ -74,6 +104,17 @@ function dragK(name, spec) {
 
 let _pid = 1;
 
+/** Deterministic stand-in for a seeded rng: a splitmix-ish walk from `seed`. */
+function hashRng(seed) {
+  let x = (seed ^ 0x9e3779b9) >>> 0;
+  return () => {
+    x = (x + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(x ^ (x >>> 15), 1 | x);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /** A live projectile. Pooled by Ballistics — never keep a reference after death. */
 class Projectile {
   constructor() {
@@ -90,6 +131,8 @@ class Projectile {
     this.gravity = GRAVITY;
     this.owner = null;
     this.team = -1;
+    /** Opt-in: a round that is allowed to strike its own side. Default false. */
+    this.friendlyFire = false;
     this.damage = 10;
     this.penetration = 20;
     this.radius = 0.04;
@@ -101,6 +144,8 @@ class Projectile {
     this.fuse = -1;
     this.tracer = 0;
     this.explosive = null;
+    /** Collider the round is currently punching through, if any. */
+    this.penColl = null;
     this.onHit = null;
     this.userData = null;
   }
@@ -148,6 +193,13 @@ export class Ballistics {
     p.gravity = GRAVITY * (prof.grav ?? 1);
     p.owner = spec.owner || null;
     p.team = spec.team ?? (spec.owner && spec.owner.team) ?? -1;
+    // FRIENDLY FIRE IS NOT A FEATURE — the same rule src/game/combat.js's
+    // fireRound() settled on in round 19, and for the same reason: nobody has
+    // ever wanted a burst meant for an Imperial to stop on the scout who walked
+    // into it. A projectile carried a `team` and no filter used it, so the
+    // moment anything routes fire through here it would have hit squadmates
+    // that the hitscan path already refuses to hit. Opt back in per shot.
+    p.friendlyFire = spec.friendlyFire === true;
     p.damage = spec.damage ?? prof.damage ?? 12;
     p.penetration = spec.penetration ?? prof.pen ?? 20;
     p.radius = spec.radius ?? Math.max(0.03, prof.cal * 0.5);
@@ -159,6 +211,7 @@ export class Ballistics {
     p.fuse = spec.fuse ?? prof.fuse ?? -1;
     p.tracer = spec.tracer ?? prof.tracer ?? 0;
     p.explosive = spec.explosive || prof.explosive || null;
+    p.penColl = null;
     p.onHit = spec.onHit || null;
     p.userData = spec.userData || null;
 
@@ -170,7 +223,11 @@ export class Ballistics {
     _v0.copy(spec.dir).normalize();
     const spread = spec.spread || 0;
     if (spread > 0) {
-      const rng = spec.rng || Math.random;
+      // DETERMINISM CONTRACT (CLAUDE.md): identical shot name => identical frame
+      // => identical pixels. `Math.random` as the default rng broke that for any
+      // caller that forgot to pass one. Fall back to a hash of the projectile id
+      // instead — same distribution, no global state, replay-safe.
+      const rng = spec.rng || hashRng(p.id);
       // Cone jitter in the plane perpendicular to dir.
       const ang = rng() * Math.PI * 2;
       const r = Math.sqrt(rng()) * spread;
@@ -302,8 +359,11 @@ export class Ballistics {
       }
     }
     if (!(opts && opts.skipUnits)) {
+      // `friendlyFire: true` on the pseudo-projectile: a LINE-OF-FIRE query must
+      // report the squadmate standing in the way — that is the entire question
+      // being asked (combat.js friendlyInLine()). Only fire() suppresses him.
       const uh = this._sweepUnits(origin, _v2, best ? best.distance : maxDist, 0.001,
-        ignore ? { owner: ignore, team: -2 } : null);
+        ignore ? { owner: ignore, team: -1, friendlyFire: true } : null);
       if (uh) best = uh;
     }
     if (!best) return null;
@@ -320,6 +380,9 @@ export class Ballistics {
       if (!u || u.alive === false) continue;
       if (proj && (u === proj.owner || (proj.owner && u.character === proj.owner) ||
                    (proj.owner && u.tank === proj.owner))) continue;
+      // Same-side rounds pass through. See the note in fire(): `team` was
+      // recorded on every projectile and consulted by nothing.
+      if (proj && !proj.friendlyFire && proj.team >= 0 && u.team === proj.team) continue;
       const t = hitVolumesSweep(u, origin, dir, bestT, radius, _hitUnit);
       if (t) { bestT = _hitUnit.distance; found = true; }
     }
@@ -355,11 +418,27 @@ export class Ballistics {
     // armour is much harder to punch through — this is the whole point of the
     // Edelweiss' sloped glacis).
     const cosT = clamp(-dir.dot(hit.normal), 0.05, 1);
-    const hardness = (SURFACE_HARDNESS[hit.material] ?? 60) / cosT;
+    const base = hit.collider && hit.collider.hardness != null
+      ? hit.collider.hardness
+      : (SURFACE_HARDNESS[hit.material] ?? 60);
+    const hardness = base / cosT;
     // Only *colliders* can be shot through. The heightfield is the world: a
     // round that tunnelled through a hill would let players shoot through
     // terrain, which breaks cover entirely.
-    const canPen = hit.kind === 'collider' && hit.collider && !hit.collider.solid &&
+    //
+    // The second clause used to be `!hit.collider.solid` — a collider that does
+    // NOT block bodies but DOES stop rounds. src/world/collider.js defaults
+    // `blocksProjectile` to `solid || blocksLos`, so that describes a volume
+    // nobody authors: MEASURED on the live map, 0 of 423 colliders satisfied it
+    // (the four combinations present are solid/los/proj = TTT x305, TFT x47,
+    // TFF x22, FFF x49). Penetration was unreachable, so a tank round and a
+    // pistol round were stopped identically by a hay bale.
+    //
+    // The question is a MATERIAL one, and hardness already answers it: at normal
+    // incidence a rifle (pen 26) defeats wood (22) and nothing else, a lance
+    // (240) and an 88 (300) go through brick and stone, and everything is harder
+    // to defeat obliquely. `solid` is about bodies and never belonged here.
+    const canPen = hit.kind === 'collider' && hit.collider &&
                    p.penetration > hardness * 1.15;
 
     // Bouncy ordnance (grenades) ricochets off terrain instead of detonating.
@@ -375,7 +454,25 @@ export class Ballistics {
       return false;
     }
 
-    this._emitHit(p, hit);
+    // Publish the through-and-through with the hit, not after it. `penetrated`
+    // used to be written in the canPen branch BELOW _emitHit, so `shot:hit`
+    // always announced `penetrated: false` and the FX layer could never draw a
+    // punch-through; worse, `hit` is a pooled scratch record, so whatever the
+    // previous hit left there was what a caller read.
+    // An explosive round detonates on the face it strikes; it never punches
+    // through, whatever its `pen` says, so it must not advertise that it did.
+    hit.penetrated = !!canPen && !p.explosive;
+
+    // STILL INSIDE THE SAME OBSTRUCTION. The punch-through below can only step
+    // 1.2 m at a time, so a round crossing a 6.8 m building re-enters it at
+    // distance 0 on the next substep and pays again — which is the thickness
+    // model working as intended. What is NOT intended is announcing each of
+    // those as a fresh impact: measured, a tankAP round through one building
+    // published five `shot:hit` events at the same point, so FX drew five
+    // impact bursts and five decals on one hole. Charge the energy, skip the
+    // event; the round is spending its penetration, not striking again.
+    const again = canPen && hit.collider && hit.collider === p.penColl && hit.distance < 0.05;
+    if (!again) this._emitHit(p, hit);
 
     if (p.explosive) {
       this._detonate(p, hit.point, hit);
@@ -391,9 +488,10 @@ export class Ballistics {
       const thick = hit.collider ? Math.min(1.2, normalizeCollider(hit.collider).half.length() * 0.9) : 0.35;
       p.pos.copy(hit.point).addScaledVector(dir, thick + p.radius);
       p.dist += hit.distance + thick;
-      hit.penetrated = true;
+      p.penColl = hit.collider;
       return p.penetration < 4;
     }
+    p.penColl = null;
     p.pos.copy(hit.point);
     return true;
   }

@@ -72,6 +72,28 @@ export const TAG_SURFACE = {
   barrel: SURFACE.METAL,
   vehicle: SURFACE.METAL,
   rock: SURFACE.STONE,
+
+  // THE OTHER ELEVEN TAGS THE MAP ACTUALLY EMITS.
+  //
+  // normalizeCollider falls back to SURFACE.STONE (hardness 90) for any tag not
+  // listed here, so hay bales, hedges and telegraph poles were all as hard as
+  // ashlar — which is both the wrong impact FX and the wrong penetration answer.
+  // This list is the complete set of `tag:` literals in src/world and src/game;
+  // if you add a collider tag, add it here too or it silently becomes granite.
+  hay: SURFACE.GRASS,        // straw: soft, and a round goes through it
+  hedge: SURFACE.GRASS,
+  bush: SURFACE.GRASS,
+  cart: SURFACE.WOOD,
+  crates: SURFACE.WOOD,      // the plural tag; `crate` above is the singular one
+  pole: SURFACE.WOOD,        // telegraph poles
+  sign: SURFACE.WOOD,
+  drum: SURFACE.METAL,
+  wreck: SURFACE.METAL,
+  parapet: SURFACE.STONE,    // the bridge's masonry parapet
+  bridge: SURFACE.STONE,
+  well: SURFACE.STONE,
+  windmill: SURFACE.STONE,
+  tooth: SURFACE.STONE,      // concrete anti-tank teeth
 };
 
 /** Armour thickness (mm-ish, arbitrary but consistent) used for penetration. */

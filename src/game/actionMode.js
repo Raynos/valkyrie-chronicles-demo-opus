@@ -17,7 +17,7 @@ import { CFG } from '../core/config.js';
 import { Input } from '../core/input.js';
 import { clamp, clamp01, damp, dampAngle, lerp, TAU } from '../core/math.js';
 import {
-  GRENADE, attackForecast, bloomFor, canSee, coverFor, effectiveAccuracy, explode, fireBurst,
+  GRENADE, attackForecast, bloomFor, canSee, effectiveAccuracy, explode, fireBurst,
   friendlyInLine, hasLOS, predictArc, shotSigma, solveArc, traceScene, traceWorld,
 } from './combat.js';
 import { moveWithCollision } from './nav.js';
@@ -840,15 +840,19 @@ export class ActionMode {
 
     if (this.aimTarget) {
       u.muzzlePoint(_muzzle);
-      const acc = effectiveAccuracy(u, w, {
-        aimed: true, range: _muzzle.distanceTo(this.aimTarget.pos),
-        cover: coverFor(this.aimTarget, _muzzle.x, _muzzle.y, _muzzle.z, this.world),
-        target: this.aimTarget, battle: this.battle,
-      });
       this.forecast = attackForecast(u, this.aimTarget, {
         weapon: w, aimed: true, bloom: this.bloom, battle: this.battle, world: this.world,
+        // fire() sends the burst at _aimPoint, so the forecast has to be about _aimPoint. On
+        // the reject-naming paths below the reticle is not resting on him at all and the point
+        // would be meaningless, so only hand it over when the lock came from the reticle.
+        aimPoint: (this._magnet === 'ray' || this._magnet === 'magnet') ? _aimPoint : null,
       });
-      this._sigma = shotSigma(u, w, acc, this.bloom, this.speedSmoothed);
+      // THE round is jittered by THE sigma the readout was computed from. This used to be a
+      // second, independently derived shotSigma(), and the forecast's own sigma carried an
+      // evasion term this one did not, so the hit-% on screen described a shot the game never
+      // fired (Round 26: 12 m prone, forecast 29.0%, measured 66.4%). Never re-derive it here
+      // — if the model changes, both sides have to move together or neither does.
+      this._sigma = this.forecast.sigma;
       // A man the reticle names is out of the fog: the player is looking down his sights at him.
       if (this.aimStatus === AIM_STATUS.NO_TARGET) {
         this.aimStatus = this.forecast.range > w.maxRange ? AIM_STATUS.OUT_OF_RANGE

@@ -323,14 +323,51 @@ export const BODY_PARTS = [
   { id: 'legs', label: 'LEGS', ax: 0, ay: 0.08, az: 0, bx: 0, by: 0.94, bz: 0, r: 0.19, mult: 0.62, crit: false },
 ];
 
-// Tank zones. Angles are the *facing* of the plate in local space; `arc` is the half-angle
-// over which the hit is considered to land on that plate. `radiator` is the VC weak point.
+/**
+ * TANK ZONES — capsules, feet at y = 0, facing +Z, nearest-t wins (see rayHitUnit()).
+ *
+ * THE ADVERTISED WEAK POINT COULD NOT BE HIT BY ANYBODY. Measured in the r26 sim audit:
+ * sweep 360 bearings around the Edelweiss at a standing soldier's muzzle height and 360 of
+ * them returned `hull`. The radiator (x4.2, `crit`, the thing CLASSES.tank's own blurb tells
+ * you to aim at) and the turret were both geometrically INSIDE the hull capsule, so no ray
+ * could ever reach either one from outside.
+ *
+ * The cause was that the hull capsule was not a hull. r = 1.22 swept along y 0.75..1.50 and
+ * z -2.30..2.35 is a rounded blob 2.44 m wide, 7.1 m long and 3.2 m tall — roughly a metre
+ * proud of the actual vehicle on every face. src/actors/tank.js authors the armour envelope
+ * as `hitDims.hull` = 2.40 x 0.90 x 5.00 with the belly at 0.46 and the deck at 1.36, the
+ * rear plate (and the radiator grille on it) at z = -2.585, y 1.09 +- 0.155.
+ *
+ * These capsules are re-authored against THAT envelope. A capsule cannot be a box, so the
+ * 2.40 m width is built out of THREE parallel hull capsules rather than one fat one — a
+ * single r = 1.20 capsule would be 2.40 m TALL as well as wide, which is how the old one came
+ * to enclose everything bolted to the vehicle:
+ *
+ *   - hull: three capsules at x = -0.66 / 0 / +0.66, r 0.54, swept z -1.95..2.05 at y 0.92.
+ *     Envelope 2.40 x 1.08 x 5.08 against the model's 2.40 x 0.90 x 5.00.
+ *   - the hull now STOPS at z = -1.95, IN FRONT of the rear plate, so the radiator capsule at
+ *     z = -2.62 protrudes 0.5-0.6 m behind it at every height a soldier can shoot from. That
+ *     is the whole tactic CLASSES.tank's blurb advertises and it was unreachable.
+ *   - turret: two capsules at x = +-0.24, r 0.60, y 1.70 — proud of the hull above y ~1.45,
+ *     which is where a turret is: a horizontal round from a standing man clips the deck line
+ *     and anything from a rise finds the turret cleanly.
+ *   - tracks keep the running gear's real gauge (2.42, so centres at +-1.21) and are the only
+ *     thing below the belly at 0.46, so low fire disables the tracks and nothing else.
+ *
+ * Ordering in this array does not matter — rayHitUnit takes the nearest hit — but the
+ * geometry does. Checked with a 360-bearing sweep at three shooter heights via tools/probe.
+ * `centerPoint()` was lowered to the middle of this box in the same pass; it was sitting at
+ * y 1.35, on the deck line, i.e. aimed shots were grazing the roof of the hitbox.
+ */
 export const TANK_PARTS = [
-  { id: 'radiator', label: 'RADIATOR', ax: 0, ay: 1.05, az: -2.42, bx: 0, by: 1.62, bz: -2.28, r: 0.42, mult: 4.2, crit: true },
-  { id: 'turret', label: 'TURRET', ax: 0, ay: 1.94, az: -0.15, bx: 0, by: 2.34, bz: 0.55, r: 0.86, mult: 1.15, crit: false },
-  { id: 'hull', label: 'HULL', ax: 0, ay: 0.75, az: -2.3, bx: 0, by: 1.5, bz: 2.35, r: 1.22, mult: 1.0, crit: false },
-  { id: 'trackL', label: 'TRACK', ax: 1.36, ay: 0.42, az: -2.3, bx: 1.36, by: 0.42, bz: 2.3, r: 0.44, mult: 0.55, crit: false, disables: 'move' },
-  { id: 'trackR', label: 'TRACK', ax: -1.36, ay: 0.42, az: -2.3, bx: -1.36, by: 0.42, bz: 2.3, r: 0.44, mult: 0.55, crit: false, disables: 'move' },
+  { id: 'radiator', label: 'RADIATOR', ax: 0, ay: 0.98, az: -2.62, bx: 0, by: 1.30, bz: -2.62, r: 0.44, mult: 4.2, crit: true },
+  { id: 'turret', label: 'TURRET', ax: 0.24, ay: 1.70, az: -0.62, bx: 0.24, by: 1.70, bz: 0.62, r: 0.60, mult: 1.15, crit: false },
+  { id: 'turret', label: 'TURRET', ax: -0.24, ay: 1.70, az: -0.62, bx: -0.24, by: 1.70, bz: 0.62, r: 0.60, mult: 1.15, crit: false },
+  { id: 'hull', label: 'HULL', ax: 0.66, ay: 0.92, az: -1.95, bx: 0.66, by: 0.92, bz: 2.05, r: 0.54, mult: 1.0, crit: false },
+  { id: 'hull', label: 'HULL', ax: 0, ay: 0.92, az: -1.95, bx: 0, by: 0.92, bz: 2.05, r: 0.54, mult: 1.0, crit: false },
+  { id: 'hull', label: 'HULL', ax: -0.66, ay: 0.92, az: -1.95, bx: -0.66, by: 0.92, bz: 2.05, r: 0.54, mult: 1.0, crit: false },
+  { id: 'trackL', label: 'TRACK', ax: 1.21, ay: 0.34, az: -2.30, bx: 1.21, by: 0.34, bz: 2.30, r: 0.40, mult: 0.55, crit: false, disables: 'move' },
+  { id: 'trackR', label: 'TRACK', ax: -1.21, ay: 0.34, az: -2.30, bx: -1.21, by: 0.34, bz: 2.30, r: 0.40, mult: 0.55, crit: false, disables: 'move' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -670,9 +707,16 @@ export class Unit {
     return out.set(this.pos.x, this.pos.y + this.eyeHeight, this.pos.z);
   }
 
-  /** World-space centre of mass — what the AI actually shoots at. */
+  /**
+   * World-space centre of mass — what the AI actually shoots at.
+   *
+   * 1.35 was the DECK LINE of the Edelweiss, not its centre: the armour box runs 0.46..1.36
+   * (src/actors/tank.js) so an aimed round converging on 1.35 skimmed the roof of the hull
+   * hitbox and any downward jitter went under it into the terrain. 0.95 is the middle of the
+   * box, which is also where a gunner aims. See TANK_PARTS.
+   */
   centerPoint(out = new THREE.Vector3()) {
-    const h = this.isVehicle ? 1.35 : 1.18 * this.stanceScale;
+    const h = this.isVehicle ? 0.95 : 1.18 * this.stanceScale;
     return out.set(this.pos.x, this.pos.y + h, this.pos.z);
   }
 
@@ -827,12 +871,43 @@ export class Unit {
    * @param {object} opts   { crit, part, worldPos, kind }
    */
   takeDamage(n, source = null, opts = null) {
-    if (!this.alive || n <= 0) return 0;
+    /**
+     * NaN IS NOT LESS THAN OR EQUAL TO ZERO, and that is how a unit became immortal.
+     *
+     * `n <= 0` is false for NaN, so a NaN got all the way through: `Math.max(1, Math.round(NaN))`
+     * is NaN, `this.hp -= NaN` makes hp NaN, and from then on `hp <= 0` is false forever — the
+     * unit can never be downed, never dies, and every HP readout on it prints NaN. Measured in
+     * the r26 sim audit: one takeDamage(NaN) permanently un-killable. Any arithmetic upstream
+     * that divides by a zero range or reads an undefined multiplier produces one.
+     */
+    if (!this.alive || !Number.isFinite(n) || n <= 0) return 0;
     if (this.downed) {
       // Downed units cannot be shot further — VC protects them until reached.
       return 0;
     }
-    const amount = Math.max(1, Math.round(n));
+    /**
+     * THE 1 HP FLOOR IS FOR FLESH, NOT FOR ARMOUR.
+     *
+     * `Math.max(1, ...)` exists so a hit always registers as a hit. Against a vehicle it was
+     * also a 4x damage buff: a scout rifle's aaDamage is 4, `mitigation()` bottoms out at
+     * 0.06, so a round on the hull computes 0.24 HP and was billed as 1 — every small arm on
+     * the map was ~4.2x more effective against the Edelweiss than its own forecast said.
+     *
+     * Carry the fraction instead of flooring it. The HP taken over many rounds is now exactly
+     * the sum of the computed values, and a round that has not yet accumulated a whole point
+     * still lands (suppression, FX and `shot:hit` are unaffected) — it just does not invent
+     * damage. Infantry keep the floor: `apDamage` never mitigates below ~0.7, so the floor
+     * there rounds rather than multiplies.
+     */
+    let amount;
+    if (this.isVehicle) {
+      const pool = (this._dmgCarry || 0) + n;
+      amount = Math.floor(pool);
+      this._dmgCarry = pool - amount;
+      if (amount <= 0) { this.applySuppression(0.34, 3.0); return 0; }
+    } else {
+      amount = Math.max(1, Math.round(n));
+    }
     this.hp -= amount;
     this.stats.damageTaken += amount;
     if (source) { this.lastAttacker = source; source.stats.damageDealt += amount; }

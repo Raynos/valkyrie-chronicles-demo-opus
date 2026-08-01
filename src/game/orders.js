@@ -4,10 +4,7 @@
 // path has to know an order exists. `apply` returns false to refuse (bad target, no LOS to the
 // commander, etc.) and the Battle refunds the CP.
 
-import * as THREE from 'three';
 import { Bus } from '../core/bus.js';
-
-const _v = new THREE.Vector3();
 
 /**
  * WHAT `turns: 2` IS WORTH, so the blurbs stop lying about it.
@@ -115,12 +112,41 @@ export const ORDERS = {
     },
   },
 
+  /**
+   * THIS CARD USED TO SHELL YOUR OWN SQUAD, and it is worth being precise about how.
+   *
+   * `target: 'area'` — but there is no area-picking UI anywhere in this build, and the order
+   * deck passes `{ unit: <the selected soldier> }` for every card it draws. So the fallback
+   * `target?.pos` resolved to THE PLAYER'S OWN SOLDIER and four 95-power shells walked across
+   * him. Measured in the r26 playtest: 4 of 6 squadmates hit, Alicia downed, zero Imperials
+   * touched, 3 Command Points spent. With no unit passed at all it was worse — the fallback
+   * beyond that is the world ORIGIN, which is the middle of the bridge.
+   *
+   * Two changes, and the second is the one that matters:
+   *
+   *   1. It aims ITSELF at the densest spotted enemy cluster (Battle.barrageAimPoint()) and
+   *      IGNORES the unit the deck hands it, because that unit is never an aim point — it is
+   *      the deck's selection. An explicit Vector3 still wins, so a future area picker can
+   *      pass one and this code does not have to change.
+   *   2. It REFUSES cleanly when there is no cluster it can shell without a friendly inside
+   *      the danger footprint. `filter` uses the same query, so the card does not even appear
+   *      in the deck when it cannot fire, and `apply` returning false makes Battle.useOrder()
+   *      hand the 3 CP back if the board changes between the two.
+   *
+   * The safety rule is a guarantee, not a heuristic — see barrageAimPoint() for the geometry.
+   * The cost is that the card is unavailable in a close-quarters fight, which is the correct
+   * side to err on for an off-map battery.
+   */
   fireSupport: {
     id: 'fireSupport', name: 'Fire Support', cost: 3, target: 'area', icon: '*',
-    desc: 'Off-map battery walks four shells across the marked ground.',
-    filter: () => true,
+    desc: 'Off-map battery walks four shells over a spotted enemy position, clear of your own.',
+    filter: (u, battle) => !!(battle && battle.barrageAimPoint(battle.team ?? 0, 6.5)),
     apply(battle, target) {
-      const pos = target?.isVector3 ? target : (target?.pos || _v.set(0, 0, 0));
+      const pos = target?.isVector3 ? target.clone() : battle.barrageAimPoint(battle.team ?? 0, 6.5);
+      if (!pos) {
+        Bus.emit('command:denied', { order: ORDERS.fireSupport, reason: 'No safe target — friendlies too close' });
+        return false;
+      }
       battle.queueBarrage(pos, 4, 6.5, 95);
       return true;
     },

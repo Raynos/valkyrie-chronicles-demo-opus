@@ -29,7 +29,7 @@ import { World } from './world/world.js';
 import { WorldLighting } from './world/worldMaterials.js';
 
 import {
-  PhysicsWorld, WEAPON_BALLISTICS, GRAVITY, groundUnder,
+  PhysicsWorld, WEAPON_BALLISTICS, GRAVITY, groundUnder, ballisticsFor,
 } from './physics/index.js';
 
 import { Battle } from './game/battle.js';
@@ -383,7 +383,14 @@ async function buildSystems() {
   // `blocksLos` for sight, same as the World's), but only the World's goes
   // through the uniform-grid broadphase — the physics one is a linear scan over
   // every collider on the map, which for hitscan volume is the wrong trade.
-  setPhysics({ GRAVITY, groundUnder });
+  // `ballisticsFor` was the missing third argument, and its absence was silent.
+  // combat.js's ballisticsSpec() is `Physics.ballisticsFor ? Physics.ballisticsFor(w) : null`,
+  // and this call is its ONLY producer — so it returned null for every weapon in
+  // the game, and cover destruction fell through to a generic default that
+  // inverts the design the profile table exists to express (a rifle round and an
+  // anti-tank rocket did the same thing to a wall). physics/index.js:212 has
+  // carried the function and its GAME_WEAPON_BALLISTICS table the whole time.
+  setPhysics({ GRAVITY, groundUnder, ballisticsFor });
 
   // --- battle -------------------------------------------------------------
   // Battle.makeActor() cannot see the PhysicsWorld, so a Tank built by it gets
