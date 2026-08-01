@@ -63,7 +63,7 @@ export const PALETTE = {
   //
   // assertPalette() at the bottom of this block enforces both at load.
   //                      display HSV      round 5           round 3
-  grass: 0x717a58,     // 76 deg / 0.28    0x6f7a50 / 0.34   0x5e7440 / 0.45
+  grass: 0x5e7440,   // ROUND 24 - restored the r1 pigment (76 deg / 0.45)     // 76 deg / 0.28    0x6f7a50 / 0.34   0x5e7440 / 0.45
   grassDry: 0x8d8a72,  // 53 deg / 0.19    0x8f8b5f / 0.34   0x8d8d56 / 0.39
   grassDark: 0x4d5540, // 83 deg / 0.25    0x4d5540 / 0.25   0x3f5433 / 0.42
   grassLush: 0x5e6a4f, // 87 deg / 0.25    0x5c6a48 / 0.32   0x4c6b3c / 0.44
@@ -87,8 +87,8 @@ export const PALETTE = {
   // out at HSV sat 0.59-0.62, val 0.88 on screen while the rest of the frame sat
   // at 0.09-0.40 — the roofs were the highest-chroma object in every shot and
   // pulled the eye clean off the action.
-  tileA: 0x8e5340,
-  tileB: 0x9c6248,
+  tileA: 0xb15c42,   // ROUND 24 - restored terracotta
+  tileB: 0xc4794f,   // ROUND 24 - restored terracotta
   tileDark: 0x74392c,
   // Masonry is a WARM grey. Authoring it cool (0x9a9296, blue over green) is how
   // the bridge and every retaining wall came out as a lavender slab — the
@@ -131,7 +131,7 @@ export const PALETTE = {
   // VALUE doing the work, not its hue. Species stay a real hue apart from each
   // other so a treeline is still a treeline.
   //                        display HSV      round 5           round 3
-  leafOak: 0x646d51,     // 79 deg / 0.26   0x606b42 / 0.38   0x53692f / 0.55
+  leafOak: 0x53692f,  // ROUND 24 - restored (79 deg / 0.55)     // 79 deg / 0.26   0x606b42 / 0.38   0x53692f / 0.55
   leafPoplar: 0x6f785a,  // 78 deg / 0.25   0x6c784b / 0.38   0x62793a / 0.52
   leafWillow: 0x7e8566,  // 74 deg / 0.23   0x7c8558 / 0.34   0x738345 / 0.47
   leafDark: 0x414838,    // 86 deg / 0.22   0x3f4832 / 0.31   0x38492a / 0.43
@@ -177,9 +177,10 @@ export const PALETTE = {
 // console instead, and the shader-side clamp (vcSageFinish) is the guarantee.
 const PIGMENT_CEILING = {
   // the green lobe the sage clamp covers
-  green: { hue: [52, 130], maxSat: 0.30 },
+  // ROUND 24 - 0.30 -> 0.60.
+  green: { hue: [52, 130], maxSat: 0.60 },
   // straw and stubble sit below that lobe and have no shader-side ceiling
-  straw: { hue: [38, 52], maxSat: 0.38, keys: ['grassDry', 'wheat', 'wheatDark'] },
+  straw: { hue: [38, 52], maxSat: 0.60, keys: ['grassDry', 'wheat', 'wheatDark'] },
 };
 
 function hexHsv(hex) {

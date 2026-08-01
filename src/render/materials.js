@@ -1897,7 +1897,12 @@ function nprExtraUniforms() {
     // measured 0.314. 0.245 is the value that keeps every shot's median under
     // the 0.28 bar with the p95 under 0.31 and the green wedge intact.
     // Round 5 wrote a 0.34 ceiling and measured 0.335 on screen.
-    uSage:       { value: new THREE.Vector3(0.1750, 0.245, 1) },
+    // ROUND 24 - (hue 63deg, chroma ceiling 0.245 linear, pull 1.0) was THE clamp
+    // that made every pasture, canopy and hedge the same sage. Ceiling 0.245 ->
+    // 0.42 and the hue pull 1.0 -> 0.40, so greens keep their own hue and a real
+    // chroma tail. The real game's greens are strong and varied; see
+    // docs/reference/vc-072.jpg and vc-088.jpg.
+    uSage:       { value: new THREE.Vector3(0.1750, 0.42, 0.40) },
     uGradeExp:   { value: 1 },     // replaced by reference in bindShared
     uGrain:      { value: 0.45 },
     uPigment:    { value: new THREE.Vector4(0, 0, 0, 0) },
@@ -2078,7 +2083,9 @@ export function makeCanvasMaterial(opts = {}) {
     // how far the wet edge may wander along a boundary, in screen pixels. A
     // head is only ~250 px across in a closeup, so its edge gets a shorter
     // leash than a hillside.
-    wetPx: opts.skinning ? 9 : 16,
+    // ROUND 24 — 16 -> 0. Displaced every wash boundary by up to 16 screen px,
+    // which is the "everything wobbles off its own geometry" read.
+    wetPx: 0,
     // ---- the composite-luminance (pigment) quantiser -----------------------
     // This is the pass that is supposed to put steps on everything the LIGHT
     // quantiser cannot reach — albedo, vertex colour, curvature, rim. It has
@@ -2087,13 +2094,21 @@ export function makeCanvasMaterial(opts = {}) {
     // lobes, so on a hillside it creeps a boundary and on a 40 px torso it
     // translates every boundary bodily off the figure. A soldier gets a short
     // leash and, being a small smooth form, fewer and harder levels.
-    pigLevels: opts.skinning ? 11 : 14,
-    pigQ: opts.skinning ? 0.95 : 0.80,
-    pigWarp: opts.skinning ? 0.28 : 0.55,
+    // ROUND 24 - the composite-luminance (pigment) quantiser did not exist at r1,
+    // and r1's centre-box detail is 11.98 against this build's 22.13 and the real
+    // game's 6.6-7.9. It puts a second set of steps on top of the LIGHT quantiser,
+    // on albedo/curvature/rim, and the two interfere. Levels raised (finer, so
+    // closer to continuous) and the quantise weight dropped hard.
+    pigLevels: opts.skinning ? 22 : 26,
+    pigQ: opts.skinning ? 0.30 : 0.22,
+    // ROUND 24 -> 0. The warp field has 46 px lobes and translated every pigment
+    // boundary bodily off the form it belonged to.
+    pigWarp: 0,
     // Serge, leather and painted steel all have pigment structure at a few
     // centimetres; a soldier is small on screen, so his runs quieter than a
     // wall's.
-    mottle: opts.skinning ? 0.050 : 0.075,
+    // ROUND 24 - surface mottle cut hard. It is unquantisable high-frequency noise.
+    mottle: opts.skinning ? 0.012 : 0.018,
     // how much of an albedo map.s TONAL detail is handed to the band quantiser
     // instead of multiplied into the wash
     //
@@ -2114,12 +2129,17 @@ export function makeCanvasMaterial(opts = {}) {
     // smearing. mapDrive stays at 0.115: that number is now load-bearing for
     // world/structures.js's ashlar coursing, whose bed joint comes through
     // ashlarMap and reaches the wash by this route.
-    mapFlat: 0.92,
+    // ROUND 24 — 0.92 -> 0. This stripped 92% of every albedo map's tonal
+    // deviation, which is why bark, ashlar coursing, roof-tile courses and
+    // plaster mottle were all missing. The real game's materials are textured;
+    // see docs/reference/vc-104.jpg.
+    mapFlat: 0,
     mapDrive: 0.115,
     // hard painted specular band — metal, glass, wet paint
     spec: undefined,
     weave: undefined,
-    blotch: 1,
+    // ROUND 24 - lichen/damp blotch field cut; it is sub-metre isotropic noise.
+    blotch: 0.25,
     blotchScale: 0.085,
     // Round 15: 1.7 put the tooth gradient's finite difference at 0.12 m — a
     // hand's width, and therefore a camouflage patch on a 0.45 m torso. 1.05
@@ -2176,7 +2196,11 @@ export function makeCanvasMaterial(opts = {}) {
       uEmissiveIntensity: { value: 1 },
       uAlphaTest: { value: 0 },
       uShadowSoften: { value: 1 },
-      uShadowFloor: { value: 0.22 },
+      // ROUND 24 - 0.22 -> 0.09. A shadowed surface was still receiving 22% of
+      // the key, so no plane in the frame could reach a real dark. Measured: the
+      // demo's p1 sat at 55 across every revision r1..r23 against the real game's
+      // 32-33. Deep shadow is most of what gives the reference frames their range.
+      uShadowFloor: { value: 0.09 },
       uLightContrast: { value: 1 },
       uShadeCool: { value: 1 },
       uWetPx: { value: 16 },
@@ -2418,7 +2442,11 @@ export function makeGrassMaterial(opts = {}) {
       uEmissiveIntensity: { value: 0 },
       uAlphaTest: { value: 0 },
       uShadowSoften: { value: 0.75 },
-      uShadowFloor: { value: 0.22 },
+      // ROUND 24 - 0.22 -> 0.09. A shadowed surface was still receiving 22% of
+      // the key, so no plane in the frame could reach a real dark. Measured: the
+      // demo's p1 sat at 55 across every revision r1..r23 against the real game's
+      // 32-33. Deep shadow is most of what gives the reference frames their range.
+      uShadowFloor: { value: 0.09 },
       uLightContrast: { value: 1.1 },
       uShadeCool: { value: 1 },
       uWetPx: { value: 13 },

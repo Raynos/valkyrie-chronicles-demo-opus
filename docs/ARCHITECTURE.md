@@ -88,7 +88,7 @@ export const CFG = { quality, debug, ... }   // tunables, hot-editable
 ## Render contract (`src/render/`)
 
 ```js
-// canvasRenderer.js — owns the whole post pipeline
+// canvasRenderPipeline.js — owns the whole post pipeline
 export class CanvasRenderPipeline {
   constructor(renderer, scene, camera)
   render(dt)                   // call INSTEAD of renderer.render()

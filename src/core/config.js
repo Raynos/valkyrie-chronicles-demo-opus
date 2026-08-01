@@ -48,7 +48,14 @@ export const CFG = {
     // 0.5 on a 2x display = one device pixel per CSS pixel = 22.1 ms before the
     // round-21 cuts, ~17 ms after. On a 1x display it is a no-op.
     // Override with ?rs=<n> — ?rs=1 restores the old 2x behaviour.
-    renderScale: 0.5,
+    // ROUND 24 — 0.5 -> 1.0. Measured live at devicePixelRatio 2 (the only place
+    // it is not a no-op): the canvas backing store was 1496 px for a 1496 px CSS
+    // width, i.e. the game rendered at half the screen's linear resolution and the
+    // browser upscaled it. That cost 54% of the frame's local contrast (mean
+    // |Laplacian| 18.69 -> 8.68). The capture harness always shoots at
+    // deviceScaleFactor 1, so twenty-three rounds of critique were run on plates
+    // that could not show the defect. Override with ?rs=<n>.
+    renderScale: 1.0,
     minPixelRatio: 1,
     // ROUND 22 — pinned at 1 and no longer written by anything. This used to be
     // the dynamic-resolution ratchet's lever; the ratchet is retired (see
@@ -71,7 +78,10 @@ export const CFG = {
     outlineWidth: 1.35,
     outlineWobble: 0.55,
     paperStrength: 0.42,
-    hatchStrength: 0.62,
+    // ROUND 24 - 0.62 -> 0.18. This drives the SURFACE hatch in materials.js.
+    // The grade's full-screen hatch is off entirely; the real game hatches
+    // sparsely in shadowed planes only (docs/reference/vc-088.jpg).
+    hatchStrength: 0.18,
     bloomStrength: 0.52,
     bloomRadius: 0.62,
     bloomThreshold: 0.72,
@@ -97,7 +107,11 @@ export const CFG = {
     bloomMips: 5,
     vignette: 0.34,
     chroma: 0.0016,
-    exposure: 1.06,
+    // ROUND 24 - 1.06 -> 0.90. Measured on the CENTRE 50% box (i.e. excluding the
+    // drawing falloff's drained margin) the demo sat uniformly ~20% brighter than
+    // the reference: p50 122 vs 98-99, p1 42 vs 33-34, p0.1 34 vs 20-22. It was
+    // never a black-point clamp - the whole midtone was lifted.
+    exposure: 0.84,
     bands: 4,
   },
 

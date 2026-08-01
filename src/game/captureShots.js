@@ -1667,6 +1667,14 @@ export function resetShotState(ctx) {
   const b = ctx.battle;
   if (!b) return;
 
+  // ROUND 24 - the fx system now parents live objects to the scene (the
+  // onomatopoeia sprites), and a resident render daemon reuses one world across
+  // shots. Anything that survives a shot is a determinism bug: `--verify
+  // firefight` caught this immediately, reporting "NOT reproducible" because the
+  // words a previous shot's muzzle flashes had thrown were still in the scene.
+  // fx.clear() drops the sprites and resets every particle pool.
+  (ctx.fx || b.fx || ctx.engine?.fx)?.clear?.();
+
   // Modes. exitAim() before exit(): aim is a sub-state of action mode, and
   // exiting the parent first leaves the aim fov/armLength drive latched on.
   const am = b.actionMode;

@@ -766,7 +766,11 @@ void main() {
   vec2 flow = texture2D(tNoise, sPx / 215.0).rg - 0.5;
   flow += (texture2D(tNoise, sPx / 61.0 + 0.37).gb - 0.5) * 0.52;
   flow += (texture2D(tNoise, sPx / 17.0 + 0.71).br - 0.5) * 0.20;
-  vec2 wuv = uv + flow * uTexel * uWobble * 6.2;
+  // ROUND 24 - 6.2 -> 3.4 (r1's value). At 6.2 the G-buffer lookup is displaced
+  // up to ~3.4 texels, so every stroke visibly leaves the geometry it is supposed
+  // to describe - which reads as tremor, and measures as local contrast that
+  // describes nothing.
+  vec2 wuv = uv + flow * uTexel * uWobble * 3.4;
 
   Gb c = sampleGb(wuv);
   float isSky = step(length(c.n), 0.4);
@@ -994,6 +998,11 @@ uniform vec2  uResolution;
 uniform float uPixelRatio;
 uniform float uExposure;
 uniform float uVignette;
+uniform float uDrawFallAmt;    // how much chroma the periphery loses
+uniform float uDrawFallStart;  // where the falloff begins, in normalised radius
+uniform float uDrawFallScale;  // maps r2 into that 0..1 radius
+uniform float uDrawFallPaper;  // how far the drained periphery lifts to paper
+uniform float uDrawFallAniso;  // <1 keeps a wider left/right margin than top/bottom
 uniform float uChroma;
 // Paper tooth, in SIGMAS OF TOOTH PER WASH STEP (see the paper block).
 uniform float uGrainSteps;
@@ -1865,6 +1874,55 @@ void main() {
   c *= mix(vT, vec3(1.0), vig);
   c *= mix(0.94, 1.0, vig);
 
+  // ---- THE DRAWING FALLOFF (round 24) --------------------------------------
+  // THIS is the effect the CANVAS engine actually has, and the one this project
+  // spent eighteen rounds simulating in the wrong place.
+  //
+  // Measured off four frames of the real game (docs/reference/): the saturation
+  // of the middle 50% box over the saturation of the outer 12% margin is 1.26 to
+  // 2.68, mean ~1.85. Every revision of this demo from r1 to r23 measured 0.90 to
+  // 1.16 — flat, and sometimes MORE saturated at the edge than at the subject.
+  //
+  // The real game paints the centre of the composition at full chroma and lets
+  // the periphery drain to cream paper, until at the very edge the geometry is
+  // an uncoloured pencil line drawing (see vc-072.jpg, where the buildings at far
+  // left and far right are unpainted line-art while the centre is fully painted).
+  //
+  // So: an edge-driven term that removes CHROMA and lifts toward PAPER, and
+  // nothing else. It must not blur, must not quantise and must not touch the
+  // middle of the frame — all three of those were tried globally and are what
+  // made the picture mush. Linework survives because it is dark, and the lift is
+  // a mix toward paper weighted by how light the pixel already is.
+  {
+    // A PAGE MARGIN IS RECTANGULAR, NOT RADIAL. The vignette's r2 reaches the
+    // corners long before it reaches the middle of an edge, so a radial term
+    // drains four corners and leaves the top and bottom of the frame fully
+    // painted — measured, that only moved the centre/edge ratio 1.08 -> 1.16
+    // against a 1.85 target. The real game insets its picture into a rectangular
+    // sheet, so the distance that matters is the Chebyshev one.
+    vec2 m = abs(uv - 0.5) * 2.0;                 // 0 at centre, 1 at each edge
+    float dEdge = max(m.x, m.y * uDrawFallAniso); // 16:9 keeps a wider side margin
+    float d = clamp(dEdge * uDrawFallScale, 0.0, 1.0);
+    float fall = smoothstep(uDrawFallStart, 1.0, d) * uDrawFallAmt;
+    // The sky is already paper-adjacent; draining it as well just greys the top
+    // of the frame, so it takes a fraction of the effect.
+    fall *= mix(1.0, 0.35, sky);
+    if (fall > 0.001) {
+      vec3 hsv = vcRgb2Hsv(c);
+      hsv.y *= 1.0 - fall;
+      c = vcHsv2Rgb(hsv);
+      // Lift toward paper, but only what is already light: a dark stroke stays a
+      // dark stroke, so the periphery reads as line-art on paper rather than as
+      // fog. lumaOf(c) gates it, so ink at luma 0.15 keeps 85% of its weight.
+      // The margin must go to CREAM, not to grey. Dropping chroma alone leaves a
+      // neutral grey wash, which reads as fog; the real game's drained margin is
+      // the warm white of the sheet itself. So the lift keeps a floor even in the
+      // midtones and only real ink is allowed to stay dark.
+      float lift = fall * mix(0.45, 1.0, smoothstep(0.04, 0.62, lumaOf(c)));
+      c = mix(c, uPaperWhite, clamp(lift * uDrawFallPaper, 0.0, 1.0));
+    }
+  }
+
   // ---- THE PLATE'S TONAL RANGE IS NOT DONE HERE ANY MORE --------------------
   // Round 17 ended this shader with a fixed-anchor smoothstep that redistributed
   // the frame's values. It bought bridge and closeup a top and a bottom and it
@@ -2171,6 +2229,20 @@ export class CanvasRenderPipeline {
     // is permanently — it is four booleans, it costs nothing, and the alternative
     // is another round of reasoning about GLSL line counts.
     // `node scratch/r22perf/bracket.mjs` drives it.
+    // ROUND 24 — BOTH of these stay TRUE, and neither is the switch it looks like.
+    //
+    // `contact` writes aoRT, which COMPOSITE_FRAG samples unconditionally. Turning
+    // the pass off leaves a stale target behind and the composite reads it as
+    // near-full occlusion, washing the entire frame down (measured: p50 141 -> 84,
+    // ink 9% -> 18%). To weaken the effect, cut uAoFarW / uContactStrength below.
+    //
+    // `range` STAYS TRUE and must. It is not just the histogram equaliser — its
+    // draw is the only one in this pipeline whose render target is `null`, i.e.
+    // it is the pass that presents to the canvas; `grade` renders into gradeRT.
+    // Switching it off leaves nothing presented at all (measured: p50 141 -> 35,
+    // ink 9% -> 49%). To disable the EQUALISATION, set uRangeAmt to 0 and leave
+    // the pass running. The r22 bracketing harness only timed frames, so it never
+    // had to notice this.
     this.passes = {
       prepass: true, contact: true, bloom: true, grade: true, range: true, stats: true,
     };
@@ -2263,7 +2335,7 @@ export class CanvasRenderPipeline {
         // authored as a glaze rather than as a full occlusion: a 3 m deep vault
         // still lands 45-60 LSB under its own spandrel, and open ground with a
         // building 4 m away picks up a few LSB instead of a grey halo.
-        uAoFarW: { value: 0.72 },
+        uAoFarW: { value: 0.10 },
         uRayLength: { value: 0.42 },
         uThickness: { value: 0.30 },
       },
@@ -2311,8 +2383,12 @@ export class CanvasRenderPipeline {
         uBloomTint: { value: new THREE.Color(0xffe9cd) },
         uInkFadeStart: { value: 16 },
         uInkFadeEnd: { value: 78 },
-        uAoStrength: { value: 0.62 },
-        uContactStrength: { value: 0.70 },
+        // ROUND 24 — a tight contact darkening only. The real game has a small,
+        // local occlusion under a foot or an eave; it does not have a 4 m-radius
+        // grey-violet wash laid over the whole composition. uAoFarW below kills
+        // the cavity ring; these two pull the remaining crease ring back.
+        uAoStrength: { value: 0.34 },
+        uContactStrength: { value: 0.34 },
         // A full cavity's wash lands at 62% of vcShadowColour's value; see
         // vcContactWash. Chosen against the picture rather than a metric: on
         // masonry that takes the arch intrados two clear washes below the spandrel
@@ -2331,7 +2407,7 @@ export class CanvasRenderPipeline {
         // the surface the wash is falling on, so they are left exactly where
         // they were measured rather than re-authored (every contact-seam and
         // cast-shadow LSB delta in the project is calibrated against them).
-        uContactViolet: { value: new THREE.Color(0x6c6a86) },
+        uContactViolet: { value: new THREE.Color(0x6f6353) },
         uInkFloor: { value: new THREE.Color(0x3c3947) },
         uViewToWorld: { value: new THREE.Matrix4() },
         // Pale straw-GREY. Aerial perspective lightens and drops contrast; the
@@ -2347,7 +2423,10 @@ export class CanvasRenderPipeline {
         // up by the ratio the far plane loses or the whole aerial perspective
         // weakens instead of just moving back. 0.768/36.1 at 100 m fixes it at
         // 0.0213.
-        uHazeDensity: { value: 0.0213 },
+        // ROUND 24 - 0.0213 -> 0.0075. At 100 m this was lifting a third of the
+        // frame off its blacks, which is most of why p1 sat at 56 against the real
+        // game's 20-33. P5's drawing falloff does the depth work instead.
+        uHazeDensity: { value: 0.0075 },
         // Haze must describe DISTANCE, not lift the whole frame. hazeStart is
         // clamped to a floor of uHazeStart * 0.55, so at 9 the near field began
         // hazing 4.95 m from the camera — inside the subject on every closeup.
@@ -2419,7 +2498,7 @@ export class CanvasRenderPipeline {
         uSatGamma: { value: 0.73 },
         uSatKnee: { value: 0.50 },
         uSatComp: { value: 1.30 },
-        uContrast: { value: 0.34 },
+        uContrast: { value: 0.42 },   // ROUND 24 - open the range
         // Was folded into the tonemap call as a literal 1.10. Exposed because
         // it is the only lever left that moves the highlight clip: round 2 put
         // 16,483 R=255 pixels into the closeup sky.
@@ -2490,7 +2569,14 @@ export class CanvasRenderPipeline {
         // it there: the COOLING of shade belongs to the ambient pole in
         // lighting.js, and the frame's darkest accents in a CANVAS plate are soft
         // graphite over a dried warm wash, which is a brown-black.
-        uInkBlack: { value: new THREE.Color(0x302420) },
+        // ROUND 24 - 0x302420 (display luma 39) -> 0x211a17 (luma ~24). This is
+        // the black point: nothing in the frame could be darker than the floor, so
+        // p1 sat at 56 against the real game's 20-33 and every plate read as being
+        // behind gauze. Re-authored at the new luminance rather than scaled:
+        // 0x211a17 is hue 18 deg at 0.30 chroma, inside the r15 acceptance band
+        // (hue 12-45, sat 0.18-0.32), so the darks stay warm brown and do not go
+        // violet or neutral.
+        uInkBlack: { value: new THREE.Color(0x181210) },
         uWhiteStart: { value: 0.62 },
         uHighStart: { value: 0.74 },
         // ...and the floor lets go of the midtones faster. 2.6 handed a
@@ -2555,12 +2641,24 @@ export class CanvasRenderPipeline {
         uShadowTint: { value: new THREE.Color(0xa9adb4) },
         uHighTint: { value: new THREE.Color(0xfff4e2) },
         uVignetteTint: { value: new THREE.Color(0xa2988c) },
+        // ROUND 24 - the drawing falloff. See the block in GRADE_FRAG.
+        uDrawFallAmt:   { value: 0.66 },
+        uDrawFallStart: { value: 0.64 },
+        uDrawFallScale: { value: 1.12 },
+        uDrawFallPaper: { value: 1.0 },
+        uDrawFallAniso: { value: 0.86 },
         // The frame-wide wash quantiser. Sixteen steps across the perceptual
         // range is roughly 22 LSB per step in the midtones, which is what puts
         // three plateaus inside the 45-60 LSB span a shaded mass actually
         // occupies. Below about ten the picture starts to read as a posterise
         // filter; above twenty a hillside goes back to being one smooth wash.
-        uWashAmt: { value: 1 },
+        // ROUND 24 — 1 -> 0. This low-passed luminance over a 12 px kernel,
+        // quantised to 16 levels and added back only 35% of the original detail,
+        // soft-clipped to 0.12 of a step. Every local contrast under ~23 LSB in
+        // the whole picture was crushed to ~2.5 LSB. The real game does not do
+        // this to its picture at all — the paper lives at the frame's edge, not
+        // over the subject. See docs/reference/vc-072.jpg.
+        uWashAmt: { value: 0 },
         uWashLevels: { value: 16 },
         uWashBleed: { value: 0.95 },
         // In LEVELS, so on a slowly-varying wash it is also the width of the
@@ -2695,7 +2793,11 @@ export class CanvasRenderPipeline {
         // of other people's edits to materials and geometry moved these plates
         // enough that a sweep against stale ones put bridge 2.4 points wrong.
         // Setting this to 0 gives the curve-off plate to calibrate on.
-        uRangeAmt: { value: 0.85 },
+        // ROUND 24 — 0.85 -> 0. A per-frame histogram equaliser with a slope floor
+        // of 0.60 cut local contrast to 60% anywhere the histogram was crowded,
+        // i.e. it actively fought the tonal range P4 is trying to open. The pass
+        // still runs because it is what presents to the canvas.
+        uRangeAmt: { value: 0 },
         // The slope floor. This is the whole answer to round 17's crushed darks:
         // a smoothstep between fixed points has slope ZERO at both ends, so a
         // population near an anchor is destroyed. Because the clamp is applied to
@@ -3026,7 +3128,11 @@ export class CanvasRenderPipeline {
     // the dark bands — and the three of them together have to leave a plateau
     // standing. 0.17 sigmas is 3.5 LSB on a 20.7 LSB step: still plainly
     // cold-press at 1:1, and a fifth of the interval it sits in.
-    gu.uGrainSteps.value = THREE.MathUtils.clamp(CFG.render.paperStrength * 0.40, 0.02, 0.45);
+    // ROUND 24 — the paper tooth no longer runs over the whole frame. In the real
+    // game paper texture is only visible where the colour has drained out toward
+    // the frame edge; over a painted subject it is just noise. P5 reintroduces it
+    // masked to the drawing falloff.
+    gu.uGrainSteps.value = 0;
     // CFG.render.hatchStrength is authored for the SURFACE hatch in
     // materials.js, whose strokes are diluted by everything that runs after
     // them; this pass is the last thing before the paper, so the same number
@@ -3044,8 +3150,14 @@ export class CanvasRenderPipeline {
     // measure. At 1.6x with the band gate, the same knob puts graphite in the
     // bottom two washes and nowhere else.
     const keyI = this.lightRig?.sun?.intensity ?? 2;
-    gu.uHatch.value = Math.min(1.9, CFG.render.hatchStrength * 1.9)
-                    * THREE.MathUtils.clamp(keyI / 1.35, 0.50, 1.0);
+    // ROUND 24 — the screen-locked graphite hatch is off. Together with the tooth
+    // and the wobbled ink it was the high-frequency field that measured as
+    // "detail" (mean |Laplacian| 23.9 vs the real game's 6.9-9.6) while the
+    // picture's own contrast was crushed underneath it. The real game hatches
+    // sparsely, in shadowed planes, from the surface shader — not as a full-screen
+    // overlay.
+    gu.uHatch.value = 0;
+    void keyI;
     if (this.passes.grade) this._quad.draw(r, this.mGrade, this.gradeRT, true);
 
     // ------------------------------- 7. histogram reduction + tonal range

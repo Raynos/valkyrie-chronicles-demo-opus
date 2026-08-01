@@ -690,7 +690,9 @@ export function createLightRig(scene, opts = {}) {
     // twilight ambient goes violet, midday ambient goes warm straw
     const noon = 1 - Math.abs(tod - 0.5) * 2;
     ambient.color.setHex(0x6a6478).lerp(_rampTmp.setHex(0x9a8d72), noon);
-    ambient.intensity = lerp(0.16, 0.26, noon) * exposure;
+    // ROUND 24 - 0.16-0.26 -> 0.10-0.17. Same reason as uShadowFloor: the fill
+    // was lifting the whole frame off its blacks.
+    ambient.intensity = lerp(0.10, 0.17, noon) * exposure;
   }
 
   function placeSun(dt) {

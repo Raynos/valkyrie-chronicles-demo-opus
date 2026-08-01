@@ -340,14 +340,21 @@ function css() {
   position:absolute; inset:0; opacity:.30; mix-blend-mode:multiply;
   background-image:var(--grain); background-size:160px 160px;
 }
-.vc-frame-rule{ position:absolute; inset:1.0em; opacity:.55; display:none; }
-.vc-corner{ position:absolute; width:5.2em; height:5.2em; opacity:.62; display:none; }
+/* ROUND 24 - the deckled rule and the corner flourishes are back in GAMEPLAY,
+   not just in vc-plate capture frames. r17 hid them along with the plate() book
+   furniture, but the two are not the same thing: the "Plate II / pencil & wash"
+   caption reads as a mock-up of a book page and stays gone, while the sheet's
+   own border is what tells you the picture is inset on paper. The real game
+   frames every gameplay frame this way - docs/reference/vc-088.jpg.
+   (No backticks in this comment: it lives inside a JS template literal.) */
+.vc-frame-rule{ position:absolute; inset:1.0em; opacity:.42; }
+.vc-corner{ position:absolute; width:5.2em; height:5.2em; opacity:.48; }
 .vc-corner.tl{ top:.7em; left:.7em; }
 .vc-corner.tr{ top:.7em; right:.7em; transform:scaleX(-1); }
 .vc-corner.bl{ bottom:.7em; left:.7em; transform:scaleY(-1); }
 .vc-corner.br{ bottom:.7em; right:.7em; transform:scale(-1); }
 .vc-bookmark{ position:absolute; top:0; left:27em; width:2.4em; display:none; }
-.vc-plate .vc-frame-rule, .vc-plate .vc-corner, .vc-plate .vc-bookmark{ display:block; }
+.vc-plate .vc-bookmark{ display:block; }
 .vc-rule{ margin:.6em 0 .55em; }
 
 /* ---------- plate caption (capture mode 'plate') --------------------------
@@ -834,6 +841,28 @@ function css() {
   position:absolute; left:calc(50% + 5.6em); top:calc(50% + 1.1em);
   padding:.34em .6em .42em; min-width:8.2em;
 }
+
+/* ROUND 24 - the damage table, across the top of the frame while aiming. The
+   real game rules every cell and every header; the double rule is the point,
+   because a single hairline reads as a modern flat UI and this one has to read
+   as something ruled onto a sheet. docs/reference/vc-088.jpg. */
+.vc-dmg{
+  position:absolute; left:50%; top:1.6em; transform:translateX(-50%);
+  padding:.16em .18em .2em;
+}
+.vc-dmg-row{ display:flex; align-items:stretch; }
+.vc-dmg-cell{
+  min-width:4.6em; padding:.14em .5em .2em; text-align:center;
+  border-right:1px solid rgba(70,56,38,.42);
+}
+.vc-dmg-cell:last-child{ border-right:0; }
+.vc-dmg-h{
+  font-size:.62em; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--ink-soft, #6b5a3e); border-bottom:1px solid rgba(70,56,38,.34);
+  padding-bottom:.14em; margin-bottom:.16em; white-space:nowrap;
+}
+.vc-dmg-v{ font-size:1.06em; line-height:1; color:var(--ink, #3a2c1c); }
+.vc-dmg-cell:first-child .vc-dmg-v{ color:var(--red, #a8342a); }
 .vc-hit-in{ display:flex; align-items:center; gap:.5em; }
 .vc-hit-arc{ width:2.5em; height:2.5em; flex:0 0 auto; }
 .vc-hit-arc svg{ width:100%; height:100%; }

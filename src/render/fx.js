@@ -701,11 +701,23 @@ export class FxSystem {
    * @param {object|string|number} [weapon] payload `weapon`; a WEAPONS record,
    *   a ballistics profile name, or a bare scale. Scale 0 draws nothing.
    */
+  /** Which comic word a weapon shouts. See onomatopoeia(). */
+  _weaponWord(weapon) {
+    const k = String((weapon && (weapon.kind || weapon.type || weapon.id)) || weapon || '')
+      .toLowerCase();
+    if (k.includes('mg') || k.includes('machine') || k.includes('smg')) return 'RATTA';
+    if (k.includes('lance') || k.includes('rocket') || k.includes('at')) return 'DOOM';
+    if (k.includes('snip')) return 'CRACK';
+    if (k.includes('cannon') || k.includes('shell')) return 'BOOM';
+    return 'BAM';
+  }
+
   muzzleFlash(pos, dir, weapon) {
     if (!this.enabled) return;
     const W = this._weaponFx(weapon);
     const s = W.scale;
     if (!(s > 0)) return;                 // thrown / tool / repair: no muzzle
+    this.onomatopoeia(pos, this._weaponWord(weapon), { scale: 0.9 + s * 0.5 });
     const d = _v0.copy(dir || _up).normalize();
     const bore = W.bore;
 
@@ -1114,8 +1126,93 @@ export class FxSystem {
   }
 
   // ----------------------------------------------------------------- update
+
+  // -------------------------------------------------------------------------
+  // ONOMATOPOEIA (round 24)
+  //
+  // The single most recognisable thing the real game puts on screen during a
+  // shot, and this demo had nothing like it: heavy display lettering thrown into
+  // WORLD space beside the muzzle - "RATTA", "DAKKA", "BAM" - in saturated yellow
+  // with a dark outline, canted a few degrees off horizontal. See
+  // docs/reference/vc-108.jpg.
+  //
+  // It is a sprite, not a HUD element, on purpose: it has to sit in the scene at
+  // the muzzle and be occluded and scaled by distance the way the real game's is.
+  // Textures are cached per word, so the whole feature is a handful of canvases.
+  _wordTexture(word) {
+    this._wordCache = this._wordCache || new Map();
+    const hit = this._wordCache.get(word);
+    if (hit) return hit;
+    const S = 256;
+    const cv = document.createElement('canvas');
+    cv.width = S * 2; cv.height = S;
+    const g = cv.getContext('2d');
+    g.clearRect(0, 0, cv.width, cv.height);
+    g.font = '900 150px Georgia, "Times New Roman", serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.lineJoin = 'round';
+    // The outline is drawn first and fat, so the letter keeps a dark contour at
+    // any distance - the same reason the rest of this renderer inks silhouettes.
+    g.strokeStyle = '#2b1d10'; g.lineWidth = 20;
+    g.strokeText(word, cv.width / 2, S / 2);
+    g.fillStyle = '#f2c02c';
+    g.fillText(word, cv.width / 2, S / 2);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    this._wordCache.set(word, tex);
+    return tex;
+  }
+
+  onomatopoeia(pos, word = 'RATTA', opts = {}) {
+    if (!this.enabled || typeof document === 'undefined') return;
+    this._words = this._words || [];
+    // One at a time per burst: a machine gun firing 8 rounds must not stack 8
+    // copies of the same word on top of each other.
+    if (this._words.length >= (opts.max ?? 3)) return;
+    const tex = this._wordTexture(word);
+    if (!tex) return;
+    const mat = new THREE.SpriteMaterial({
+      map: tex, transparent: true, depthWrite: false, depthTest: true,
+      // Deterministic: the capture harness's contract is identical shot name =>
+      // identical pixels, so this must not read Math.random.
+      rotation: (((this._wordSeq = (this._wordSeq || 0) + 1) % 5) - 2) * 0.085,
+    });
+    const sp = new THREE.Sprite(mat);
+    sp.position.copy(pos);
+    sp.position.y += 0.35;
+    const scale = opts.scale ?? 1.35;
+    sp.scale.set(scale * 2, scale, 1);
+    sp.renderOrder = 12;
+    this.scene.add(sp);
+    this._words.push({ sp, mat, t: 0, life: opts.life ?? 0.62, scale });
+  }
+
+  _updateWords(dt) {
+    if (!this._words || !this._words.length) return;
+    for (let i = this._words.length - 1; i >= 0; i--) {
+      const w = this._words[i];
+      w.t += dt;
+      const k = w.t / w.life;
+      if (k >= 1) {
+        this.scene.remove(w.sp);
+        w.mat.dispose();
+        this._words.splice(i, 1);
+        continue;
+      }
+      // pop in over the first 18%, drift up, fade out over the last 40%
+      const pop = k < 0.18 ? (k / 0.18) : 1;
+      const s = w.scale * (0.72 + 0.28 * pop) * (1 + k * 0.10);
+      w.sp.scale.set(s * 2, s, 1);
+      w.sp.position.y += dt * 0.55;
+      w.mat.opacity = k > 0.60 ? 1 - (k - 0.60) / 0.40 : 1;
+    }
+  }
+
   update(dt) {
     this.time += dt;
+    this._updateWords(dt);
     for (const u of this._times) u.value = this.time;
 
     // depth-fade only once the pipeline has published a G-buffer
@@ -1126,6 +1223,10 @@ export class FxSystem {
   }
 
   clear() {
+    if (this._words) {
+      for (const w of this._words) { this.scene.remove(w.sp); w.mat.dispose(); }
+      this._words.length = 0;
+    }
     for (const [pool, geo] of this._pools) {
       pool.origin.fill(0); pool.vel.fill(0);
       pool.head = 0; pool.live = 0; pool.dirty = true;

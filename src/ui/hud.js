@@ -224,8 +224,12 @@ function mutablePoint() {
 
 const LEGENDS = {
   command: [
-    ['Drag', 'Pan Map'], ['LMB', 'Select Unit'], ['Q', 'Orders'],
-    ['Enter', 'Sortie'], ['E', 'End Turn'], ['Esc', 'Pause'],
+    // ROUND 24 - Tab was the ONLY way to cycle the roster and nothing in the game
+    // said so (main.js documents the gap). Auto-select on turn open made the game
+    // playable without it, but a player who wants a SPECIFIC soldier had no
+    // discoverable route to them.
+    ['Drag', 'Pan Map'], ['LMB', 'Select Unit'], ['Tab', 'Next Soldier'],
+    ['Q', 'Orders'], ['Enter', 'Sortie'], ['E', 'End Turn'], ['Esc', 'Pause'],
   ],
   action: [
     ['WASD', 'Move'], ['Shift', 'Sprint'], ['Ctrl', 'Crouch'], ['RMB / Q', 'Aim'],
@@ -993,6 +997,29 @@ export class HUD {
     this.hitPanel = hp.root;
     L.appendChild(hp.root);
 
+    // ---- THE DAMAGE TABLE (round 24) ------------------------------------
+    // The real game puts a five-cell ruled table across the top of the screen the
+    // whole time you are aiming - To kill / Shots / vs Pers / vs Armor / Area -
+    // and it is one of the two or three things that make a still frame instantly
+    // identifiable as Valkyria. See docs/reference/vc-088.jpg and vc-104.jpg.
+    // The demo had the underlying numbers (the forecast publishes expectedDamage)
+    // and simply never drew them.
+    const dt = panel({ seed: 913, cls: 'vc-dmg', tilt: 0.2 });
+    this.dmgPanel = dt.root;
+    this.dmgCells = {};
+    const dtRow = h('div', { class: 'vc-dmg-row' });
+    for (const [key, head] of [['kill', 'To kill'], ['shots', 'Shots'],
+                               ['pers', 'vs Pers'], ['armor', 'vs Armor'], ['area', 'Area']]) {
+      const cell = h('div', { class: 'vc-dmg-cell' });
+      cell.appendChild(h('div', { class: 'vc-dmg-h', text: head }));
+      const v = h('div', { class: 'vc-dmg-v vc-num', text: '-' });
+      cell.appendChild(v);
+      this.dmgCells[key] = v;
+      dtRow.appendChild(cell);
+    }
+    dt.content.appendChild(dtRow);
+    L.appendChild(dt.root);
+
     const tc = panel({ seed: 831, cls: 'vc-tcard', tilt: -0.4, under: true });
     this.tcard = tc.root;
     const th = h('div', { class: 'vc-tcard-head' });
@@ -1468,6 +1495,9 @@ export class HUD {
       distance: p.distance, hit: this.hitChance, part: p.part,
       cover: t.coverValue != null ? t.coverValue : null,
       lethal: p.lethal, expectedDamage: p.expectedDamage,
+      // The damage table describes the SHOOTER's weapon against this target, so
+      // it needs the firing unit too - `unit` above is the man being aimed at.
+      shooter: p.unit,
     });
   }
 
@@ -1701,6 +1731,23 @@ export class HUD {
       row.appendChild(inkRule({ w: 220, seed: 471 + i * 23, weight: 0.85, color: '#8a7659' }));
       this.tcardRows.appendChild(row);
     });
+    // ---- damage table ----------------------------------------------------
+    // "To kill" is the number a player actually plans around: how many landed
+    // rounds finish this man. Everything else on the row is the weapon's profile.
+    if (this.dmgCells) {
+      const dmg = t.expectedDamage != null ? t.expectedDamage : 0;
+      const kill = (dmg > 0 && hp != null) ? Math.max(1, Math.ceil(hp / dmg)) : null;
+      const sh = t.shooter || {};
+      const wCls = String(sh.cls || '').toLowerCase();
+      const set = (k, v) => { if (this.dmgCells[k]) this.dmgCells[k].textContent = v; };
+      set('kill', kill != null ? String(kill).padStart(2, '0') : '--');
+      const mag = sh.maxAmmo ?? sh.ammo;
+      set('shots', mag != null ? String(mag).padStart(2, '0') : '--');
+      // Circle = effective, cross = not. Matches the reference's glyph pair.
+      set('pers', wCls === 'lancer' ? '\u00d7' : '\u25cb');
+      set('armor', wCls === 'lancer' ? '\u25cb' : '\u00d7');
+      set('area', (wCls === 'lancer' || wCls === 'shock') ? '\u25cb' : '\u00d7');
+    }
     if (t.part !== this._bodyPart) {
       this._bodyPart = t.part || 'torso';
       clear(this.bodyFig);

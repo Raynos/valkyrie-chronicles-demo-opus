@@ -48,7 +48,75 @@ export function setWind(x, y, z) { WIND.set(x, y, z); }
  * Everything that makes one soldier not look like the next: proportions, face
  * geometry parameters, skin/hair tone, uniform wear and kit colour drift.
  */
-export function makeAppearance(seed, cls, team) {
+
+/**
+ * THE CAST (round 24).
+ *
+ * Squad 7's leads are NAMED PEOPLE, and until this round every one of them was
+ * the same procedurally-tinted militia body. The plate that made the case is
+ * docs/reference/vc-088.jpg next to the r23 `closeup` shot: the HUD said
+ * "Alicia Melchiott - Scout" over a middle-aged man in a US M1 steel helmet and
+ * olive drab. The real Alicia is a young woman in a teal jacket over a white
+ * dress, brown ponytail, red headscarf, no helmet.
+ *
+ * So identity is authored, not rolled. Anyone not in this table still gets the
+ * procedural militia appearance, which is correct - they are the rank and file.
+ *
+ * Colours are authored in sRGB hex and converted with the same rgbLin() the
+ * palette uses, so they sit in the same space as PALETTE.
+ */
+const CAST = {
+  'Alicia Melchiott': {
+    feminine: true, bodyType: 'lean', hairStyle: 'ponytail',
+    face: { eye: 1.14, cranium: 1.30, nose: 0.80, jaw: 0.28, chin: 0.36,
+            brow: 0.25, cheek: 0.55, width: 0.94, length: 0.95, ear: 0.86 },
+    eyeColor: 0x4a6b8c,
+    hair: 0x6b4b2e,                       // warm brown
+    tunic: 0x3f7d78, tunicShade: 0x2f5f5c, // the teal jacket
+    collar: 0xe4dcc4, trouser: 0xe4dcc4,   // white dress under it
+    trim: 0xe9e0c6, accent: 0xb2342c,      // red
+    scarf: 0xb2342c,                       // THE red headscarf
+    cap: 0xb2342c, capShade: 0x7e2620,
+    bare: true,                            // no steel helmet
+  },
+  'Welkin Gunther': {
+    feminine: false, bodyType: 'lean', hairStyle: 'swept',
+    face: { eye: 1.04, cranium: 1.24, nose: 0.82, jaw: 0.55, chin: 0.40,
+            brow: 0.60, cheek: 0.60, width: 0.96, length: 0.96, ear: 0.90 },
+    eyeColor: 0x5a4430,
+    hair: 0x3a2c22,
+    tunic: 0x6d5a3e, tunicShade: 0x51422c,
+    collar: 0xd8cfb4, trouser: 0x4a4740,
+    trim: 0xe9e0c6, accent: 0x8a6a3c, scarf: 0x8a6a3c,
+    cap: 0x5c4d33, capShade: 0x3d3222,
+    bare: true,
+  },
+  'Rosie Stark': {
+    feminine: true, bodyType: 'medium', hairStyle: 'swept',
+    face: { eye: 1.12, cranium: 1.26, nose: 0.82, jaw: 0.30, chin: 0.38,
+            brow: 0.28, cheek: 0.62, width: 0.95, length: 0.95, ear: 0.88 },
+    eyeColor: 0x4a6b45,
+    hair: 0x8a6a34,
+    tunic: 0xa8442c, tunicShade: 0x7c2f1e,  // red-orange
+    collar: 0x35506b, trouser: 0x35506b,    // blue
+    trim: 0xe9e0c6, accent: 0x35506b, scarf: 0xd8cfb4,
+    cap: 0xa8442c, capShade: 0x7c2f1e,
+    bare: true,
+  },
+  'Largo Potter': {
+    feminine: false, bodyType: 'stocky', hairStyle: 'crop',
+    face: { eye: 0.98, cranium: 1.14, nose: 0.95, jaw: 0.82, chin: 0.62,
+            brow: 0.92, cheek: 0.96, width: 1.04, length: 0.98, ear: 0.96 },
+    eyeColor: 0x33302c,
+    hair: 0x4a3a28,
+    tunic: 0x7d7048, tunicShade: 0x5c5233,
+    collar: 0x5a5238, trouser: 0x6b6142,
+    trim: 0xd8cfb4, accent: 0x92392a, scarf: 0x8f8465,
+    cap: 0x5c5233, capShade: 0x3c3624,
+  },
+};
+
+export function makeAppearance(seed, cls, team, name) {
   const rng = makeRng((seed | 0) * 2654435761 >>> 0 || 12345);
   const feminine = rng() < 0.42;
   const bodyKeys = feminine ? ['petite', 'lean', 'medium'] : ['medium', 'lean', 'stocky', 'tall'];
@@ -86,7 +154,7 @@ export function makeAppearance(seed, cls, team) {
     : { tunic: PALETTE.tunic, tunicShade: PALETTE.tunicShade, collar: PALETTE.collar, trouser: PALETTE.trouser, leather: PALETTE.leather, accent: PALETTE.accent, trim: PALETTE.trim };
 
   const tint = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
-  return {
+  const app = {
     rng, feminine, bodyType, hairStyle, face, skin, hairColor,
     heightScale: rngRange(rng, 0.975, 1.03),
     girth: rngRange(rng, 0.95, 1.06) * BODY_TYPES[bodyType].girth,
@@ -111,6 +179,39 @@ export function makeAppearance(seed, cls, team) {
     canvas: mixCol(PALETTE.canvas, base.tunic, 0.35),
     scarf: mixCol(PALETTE.scarf, base.trim, 0.3),
   };
+
+  const cast = name && CAST[name];
+  if (!cast) return app;
+
+  // A named lead overrides the roll. Proportions and hair STYLE come first
+  // because the silhouette is what identifies someone at gameplay distance;
+  // the colours are what identify them in a closeup.
+  if (cast.feminine !== undefined) app.feminine = cast.feminine;
+  if (cast.bodyType) { app.bodyType = cast.bodyType; app.girth = BODY_TYPES[cast.bodyType].girth; }
+  if (cast.hairStyle) app.hairStyle = cast.hairStyle;
+  // ANIME PROPORTIONS, AUTHORED PER LEAD.
+  //
+  // The procedural face rolls a plausible adult head: eye 0.92-1.14, cranium
+  // 0.7-1.3, nose 0.8-1.25. Valkyria's cast are drawn, not photographed - the
+  // cranium is large, the eye is very large with a visible iris and catchlight,
+  // and the nose and jaw are barely there. rig.js already builds a full eye
+  // (sclera, iris, limbal ring, catchlight - round 17); it was simply never
+  // driven hard enough to read as an anime eye. See docs/reference/vc-076.jpg.
+  // Every value here MUST stay inside the procedural ranges above. Pushing the
+  // nose to 0.62 and the jaw to 0.24 (both below their floors) was tried and
+  // produced a degenerate wedge across the middle of the face - the mesh is only
+  // built to deform over the range makeAppearance itself rolls.
+  if (cast.face) Object.assign(app.face, cast.face);
+  if (cast.eyeColor !== undefined) app.face.eyeColor = rgbLin(cast.eyeColor);
+  if (cast.hair) app.hairColor = rgbLin(cast.hair);
+  for (const k of ['tunic', 'tunicShade', 'collar', 'trouser', 'trim', 'accent', 'scarf', 'cap', 'capShade']) {
+    if (cast[k] !== undefined) app[k] = rgbLin(cast[k]);
+  }
+  if (cast.trouser !== undefined) app.trouserCuff = rgbLin(cast.trouser);
+  // Gallia's militia leads do not wear stamped steel. See vc-072/088/104.
+  app.bare = !!cast.bare;
+  app.castName = name;
+  return app;
 }
 
 // ---------------------------------------------------------------------------
@@ -1538,7 +1639,9 @@ function gearHead(b, rig, o, head, cls) {
     return true;
   }
 
-  if (cls === 'shock' || cls === 'lancer') {
+  // ROUND 24 - a named lead never wears stamped steel. Gallia's militia leads
+  // are in personal clothes; see docs/reference/vc-072.jpg and vc-108.jpg.
+  if ((cls === 'shock' || cls === 'lancer') && !o.bare) {
     // --- STAMPED STEEL HELMET. The crown is a deep dome; the READ is the brim,
     // which flares to 1.34 R and hangs. At 60 m the soldier is 20 px tall and the
     // only thing resolving is that his head is wider than his neck by half again
@@ -2443,7 +2546,7 @@ export class Character {
     }
 
     // --- appearance + skeleton ---------------------------------------------
-    const app = makeAppearance(this.seed, this.cls, this.team);
+    const app = makeAppearance(this.seed, this.cls, this.team, this.name);
     this.appearance = app;
     this.rig = makeRig({ bodyType: app.bodyType, heightScale: app.heightScale });
 
@@ -2452,6 +2555,7 @@ export class Character {
     const opts = {
       girth: app.girth,
       shoulder: this.cls === 'shock' || this.cls === 'lancer' ? 1.05 : 1.0,
+      bare: app.bare,
       skin: app.skin, gloves: app.gloves,
       tunic: app.tunic, tunicShade: app.tunicShade, collar: app.collar,
       trouser: app.trouser, trouserCuff: app.trouserCuff,

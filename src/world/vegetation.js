@@ -172,21 +172,21 @@ const SPECIES = {
     height: [12, 17], trunkR: [0.17, 0.26], lean: 0.045,
     // crown: tall, narrow, starts low on the trunk (Lombardy habit)
     crown: { base: 0.34, top: 1.02, rx: 0.165, ry: 0.34, lobes: 7, lobeR: 0.145 },
-    limbs: [3, 5], limbRise: 0.34, cards: [13, 17],
+    limbs: [3, 5], limbRise: 0.34, cards: [11, 15],
     bark: PALETTE.barkPale, leaf: PALETTE.leafPoplar, tex: 'poplar', droop: 0.02,
   },
   oak: {
     height: [8.5, 12.5], trunkR: [0.32, 0.50], lean: 0.11,
     // crown: broad, flattened dome sitting on a short bole
     crown: { base: 0.40, top: 1.0, rx: 0.40, ry: 0.28, lobes: 6, lobeR: 0.255 },
-    limbs: [4, 6], limbRise: 0.22, cards: [13, 18],
+    limbs: [4, 6], limbRise: 0.22, cards: [11, 15],
     bark: PALETTE.bark, leaf: PALETTE.leafOak, tex: 'oak', droop: 0.05,
   },
   willow: {
     height: [7, 10.5], trunkR: [0.30, 0.46], lean: 0.26,
     // crown: weeping — wide, low-shouldered, skirts trail below the mass
     crown: { base: 0.36, top: 0.98, rx: 0.44, ry: 0.30, lobes: 6, lobeR: 0.27 },
-    limbs: [4, 5], limbRise: 0.16, cards: [12, 16],
+    limbs: [4, 5], limbRise: 0.16, cards: [10, 14],
     bark: PALETTE.bark, leaf: PALETTE.leafWillow, tex: 'willow', droop: 0.22,
   },
 };
@@ -358,6 +358,14 @@ function growTree(kind, rng) {
       // Cards are sized off the LOBE, not off an absolute metre range: a
       // sapling's clusters have to shrink with it or it looks like a bush on a
       // stick, and a full-grown oak needs 3 m masses to read as painted foliage.
+      // ROUND 24 - fewer cards, each larger. At 13-18 cards a canopy read as a
+      // few dozen individually legible discs ('coins'); the reference canopies are
+      // a small number of overlapping painted masses. Card COUNT is down ~30% and
+      // SIZE up ~18% so the lobe still fills but with bigger strokes.
+      // ROUND 24 - card SIZE is back to its original range. Enlarging it to
+      // 0.86-1.30 to make the canopy read as fewer masses backfired: the leaf
+      // cluster texture became legible as individual cabbage-sized leaves, which
+      // is worse than the disc problem it was meant to fix. Count stays reduced.
       const size = L.r * rngRange(rng, 0.72, 1.12);
       cards.push({
         x: px, y: py, z: pz,
@@ -629,8 +637,12 @@ export class Vegetation {
     // SHORTER and NARROWER (see `geos` and `hgt`), which is the other half of
     // reading as turf rather than as spikes — a 45 cm blade at 25 cm spacing is
     // a picket fence; a 25 cm blade at 12 cm spacing is a lawn.
-    const clumpsPerM2 = q >= 2 ? 5.6 : q === 1 ? 3.4 : 0.8;
-    const perClump = q >= 2 ? 13 : q === 1 ? 8 : 4;
+    // ROUND 24 - 5.6 x 13 was ~73 blades/m2 against r1's 10. At 1080p a blade is
+    // sub-pixel at any real viewing distance, so every ground pixel became a blade
+    // edge: measured mean |Laplacian| 18.2 against the real game's 8.7-9.6. That
+    // is not detail, it is aliasing. 2.2 x 9 is ~20 blades/m2.
+    const clumpsPerM2 = q >= 2 ? 2.2 : q === 1 ? 1.5 : 0.6;
+    const perClump = q >= 2 ? 9 : q === 1 ? 6 : 4;
 
     // THREE blade cuts, not one. A meadow made from a single 3.8 cm straight
     // spike is exactly what the closeup critique measured — "sparse flat

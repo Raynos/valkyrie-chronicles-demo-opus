@@ -233,7 +233,9 @@ void main() {
   float ci = fbm(vec2(cp.x * 0.30, cp.y * 1.15) + vec2(11.0, -4.0), 4);
   float cirrus = smoothstep(0.56, 0.80, ci) * smoothstep(0.02, 0.22, d.y);
   cirrus = band(cirrus, 2.0, 0.22) * (1.0 - q * 0.85);
-  col = mix(col, uCirrus, cirrus * 0.26);
+  // ROUND 24 — 0.26 -> 0.06. At 3.8:1 anisotropy this read as broad horizontal
+  // wash bands smeared across the sky rather than as cloud.
+  col = mix(col, uCirrus, cirrus * 0.06);
 
   col = mix(col, uHaze, hazeBand * 0.42 * q);
 

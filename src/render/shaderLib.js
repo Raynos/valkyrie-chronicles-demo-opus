@@ -333,8 +333,9 @@ vec3 vcLitColour(vec3 albedo, vec3 cream) {
   float dO = hsv.x - 0.055;                   // ~20 deg, brick / pantile
   dO -= floor(dO + 0.5);
   float hot = exp(-dO * dO / 0.0035);
-  hsv.y = min(hsv.y, mix(0.52, 0.34, hot));
-  hsv.z *= 1.0 - 0.14 * hot * hsv.y;
+  // ROUND 24 - the brick/pantile ceiling was cutting chroma AND value on the
+  // one hue the real game is loudest in: terracotta roof tile.
+  hsv.y = min(hsv.y, mix(0.72, 0.62, hot));
 
   return mix(vcHsv2Rgb(hsv), cream, 0.014 + 0.050 * guard);
 }
@@ -429,7 +430,10 @@ vec3 vcPasture(vec3 c, float macro, float fine, float amt) {
   // and then adds another 22% on the pasture lobe specifically (uGreenChroma).
   // The number that has to land under the 0.34 target is the one after all of
   // that, so this one has to be authored well below it.
-  hsv.y = min(hsv.y, mix(1.0, 0.34, g));
+  // ROUND 24 - 0.34 -> 0.62. The green lobe was capped so hard that every
+  // pasture, canopy and hedge collapsed to the same sage. The real game's
+  // greens are strong (docs/reference/vc-072.jpg, vc-088.jpg).
+  hsv.y = min(hsv.y, mix(1.0, 0.62, g));
   return vcHsv2Rgb(hsv);
 }
 `;
