@@ -55,8 +55,46 @@ export const CFG = {
     // |Laplacian| 18.69 -> 8.68). The capture harness always shoots at
     // deviceScaleFactor 1, so twenty-three rounds of critique were run on plates
     // that could not show the defect. Override with ?rs=<n>.
+    // ROUND 25 — renderScale is no longer the thing that decides the resolution;
+    // budgetPx below is. It survives as the AUTHORED multiplier on top of the
+    // budget (and as what ?rs writes), so 1.0 means "as many pixels as the budget
+    // allows" and the quality menu can still scale the whole thing by hand.
     renderScale: 1.0,
     minPixelRatio: 1,
+
+    // ROUND 25 — THE BUDGET IS A PIXEL COUNT, NOT A SCALE FACTOR.
+    //
+    // A scale factor holds 60 fps at exactly one window size. Measured on this
+    // M3 Pro (18-core), played build, DPR 2, four interleaved 400-frame reps per
+    // arm, the frame is purely fill-bound and fits
+    //
+    //     T = 3.5 ms + 4.0 ms per megapixel of DRAWING BUFFER
+    //
+    // to within 0.4 ms at every one of six points (1.078 Mpx -> 7.80 measured vs
+    // 7.8 predicted; 2.42 -> 13.00 vs 13.2; 4.31 -> 20.72 vs 20.7; 7.46 -> 33.69
+    // vs 33.3). So renderScale 1.0 in a 1496x721 window draws 4.31 Mpx = 20.7 ms
+    // = 48 fps, and the SAME setting maximised to 1728x1080 draws 7.46 Mpx =
+    // 33.7 ms = 29 fps. One number cannot be right for both.
+    //
+    // 16.67 ms is 3.29 Mpx by that fit. 3.0e6 is ~15.5 ms, i.e. 60 fps with p99
+    // headroom, and it is a fixed function of the window size — decided once at
+    // resize and never changed mid-session.
+    //
+    // THIS IS NOT THE ROUND-21/22 DYNAMIC RATCHET (see Engine.setDynScale for the
+    // measurements that killed that). The ratchet responded to observed frame
+    // times, drifted silently downward and could never recover. This is a pure
+    // function of innerWidth * innerHeight.
+    //
+    // Nor is it a licence to delete effects instead: every post pass was priced
+    // at rs=1 against a 22.40 ms base, and the whole stack MINUS the G-buffer
+    // prepass is 5.0 ms (contact 2.0, grade 1.4, shadow map 0.6, bloom 0.5, stats
+    // 0.4, shadow cadence 0.1) — and the prepass IS the contour ink. Only
+    // resolution pays. Override with ?px=<pixels>, or 0/Infinity to disable.
+    budgetPx: 3.0e6,
+
+    // Scaled by boot calibration on a machine slower than the one above; see
+    // calibrateBudget(). Never raised above 1.
+    budgetCal: 1,
     // ROUND 22 — pinned at 1 and no longer written by anything. This used to be
     // the dynamic-resolution ratchet's lever; the ratchet is retired (see
     // Engine.setDynScale for the measurements that killed it). The knob survives
@@ -134,9 +172,27 @@ export const CFG = {
   },
 };
 
+/**
+ * Has the resolution been chosen BY HAND — by a query flag or by the player in
+ * the options menu?
+ *
+ * It decides whether minPixelRatio applies. The comment on minPixelRatio ("so a
+ * 1x display is never rendered BELOW its own resolution") is right as a default
+ * and wrong as a hard floor on a manual override: measured, `?rs=0.5` and even
+ * `?rs=0.25` on a deviceScaleFactor-1 display both produced a 1496x721 backing
+ * store — exactly the same as no query at all. The documented escape hatch did
+ * nothing at all on the majority of the world's displays.
+ */
+let explicitScale = qs.has('rs') || qs.has('ds') || qs.has('px');
+
 if (qs.has('rs')) {
   const rs = parseFloat(qs.get('rs'));
   if (Number.isFinite(rs) && rs > 0) CFG.render.renderScale = rs;
+}
+if (qs.has('px')) {
+  const px = parseFloat(qs.get('px'));
+  if (Number.isFinite(px) && px > 0) CFG.render.budgetPx = px;
+  else if (qs.get('px') === '0' || qs.get('px') === 'off') CFG.render.budgetPx = Infinity;
 }
 if (qs.has('mpr')) {
   const m = parseFloat(qs.get('mpr'));
@@ -161,9 +217,110 @@ export const byQ = (arr) => arr[Math.min(arr.length - 1, CFG.quality)];
  */
 export const pixelRatio = () => {
   const dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
-  const authored = Math.max(
-    CFG.render.minPixelRatio,
-    Math.min(dpr, CFG.render.maxPixelRatio) * CFG.render.renderScale,
-  );
-  return Math.max(0.75, authored * CFG.render.dynScale);
+  const w = typeof innerWidth === 'number' ? innerWidth : 1920;
+  const h = typeof innerHeight === 'number' ? innerHeight : 1080;
+
+  // The budget cap, expressed back in pixel-ratio terms. See CFG.render.budgetPx.
+  const budget = CFG.render.budgetPx * CFG.render.budgetCal;
+  const cap = budget > 0 && Number.isFinite(budget)
+    ? Math.sqrt(budget / Math.max(1, w * h))
+    : Infinity;
+
+  const authored = Math.min(dpr, CFG.render.maxPixelRatio, cap) * CFG.render.renderScale;
+  // minPixelRatio is the DEFAULT floor, not an absolute one — and it must never
+  // fight the budget, or a big window on a 1x display would be pinned at native
+  // resolution and blow straight through the frame budget it was just given.
+  const floor = explicitScale ? 0.5 : Math.min(CFG.render.minPixelRatio, cap);
+  // 0.5 (not the old 0.75) is the absolute bottom: 0.75 is only 56% of the fill,
+  // which is not a big enough step for an integrated-GPU machine to recover a
+  // missed budget, and there was no lower gear at all.
+  return Math.max(0.5, Math.max(floor, authored) * CFG.render.dynScale);
 };
+
+/**
+ * Drawing-buffer budgets the options menu offers, in pixels.
+ *
+ * Balanced is the authored default (~15.5 ms on an M3 Pro by the fit above).
+ * Performance is ~9.9 ms — the setting for an integrated GPU. Native disables
+ * the cap entirely and renders one buffer pixel per device pixel, up to
+ * maxPixelRatio; on a retina display in a large window that is the 30 fps the
+ * shipped r24 build had, chosen on purpose instead of by accident.
+ */
+export const RESOLUTION_BUDGETS = {
+  Performance: 1.6e6,
+  Balanced: 3.0e6,
+  Native: Infinity,
+};
+export const RESOLUTION_NAMES = Object.keys(RESOLUTION_BUDGETS);
+
+/** The options menu picking a resolution. The caller must call engine.onResize(). */
+export function setResolutionBudget(nameOrPx) {
+  const px = typeof nameOrPx === 'number' ? nameOrPx : RESOLUTION_BUDGETS[nameOrPx];
+  if (px === undefined) return false;
+  CFG.render.budgetPx = px;
+  CFG.render.budgetCal = 1;      // a hand-picked budget is not second-guessed
+  explicitScale = true;
+  return true;
+}
+
+/** Which named preset the live budget corresponds to, for restoring the menu. */
+export function resolutionName() {
+  const px = CFG.render.budgetPx;
+  return RESOLUTION_NAMES.find((n) => RESOLUTION_BUDGETS[n] === px) || null;
+}
+
+/**
+ * ONE-SHOT boot calibration for machines that are not the machine this was tuned
+ * on. Deliberately not the retired ratchet: it runs exactly once, it can only
+ * ever REDUCE the budget, and it is a throughput measurement rather than a
+ * missed-frame count.
+ *
+ * The fit T = a + b*Mpx makes this a division. Given a measured mean frame time
+ * at a known buffer size, the fill rate b is (T - a) / Mpx, and the buffer that
+ * costs `targetMs` is (targetMs - a) / b. An M3 Pro measures b ~= 4.0 ms/Mpx and
+ * lands on cal = 1; an 8-core M1 or an Iris Xe measures 2-3x that and steps down.
+ *
+ * @returns {number} the calibration factor that was applied (1 = no change).
+ */
+/*
+ * TARGET 13.5 ms, NOT 15.5 — measured, r25. See tools/frametime.mjs.
+ *
+ * 15.5 leaves 1.2 ms of headroom under a 16.7 ms vsync budget, and rAF quantises:
+ * a frame that misses vsync does not cost 17 ms, it costs 33.3. Measured at DPR 2
+ * on a 1496x840 CSS viewport (300 frames x 3 reps, 120-frame warmup discarded):
+ * mean 16.34 ms, median 15.7, p95 32.1, p99 33.5 — the mean sat ON budget while
+ * 35-45% of frames spilled onto the next vsync. That bimodal 16.7/33.3 signature
+ * is what running exactly at the edge looks like, and a player sees it wobble even
+ * though the mean reports 61 fps.
+ *
+ * finish_plan P0's "take the resolution over the effects" still governs the choice
+ * between resolution and post-processing; it does not oblige us to spend the last
+ * millimetre of resolution on a frame rate that visibly stutters.
+ *
+ * WHY 13.5 AND NOT LOWER, recorded so the next round does not re-derive it: at a
+ * 12.5 ms target this same machine calibrated straight down to `cal`'s 0.34 floor
+ * (a 1347x756 buffer, ratio 0.90). That is a real quality cost and it was driven
+ * by contention, not by the GPU — the three reps at that identical buffer measured
+ * 11.5 / 22.6 / 26.2 ms, an 87 fps run and two 40 fps runs at the SAME pixel count.
+ *
+ * MEASUREMENT CAVEAT, stated plainly: every number above was taken with another
+ * project's two headless chromiums pinned at ~100% CPU on this machine (load
+ * average 3.9-5.2). They are pessimistic and their spread is external. This should
+ * be re-run on a quiet machine before anyone tunes it further — which is exactly
+ * why the budget is CALIBRATED per-session rather than hardcoded: on the player's
+ * machine `fill` is measured there, and a lower fill keeps proportionally more
+ * resolution automatically.
+ */
+export function calibrateBudget(meanMs, bufferPx, { targetMs = 13.5, fixedMs = 3.5 } = {}) {
+  if (!(meanMs > 0) || !(bufferPx > 0) || explicitScale) return 1;
+  const mpx = bufferPx / 1e6;
+  const fill = (meanMs - fixedMs) / mpx;              // ms per megapixel, this GPU
+  if (!(fill > 0.2)) return 1;                        // implausible: leave it alone
+  const wantMpx = (targetMs - fixedMs) / fill;
+  // Only ever down, and never below a third of the authored budget — past that
+  // the picture is worse than the frame rate is good, and finish_plan's P0 rule
+  // ("take the resolution over the effects") stops paying.
+  const cal = Math.max(0.34, Math.min(1, (wantMpx * 1e6) / CFG.render.budgetPx));
+  CFG.render.budgetCal = cal;
+  return cal;
+}

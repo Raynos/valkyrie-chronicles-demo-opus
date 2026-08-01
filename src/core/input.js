@@ -1,4 +1,20 @@
 // Keyboard + mouse + pointer lock. Engine calls Input.update() at end of frame.
+//
+// THERE IS DELIBERATELY NO TOUCH INPUT HERE, AND THAT IS A SHIPPED DECISION.
+//
+// Command mode needs drag/LMB/Tab/Q/Enter/E and action mode needs WASD + RMB-aim
+// + LMB-fire; pointer lock (requestLock below) does not exist on iOS at all. A
+// phone used to boot to a polished, readable title card with a real tappable
+// "Open the Book" and then have nothing to press — the demo looked like it
+// worked and then silently didn't, which is worse than saying no.
+//
+// So `needsDesktop()` in src/main.js checks `(any-pointer: fine)` /
+// `(any-hover: hover)` at boot and shows a "this needs a keyboard and mouse"
+// card INSTEAD of building the world — which also spares a phone GPU 986k
+// triangles it was never going to be able to play. Half-built touch controls
+// would be a worse answer than an honest gate; if touch is ever added it has to
+// be a real scheme (virtual stick, tap-to-select, aim reticle drag), not a
+// mousedown alias.
 
 const keys = new Set();
 const justDown = new Set();

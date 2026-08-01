@@ -418,7 +418,14 @@ export const SHOTS = {
     // Every placement below is authored in CAMERA space (depth along the view axis, lateral
     // across it) and then converted, because "put him on the left third" is a statement about
     // the picture and not about the map.
-    const hx = -7.7, hz = 30.1;
+    // THE DOLLY (see the lens note at the bottom of this shot). The lens moves 5 m along
+    // -screen-right to swing the near copse off the picture; the section and the tank move
+    // WITH it, by the same vector, so their screen positions are unchanged and only the
+    // world-fixed trees swing. Moving the lens alone shoved the whole squad into the
+    // right-hand corner and inside the drawing falloff's drained margin — measured.
+    const DX = -4.4, DZ = -2.35;
+
+    const hx = -7.7 + DX, hz = 30.1 + DZ;
     pose(ctx, unitNamed(ctx, 'Alicia Melchiott'), hx, hz, facing(hx, hz, bx, bz),
       'walk', STANCE.STAND, { phase: 0.31 });
 
@@ -428,19 +435,24 @@ export const SHOTS = {
       ['Rosie Stark', -9.43, 31.14, 'crouchIdle', STANCE.CROUCH, 0],
       ['Marina Wulfstan', 0.7, 19.7, 'walk', STANCE.STAND, 0.12],
     ];
-    for (const [name, x, z, clip, stance, ph] of section) {
+    for (const [name, x0, z0, clip, stance, ph] of section) {
+      const x = x0 + DX, z = z0 + DZ;
       pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, bx, bz), clip, stance, { phase: ph });
     }
+    const tx = 2.90 + DX, tz = 19.55 + DZ;      // the Edelweiss, dollied with everything else
     const isara = unitNamed(ctx, 'Isara Gunther');
-    if (isara) pose(ctx, isara, 0.4, 22.9, facing(0.4, 22.9, 2.90, 19.55) + 0.9, 'idle');
+    if (isara) {
+      const ix = 0.4 + DX, iz = 22.9 + DZ;
+      pose(ctx, isara, ix, iz, facing(ix, iz, tx, tz) + 0.9, 'idle');
+    }
 
     // The Edelweiss halted on the shoulder, angled across the frame so it reads as a wedge
     // and not as a side elevation, gun traversed toward the town. It also gives the right
     // third of the frame something with hard edges and real value contrast in it.
     const tank = b.units.find((u) => u.isVehicle && u.team === 0);
     if (tank) {
-      pose(ctx, tank, 2.90, 19.55, facing(2.90, 19.55, bx, bz) - 0.55, 'idle');
-      turretTo(tank, facing(2.90, 19.55, 30, -30));
+      pose(ctx, tank, tx, tz, facing(tx, tz, bx, bz) - 0.55, 'idle');
+      turretTo(tank, facing(tx, tz, 30, -30));
     }
 
     // The garrison, small, on the far bank — the frame's stakes, not its subject.
@@ -460,7 +472,30 @@ export const SHOTS = {
     // closing the RIGHT edge, with the river leading out of the bottom-left corner, the
     // crossing on the left third, the mill town along the top and the section coming up the
     // near bank through the foreground.
-    aimCameraG(ctx, -14.0, 5.20, 40.0, 1.0, 1.00, 12.0, 42);
+    // R25: the copse did not close the right edge, it sliced the right HALF. Three bare
+    // trunks ran the full height of the frame at roughly x = 1050, 1370 and 1520 of 1920,
+    // cutting the picture into vertical bands and putting the Edelweiss behind one of them.
+    // No reference frame does that — vc-072 and vc-092 keep near trees at the EDGE as a
+    // repoussoir, never through the subject.
+    //
+    // Fixed with parallax rather than by deleting trees (the world is another agent's file,
+    // and the trunks are correct scenery in the wrong place on ONE lens). The lens axis runs
+    // f = (0.47, -0.88) with screen-right r = (0.88, 0.47); translating BOTH the eye and the
+    // look-at by -5 m along r is a pure lateral dolly, so the framing of the far bank is
+    // unchanged while near objects swing hard. The offending trunks sit ~12 m out, so the
+    // dolly swings them from 12-26 deg off-axis to 42-54 deg, i.e. clean off a 34.3 deg
+    // half-field; the Edelweiss at 26 m only moves from 0.36 to 0.58 of the half-field.
+    //
+    // It has to be a TRUE dolly, so both heights are taken at the ORIGINAL two points and
+    // carried across unchanged. Routing the moved look-at through aimCameraG instead puts it
+    // over the river channel, whose ground is four metres lower, and the shot silently
+    // pitches down: measured, that framing lost the whole mill town off the top edge and gave
+    // the bottom-left half of the page to an empty grass bank. That is exactly the
+    // heightfield trap aimCameraG's own docstring names.
+    const EX = -14.0, EZ = 40.0, TX = 1.0, TZ = 12.0;   // DX/DZ = -5 m along right (0.88,0.47)
+    const eyeY = groundAt(ctx, EX, EZ) + 5.20;
+    const lookY = groundAt(ctx, TX, TZ) + 1.00;
+    aimCamera(ctx.camera, EX + DX, eyeY, EZ + DZ, TX + DX, lookY, TZ + DZ, 42);
 
     finale(ctx, 6, (i) => {
       if (i === 0) {
@@ -931,6 +966,18 @@ export const SHOTS = {
     Bus.emit('cp:changed', { team: 0, cp: b.cp[0] || 7 });
     Bus.emit('turn:changed', { team: 0, turn: Math.max(1, b.turn) });
     Bus.emit('unit:selected', { unit: alicia });
+    // THE ORDER DECK IS DEALT, EXPLICITLY.
+    //
+    // R25 wave 1 made the hand SHUT by default — correct for play (Esc used to open a
+    // drawer the player had never opened, and the resting page is a reconnaissance
+    // drawing with the deck as a tab in its margin), but it silently took the six order
+    // cards out of this plate, and the six cards splayed along the foot of the page are
+    // half of why this frame reads as a Valkyria command screen rather than a top-down
+    // strategy map. A shot that wants a piece of interface on the page has to ask for it
+    // now that nothing deals it automatically. `cp:changed` above has already run
+    // _refreshOrderLocks(), so with 5 CP the dearer cards are drawn locked — the state a
+    // turn-three staff map should be in. Reset in resetShotState().
+    ctx.ui?._toggleOrders?.(true);
     await frames(12);
   },
 
@@ -984,7 +1031,19 @@ export const SHOTS = {
     const am = b.actionMode;
     am.enter(alicia);
     am.camYaw = Math.PI - 0.10;
-    am.camPitch = -0.055;
+    // Nose up a little as well: the deck is a pale flat plane and every degree of down-pitch
+    // at fov 32 is another 3% of the page given to it. -0.09 was too far — it cropped both
+    // frontages' roofs against the top edge; -0.07 keeps them whole.
+    am.camPitch = -0.07;
+    // R25 presentation pass: at the gameplay shoulder of 0.62 Alicia sits at 0.60 of frame
+    // width — near enough dead centre that the deck's two parapets converge symmetrically
+    // behind her head and the picture reads as a one-point perspective diagram with a figure
+    // pasted on the axis. Composition rule 1 says never dead centre. 1.20 walks the lens far
+    // enough left to put her on the right-hand third and swings the vanishing point off the
+    // centre line, so the corridor rakes instead of aiming at the viewer. updateCamera()
+    // damps shoulder toward shoulderTarget at rate 8, and the settle below runs 24 frames,
+    // so the target alone is enough — no snapping needed.
+    am.shoulderTarget = 1.00;   // 1.20 pushed her onto the bottom-right ammunition panel
     am.sprinting = true;
     am.speedSmoothed = alicia.classDef.speed.run;
     am.scriptedMove = { x: 0, y: 1 };
@@ -1049,7 +1108,13 @@ export const SHOTS = {
     // Shooter crouched behind the bridge parapet, target dug in at the far bridgehead with
     // the ruined frontages behind him, so the reticle has something other than sky in it.
     pose(ctx, shooter, 5.0, 10.0, Math.PI, 'aim', STANCE.CROUCH);
-    pose(ctx, target, 6.6, -14.0, 0.15, 'idle');
+    // HE WAS STANDING IN THE OPEN WITH HIS ARMS DOWN, IN FRONT OF HIS OWN SANDBAGS.
+    // The old line took the STANCE.STAND default and the 'idle' clip, which flatly
+    // contradicted the comment above it and read as a man who does not know there is a war
+    // on — on the one plate whose entire job is to sell the aim mechanic. vc-088 has the
+    // target CROUCHED with the sandbag course cutting his silhouette at the waist. Two
+    // metres east and one and a half further out puts him behind the course, not clear of it.
+    pose(ctx, target, 8.4, -15.5, 0.15, 'crouchIdle', STANCE.CROUCH);
 
     const others = b.units.filter((u) => u.team === 1 && u !== target && !u.isVehicle).slice(0, 4);
     const spots = [[0.0, -16.0], [13.0, -18.0], [-5.5, -14.0], [18.0, -24.0]];
@@ -1068,6 +1133,32 @@ export const SHOTS = {
     // bottom third of the frame with nothing in it.
     am.camPitch = 0.035;
     am.enterAim();
+    // OVER-THE-SHOULDER MEANS A SHOULDER IS IN THE FRAME.
+    //
+    // The gameplay defaults (fov 32/1.9 = 16.8 deg, arm 1.45 m, shoulder 0.46 m) project
+    // Alicia's head at x = 1917 of 1920 — three pixels from the right edge, with her body
+    // entirely off-screen and the sliver that remains sitting inside the drawing falloff's
+    // drained margin, i.e. the grade erases the one character the shot is about. A 17-degree
+    // lens 1.45 m behind a crouched soldier's chest cannot see her at all; VC's
+    // over-the-shoulder is a normal ~30-35 deg lens (its magnification is the separate scope
+    // view). vc-088 puts Alicia in the LEFT third from mid-torso up, head about a quarter of
+    // frame height, with the target at dead centre.
+    //
+    // Set the TARGETS, because the settle loop below snaps fov/arm/shoulder to them each
+    // frame. This is shot-local: it cannot disturb the aim line, because updateCamera()
+    // converges camLook on pivot + fwd*convergeDist with a ZERO lateral term in AIM mode
+    // (actionMode.js:1263-1265), so r22's shoulder-parallax inversion is not a function of
+    // any of these three.
+    // Measured, not guessed. The lateral angle from the lens axis to the soldier is
+    // atan(shoulder / arm); she is in frame only while that is under the half horizontal
+    // field, atan(tan(fov/2) * 16/9). At the defaults that is 17.6 deg against a 14.7 deg
+    // half-field — off the edge by three degrees, which is the 1917 px reading. The SIGN
+    // matters too: +shoulder swings the lens left and throws her to the RIGHT edge, so
+    // vc-088's left-third placement needs a NEGATIVE shoulder.
+    // 1.25 m put her head across a third of the page height and her forearm through the
+    // middle of the frame; vc-088's head is ~28% of frame height. Back off to 1.85 and hold
+    // the 16 deg lateral angle by scaling the shoulder with the arm.
+    am.fovTarget = 32; am.armTarget = 1.85; am.shoulderTarget = -0.53;
     am.aimHold = shooter.weapon.settle * 0.72;   // partly converged — the circle is visible
     am.timeScale = am.timeScaleTarget = CFG.gameplay.aimSlowFactor;
     for (let i = 0; i < 30; i++) {
@@ -1381,7 +1472,34 @@ export const SHOTS = {
     // perspective down the middle, and cart ruts and beaten earth instead of turf in the near
     // field. Everything the previous framing was missing is a property of standing in the
     // right place.
-    const FOV = 42, CX = 14.2, CZ = -24.0, TX = 30.5, TZ = -53.0;
+    // R25 presentation pass: the right-hand frontage stood 4 m off the lens, faced away from
+    // a 1.75 rad key, and came back as an unlit near-black slab down the whole right edge —
+    // roughly a tenth of the page as a hole in the picture, with the near repoussoir soldier
+    // lost against it. Both the lens and the street staging are authored from these four
+    // numbers, so shifting all four by the same vector is a pure lateral dolly: the men keep
+    // their screen positions and only the world-fixed frontage swings. -2.2 m along
+    // screen-right (0.87, 0.49) walks that wall off the edge without opening the pasture the
+    // round-3 framing was moved out of.
+    // R25 wave 2: ON THE CARRIAGEWAY, AND FAR ENOUGH IN TO BE IN THE VILLAGE.
+    //
+    // The road centreline (layout.js, seed 20250728) runs (13.9, -27.2) -> (17.7, -35.9)
+    // -> (21.0, -45.0) -> (23.8, -54.8), half-width 3.3-3.9 m. The previous lens at
+    // (12.29, -25.08) aiming (28.59, -54.08) tracked the street in the near field but
+    // diverged east of it with depth: at 22 m down the axis it sat at x = 23.1 against a
+    // centreline at 20.8, i.e. on the eastern kerb, and by the far field it was out on the
+    // yards — which is why the cobbled ribbon the world agent built (structures._buildStreet,
+    // the road inside village.r * 1.12, i.e. z = -20.6 .. -68) never entered the frame. It
+    // also stood 5 m SHORT of the first frontage, so most of the page was the approach.
+    // Both lens and target are now points on the centreline itself — (16.4, -34.0) standing
+    // in the street between the two built ranks, sighting (25.0, -62.0) at the far end of
+    // the run — so the axis follows the carriageway for its whole 30 m and the frontages
+    // close on both edges. The staging is authored in camera space off these same four
+    // numbers, so the men keep their screen positions.
+    // (19.6, -42) sighting (25.6, -68) — one bay further in — was tried and rejected: it
+    // stands close enough to the western frontage that a single stucco wall owns the left
+    // 40% of the page, and the street beyond the last building opens onto empty pasture and
+    // sky with nothing closing the end of the run.
+    const FOV = 42, CX = 16.4, CZ = -34.0, TX = 25.0, TZ = -62.0;
     const S = staging(CX, CZ, TX, TZ);
     const foe = b.units.filter((u) => u.team === 1 && !u.isVehicle).slice(0, 4);
     show(ctx, foe);
@@ -1390,7 +1508,7 @@ export const SHOTS = {
     // 2.5 m on the near man is a repoussoir: the bottom edge crops him across the thigh and
     // his torso fills the lower-right corner, which is what stops the street surface — the
     // same flat pale plane a bridge deck is — from owning the near third of the frame.
-    const spots = [[2.5, 0.52, 'idle'], [6.0, -0.40, 'crouchIdle'], [11.0, 0.26, 'idle'],
+    const spots = [[2.5, 0.40, 'idle'], [6.0, -0.40, 'crouchIdle'], [11.0, 0.26, 'idle'],
       [19.0, -0.30, 'crouchIdle']];
     foe.forEach((u, i) => {
       const [d, f, clip] = spots[i % spots.length];
@@ -1508,9 +1626,19 @@ export const SHOTS = {
     };
     // Inside the fallow field south-west of the deployment (layout.fields), on one line of
     // advance at 4.2 / 8 / 13 m so the eye has somewhere to go after the subject.
-    put(edy, 4.2, -0.12, 'crouchWalk', { phase: 0.42 });
-    put(rosie, 8.0, 0.50, 'crouchIdle');
-    put(alicia, 13.0, -0.46, 'crouchWalk', { phase: 0.78 });
+    // R25 wave 2 — THE BOTTOM 45% WAS SWARD, AND THE SUBJECT WAS DEAD CENTRE.
+    //
+    // Measured on my own plate: a crouching man at 4.2 m on a 0.92 m lens has his boots
+    // barely below the middle of the page, so everything under him — very nearly half the
+    // frame — is one unbroken pasture at one value, with nothing in it and nothing crossing
+    // it. And at a lateral of -0.12 he sits within 6% of the centre column, which is the one
+    // place a subject cannot be. Both are fixed by the same move: the near man comes forward
+    // to 2.6 m, where the bottom edge crops him at the shin and his mass owns the near
+    // field as a repoussoir, and out to -0.30 so he stands on the left third. The other two
+    // then spread wider to keep the eye walking away from him rather than stacking behind.
+    put(edy, 2.6, -0.30, 'crouchWalk', { phase: 0.42 });
+    put(rosie, 7.0, 0.56, 'crouchIdle');
+    put(alicia, 13.0, -0.50, 'crouchWalk', { phase: 0.78 });
 
     aimCameraPitch(ctx, CX, CZ, 0.92, AX, AZ, 6.0, FOV);
     await frames(12);
@@ -1557,7 +1685,15 @@ export const SHOTS = {
     // in depth. The first pass here used -0.52 / -0.55 / -0.62 for three of the six and they
     // duly stacked into one vertical pile on the left. Spread them.
     const squad = [
-      ['Marina Wulfstan', 6.4, -0.46],
+      // R25 wave 2: 6.4 m is not a repoussoir, it is a figure standing in the middle
+      // distance with a quarter of the page of empty field underneath her. On a 1.95 m
+      // lens at 40 degrees she cleared the bottom edge by ~230 px and the bottom third
+      // was pasture again. 3.6 m crops her at the thigh, which is what a foreground
+      // figure has to do to close the near field.
+      // ...and -0.46 of the half-width projects to x = 518, which at this depth puts her
+      // body behind the roster plate in the lower-left corner (x < 520). -0.20 lands her
+      // at x = 768: still left of the centre column, clear of every HUD panel.
+      ['Marina Wulfstan', 3.6, -0.20],
       ['Edy Nelson', 10.5, 0.34],
       ['Largo Potter', 15.0, -0.13],
       ['Alicia Melchiott', 20.0, 0.66],
@@ -1686,9 +1822,21 @@ export function resetShotState(ctx) {
     // fovTarget/armTarget/shoulderTarget are the drives; the `aim` shot snaps the
     // current values onto them (line ~1068) so both sides must be cleared.
     if (am.fovTarget !== undefined) am.fov = am.fovTarget = am.fovRest ?? am.fovTarget;
+    // R25: the comment above was right and the code was half of it. `aim` now also snaps
+    // armLength and shoulder onto over-the-shoulder targets — including a NEGATIVE shoulder,
+    // which would otherwise ride into the next shot's action camera and mirror it. exitAim()
+    // has already restored the two drives to their gameplay defaults, so copying them onto
+    // the live values is the whole reset.
+    if (am.armTarget !== undefined) am.armLength = am.armTarget;
+    if (am.shoulderTarget !== undefined) am.shoulder = am.shoulderTarget;
   }
   b.commandMode?.exit?.();
   b.setPhase?.('command');
+
+  // The order hand. `command` deals it out explicitly (see that shot's tail); shut is
+  // the resting state for every other plate, and a hand left dealt would ride into the
+  // next shot's lower-left corner. Same class of leak as the aim-camera latch above.
+  ctx.ui?._toggleOrders?.(false);
 
   // Camera. main.js holds the base plate at fov 32 whenever no mode is driving
   // it; a shot that set its own fov (command uses 41) must not export that.

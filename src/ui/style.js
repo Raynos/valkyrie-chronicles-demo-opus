@@ -40,17 +40,29 @@ function svgUri(inner, w, h) {
   return 'url("data:image/svg+xml;utf8,' + encodeURIComponent(s) + '")';
 }
 
-/** Fine cold-press paper fibre. Tiles seamlessly via stitchTiles. */
-export function grainUri({ size = 160, freq = 0.86, oct = 4, seed = 5, alpha = 0.5 } = {}) {
+/** Fine cold-press paper fibre. Tiles seamlessly via stitchTiles.
+ *
+ *  `slope`/`lo` set the tone the noise is mapped into. They matter because every
+ *  consumer of this texture composites it with mix-blend-mode:multiply, and a
+ *  multiply layer's MEAN tone is a hard ceiling on the luminance of everything
+ *  behind it. The default (mean ~0.81) costs ~2.8% of the top end, which is fine
+ *  on a panel — a panel is cream stock, nowhere near paper white. It is NOT fine
+ *  spread over the whole picture: see the --vc-fibre-uri note in injectStyles(). */
+export function grainUri({
+  size = 160, freq = 0.86, oct = 4, seed = 5, alpha = 0.5, slope = 0.42, lo = 0.62,
+} = {}) {
+  const f = (n) => (Math.round(n * 1000) / 1000).toFixed(3);
   const inner =
     '<filter id="g" x="0" y="0" width="100%" height="100%">' +
     '<feTurbulence type="fractalNoise" baseFrequency="' + freq + '" numOctaves="' + oct +
     '" seed="' + seed + '" stitchTiles="stitch"/>' +
     '<feColorMatrix type="saturate" values="0"/>' +
     // push the noise toward the light end so it multiplies as a *tint*, not soot
-    '<feComponentTransfer><feFuncR type="linear" slope="0.42" intercept="0.62"/>' +
-    '<feFuncG type="linear" slope="0.42" intercept="0.60"/>' +
-    '<feFuncB type="linear" slope="0.42" intercept="0.56"/></feComponentTransfer>' +
+    '<feComponentTransfer>' +
+    '<feFuncR type="linear" slope="' + f(slope) + '" intercept="' + f(lo) + '"/>' +
+    '<feFuncG type="linear" slope="' + f(slope) + '" intercept="' + f(lo - 0.02) + '"/>' +
+    '<feFuncB type="linear" slope="' + f(slope) + '" intercept="' + f(lo - 0.06) + '"/>' +
+    '</feComponentTransfer>' +
     '</filter><rect width="100%" height="100%" filter="url(#g)" opacity="' + alpha + '"/>';
   return svgUri(inner, size, size);
 }
@@ -321,14 +333,43 @@ function css() {
    briefing / chapter / journal pages in ui/screens.js keep their own cream
    deckled stock, ink rules and serif type; nothing here touches them. */
 .vc-frame{ position:absolute; inset:0; }
-/* Gameplay keeps only a mild edge fall-off — enough to seat the picture, far
-   short of the printed-plate vignette, whose 62% corners read as a border. The
-   full-strength version is restored for ".vc-plate" below. */
+/* R25 — THE EDGE WEIGHT MOVED INWARD, AND THIS IS WHY.
+   This is a mix-blend-mode:multiply layer over the entire frame, so wherever it
+   carries alpha it is a HARD CEILING on luminance: nothing behind it can present
+   brighter than base * (1 - a + a*ink). The old rule put its heaviest stops
+   (a=.12 left, a=.09 right, over the outer 6%) on exactly the band where the
+   drawing falloff lifts the wash to cream paper — measured on a cold "tank", the
+   left 40 px read p99 220 / max 224 with the layer on and p99 241 / max 243 with
+   it off. Seventeen to nineteen LSB of paper, thrown away by the frame furniture,
+   at the one place in the picture the whole P5 falloff exists to produce.
+   (The radial term was inert regardless: at 132% x 120% from the centre, the
+   frame's own corners land at gradient position 0.58, short of its first
+   non-zero stop at 60%. It was costing nothing and doing nothing.)
+
+   A paper margin is the BRIGHTEST part of a watercolour, not the darkest —
+   docs/reference/vc-104.jpg puts 11% of its pixels above L225 and they are
+   almost all in the margin. So the seat for the picture is now a WET EDGE: the
+   pooled, slightly darker warm line a wash leaves where it stops running, placed
+   just INSIDE the drained margin and back to zero before the sheet edge. It
+   gives the composition its border without standing on the paper. Corners get it
+   twice over — both axes multiply there — which is where a vignette wants weight
+   anyway. Keep every stop past ~92% at alpha 0: that band is the paper.
+   The full printed-plate vignette is untouched and still lives on ".vc-plate". */
 .vc-vignette{
   position:absolute; inset:0;
   background:
-    radial-gradient(132% 120% at 50% 48%, rgba(58,47,51,0) 60%, rgba(58,47,51,.10) 86%, rgba(46,36,40,.20) 100%),
-    linear-gradient(90deg, rgba(58,47,51,.12) 0%, rgba(58,47,51,0) 6%, rgba(58,47,51,0) 94%, rgba(58,47,51,.09) 100%);
+    linear-gradient(90deg,
+      rgba(96,74,54,0) 0%, rgba(96,74,54,0) 5.5%,
+      rgba(96,74,54,.085) 9.5%, rgba(96,74,54,.055) 13%,
+      rgba(96,74,54,0) 19%, rgba(96,74,54,0) 81%,
+      rgba(96,74,54,.05) 87%, rgba(96,74,54,.075) 90.5%,
+      rgba(96,74,54,0) 94.5%, rgba(96,74,54,0) 100%),
+    linear-gradient(180deg,
+      rgba(96,74,54,0) 0%, rgba(96,74,54,0) 9%,
+      rgba(96,74,54,.06) 14.5%, rgba(96,74,54,.04) 19%,
+      rgba(96,74,54,0) 26%, rgba(96,74,54,0) 76%,
+      rgba(96,74,54,.045) 84%, rgba(96,74,54,.065) 89%,
+      rgba(96,74,54,0) 93%, rgba(96,74,54,0) 100%);
   mix-blend-mode:multiply;
 }
 .vc-plate .vc-vignette{
@@ -336,9 +377,11 @@ function css() {
     radial-gradient(126% 112% at 50% 46%, rgba(58,47,51,0) 52%, rgba(58,47,51,.30) 82%, rgba(46,36,40,.62) 100%),
     linear-gradient(90deg, rgba(58,47,51,.34) 0%, rgba(58,47,51,0) 9%, rgba(58,47,51,0) 91%, rgba(58,47,51,.26) 100%);
 }
+/* The picture's own paper tooth. Uses --vc-fibre-uri, NOT --grain: see the note
+   in injectStyles(). Opacity is driven by the "Paper Grain" option (hud.js). */
 .vc-fibre{
   position:absolute; inset:0; opacity:.30; mix-blend-mode:multiply;
-  background-image:var(--grain); background-size:160px 160px;
+  background-image:var(--vc-fibre-uri); background-size:160px 160px;
 }
 /* ROUND 24 - the deckled rule and the corner flourishes are back in GAMEPLAY,
    not just in vc-plate capture frames. r17 hid them along with the plate() book
@@ -634,7 +677,13 @@ function css() {
 .vc-rbtn-t{
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:.5em;
   color:#fbf2dd; font-variant:small-caps; letter-spacing:.20em; font-size:.94em;
-  text-shadow:0 1px 0 rgba(60,12,16,.7); padding:0 1.5em .2em .7em; white-space:nowrap;
+  /* R25 — right padding 1.5em -> 2.6em. The ribbon SVG (240x58 viewBox, drawn to
+     100% width) spends about 12% of its right edge on the swallow-tail notch,
+     which at w=15em is more than 1.5em, so the keycap on "Close the Book",
+     "Open the Book" and "End Turn" had its right border and last letter cut off
+     by the notch. Left stays .7em: the asymmetry is what centres the label group
+     over the flat body of the ribbon rather than over its outline. */
+  text-shadow:0 1px 0 rgba(60,12,16,.7); padding:0 2.6em .2em .7em; white-space:nowrap;
 }
 .vc-rbtn-t .vc-key{ opacity:.9; }
 .vc-rbtn-t .vc-key svg{ height:1.25em; }
@@ -827,9 +876,15 @@ function css() {
    slightly bled, and settles. */
 .vc-tgt{ position:absolute; inset:0; opacity:0; }
 .vc-tgt.on{ opacity:1; animation:vc-sight .22s cubic-bezier(.2,.9,.3,1.2) both; }
+/* R25: the "from" step does NOT set opacity:0. The capture harness appends a
+   permanent animation-play-state:paused sheet, so any entrance animation
+   restarted after that point is pinned at t=0 forever — and an opacity:0 "from"
+   pinned at t=0 deletes the entire sight picture (crosshair, brackets, hit chit,
+   dossier, damage table are all children of .vc-tgt). The strike-on still reads:
+   it arrives oversize and bled, and settles. */
 @keyframes vc-sight{
-  from{ opacity:0; transform:scale(1.055); filter:blur(2.4px); }
-  to{ opacity:1; transform:none; filter:blur(0); }
+  from{ transform:scale(1.055); filter:blur(2.4px); }
+  to{ transform:none; filter:blur(0); }
 }
 .vc-cross{ position:absolute; left:50%; top:50%; width:15em; height:15em; transform:translate(-50%,-50%); }
 .vc-cross svg{ width:100%; height:100%; }
@@ -846,23 +901,31 @@ function css() {
    real game rules every cell and every header; the double rule is the point,
    because a single hairline reads as a modern flat UI and this one has to read
    as something ruled onto a sheet. docs/reference/vc-088.jpg. */
-.vc-dmg{
-  position:absolute; left:50%; top:1.6em; transform:translateX(-50%);
+/* R25: centred with left/right/margin, NOT with translateX(-50%). This is a
+   panel(), and panel() writes an inline transform:rotate(Ndeg) for the sheet's
+   tilt — an inline style beats the sheet, so the old transform:translateX(-50%)
+   here was dead code and the table sat 232 px right of centre (measured: x=960
+   w=465 on a 1920 frame). The class is vc-dmgtable and not vc-dmg because
+   .vc-dmg belongs to the floating world-space damage numeral (worldLabels.js),
+   which declares translate(-50%,-50%) and z-index:3 further down this
+   sheet and was silently winning on both widgets. */
+.vc-dmgtable{
+  position:absolute; left:0; right:0; top:1.6em; margin:0 auto; width:max-content;
   padding:.16em .18em .2em;
 }
-.vc-dmg-row{ display:flex; align-items:stretch; }
-.vc-dmg-cell{
+.vc-dmgtable-row{ display:flex; align-items:stretch; }
+.vc-dmgtable-cell{
   min-width:4.6em; padding:.14em .5em .2em; text-align:center;
   border-right:1px solid rgba(70,56,38,.42);
 }
-.vc-dmg-cell:last-child{ border-right:0; }
-.vc-dmg-h{
+.vc-dmgtable-cell:last-child{ border-right:0; }
+.vc-dmgtable-h{
   font-size:.62em; letter-spacing:.09em; text-transform:uppercase;
   color:var(--ink-soft, #6b5a3e); border-bottom:1px solid rgba(70,56,38,.34);
   padding-bottom:.14em; margin-bottom:.16em; white-space:nowrap;
 }
-.vc-dmg-v{ font-size:1.06em; line-height:1; color:var(--ink, #3a2c1c); }
-.vc-dmg-cell:first-child .vc-dmg-v{ color:var(--red, #a8342a); }
+.vc-dmgtable-v{ font-size:1.06em; line-height:1; color:var(--ink, #3a2c1c); }
+.vc-dmgtable-cell:first-child .vc-dmgtable-v{ color:var(--red, #a8342a); }
 .vc-hit-in{ display:flex; align-items:center; gap:.5em; }
 .vc-hit-arc{ width:2.5em; height:2.5em; flex:0 0 auto; }
 .vc-hit-arc svg{ width:100%; height:100%; }
@@ -1278,6 +1341,46 @@ function css() {
   .vc-ap{ width:22em; }
 }
 
+/* R25 — SHORT viewports. The root font is already clamped to its 13 px floor by
+   then, so nothing else in the sheet gives. Measured in play at 1366x768 (a
+   maximised window on a 1366x768 laptop is ~680 px of viewport, i.e. the common
+   case, not an edge case): the roster ran y=128..641 for seven cards, the orders
+   tab sat at y=708..736, and at 1024x600 the roster, the order hand, the tab and
+   a two-row legend were one pile-up.
+
+   The personnel card loses its second gauge row here — the AP march line, which
+   is also printed at full size in the action bar — and its portrait shrinks, so
+   seven cards fit above the bottom furniture instead of running under it. */
+@media (max-height:760px){
+  /* CLIP THE HEIGHT ONLY. A plain "overflow:hidden" here also clips the X axis,
+     and every roster card deliberately bleeds LEFT of its own box: the selection
+     bracket .vc-ru-mark sits at left:-.10em and the acted ribbon .vc-ru-ribbon at
+     left:-.55em, so hidden would amputate both — i.e. at exactly the window size
+     where the roster is hardest to read, you would lose the mark that says which
+     soldier is selected. overflow-x:visible pairs legally with overflow-y:clip
+     (only "hidden" forces the other axis to compute to "auto"), and the clip
+     margin lets the panels' drop shadows off the edge. */
+  .vc-roster{
+    gap:.34em; max-height:calc(100vh - 11em);
+    overflow-x:visible; overflow-y:clip; overflow-clip-margin:.9em;
+  }
+  .vc-ru{ width:14.4em; }
+  .vc-ru-in{ gap:.42em; padding:.28em .44em .32em; }
+  .vc-ru-por{ width:2.9em; height:3.2em; }
+  .vc-ru-body > .vc-ru-gr:last-child{ display:none; }
+  .vc-ru-stamp{ font-size:.42em; }
+  .vc-orders{ bottom:4.0em; height:11.4em; }
+  .vc-orders-tab{ bottom:1.0em; }
+  .vc-legend{ font-size:.9em; bottom:.35em; }
+}
+@media (max-height:700px){
+  /* Dealt, the tab used to move to the bottom-LEFT margin, which is where the
+     roster's last card now ends. Park it clear of the roster instead. */
+  .vc-orders-tab.open{ left:16.6em; justify-content:flex-start; width:auto; bottom:1.0em; }
+  .vc-orders{ bottom:3.4em; height:10.6em; }
+  .vc-legend{ font-size:.82em; max-width:56vw; }
+}
+
 /* ---------- reduced motion ----------------------------------------------- */
 .vc-root.vc-nomotion *, .vc-root.vc-nomotion *::before, .vc-root.vc-nomotion *::after{
   animation-duration:.001s !important; animation-delay:0s !important;
@@ -1309,7 +1412,16 @@ export function injectStyles() {
     styleEl = document.createElement('style');
     styleEl.id = 'vc-ui-style';
     styleEl.textContent =
-      ':root{--vc-grain-uri:' + grainUri() + ';--vc-blotch-uri:' + blotchUri() +
+      ':root{--vc-grain-uri:' + grainUri() +
+      // R25 — the FULL-FRAME fibre gets its own, much lighter, plate. It is the
+      // only grain that lies over the picture rather than over a panel, so its
+      // mean tone is a ceiling on the frame's p99: at the default mean 0.81 and
+      // .vc-fibre's .30 opacity the effective multiply is 0.972, i.e. the cream
+      // paper margin the drawing falloff works so hard to produce (243) can
+      // never present brighter than 236. Mean 0.90 costs 1.5% instead of 2.8%
+      // and still carries a visible tooth (the swing is ~5 LSB at paper white).
+      ';--vc-fibre-uri:' + grainUri({ slope: 0.26, lo: 0.79 }) +
+      ';--vc-blotch-uri:' + blotchUri() +
       ';--vc-rule-uri:' + ruleUri() +
       ';--vc-hatch-uri:' + hatchUri({ size: 24, pitch: 6, seed: 9, alpha: 0.62, cross: 0.42 }) +
       ';--vc-hatch-deep-uri:' + hatchUri({

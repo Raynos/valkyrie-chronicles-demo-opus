@@ -1,7 +1,7 @@
 {
   "name": "valkyrie-chronicles-demo-opus",
   "version": "1.0.0",
-  "description": "I want you to build a tactical role-playing game with shooter gameplay at the level of the most recent Valkyrie Chronicles Remastered for PS4. It should be utterly perfect, visually beautiful, with every single thing done at AAA quality\u2014from textures to physics to anything you could think of.",
+  "description": "A browser tactical RPG in the CANVAS watercolour style \u2014 one mission, The Bridge at Vasel. Built in three.js. A fan-made technical demo, not affiliated with SEGA.",
   "main": "index.js",
   "scripts": {
     "dev": "vite",
@@ -14,9 +14,10 @@
     "renderd": "node tools/renderd.mjs",
     "renderd:stop": "node tools/shoot.mjs --stop"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["three.js", "webgl", "tactical-rpg", "non-photorealistic-rendering", "watercolour", "game-demo"],
+  "author": "Jake Verbaten",
+  "license": "MIT",
+  "private": true,
   "type": "module",
   "dependencies": {
     "three": "^0.185.1",

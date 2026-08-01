@@ -130,10 +130,23 @@ export const PALETTE = {
   // wooded shot; a canopy in a gouache study is a low-chroma olive with its
   // VALUE doing the work, not its hue. Species stay a real hue apart from each
   // other so a treeline is still a treeline.
-  //                        display HSV      round 5           round 3
-  leafOak: 0x53692f,  // ROUND 24 - restored (79 deg / 0.55)     // 79 deg / 0.26   0x606b42 / 0.38   0x53692f / 0.55
-  leafPoplar: 0x6f785a,  // 78 deg / 0.25   0x6c784b / 0.38   0x62793a / 0.52
-  leafWillow: 0x7e8566,  // 74 deg / 0.23   0x7c8558 / 0.34   0x738345 / 0.47
+  //
+  // ROUND 25 — re-authored, and re-authored at the new LUMINANCE rather than
+  // dimmed (the round-15 lesson). Two things changed under these values at
+  // once: vegetation.js now passes `pasture: 0.30`, so a canopy is no longer
+  // graded through the sward's sage clamp and its raw chroma now REACHES the
+  // frame; and the per-card dark-bottom ramp is gone, so the pigment is no
+  // longer being darkened twice. Measured on docs/reference/vc-072.jpg, whose
+  // canopies are the clearest in the set: two crowns read rgb(118,135,99) and
+  // rgb(126,135,109) — L 126-129, hue 80-87, display chroma 0.19-0.27, V 0.53.
+  // The old table sat at hue 74-79 (the SAME hue band as the sward's tip,
+  // 72 deg) and, for oak, at 0.55 chroma. So: hue pushed to 84-98 to put a
+  // real separation between canopy and field, chroma into 0.26-0.38, and value
+  // UP, because the crown ramp in _buildTrees now takes 0.74-1.07 out of it.
+  //                        display HSV       round 24      round 5
+  leafOak: 0x60784a,     // 92 deg / 0.38   0x53692f/0.55  0x606b42/0.38
+  leafPoplar: 0x6b825b,  // 84 deg / 0.30   0x6f785a/0.25  0x6c784b/0.38
+  leafWillow: 0x718764,  // 98 deg / 0.26   0x7e8566/0.23  0x7c8558/0.34
   leafDark: 0x414838,    // 86 deg / 0.22   0x3f4832 / 0.31   0x38492a / 0.43
   // Straw, not gold. See the note on grassDry: these sit below the sage clamp's
   // lobe, so this table is the only ceiling they have.
@@ -764,8 +777,15 @@ export const ASHLAR_COURSE = 0.42;    // course height in metres
 const _mapCache = new Map();
 
 /** Value-only detail conversion: re-centre on the image mean, compress to [1-s, 1]. */
-function toValueDetail(ctx, S, strength, contrast) {
-  const img = ctx.getImageData(0, 0, S, S);
+function toValueDetail(ctx, S, strength, contrast, img = null) {
+  // `img` lets a caller hand over pixels it has already read back. Two
+  // getImageData calls on one context is what makes chromium warn about
+  // willReadFrequently on every page load, and that attribute is not the fix —
+  // it moves the canvas onto the software rasteriser and quietly re-authors the
+  // map (measured elsewhere in this build: 92551 differing bytes on a 256x256
+  // stroke texture). One readback instead of two costs nothing and changes
+  // nothing.
+  if (!img) img = ctx.getImageData(0, 0, S, S);
   const d = img.data;
   const lum = new Float32Array(S * S);
   let mean = 0;
@@ -877,18 +897,124 @@ export function ashlarMap(opts = {}) {
       d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + k * 255));
     }
   }
-  g.putImageData(img, 0, 0);
-
   // The joints have to survive the [1-strength, 1] compression as a real step:
   // the shader turns this map's local deviation from its own mip-4 fetch into
   // BAND DRIVE (uMapDrive), and at 4 bands a step of 0.25 in the drive is a
   // whole wash. 0.46/1.30 lands a joint about 0.8 of a band below its block,
   // which is a drawn line rather than a 4% darkening nobody can see.
-  toValueDetail(g, S, opts.strength ?? 0.46, opts.contrast ?? 1.30);
+  toValueDetail(g, S, opts.strength ?? 0.46, opts.contrast ?? 1.30, img);
 
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.anisotropy = 8;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  _mapCache.set(key, t);
+  return t;
+}
+
+// Metres per tile for cobbleMap. A Gallian sett in vc-072 is roughly 0.18 m
+// across and the street is ~9 setts wide in the near field, so a 1.55 m tile at
+// 256 px puts a stone at ~30 px in the map — enough for a joint, a highlight
+// and a value, and small enough that the tile repeat is not legible.
+export const COBBLE_TILE = 1.55;
+
+/**
+ * A cobbled street surface, patterned directly on ashlarMap.
+ *
+ * ROUND 25. The village street is a fifth of the `village` frame and carried
+ * nothing larger than about 3 px: the terrain's rut/gravel/dust variation is
+ * painted into a 0.625 m vertex grid, so none of it survives as a SHAPE at
+ * street-camera distance, and the near-field procedural fields are all
+ * deliberately sub-metre. The eye slid straight off it. vc-072's street is
+ * unmistakably cobbled — individual pale stones with dark joints, receding —
+ * and after the half-timbering and the pantiles it is the third thing that
+ * names the game.
+ *
+ * Setts, not ashlar: rows of rounded quads, each row offset by a random
+ * fraction rather than a clean half-bond, with per-stone value scatter and a
+ * lit top / raked bottom. Same value-only output contract as ashlarMap, for the
+ * same reason — the shader turns this map's deviation into BAND DRIVE, so a
+ * joint has to be a real step or it is a 4% darkening nobody can see.
+ */
+export function cobbleMap(opts = {}) {
+  const tile = opts.tile ?? COBBLE_TILE;
+  const seed = opts.seed ?? 53;
+  const key = `cobble:${seed}:${tile}`;
+  const hit = _mapCache.get(key);
+  if (hit) return hit;
+
+  const S = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  const rng = makeRng(seed * 3617 + 7);
+
+  // ~0.175 m setts
+  const rows = Math.max(4, Math.round(tile / 0.175));
+  const rowH = S / rows;
+
+  // the joint bed — sand and grit, not mortar
+  g.fillStyle = '#575149';
+  g.fillRect(0, 0, S, S);
+
+  const drawSett = (cx, cy, w, h, tone) => {
+    for (const dx of [-S, 0, S]) {
+      const x = cx + dx;
+      if (x + w < -4 || x - w > S + 4) continue;
+      const v = (k) => Math.max(0, Math.min(255, (tone * k * 255) | 0));
+      g.fillStyle = `rgb(${v(1)},${v(0.988)},${v(0.962)})`;
+      // A sett is a rounded lozenge, not a rectangle: the corners are worn off
+      // by a century of cartwheels and a pixel-exact grid reads as a tile map.
+      g.beginPath();
+      g.ellipse(x, cy, w * 0.5, h * 0.5, (rng() - 0.5) * 0.5, 0, Math.PI * 2);
+      g.fill();
+      // crown lighting: the stone is domed, so its top catches and its lower
+      // edge rakes into the joint
+      const grad = g.createLinearGradient(0, cy - h * 0.5, 0, cy + h * 0.5);
+      grad.addColorStop(0, 'rgba(255,255,255,0.20)');
+      grad.addColorStop(0.42, 'rgba(255,255,255,0.02)');
+      grad.addColorStop(1, 'rgba(24,20,24,0.24)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.ellipse(x, cy, w * 0.5, h * 0.5, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  };
+
+  for (let r = 0; r < rows; r++) {
+    const cy = (r + 0.5) * rowH;
+    // Row-by-row random phase rather than a half-bond. A clean stagger reads as
+    // brickwork laid flat; a real sett street wanders.
+    let x = rng() * rowH * 1.4;
+    while (x < S + rowH) {
+      const w = rowH * (0.86 + rng() * 0.42);
+      drawSett(x + w * 0.5, cy + (rng() - 0.5) * rowH * 0.16,
+        w, rowH * (0.82 + rng() * 0.26), 0.70 + rng() * 0.26);
+      x += w + rowH * (0.10 + rng() * 0.10);
+    }
+  }
+
+  // fine granular tooth only, as ashlarMap — no broad octave, the shader has
+  // two blotch fields of its own
+  const img = g.getImageData(0, 0, S, S);
+  const d = img.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = (y * S + x) * 4;
+      const k = (valueNoise2(x * 0.71, y * 0.71, seed + 13) - 0.5) * 0.060;
+      d[i] = Math.max(0, Math.min(255, d[i] + k * 255));
+      d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + k * 255));
+      d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + k * 255));
+    }
+  }
+  toValueDetail(g, S, opts.strength ?? 0.44, opts.contrast ?? 1.22, img);
+
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  // A ground plane seen at a grazing angle is the worst case for mipping; 16 is
+  // the difference between a street and a shimmer.
+  t.anisotropy = 16;
   t.colorSpace = THREE.SRGBColorSpace;
   t.needsUpdate = true;
   _mapCache.set(key, t);
@@ -925,6 +1051,10 @@ const NPR_FORWARD = [
   // 265 deg skylight. Defaults in applyNprOpts (40 deg, 32 on skin); a bin only
   // sets it to say "this pigment must stay closer to itself in shade".
   'shadeTurn',
+  // round 25: foliage only. 1 = the grass shader's base-darkening ramp applies
+  // (grass, wheat, reeds); 0 = it does not (leaf and bush cards, whose local
+  // `hN` is height within the CARD, not within the crown).
+  'heightShade',
 ];
 
 function forwardNpr(dst, opts) {

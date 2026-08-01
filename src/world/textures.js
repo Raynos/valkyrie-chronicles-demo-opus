@@ -29,8 +29,15 @@ function canvas(size) {
  * takes whatever was painted, reduces it to luminance, re-centres it on the
  * image mean and compresses it into [1-strength, 1].
  */
-function toDetail(g, size, { strength = 0.3, contrast = 1.0 } = {}) {
-  const img = g.getImageData(0, 0, size, size);
+function toDetail(g, size, { strength = 0.3, contrast = 1.0 } = {}, img = null) {
+  // `img` lets a caller that has ALREADY read the canvas back hand the pixels
+  // straight over. Two getImageData calls on one context is what makes chromium
+  // print "Canvas2D: Multiple readback operations ... willReadFrequently" on
+  // every page load — and the attribute is NOT the fix: measured, it switches
+  // chromium to the software rasteriser, which antialiases differently (the
+  // pencil-hatch map came back with 92551 differing bytes, max delta 143). One
+  // readback instead of two is free and changes nothing.
+  if (!img) img = g.getImageData(0, 0, size, size);
   const d = img.data;
   let mean = 0;
   const lum = new Float32Array(size * size);
@@ -106,12 +113,22 @@ export function leafClusterTexture(species = 'oak', seed = 5) {
     const rng = makeRng(seed * 7919 + 13);
     g.clearRect(0, 0, S, S);
 
+    // ROUND 25 — LOBE COUNT UP ~3x, DAB RADIUS DOWN ~2.5x, at constant covered
+    // area. `r: 0.20` put an oak dab at 51 px radius on a 256 px card, i.e. 40%
+    // of the card's width; a card is ~1.5 m, so a single painted "leaf" was
+    // 0.6 m across. That is the literal cabbage. Measured against
+    // docs/reference/vc-072.jpg: a canopy there spans ~400 px and its largest
+    // individual leaf stroke is 12-16 px, about 3.5% of the crown — a card is
+    // roughly a quarter of a crown, so a dab should be ~12-14% of the card, not
+    // 40%. The per-card two-tone that r24 blamed for the 'legible discs' read
+    // is fixed separately (uHeightShade, materials.js); this is the other half
+    // of the same complaint and it lives in the texture, not the geometry.
     const cfg = {
-      oak: { lobes: 22, r: 0.20, spread: 0.30, elong: 1.0, tone: [92, 108, 62] },
-      poplar: { lobes: 26, r: 0.13, spread: 0.20, elong: 2.1, tone: [104, 120, 66] },
-      willow: { lobes: 30, r: 0.10, spread: 0.34, elong: 2.4, tone: [116, 130, 84] },
-      bush: { lobes: 18, r: 0.22, spread: 0.30, elong: 0.9, tone: [86, 100, 56] },
-    }[species] || { lobes: 20, r: 0.2, spread: 0.3, elong: 1, tone: [96, 112, 64] };
+      oak: { lobes: 70, r: 0.075, spread: 0.33, elong: 1.0, tone: [92, 108, 62] },
+      poplar: { lobes: 84, r: 0.052, spread: 0.24, elong: 2.1, tone: [104, 120, 66] },
+      willow: { lobes: 96, r: 0.044, spread: 0.36, elong: 2.4, tone: [116, 130, 84] },
+      bush: { lobes: 58, r: 0.088, spread: 0.32, elong: 0.9, tone: [86, 100, 56] },
+    }[species] || { lobes: 64, r: 0.08, spread: 0.32, elong: 1, tone: [96, 112, 64] };
 
     for (let i = 0; i < cfg.lobes; i++) {
       const a = rng() * TAU;
@@ -121,7 +138,13 @@ export function leafClusterTexture(species = 'oak', seed = 5) {
       const rad = S * cfg.r * (0.55 + rng() * 0.75);
       // Depth shading inside the cluster: lower-inner dabs go violet-shadowed,
       // upper-outer dabs go straw-warm. This is the band split pre-baked.
-      const up = clamp01(1 - cy / S);
+      //
+      // ROUND 25 — mostly RANDOM per dab now rather than purely the dab's
+      // height in the card. Keyed on cy alone this baked a top-light/
+      // bottom-dark ramp into every card, which is the same defect as the
+      // shader's per-card height ramp, printed into the texture instead. A
+      // third of it survives so the mass still has some internal order.
+      const up = clamp01(0.34 * (1 - cy / S) + 0.66 * rng());
       const shade = 0.62 + up * 0.66;
       const r = Math.min(255, cfg.tone[0] * shade + 26 * up);
       const gg = Math.min(255, cfg.tone[1] * shade + 22 * up);
@@ -156,11 +179,13 @@ export function leafClusterTexture(species = 'oak', seed = 5) {
     g.globalCompositeOperation = 'source-over';
 
     // pencil strokes over the mass — a few graphite ticks suggesting leaves
+    // ROUND 25 — more, shorter ticks to match the smaller dabs above. At
+    // 5-18 px against a 20 px leaf they were as long as the leaves themselves.
     g.strokeStyle = 'rgba(58,47,51,0.30)';
-    g.lineWidth = 1.4;
-    for (let i = 0; i < 40; i++) {
+    g.lineWidth = 1.2;
+    for (let i = 0; i < 78; i++) {
       const x = rng() * S, y = rng() * S;
-      const l = 5 + rng() * 13, a = -0.9 + rng() * 0.5;
+      const l = 3 + rng() * 7, a = -0.9 + rng() * 0.5;
       g.beginPath();
       g.moveTo(x, y);
       g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l);
@@ -382,8 +407,7 @@ export function roofTileTexture(seed = 37) {
         d[i + 2] = clamp01(d[i + 2] / 255 * m) * 255;
       }
     }
-    g.putImageData(img, 0, 0);
-    toDetail(g, S, { strength: 0.40, contrast: 1.25 });
+    toDetail(g, S, { strength: 0.40, contrast: 1.25 }, img);
     return finish(c, { repeat: 1 });
   });
 }
@@ -507,8 +531,7 @@ export function stoneTexture(seed = 31) {
         d[i + 2] = clamp01(d[i + 2] / 255 + k * 0.92) * 255;
       }
     }
-    g.putImageData(img, 0, 0);
-    toDetail(g, S, { strength: 0.44, contrast: 1.25 });
+    toDetail(g, S, { strength: 0.44, contrast: 1.25 }, img);
     return finish(c, { repeat: 1 });
   });
 }

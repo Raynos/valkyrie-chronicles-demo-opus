@@ -168,25 +168,36 @@ const SPECIES = {
   // `lobeR` is deliberately ~0.6 of `rx`: any smaller and the lobes stop
   // overlapping, and a canopy you can see the sky through is a canopy you can
   // see the branch structure through.
+  //
+  // ROUND 25 — `cards` restored (+~40%, back above the r23 level). r24 cut the
+  // count ~30% because "a canopy read as a few dozen individually legible
+  // discs". The discs were legible because every card carried its own
+  // dark-bottom/light-top ramp from the grass shader, not because there were
+  // too many of them; that is fixed at source now (see heightShade in
+  // _makeMaterials). The count cut therefore bought nothing and cost density —
+  // it left crowns you could see sky through, and every card silhouetted
+  // against sky picks up a full skyEdge stroke, which is what drew a contour
+  // around each blob. Card SIZE stays where it is: enlarging it is a recorded
+  // dead end (see the note at the card loop in growTree).
   poplar: {
     height: [12, 17], trunkR: [0.17, 0.26], lean: 0.045,
     // crown: tall, narrow, starts low on the trunk (Lombardy habit)
     crown: { base: 0.34, top: 1.02, rx: 0.165, ry: 0.34, lobes: 7, lobeR: 0.145 },
-    limbs: [3, 5], limbRise: 0.34, cards: [11, 15],
+    limbs: [3, 5], limbRise: 0.34, cards: [16, 21],
     bark: PALETTE.barkPale, leaf: PALETTE.leafPoplar, tex: 'poplar', droop: 0.02,
   },
   oak: {
     height: [8.5, 12.5], trunkR: [0.32, 0.50], lean: 0.11,
     // crown: broad, flattened dome sitting on a short bole
     crown: { base: 0.40, top: 1.0, rx: 0.40, ry: 0.28, lobes: 6, lobeR: 0.255 },
-    limbs: [4, 6], limbRise: 0.22, cards: [11, 15],
+    limbs: [4, 6], limbRise: 0.22, cards: [16, 21],
     bark: PALETTE.bark, leaf: PALETTE.leafOak, tex: 'oak', droop: 0.05,
   },
   willow: {
     height: [7, 10.5], trunkR: [0.30, 0.46], lean: 0.26,
     // crown: weeping — wide, low-shouldered, skirts trail below the mass
     crown: { base: 0.36, top: 0.98, rx: 0.44, ry: 0.30, lobes: 6, lobeR: 0.27 },
-    limbs: [4, 5], limbRise: 0.16, cards: [10, 14],
+    limbs: [4, 5], limbRise: 0.16, cards: [15, 20],
     bark: PALETTE.bark, leaf: PALETTE.leafWillow, tex: 'willow', droop: 0.22,
   },
 };
@@ -373,6 +384,16 @@ function growTree(kind, rng) {
         h: size * rngRange(rng, 0.74, 1.04),
         yaw: rng() * TAU,
         pitch: rngRange(rng, -0.3, 0.3),
+        // ROUND 25 - the card's normalised height inside the CROWN envelope.
+        // The light-to-dark gradient belongs here, not inside each card: the
+        // grass shader's per-blade base darkening was firing on every leaf card
+        // (see uHeightShade in materials.js) and printing a pale-topped,
+        // dark-bottomed contour on every one, which is the whole of the
+        // 'canopy reads as a cluster of cabbages' complaint. vc-072's canopies
+        // have no per-cluster highlight at all — one mass, falling in value
+        // from the top of the CROWN to its underside. _buildTrees folds this
+        // into the per-instance colour the shader already consumes.
+        ct: clamp01((py - (crownYc - crownRy)) / Math.max(2 * crownRy, 1e-3)),
       });
       maxR = Math.max(maxR, Math.hypot(px, pz) + size * 0.6);
     }
@@ -381,14 +402,18 @@ function growTree(kind, rng) {
       for (let i = 0; i < 3; i++) {
         const a = rng() * TAU;
         const rr = L.r * rngRange(rng, 0.5, 1.0);
+        const wy = L.y - L.r * rngRange(rng, 0.9, 1.7);
         cards.push({
           x: L.x + Math.cos(a) * rr,
-          y: L.y - L.r * rngRange(rng, 0.9, 1.7),
+          y: wy,
           z: L.z + Math.sin(a) * rr,
           s: rngRange(rng, 0.7, 1.1),
           h: rngRange(rng, 1.6, 2.6),
           yaw: rng() * TAU,
           pitch: rngRange(rng, -0.12, 0.12),
+          // withies hang below the mass, so they sit at the dark end of the
+          // crown ramp — which is what a weeping skirt looks like in shade
+          ct: clamp01((wy - (crownYc - crownRy)) / Math.max(2 * crownRy, 1e-3)),
         });
       }
     }
@@ -511,11 +536,40 @@ export class Vegetation {
       fadeStart: 78, fadeEnd: 105, alphaTest: 0.4, rim: 0.75, hatch: 0.25,
     });
 
+    // ROUND 25 — foliage is not grass, and until now it was shaded as if it
+    // were. Three things change together here and they only work together:
+    //
+    //  * heightShade 0. The grass shader's "blades darken sharply into the
+    //    sward at the base" term keys off the fragment's height in its OWN
+    //    geometry. lobeCard() pivots at the card centre, so on a leaf card
+    //    that term printed a hard dark-bottom/light-top ramp on EVERY card:
+    //    measured on a cold closeup plate, L=123 top half against L=75 bottom
+    //    half inside one 1.5 m card. ~100 of those per tree, all aligned to
+    //    world-up, is exactly the 'cluster of dark green cabbages' read. The
+    //    value fall now lives at CROWN scale, in the per-instance colour that
+    //    _buildTrees writes (see `cs` there).
+    //  * rootColor ~= tipColor. With no per-card height ramp there is nothing
+    //    meaningful for a root-to-tip PIGMENT ramp to describe either; leaving
+    //    leafDark on the root was the second half of the same two-tone card.
+    //    A whisper of it (0.94) survives so a card is not perfectly flat.
+    //  * variation 0.32 -> 0.10. Per-card hue/value scatter is the other
+    //    separator: at 0.32 neighbouring cards differed by up to 44% in value,
+    //    which draws a boundary around every cluster. The mass wants to differ
+    //    from its neighbours by a LITTLE and from the crown above/below it by
+    //    a lot.
+    //
+    // `pasture: 0.30` releases the sward's sage/olive clamp, which the grass
+    // material hard-sets to 1 for every caller. A canopy graded through the
+    // pasture ceiling comes out the same pigment as the field it stands in;
+    // in vc-072 the canopy is hue 80-87 against a distinctly yellower sward,
+    // and that separation is most of how the reference reads depth.
     this.matLeaf = {};
     for (const k of Object.keys(SPECIES)) {
+      const tip = new THREE.Color(SPECIES[k].leaf);
       this.matLeaf[k] = makeFoliageMaterial({
         color: 0xffffff, vertexColors: false, instanced: true,
-        rootColor: PALETTE.leafDark, tipColor: SPECIES[k].leaf, variation: 0.32,
+        rootColor: tip.clone().multiplyScalar(0.94), tipColor: tip,
+        variation: 0.10, heightShade: 0, pasture: 0.30,
         map: leafClusterTexture(SPECIES[k].tex, 5 + Object.keys(SPECIES).indexOf(k)),
         // Cards are centred on their own pivot, so the useful sway range is
         // the upper half: windHeight 0.5 makes the top edge flutter fully.
@@ -526,7 +580,12 @@ export class Vegetation {
     }
     this.matBush = makeFoliageMaterial({
       color: 0xffffff, vertexColors: false, instanced: true,
-      rootColor: PALETTE.leafDark, tipColor: PALETTE.leafOak, variation: 0.3,
+      rootColor: new THREE.Color(PALETTE.leafOak).multiplyScalar(0.90),
+      tipColor: PALETTE.leafOak, variation: 0.10,
+      // A bush IS a single mass sitting on the ground, so unlike a tree crown
+      // it keeps a little base darkening — but a third of the grass value, not
+      // all of it: at 1.0 every bush card was its own two-tone lozenge.
+      heightShade: 0.34, pasture: 0.30,
       map: leafClusterTexture('bush', 9),
       windStrength: 0.09, windSpeed: 1.4, windHeight: 0.5, stiffness: 1.2,
       fadeStart: 160, fadeEnd: 210, alphaTest: 0.46, rim: 0.6, hatch: 0.45,
@@ -1181,6 +1240,15 @@ export class Vegetation {
       const tw = rngRange(rng, -0.06, 0.10);
       for (const c of v.cards) {
         const lx = c.x * scale, ly = c.y * scale, lz = c.z * scale;
+        // ROUND 25 - the crown's value ramp. The card-local ramp that used to
+        // do this job (the grass shader's base darkening) is now off for
+        // foliage; this puts the same amount of value fall back at the scale
+        // the reference actually has it, so the crown is ONE mass with a lit
+        // top and a shaded underside instead of ~100 separately shaded balls.
+        // 0.74..1.07 rather than a wider range: measured against vc-072, whose
+        // canopy runs L 118-135 across a whole crown, i.e. about a 1.15x fall,
+        // with the rest of the depth coming from the light itself.
+        const cs = 0.74 + 0.33 * (c.ct ?? 0.5);
         cards.push({
           x: s.x + lx * co - lz * si,
           y: s.y + ly,
@@ -1189,7 +1257,7 @@ export class Vegetation {
           h: c.h * scale,
           yaw: c.yaw + yaw,
           pitch: c.pitch,
-          r: tv * (1 + tw), g: tv * (1 + tw * 0.35), b: tv * (1 - tw * 0.9),
+          r: tv * cs * (1 + tw), g: tv * cs * (1 + tw * 0.35), b: tv * cs * (1 - tw * 0.9),
         });
       }
 

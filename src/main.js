@@ -11,7 +11,9 @@
 
 import * as THREE from 'three';
 
-import { CFG, byQ } from './core/config.js';
+import {
+  CFG, byQ, calibrateBudget, setResolutionBudget, RESOLUTION_BUDGETS,
+} from './core/config.js';
 import { Bus } from './core/bus.js';
 import { Input } from './core/input.js';
 import { makeRng } from './core/rng.js';
@@ -21,6 +23,7 @@ import { CanvasRenderPipeline } from './render/canvasRenderPipeline.js';
 import { createLightRig } from './render/lighting.js';
 import { FxSystem } from './render/fx.js';
 import { MaterialRegistry } from './render/materials.js';
+import { warmTextureCacheAsync } from './render/textures.js';
 
 import { World } from './world/world.js';
 import { WorldLighting } from './world/worldMaterials.js';
@@ -106,7 +109,73 @@ const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
 async function frames(n) { for (let i = 0; i < n; i++) await raf(); }
 
 // ---------------------------------------------------------------------------
-// Fatal-error surface. A black screen tells the critic nothing; a stack does.
+// The pre-JS boot card (index.html #boot).
+//
+// It is static markup so it is on screen at FIRST PAINT, before this module has
+// been fetched. Everything here only moves its text, or takes it away.
+// ---------------------------------------------------------------------------
+
+const qsMain = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+
+/** rAF *and then a task*, so the frame we just yielded for actually paints.
+ *  Awaiting a bare rAF resumes inside the same frame's microtask checkpoint —
+ *  i.e. still before the paint — which is no yield at all for this purpose. */
+const paint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+const bootEl = () => (typeof document !== 'undefined' ? document.getElementById('boot') : null);
+
+/** Advance the loading card. `frac` is 0..1 and drives the rule under the title. */
+function bootStage(text, frac) {
+  const s = document.getElementById('boot-stage');
+  if (s && text) s.textContent = text;
+  const b = document.getElementById('boot-bar');
+  if (b && frac != null) b.style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%';
+}
+
+function bootDismiss() {
+  const el = bootEl();
+  if (!el) return;
+  el.classList.add('gone');
+  setTimeout(() => el.remove(), 360);
+}
+
+/**
+ * Turn the loading card into a message card. Used for every "you cannot play
+ * this here" outcome, so the reason arrives in the same typeface the game is
+ * set in rather than as a browser default or a stack trace.
+ */
+function bootMessage(head, body, extra, foot) {
+  const el = bootEl();
+  if (!el) return null;
+  el.classList.remove('gone');
+  el.innerHTML = '';
+  el.appendChild(Object.assign(document.createElement('div'), { className: 'bl', textContent: 'Gallian Militia · Squad 7' }));
+  el.appendChild(Object.assign(document.createElement('h1'), { textContent: 'Valkyrie Chronicles' }));
+  const rule = document.createElement('div');
+  rule.className = 'rule';
+  rule.appendChild(document.createElement('i')).style.animation = 'none';
+  el.appendChild(rule);
+  el.appendChild(Object.assign(document.createElement('div'), { className: 'sub', textContent: head }));
+  el.appendChild(Object.assign(document.createElement('div'), { className: 'note', textContent: body }));
+  if (extra) el.appendChild(extra);
+  if (foot) {
+    const f = Object.assign(document.createElement('div'), { className: 'note', textContent: foot });
+    f.style.marginTop = '2.2em';
+    f.style.opacity = '.7';
+    el.appendChild(f);
+  }
+  return el;
+}
+
+// ---------------------------------------------------------------------------
+// Fatal-error surface.
+//
+// It has two audiences and they want opposite things. A player wants a sentence;
+// the screenshot critic and anyone debugging want the stack. Before round 25 only
+// the critic was served, and a browser with no WebGL rendered a minified
+// "at new lg (…/index-Cz6FhtD-.js:4108:23888)" full-screen in monospace as its
+// public failure page. So: the sentence is the page, and the stack is one click
+// away (open by default under ?debug or ?capture, where nobody is a player).
 // ---------------------------------------------------------------------------
 
 function showFatal(err, where = 'boot') {
@@ -115,20 +184,39 @@ function showFatal(err, where = 'boot') {
   console.error(`[main] ${where} failed:`, err);
   try {
     window.__BOOT_ERROR__ = { where, message, stack };
-    let el = document.getElementById('vc-fatal');
-    if (!el) {
-      el = document.createElement('pre');
-      el.id = 'vc-fatal';
-      el.style.cssText = [
-        'position:fixed', 'inset:0', 'z-index:9999', 'margin:0', 'padding:4vh 5vw',
-        'background:#17120e', 'color:#e8d9be', 'overflow:auto', 'white-space:pre-wrap',
-        'font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace',
-      ].join(';');
-      document.body.appendChild(el);
+    const details = document.createElement('details');
+    details.open = !!(CFG.debug || CFG.capture);
+    details.style.cssText = 'margin-top:1.6em;max-width:min(80vw,70em);text-align:left';
+    const sum = document.createElement('summary');
+    sum.textContent = 'Technical details';
+    sum.style.cssText = 'cursor:pointer;letter-spacing:.18em;text-transform:uppercase;font-size:.7rem;color:#8d7c62';
+    details.appendChild(sum);
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'margin-top:.9em;padding:1em;background:rgba(0,0,0,.28);color:#c9b795;'
+      + 'overflow:auto;max-height:46vh;white-space:pre-wrap;'
+      + 'font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+    pre.textContent = `${where} failed\n\n${stack || message}\n\n`
+      + `capture=${CFG.capture} shot=${CFG.captureShot || '-'} quality=${CFG.quality} seed=${CFG.seed}`;
+    details.appendChild(pre);
+
+    const el = bootMessage(
+      'The demo could not start.',
+      'Something went wrong while building the field. Reloading the page usually fixes it. '
+      + 'If it does not, the demo needs a browser with WebGL2 and hardware acceleration enabled.',
+      details,
+    );
+    if (!el) {                       // #boot already removed: fall back to our own layer
+      const pane = document.createElement('div');
+      pane.id = 'vc-fatal';
+      pane.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;'
+        + 'align-items:center;justify-content:center;gap:1em;padding:6vh 8vw;text-align:center;'
+        + 'background:#17120e;color:#e8d9be;font:1rem/1.6 inherit';
+      pane.appendChild(Object.assign(document.createElement('div'), {
+        textContent: 'The demo hit an error and stopped. Reload the page to start again.',
+      }));
+      pane.appendChild(details);
+      document.body.appendChild(pane);
     }
-    el.textContent =
-      `Valkyrie Chronicles — ${where} failed\n\n${stack || message}\n\n` +
-      `capture=${CFG.capture} shot=${CFG.captureShot || '-'} quality=${CFG.quality} seed=${CFG.seed}`;
   } catch (e) {
     console.error('[main] could not render the error overlay', e);
   }
@@ -140,10 +228,65 @@ function showFatal(err, where = 'boot') {
 }
 
 // ---------------------------------------------------------------------------
-// System construction. Dependency order is load-bearing, see the comments.
+// "You cannot play this here" gates. Both run BEFORE anything is constructed:
+// a phone that builds the world melts on 986k triangles for a game it then
+// cannot accept a single input for, and a machine with no WebGL2 throws inside
+// the THREE.WebGLRenderer constructor.
 // ---------------------------------------------------------------------------
 
-function buildSystems() {
+/** @returns {boolean} true if this browser can create a WebGL2 context at all. */
+function hasWebGL2() {
+  try {
+    const c = document.createElement('canvas');
+    return !!(c.getContext('webgl2') || c.getContext('webgl2', { failIfMajorPerformanceCaveat: false }));
+  } catch { return false; }
+}
+
+/**
+ * A touch-only device. `Input.attach` binds keydown/keyup/mousemove/mousedown/
+ * mouseup/wheel and nothing else — there is not one touch or pointer handler in
+ * the file, and pointer lock does not exist on iOS at all. So a phone renders
+ * the title card, offers a real tappable "Open the Book", and then has no way to
+ * move, select, aim or fire. Half-built touch controls would be worse than
+ * saying so; this says so, before the GPU is asked for anything.
+ *
+ * `any-pointer`/`any-hover` rather than `pointer`, so a laptop with a
+ * touchscreen (coarse primary pointer, fine trackpad) is not turned away.
+ */
+function needsDesktop() {
+  if (CFG.capture || qsMain.has('desktop')) return false;
+  if (typeof matchMedia !== 'function') return false;
+  return !matchMedia('(any-pointer: fine)').matches && !matchMedia('(any-hover: hover)').matches;
+}
+
+// ---------------------------------------------------------------------------
+// System construction. Dependency order is load-bearing, see the comments.
+//
+// ROUND 25 MADE THIS ASYNC, AND THE AWAITS ARE THE POINT.
+//
+// It used to be one synchronous call, and a CDP CPU profile of the boot found
+// only 370 ms of idle in a 4515 ms window: the main thread was blocked solid
+// from module eval to the title card, so a page.screenshot() issued at t=500 ms
+// could not be serviced until t=3775 ms. The tab was unresponsive, not merely
+// blank. Nothing could have painted a loading indicator even if one had existed.
+//
+// `await paint()` between the stages hands the browser a frame to composite, so
+// the boot card's text and rule actually advance. The stage boundaries are the
+// four costs the profile named: world/layout + terrain (~420 ms), the procedural
+// texture bakes in render/textures.js (~550 ms), the 13 character rigs in
+// actors/rig.js (~557 ms) and vegetation (~128 ms). Each yield costs one frame.
+//
+// Skipped entirely under ?capture: the daemon boots once and the yields would
+// just make every cold render slower. They happen before engine.start(), so they
+// cannot touch the frame-count determinism contract either way.
+// ---------------------------------------------------------------------------
+
+async function buildSystems() {
+  const stage = async (text, frac) => {
+    bootStage(text, frac);
+    if (!CFG.capture) await paint();
+  };
+
   const canvas = document.getElementById('view');
   if (!canvas) throw new Error('#view canvas is missing from index.html');
 
@@ -151,6 +294,8 @@ function buildSystems() {
   const { scene, camera, renderer } = engine;
   // A scripted shot must not be steerable: no stray key from the harness gets in.
   if (CFG.capture) Input.enabled = false;
+
+  await stage('Raising the standard', 0.10);
 
   // --- lights first -------------------------------------------------------
   // World._makeLights() adopts an existing key light by NAME rather than adding
@@ -166,8 +311,34 @@ function buildSystems() {
   // (createLightRig already names them 'sun' / 'worldFill' — that IS the
   // handshake World._makeLights() looks for. Nothing to do here.)
 
+  // --- procedural paper stock --------------------------------------------
+  // Baked here, one per frame, purely so they are not baked somewhere worse.
+  // Left lazy, `paper` (205 ms) and `ground` (189 ms) were pulled in mid-way
+  // through the terrain material build, which is why r25's CPU profile blamed
+  // world/terrain.js for time that is actually canvas painting in
+  // render/textures.js. Identical output either way — see warmTextureCacheAsync.
+  if (!CFG.capture) {
+    await warmTextureCacheAsync(paint, (name, i, n) => {
+      bootStage('Sizing the paper', 0.10 + (i / n) * 0.08);
+    });
+  }
+
+  bootStage('Surveying the Vasel valley', 0.18);
+
   // --- world --------------------------------------------------------------
-  const world = new World(scene, CFG.seed);
+  // The single most expensive thing in the boot, and until r25 the single
+  // longest freeze: one synchronous constructor, ~1.7 s dev / ~2.0 s production,
+  // during which nothing painted and the tab did not answer. World.build() runs
+  // the identical stages from the identical seed in the identical order and
+  // yields a frame between each, so the loading card can advance and the page
+  // stays responsive. Capture keeps the plain synchronous constructor: a cold
+  // render must stay bit-for-bit the code path the determinism contract was
+  // measured on, and the daemon boots the world once anyway.
+  const world = CFG.capture
+    ? new World(scene, CFG.seed)
+    : await World.build(scene, CFG.seed, (name, f) => bootStage(name, 0.18 + f * 0.26));
+
+  await stage('Mixing the pigments', 0.46);
 
   // The sky dome and every fallback world material read WorldLighting, while the
   // NPR pipeline reads the rig. Keep the two agreeing or the sun sits in one
@@ -195,6 +366,8 @@ function buildSystems() {
   const pipeline = new CanvasRenderPipeline(renderer, scene, camera);
   pipeline.setLightRig(rig);
   engine.pipeline = pipeline;          // Engine.start() renders through it
+
+  await stage('Wind, water and smoke', 0.58);
 
   // --- fx -----------------------------------------------------------------
   const fx = new FxSystem(scene);
@@ -237,8 +410,12 @@ function buildSystems() {
     }
   };
 
+  await stage('Mustering Squad 7', 0.66);
+
   const battle = new Battle(world, scene, { camera, mission: MISSION_VASEL, seed: CFG.seed });
   battle.setup();
+
+  await stage('Ruling the field book', 0.90);
   battle.attachCamera(camera);
   physics.setUnits(battle.units);
 
@@ -268,11 +445,15 @@ function buildSystems() {
     if (hudHost) hudHost.style.display = captureUiMode === 'none' ? 'none' : '';
   });
 
+  await stage('Tuning the band', 0.96);
+
   // --- audio --------------------------------------------------------------
   // Constructed (and Bus-wired) always; ctx creation waits for a user gesture,
   // and in capture mode it never happens at all.
   const audio = new AudioEngine({ seed: CFG.seed });
   audio.setMusicState('menu');          // S11: the boot state is the menu bed
+
+  bootStage('Opening the book', 0.97);
 
   return { engine, scene, camera, renderer, rig, world, pipeline, fx, physics, battle, hud, audio };
 }
@@ -510,66 +691,71 @@ function updateLighting(S, dt) {
   rig.update(CFG.capture ? 1 : dt, _focus);
 }
 
-// --- dynamic resolution (never in capture mode) -----------------------------
+// --- boot resolution calibration (never in capture mode) --------------------
 //
-// ROUND 21 replaced an auto step-down of the SHADER QUALITY TIER with one of the
-// RESOLUTION, and took the player-facing toast off the screen. Three things were
-// wrong with the old one, all of them measured:
+// WHAT THIS IS NOT: the dynamic-resolution ratchet. That was tried twice — as a
+// shader-tier step-down in round 21 and as a resolution step-down in round 22 —
+// and both are retired for measured reasons written up in Engine.setDynScale.
+// The short version: a ratchet is decided by whichever camera happens to be on
+// screen (the pre-battle orbit costs 31 ms against action mode's 14 ms, so it
+// tripped inside the title card every session), it never recovered because the
+// step-back-up counter was decremented faster than it was incremented on the
+// command map, and it silently corrupted every measurement taken afterwards.
 //
-//   * It was the wrong knob. ultra -> low saved 10.9 ms of a 58.4 ms frame and
-//     compiled 38 new shader programs to do it (a multi-second stall — which
-//     then counted as more missed frames and tripped the next step down).
-//     Dropping the pixel ratio from 2.0 to 1.4 saved 24.8 ms with no recompiles.
-//   * It deleted art direction to buy frame rate: quality 0 drops the
-//     double-stroke ink and the chromatic edge, so the look CHANGED mid-session.
-//     Resolution does not change the look, only how many samples of it there are.
-//   * It told the player. "RENDER QUALITY: LOW" sat over the opening dialogue
-//     within 35 s of every session while the options menu still said Ultra. The
-//     console.warn below is the right audience for this.
+// WHAT THIS IS: one measurement, one decision, once, and it can only go down.
 //
-// It also RECOVERS, which the old one never did, and it is not armed until the
-// boot is over. Both of those are the same bug seen twice: the first ten seconds
-// of a session are full of one-off costs (world generation, the shader
-// precompile, the first frame of every effect), the old ratchet counted them as
-// evidence about the frame budget, and the penalty was permanent. Measured after
-// the precompile landed, it still stepped twice inside the title card and left a
-// 60-fps machine rendering at 0.75 pixel ratio for the rest of the session.
+// CFG.render.budgetPx is a pixel count tuned on an Apple M3 Pro, where the frame
+// fits T = 3.5 ms + 4.0 ms/Mpx. That fit is a property of THIS GPU. An 8-core M1
+// Air or an Intel Iris Xe has two to three times the ms-per-megapixel, so the
+// same budget lands at 25-40 fps and the demo's first impression on a general
+// player's machine is a slideshow. Shipping a hard-coded quality tier for every
+// machine on earth (CFG.quality was flat 2/ultra for everyone) is the same bug
+// in the other direction.
 //
-// So: armed 3 s after the precompile resolves; each step 0.85 down or 1/0.85 up;
-// steps 6 s apart so a step is judged on a fair sample; 90 slow frames to step
-// down but 240 fast ones to step back up, which is what keeps it from
-// oscillating; floored at 0.75 device pixels per CSS pixel by pixelRatio().
-let _slow = 0;
-let _fast = 0;
-let _lastStep = -99;
-let _armAt = 8;
+// So: after the shader precompile has resolved and settled, sample the frame
+// time over ~2.5 s, solve the same linear fit for THIS machine's fill rate, and
+// pick the budget that hits the target. It runs exactly once, it is clamped so
+// it can never raise the budget above what the artist authored, and it is
+// clamped below at a third of it — past that the picture is worse than the frame
+// rate is good. A player who has chosen a resolution by hand (?rs, ?px, or the
+// options menu) is never second-guessed; calibrateBudget() refuses in that case.
+//
+// It is sampled during the title orbit, which is the most expensive camera in
+// the game (23.1 ms vs 20.7 for action mode at the shipped setting, i.e. ~12%
+// pessimistic). That is deliberately the safe direction to be wrong in.
+const CAL_SETTLE_S = 2.0;      // frames to ignore after arming (LOD, first bloom)
+const CAL_SAMPLE_S = 2.5;      // measurement window
+const CAL_STALL_MS = 60;       // a GC or a lazy compile is not evidence about fill
 
-function armAutoScale(t) { _armAt = Math.max(_armAt, t); }
+let _calArmAt = 8;
+let _calT0 = -1;
+let _calSum = 0;
+let _calN = 0;
+let _calDone = false;
+
+function armAutoScale(t) { _calArmAt = Math.max(_calArmAt, t); }
 
 function autoScale(S, dt) {
-  const { engine } = S;
-  if (engine.time < _armAt) { _slow = 0; _fast = 0; return; }
-  // Both counters LEAK rather than reset. A consecutive-frame test for the way
-  // back up never fired: play at 12 ms mean still has a 30 ms p95 (a spawn, a
-  // shadow refresh, a GC), so `_fast = 0` on any slow frame meant 300 in a row
-  // never happened and a machine that had stepped down once stayed down forever.
-  if (dt > 1 / 42) { _slow++; _fast = Math.max(0, _fast - 8); } else {
-    _slow = Math.max(0, _slow - 2);
-    if (dt < 1 / 55) _fast++;
-  }
-  if (engine.time - _lastStep < 6) return;
-  if (_slow >= 90) {
-    _slow = 0; _lastStep = engine.time;
-    if (engine.setDynScale(CFG.render.dynScale * 0.85)) {
-      console.warn('[main] frame budget missed, pixel ratio ->',
-        S.renderer.getPixelRatio().toFixed(2));
-    }
-  } else if (_fast >= 240 && CFG.render.dynScale < 1) {
-    _fast = 0; _lastStep = engine.time;
-    if (engine.setDynScale(Math.min(1, CFG.render.dynScale / 0.85))) {
-      console.info('[main] frame budget comfortable, pixel ratio ->',
-        S.renderer.getPixelRatio().toFixed(2));
-    }
+  if (_calDone) return;
+  const { engine, renderer } = S;
+  if (engine.time < _calArmAt) return;
+  if (_calT0 < 0) { _calT0 = engine.time; return; }
+  if (engine.time - _calT0 < CAL_SETTLE_S) return;
+
+  const ms = dt * 1000;
+  if (ms < CAL_STALL_MS) { _calSum += ms; _calN++; }
+  if (engine.time - _calT0 < CAL_SETTLE_S + CAL_SAMPLE_S) return;
+
+  _calDone = true;
+  if (_calN < 30) return;                       // not enough clean frames to judge
+  const mean = _calSum / _calN;
+  const buf = renderer.domElement.width * renderer.domElement.height;
+  const cal = calibrateBudget(mean, buf);
+  if (cal < 0.97) {
+    engine.onResize();
+    console.info('[main] boot calibration:', mean.toFixed(1), 'ms over', _calN,
+      'frames at', (buf / 1e6).toFixed(2), 'Mpx -> pixel budget x' + cal.toFixed(2),
+      '-> pixel ratio', renderer.getPixelRatio().toFixed(2));
   }
 }
 
@@ -595,9 +781,45 @@ function titleScreen(S, onBegin) {
   const begin = ribbonButton('Open the Book', () => start(), { w: 16, key: 'Enter', seed: 61 });
   row.appendChild(begin);
   inner.appendChild(row);
+
+  // CREDIT AND DISCLAIMER. This demo reproduces SEGA's characters, units,
+  // factions and art style directly, and it is publicly linked, so the one place
+  // everybody looks has to say what it is and what it is not. Deliberately small
+  // and in the label style so it reads as a colophon rather than as copy.
+  //
+  // The repo link is `.clickable` (index.html gates pointer-events on that class)
+  // and target=_blank, so following it cannot take the page — and because it is
+  // an <a> rather than a button it never takes the Enter binding off the ribbon.
+  const colophon = h('div', {
+    class: 'vc-label',
+    style: 'margin-top:1.5em;opacity:.7;font-size:.72em;letter-spacing:.1em;line-height:2.05',
+  });
+  colophon.appendChild(document.createTextNode(
+    'A fan-made technical demo · not affiliated with SEGA',
+  ));
+  colophon.appendChild(h('br'));
+  // Non-breaking so the byline never wraps between the first and last name,
+  // which it did at 1366x768 before the line was split in two.
+  colophon.appendChild(document.createTextNode('Built in three.js by Jake Verbaten · '));
+  const link = h('a', {
+    class: 'clickable',
+    href: 'https://github.com/Raynos/valkyrie-chronicles-demo-opus',
+    target: '_blank',
+    rel: 'noopener noreferrer',
+    style: 'color:inherit;text-decoration:underline;text-underline-offset:.35em',
+    text: 'Source on GitHub',
+  });
+  colophon.appendChild(link);
+  inner.appendChild(colophon);
+
   p.content.appendChild(inner);
   root.appendChild(p.root);
   hud.screens.appendChild(root);
+
+  // The real card is mounted: the static loading card in index.html has done its
+  // job and fades out. Doing it HERE rather than at the end of boot() is what
+  // keeps the handover seamless — there is never a frame with neither on screen.
+  bootDismiss();
 
   let started = false;
   const onKey = (e) => {
@@ -713,6 +935,42 @@ function playFlow(S) {
   });
   Bus.on('ui:resume', () => { engine.paused = false; if (audio.ready) audio.resume(); });
 
+  // OPTIONS THAT ACTUALLY DO SOMETHING.
+  //
+  // The pause menu emits `ui:option` and the HUD applies the cosmetic half of it
+  // (grain, motion, volumes). The two rows that cost frames have to be applied
+  // out here, because main.js is the only module that holds both the pipeline and
+  // the engine:
+  //
+  //  * Render Quality wrote `CFG.quality = n` and stopped. Nothing read it after
+  //    boot except the fx particle counts — every expensive define (pipeline
+  //    composite/grade, material tiers, shadow map size, terrain LOD, vegetation
+  //    density) was baked before the menu existed, so choosing Low changed
+  //    nothing a frame-time meter could see. setQuality() is the function that
+  //    was written to do it properly and had exactly one call site: its own
+  //    constructor. It recompiles the defines and re-tiers the materials. It
+  //    still cannot re-generate the terrain, the vegetation or the shadow map —
+  //    those are boot-time decisions — so this row is honest about being a
+  //    SHADER quality row and Resolution below is the one that moves the frame.
+  //  * Resolution is new, and it is the only knob that matters: every post pass
+  //    except the contour prepass totals 5.0 ms of a 22.4 ms frame. Setting the
+  //    budget and calling onResize() re-allocates every render target and changes
+  //    the backing store immediately, with no reload and no artefacts.
+  Bus.on('ui:option', (p) => {
+    if (!p || !p.key) return;
+    if (p.key === 'quality') {
+      const q = ['Low', 'High', 'Ultra'].indexOf(p.value);
+      if (q >= 0) { CFG.quality = q; S.pipeline?.setQuality?.(q); }
+    } else if (p.key === 'resolution') {
+      if (setResolutionBudget(p.value)) {
+        engine.onResize();
+        console.info('[main] resolution ->', p.value, 'budget',
+          (RESOLUTION_BUDGETS[p.value] / 1e6).toFixed(2), 'Mpx, pixel ratio',
+          S.renderer.getPixelRatio().toFixed(2));
+      }
+    }
+  });
+
   // The HUD announces intent and never mutates the battle; this is where the
   // intent is actually carried out.
   Bus.on('ui:endTurn', () => { if (battle.phase === 'command') battle.endTurn(); });
@@ -823,6 +1081,9 @@ async function captureFlow(S) {
 
   const hudHost = document.getElementById('hud');
   if (hudHost) hudHost.style.display = 'none';       // shots opt the UI back in
+  // The loading card is DOM, and page.screenshot() captures DOM: leaving it up
+  // would put a title card over every plate the critic ever looks at.
+  bootEl()?.remove();
   hud.briefing.hide();
   hud.chapterCard.hide();
 
@@ -1053,7 +1314,32 @@ async function boot() {
   // Armed before anything else: a reload that fires while the shot is being set up
   // is just as fatal as one that fires while the shutter is open.
   pinModulesForCapture();
-  const S = buildSystems();
+
+  // --- gates, before a single system is constructed -------------------------
+  if (needsDesktop()) {
+    bootMessage(
+      'This demo needs a keyboard and a mouse.',
+      'Valkyrie Chronicles is played with WASD, the mouse and a handful of keys, and there '
+      + 'are no touch controls. Open it on a desktop or laptop and it will run.',
+      null,
+      'A fan-made technical demo built in three.js · not affiliated with SEGA',
+    );
+    console.info('[main] touch-only device: the battle was not built');
+    return;
+  }
+  if (!hasWebGL2()) {
+    bootMessage(
+      'This demo needs WebGL2.',
+      'Try a recent version of Chrome, Edge, Firefox or Safari on a desktop or laptop, and '
+      + 'check that hardware acceleration is switched on in your browser settings.',
+      null,
+      'A fan-made technical demo built in three.js · not affiliated with SEGA',
+    );
+    console.warn('[main] no WebGL2 context available: the battle was not built');
+    return;
+  }
+
+  const S = await buildSystems();
   const updateTracers = wireCombatFx(S);
   installSystems(S, updateTracers);
 

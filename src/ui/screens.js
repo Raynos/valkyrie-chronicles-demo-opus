@@ -7,7 +7,7 @@
 // plain data object in and hand a plain result back through a callback.
 
 import { Bus } from '../core/bus.js';
-import { CFG } from '../core/config.js';
+import { CFG, RESOLUTION_NAMES, resolutionName } from '../core/config.js';
 import { loadSettings, patchSettings } from '../core/save.js';
 import { h, clear, panel, clickable, label, typewriter, roman, numberWord, pad, replay } from './dom.js';
 import {
@@ -746,6 +746,23 @@ export function rankFor({ turns = 5, victory = true, stats = {} } = {}) {
 
 const DEFAULT_OPTIONS = [
   { key: 'quality', name: 'Render Quality', values: ['Low', 'High', 'Ultra'], index: 2 },
+  // R25 — the frame is FILL-bound and its cost is quadratic in the pixel ratio
+  // (CFG.render.renderScale carries the measurements: 58.4 ms at ratio 2.0 vs
+  // 22.1 ms at 1.0 on the same view). Render Quality drops work; Resolution is
+  // the row that actually buys frames on a machine that cannot hold the budget,
+  // and until now the only way to reach it was the ?rs= query string.
+  //
+  // R25 wave 2 — THE VALUES ARE THE BUDGET KEYS AND MUST STAY THAT WAY. main.js
+  // hands p.value straight to setResolutionBudget(), which looks it up in
+  // RESOLUTION_BUDGETS (config.js:249: Performance / Balanced / Native). The
+  // first cut of this row read ['Half','Reduced','Full'], which are not keys, so
+  // every lookup returned undefined, setResolutionBudget() returned false and
+  // the row silently did nothing at all — no onResize(), no re-allocation, no
+  // change in the picture. Prettier labels would need a label->key map in
+  // main.js; there is no such map. index 1 = Balanced, which is what the
+  // authored CFG.render.budgetPx (3.0e6) already is, so the row opens telling
+  // the truth instead of claiming Native on a machine that is not running it.
+  { key: 'resolution', name: 'Resolution', values: RESOLUTION_NAMES.slice(), index: 1 },
   { key: 'motion', name: 'Flourishes', values: ['Reduced', 'Full'], index: 1 },
   { key: 'grain', name: 'Paper Grain', values: ['Off', 'Subtle', 'Full'], index: 2 },
   { key: 'music', name: 'Music', values: ['Off', 'Quiet', 'Normal', 'Loud'], index: 2 },
@@ -766,6 +783,17 @@ export class PauseMenu {
     if (reducedMotion()) {
       const m = this.options.find((o) => o.key === 'motion');
       if (m) m.index = 0;
+    }
+    // The Resolution row opens on whatever the budget ACTUALLY is — the boot
+    // calibration (config.js calibrateBudget) and ?px= can both move it off the
+    // authored default before anyone opens this menu, and a row that reads
+    // "Balanced" while the machine is running a calibrated-down budget is worse
+    // than no row. resolutionName() returns null for a calibrated budget that is
+    // not one of the three presets, in which case the default stands.
+    const res = this.options.find((o) => o.key === 'resolution');
+    if (res) {
+      const live = RESOLUTION_NAMES.indexOf(resolutionName());
+      if (live >= 0) res.index = live;
     }
     // The player's own choices survive a reload. Capture mode is excluded on
     // purpose: the screenshot harness must render the authored defaults, not

@@ -1030,6 +1030,10 @@ uniform float uSkySat;
 uniform float uSatGamma;
 uniform float uSatKnee;
 uniform float uSatComp;
+// G-buffer attachment 1. Read for ONE thing: the overlay sentinel written by the
+// sprite prepass (uMeta.a = -1, impossible for real geometry because the buffer
+// is half-float and every other writer puts a 0..1 form scale there).
+uniform sampler2D tMeta;
 uniform vec3  uSkyWhite;
 uniform float uWashAmt;       // 0..1 blend of the frame-wide wash quantiser
 uniform float uWashLevels;    // steps across the perceptual range
@@ -1135,6 +1139,30 @@ void main() {
   // 1 = a wash big enough to show the sheet it is painted on; 0 = a form so
   // small that a screen-frequency overlay is pure noise on it.
   float form = clamp(aRaw - sky * 2.0, 0.0, 1.0);
+
+  // ---- LETTERING IS NOT PAINT ----------------------------------------------
+  // ROUND 25. The onomatopoeia is authored #ffbe05 (255,190,5) — sat 0.98, the
+  // same chrome yellow vc-108 measures at (255,194,8). It arrived on the plate
+  // at (231,198,111), sat 0.52. Bisected by dumping the composite's own output:
+  // straight out of COMPOSITE_FRAG the word reads (254,226,42) sat 0.83, so the
+  // whole of the wash happens HERE, and it is two knobs authored for landscape:
+  //
+  //   * the chroma shoulder at uSatKnee/uSatComp, which exists to stop a lawn
+  //     going poster-green. hsv.y 0.977 -> 0.866, i.e. blue floor 0.133 linear,
+  //     which is display 104 — essentially the whole of the measured 111.
+  //   * the highlight soft clip at 225/255, which took red 254 -> 231.
+  //
+  // Neither may be relaxed globally: the rubric rejects a saturated green
+  // outright and the 225 ceiling is what keeps paint off the sheet. And no
+  // authoring change in fx.js can escape them either — the shoulder maps EVERY
+  // input chroma above ~0.5 to at most 0.866, so a more saturated fill lands in
+  // the same place. So the sprite is exempted instead: the lettering in the real
+  // game is drawn ON the plate, not painted into it, and its yellow is flat and
+  // uncompressed regardless of what is behind it.
+  //
+  // The mask is the sentinel the sprite prepass writes into gMeta.a; the G-buffer
+  // is half-float, so -1 is a value no form scale can collide with.
+  float overlay = step(texture2D(tMeta, uv).a, -0.5);
 
   // Set by the wash quantiser below: the CENTRE coordinate of the band this
   // pixel landed in, in the same perceptual space the quantiser works in, and
@@ -1491,7 +1519,9 @@ void main() {
     float head = 225.0 / 255.0 - knee;
     float over = max(lD - knee, 0.0);
     float lN = min(lD, knee) + over / (1.0 + over / max(head, 1e-4));
-    lN = mix(lN, lD, sky);
+    // The sky is bare paper and lettering is ink on top of the sheet — neither
+    // is a wash, so neither owes the sheet 8 LSB of headroom.
+    lN = mix(lN, lD, max(sky, overlay));
     c *= pow(lN / max(lD, 1e-3), 2.2);
   }
 
@@ -1583,7 +1613,10 @@ void main() {
     sat = sat <= uSatKnee ? sat
         : uSatKnee + (sat - uSatKnee) / (1.0 + (sat - uSatKnee) * uSatComp);
     hsv.y = clamp(mix(sat, hsv.y * uSkySat, sky), 0.0, 1.0);
-    c = vcHsv2Rgb(hsv);
+    // Lettering keeps the chroma it was drawn with. See the 'overlay' note at
+    // the top of main(): this whole block — the sage-to-green warp, the ochre
+    // trim and the shoulder — is authored for pigment on a landscape.
+    c = mix(vcHsv2Rgb(hsv), c, overlay);
   }
 
   // ---- graphite hatching ---------------------------------------------------
@@ -1901,24 +1934,103 @@ void main() {
     // against a 1.85 target. The real game insets its picture into a rectangular
     // sheet, so the distance that matters is the Chebyshev one.
     vec2 m = abs(uv - 0.5) * 2.0;                 // 0 at centre, 1 at each edge
-    float dEdge = max(m.x, m.y * uDrawFallAniso); // 16:9 keeps a wider side margin
+    // ROUND 25 — uDrawFallAniso is a PIXEL-margin correction, not a taste knob.
+    // At 0.86 the side margin measured 411 px and the top/bottom 181 px: the
+    // sides were 2.3x thicker, which is not a sheet edge, it is a letterbox.
+    // A = (1 - p/960) / (1 - p/540) gives an equal p-pixel margin on all four
+    // sides; at p = 154 px that is 1.18.
+    float dEdge = max(m.x, m.y * uDrawFallAniso);
     float d = clamp(dEdge * uDrawFallScale, 0.0, 1.0);
     float fall = smoothstep(uDrawFallStart, 1.0, d) * uDrawFallAmt;
-    // The sky is already paper-adjacent; draining it as well just greys the top
-    // of the frame, so it takes a fraction of the effect.
-    fall *= mix(1.0, 0.35, sky);
+
+    // ROUND 25 — THE DEPTH HALF, which r24 never built. finish_plan P5 asked for
+    // "screen-edge proximity AND far depth" and only the first term shipped, so
+    // a 12 m road at the frame edge drained exactly like a 200 m hillside.
+    //
+    // The reference settles it in both directions. vc-072: the drain reaches the
+    // CENTRE of the frame in the far distance — measured on 20 vertical strips,
+    // the receding street and far village at 38-63% across read sat 0.121-0.148
+    // while equally central NEAR strips at 18-33% read sat 0.212-0.256. No
+    // screen-margin term can do that. vc-104: at x 95-230 the tank's green plate
+    // reads sat 0.130 / p1 39 — fully painted, full-value contour ink, right at
+    // the sheet edge — while at x 0-90 beside it the far buildings read sat 0.070
+    // / p1 149. So the drain is primarily DEPTH with a margin component, and near
+    // geometry is exempt from the margin.
+    //
+    // Sky reads distG = 0 and must NOT be treated as 0 m; same guard as the
+    // depth-keyed ink floor above (see the step(0.0001, distG) at the tonemap).
+    float dz = texture2D(tND, uv).a * uFar;
+    float solid = step(0.0001, dz);
+    // 6-30 m, not the 8-45 m first tried: in vc-104 the exempt near subject (the
+    // tank at x 95-230) is about 10 m and the buildings drained right beside it
+    // at x 0-90 are midground, so 45 m was exempting a band the reference
+    // drains. Measured on cold tank, the wider band held the whole left edge at
+    // fall 0.14 and the sheet never appeared.
+    float near01 = solid * (1.0 - smoothstep(6.0, 30.0, dz));
+    fall *= mix(1.0, 0.15, near01);               // near geometry keeps its paint
+    float far01 = solid * smoothstep(70.0, 220.0, dz);
+    fall = max(fall, far01 * uDrawFallAmt);       // distance drains anywhere in frame
+
+    // ROUND 25 — THE SKY EXEMPTION WAS SIZED FOR A DIFFERENT EFFECT. r24 held it
+    // at 0.35 because "draining the sky just greys the top of the frame", and at
+    // r24's settings that was true: the margin covered 62% of the frame and the
+    // lift had a 0.45 floor it could not get past, so a drained sky went grey and
+    // stayed there. With a 154 px margin and a lift that reaches uPaperWhite, a
+    // drained sky goes to CREAM, which is what the reference actually does —
+    // vc-072's top 25 rows measure (241,239,228) at sat 0.053, i.e. paper, with
+    // its blue sky starting only at row 55 (189,211,224). The sheet cuts the sky
+    // off exactly as it cuts everything else off; it is the one surface in the
+    // frame that is ALREADY near paper, so it has the shortest way to travel.
+    //
+    // 0.80 rather than 1.0 keeps a trace of the r24 instinct: a dome corner that
+    // is already 20 LSB off the sheet should not be the crispest paper edge in
+    // the picture.
+    //
+    // Lettering is exempt outright — a word drawn on the sheet does not recede
+    // into it.
+    fall *= mix(1.0, 0.80, sky) * (1.0 - overlay);
     if (fall > 0.001) {
       vec3 hsv = vcRgb2Hsv(c);
       hsv.y *= 1.0 - fall;
       c = vcHsv2Rgb(hsv);
       // Lift toward paper, but only what is already light: a dark stroke stays a
       // dark stroke, so the periphery reads as line-art on paper rather than as
-      // fog. lumaOf(c) gates it, so ink at luma 0.15 keeps 85% of its weight.
-      // The margin must go to CREAM, not to grey. Dropping chroma alone leaves a
-      // neutral grey wash, which reads as fog; the real game's drained margin is
-      // the warm white of the sheet itself. So the lift keeps a floor even in the
-      // midtones and only real ink is allowed to stay dark.
-      float lift = fall * mix(0.45, 1.0, smoothstep(0.04, 0.62, lumaOf(c)));
+      // fog. The margin must go to CREAM, not to grey — dropping chroma alone
+      // leaves a neutral grey wash, which reads as fog.
+      //
+      // ROUND 25 — the old form was fall * mix(0.45, 1.0, smoothstep(0.04, 0.62,
+      // luma)) and its comment claimed ink at luma 0.15 kept 85% of its weight.
+      // That is arithmetically false by its own code: smoothstep(0.04,0.62,0.15)
+      // = 0.094, so mix(0.45,1.0,0.094) = 0.502 — a stroke took HALF the full
+      // lift, and at fall 0.66 an L38 contour was mixed a third of the way to
+      // (250,244,230) and landed at L108. Measured: our closeup's left 170 px
+      // read p1 138 and 0.00% ink density in every one of the twelve edge cells,
+      // against vc-104's p1 47 and 0.3-2.1% — the drained margin had no line-art
+      // left in it at all, only pale white ghosts where the contours had been.
+      //
+      // In vc-072 and vc-088 the drained regions are legible PENCIL LINE-ART:
+      // un-painted, not erased. So the exemption is HARD, the way the wash
+      // quantiser's draw exemption already is: below display luma 0.06 a stroke
+      // receives zero lift and does not move, above 0.30 a wash takes the whole
+      // lift. That separation is what lets uDrawFallAmt go to 0.95 — the single
+      // 0.66 was trying to reach paper and spare the ink with one number, and
+      // did neither.
+      //
+      // AND THE GATE MUST BE READ IN DISPLAY SPACE. c here is LINEAR — the
+      // encode happens in colorspace_fragment at the end of this shader — so a
+      // threshold written as "luma 0.30" against lumaOf(c) is really display
+      // 0.58, and the whole midtone band of the margin was only taking 40-80% of
+      // the lift. Measured with the linear gate: our left 154 px strip read p50
+      // 164 / p99 222 against vc-104's 212 / 238 — the wash was draining but
+      // stopping well short of the sheet. sqrt() is gamma 2.0, within a couple of
+      // LSB of sRGB across this range and a great deal cheaper than pow().
+      //
+      // 0.10/0.34 rather than 0.06/0.30 because our contour ink sits at display
+      // luma ~0.14, not 0.06: at 0.06/0.30 a stroke still took 24% of the lift
+      // and the strip p1 went to ~84 against the reference's 59. At 0.10/0.34 it
+      // takes 6%, and the measured strip p1 stays at 57 — on vc-104's 59.
+      float dLum = sqrt(max(lumaOf(c), 0.0));
+      float lift = fall * smoothstep(0.10, 0.34, dLum);
       c = mix(c, uPaperWhite, clamp(lift * uDrawFallPaper, 0.0, 1.0));
     }
   }
@@ -2201,6 +2313,97 @@ void main() {
 }
 `;
 
+// ======================================================= SPRITE G-BUFFER
+// ROUND 25 — A SPRITE THAT IS PART OF THE PICTURE NEEDS A DEPTH.
+//
+// `_prepassBegin` used to hide every Points/Sprite/Line unconditionally, so at a
+// sprite's pixels the G-buffer held the depth and normal of whatever was BEHIND
+// it. Everything downstream that keys off the G-buffer then graded the sprite as
+// if it were at the background's distance:
+//
+//   - the aerial perspective (COMPOSITE_FRAG's haze) mixed it toward
+//     uHazeColor by the BACKGROUND's optical path,
+//   - the ink pass drew the background's silhouettes straight over it,
+//   - the drawing falloff's depth term drained its chroma.
+//
+// Measured on the onomatopoeia word, which is the only sprite this project has:
+// the letters are authored #ffbe05 (255,190,5), sat 0.98, matching vc-108's
+// (255,194,8) exactly — and they rendered at (227,192,108), sat 0.52, with the
+// bridge parapet's contour ink legible straight through the glyphs. Ablating the
+// drawing falloff entirely only recovered 0.52 -> 0.56, i.e. the falloff was the
+// small half; the HAZE was the large one, mixing a 15 m word toward the veil of a
+// 100 m hillside.
+//
+// Sprites cannot use the generic prepass material: three renders them with its
+// own billboard vertex shader (ShaderLib.sprite), and the quad's `position` is a
+// unit square in the sprite's own frame that only becomes camera-facing inside
+// that shader. So this is that shader's vertex half, rewritten to emit the two
+// G-buffer targets. The billboard maths is copied verbatim from
+// three/src/renderers/shaders/ShaderLib/sprite.glsl.js (size-attenuated branch
+// only — every sprite here is world-scaled).
+//
+// The normal is a flat (0,0,1) in VIEW space: a sprite is a card facing the
+// camera, so that is not an approximation, it is what it is.
+let _spritePrepass = null;
+const _spriteCenter = new THREE.Vector2(0.5, 0.5);
+
+function getSpritePrepassMaterial() {
+  if (_spritePrepass) return _spritePrepass;
+  _spritePrepass = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {
+      uMap:      { value: null },
+      uFar:      { value: 400 },
+      uOpacity:  { value: 1 },
+      uRotation: { value: 0 },
+      uCenter:   { value: new THREE.Vector2(0.5, 0.5) },
+      uMeta:     { value: new THREE.Vector4(0, 0, 0, 0) },
+    },
+    vertexShader: /* glsl */`
+uniform float uRotation;
+uniform vec2  uCenter;
+out vec2 vUvS;
+out vec3 vViewPosS;
+void main() {
+  vUvS = uv;
+  vec4 mvPosition = modelViewMatrix[3];
+  vec2 sc = vec2(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz));
+  vec2 aligned = (position.xy - (uCenter - vec2(0.5))) * sc;
+  vec2 rot;
+  rot.x = cos(uRotation) * aligned.x - sin(uRotation) * aligned.y;
+  rot.y = sin(uRotation) * aligned.x + cos(uRotation) * aligned.y;
+  mvPosition.xy += rot;
+  vViewPosS = mvPosition.xyz;
+  gl_Position = projectionMatrix * mvPosition;
+}`,
+    fragmentShader: /* glsl */`
+precision highp float;
+layout(location = 0) out vec4 gNormalDepth;
+layout(location = 1) out vec4 gMeta;
+uniform sampler2D uMap;
+uniform float uFar;
+uniform float uOpacity;
+uniform vec4  uMeta;
+in vec2 vUvS;
+in vec3 vViewPosS;
+void main() {
+  // A hard cutout, not a blend: a G-buffer has no partial coverage. Folding
+  // uOpacity into the test is what makes a FADING sprite erode from its thin
+  // edges inward instead of popping out of the depth buffer in one frame.
+  float a = texture(uMap, vUvS).a * uOpacity;
+  if (a < 0.5) discard;
+  gNormalDepth = vec4(0.0, 0.0, 1.0, (-vViewPosS.z) / uFar);
+  gMeta = uMeta;
+}`,
+    lights: false,
+    fog: false,
+    name: 'vcSpritePrepass',
+  });
+  _spritePrepass.userData.vcIsPrepass = true;
+  _spritePrepass.userData.vcIsSpritePrepass = true;
+  return _spritePrepass;
+}
+
 // ================================================================ PIPELINE
 
 export class CanvasRenderPipeline {
@@ -2471,6 +2674,7 @@ export class CanvasRenderPipeline {
     this.mGrade = new THREE.ShaderMaterial({
       uniforms: {
         tColor: { value: null }, tPaper: { value: paper }, tND: { value: null },
+        tMeta: { value: null },
         uTexel: { value: new THREE.Vector2() },
         uResolution: { value: new THREE.Vector2() },
         uPixelRatio: { value: this.dpr },
@@ -2642,11 +2846,55 @@ export class CanvasRenderPipeline {
         uHighTint: { value: new THREE.Color(0xfff4e2) },
         uVignetteTint: { value: new THREE.Color(0xa2988c) },
         // ROUND 24 - the drawing falloff. See the block in GRADE_FRAG.
-        uDrawFallAmt:   { value: 0.66 },
-        uDrawFallStart: { value: 0.64 },
-        uDrawFallScale: { value: 1.12 },
+        //
+        // ROUND 25 — r24's footprint was 3-5x the real game's. Analytically the
+        // old numbers made fall > 0 wherever max(m.x, 0.86*m.y) > 0.64/1.12 =
+        // 0.5714, i.e. 411 px in from each side and 181 px in from top/bottom:
+        // 62.0% of the frame area. Measured on cold plates, the x at which column
+        // saturation first reaches half the centre value was tank 317 px, closeup
+        // 282 px, overview 265 px; the same measurement on the real game is
+        // vc-072 57 px, vc-104 103 px, vc-088 183 px. Scale 1.12 also clamped d
+        // to 1.0 for everything within 103 px of the edge, so the outermost strip
+        // was a flat plateau with no sheet edge in it at all.
+        //
+        // start 0.84 with scale 1.00: the drain begins 154 px from each edge and
+        // is at half strength 77 px in, and the ramp now runs all the way out to
+        // the edge instead of saturating early.
+        //
+        // amt 0.66 -> 0.95: 0.66 capped the lift, so the margin could never be
+        // paper. Measured, our whole frame maxed at 238 with 1.49% of pixels
+        // above 225; vc-104 reaches 255 with 11.47% above 225, concentrated in
+        // the margin. uPaperWhite's luma is 244.3 — exactly the reference p99 —
+        // the margin simply never got there. Safe only because the lift's ink
+        // exemption is now hard (see GRADE_FRAG); at 0.95 with the old floored
+        // lift this would have bleached the contours off the page.
+        uDrawFallAmt:   { value: 0.95 },
+        uDrawFallStart: { value: 0.84 },
+        uDrawFallScale: { value: 1.00 },
         uDrawFallPaper: { value: 1.0 },
-        uDrawFallAniso: { value: 0.86 },
+        // ...AND 1.18 WAS TOO DEEP AT THE TOP. 1.18 was derived as the value that
+        // gives an EQUAL PIXEL margin on all four sides. The real game does not
+        // have one. Measured — the row/column at which saturation first reaches
+        // half the middle-30%-box value, scanning inward from each edge:
+        //
+        //   frame            L     R     T     B
+        //   vc-104         106    90    59    55
+        //   vc-088         190   179    67    95
+        //   squad  @1.18     0     0   139     0
+        //   overview @1.18 102    97   143    10
+        //
+        // i.e. the reference's top margin is a little over HALF its side margin,
+        // and ours was 2.2x the reference's. Visible, and named in the r25 audit:
+        // in `squad` and `overview` every tree canopy in the top 15% of frame is
+        // bleached to a pale blob while the same trees 60 px lower are fully
+        // painted, with a hard horizontal seam between them.
+        //
+        // Half strength sits at d = 0.92, so the top half-point is
+        // 540 * (1 - 0.92 / aniso) px: 119 px at 1.18, 55 px at 1.03. The side
+        // half-point is untouched at 77 px, so wave 1's left/right work — which
+        // measured 97-102 px against the reference's 90-190 — stands exactly as
+        // it was.
+        uDrawFallAniso: { value: 1.03 },
         // The frame-wide wash quantiser. Sixteen steps across the perceptual
         // range is roughly 22 LSB per step in the midtones, which is what puts
         // three plateaus inside the 45-60 LSB span a shaded mass actually
@@ -3117,6 +3365,9 @@ export class CanvasRenderPipeline {
     // the hatch pass can still ask it whether this fragment sits on a fold or
     // on an unbroken plane.
     gu.tND.value = this.gbuf.textures[0];
+    // ...and attachment 1, for the OVERLAY sentinel only (see uMeta.a = -1 in
+    // _prepassBegin's sprite branch).
+    gu.tMeta.value = this.gbuf.textures[1];
     gu.uFar.value = cam.far;
     gu.uExposure.value = CFG.render.exposure;
     gu.uVignette.value = CFG.render.vignette;
@@ -3287,6 +3538,11 @@ export class CanvasRenderPipeline {
     meshes.length = 0; restoreMat.length = 0; restoreVis.length = 0;
 
     const generic = getGenericPrepassMaterial();
+    // The sprite prepass owns its own uFar (it is not built by materials.js and
+    // so does not share that module's uniform block). It must agree with the
+    // camera the composite normalises depth against, or a sprite lands at the
+    // wrong distance in the haze.
+    getSpritePrepassMaterial().uniforms.uFar.value = this.camera.far;
     const camPos = _camP.setFromMatrixPosition(this.camera.matrixWorld);
     // Half the viewport in CSS px over tan(fov/2): multiply by (worldSize /
     // distance) to get the object's projected size on screen.
@@ -3294,7 +3550,45 @@ export class CanvasRenderPipeline {
       Math.max(1e-4, Math.tan(THREE.MathUtils.degToRad(this.camera.fov || 45) * 0.5));
 
     this.scene.traverseVisible((o) => {
-      if (o.isPoints || o.isSprite || o.isLine) {
+      // ROUND 25 — a SPRITE may earn a depth. See getSpritePrepassMaterial: with
+      // no G-buffer entry the haze, the ink pass and the drawing falloff all
+      // graded the onomatopoeia as though it stood at the hillside behind it.
+      // Points and lines stay out: a point sprite has no coverage worth inking
+      // and every line in this scene is a debug aid.
+      if (o.isSprite) {
+        const sm = o.material;
+        const su = (sm && sm.userData) || {};
+        // Opt OUT, not in: this project has exactly one sprite and it is part of
+        // the picture. A sprite that is a soft additive puff (no map, no depth
+        // test, faded past half) must not stamp a hard silhouette into the
+        // G-buffer, so those conditions fall through to the old behaviour.
+        if (!sm || !sm.map || sm.depthTest === false ||
+            su.vcNoPrepass === true || o.userData.noPrepass === true ||
+            (sm.opacity !== undefined && sm.opacity < 0.5)) {
+          o.visible = false; restoreVis.push(o);
+          return;
+        }
+        // metaW 0: the word carries its own drawn contour in the texture, so an
+        // ink silhouette on top of it would double the outline.
+        //
+        // form -1 is the OVERLAY SENTINEL. The composite already clamps this
+        // channel to 0..1 (`formC`), so -1 reads there as "a small form, laid in
+        // flat", which is what lettering is. GRADE_FRAG tests for the negative
+        // and exempts the fragment from the chroma shoulder, the highlight soft
+        // clip and the drawing falloff — see the 'overlay' note in GRADE_FRAG.
+        // The G-buffer is half-float, so this cannot collide with a real form
+        // scale; on a UNORM8 target it would clamp to 0 and the exemption would
+        // silently stop working.
+        o.userData.__vcMetaW = 0;
+        o.userData.__vcForm = -1;
+        o.userData.__vcSpriteSrc = sm;
+        this._ensureHook(o);
+        restoreMat.push(o, sm);
+        o.material = getSpritePrepassMaterial();
+        meshes.push(o);
+        return;
+      }
+      if (o.isPoints || o.isLine) {
         o.visible = false; restoreVis.push(o);
         return;
       }
@@ -3526,6 +3820,19 @@ export class CanvasRenderPipeline {
       if (!um) return;
       um.value.set(this.userData.__vcIdR, this.userData.__vcIdG, this.userData.__vcMetaW || 0,
                    this.userData.__vcForm !== undefined ? this.userData.__vcForm : 1);
+      // A sprite's prepass material is SHARED and its billboard parameters live
+      // on the SpriteMaterial we swapped out, so they have to travel the same
+      // per-draw route as the meta vector.
+      if (material.userData.vcIsSpritePrepass === true) {
+        const src = this.userData.__vcSpriteSrc;
+        if (src) {
+          const su = material.uniforms;
+          su.uMap.value = src.map;
+          su.uOpacity.value = src.opacity !== undefined ? src.opacity : 1;
+          su.uRotation.value = src.rotation || 0;
+          su.uCenter.value.copy(src.center || _spriteCenter);
+        }
+      }
       material.uniformsNeedUpdate = true;
     };
     o.onBeforeRender = hook;

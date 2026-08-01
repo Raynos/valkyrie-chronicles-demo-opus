@@ -390,6 +390,16 @@ export function cornerFlourish({ size = 84, seed = 9, color = '#4a3c2c' } = {}) 
 // A single uniform near-white hairline is the tell that gave the aim frame away.
 const SIGHT_INK = '#2b211a';
 const SIGHT_CHALK = '#f0e1bd';
+// R25 — the ONE saturated thing in the frame. In docs/reference/vc-088.jpg the
+// targeting ring is a warm orange (sampled ~#e8801f over a ~#c4551a shadow) and
+// it carries the strongest chroma anywhere in that picture: it is what says
+// "this is targeting mode" at a glance. Our sight picture was drawn entirely in
+// the paper-ink palette, so at full size the aim frame read as "a soldier
+// standing in front of a house". The reticle is DOM, above the canvas, so the
+// grade's drawing falloff cannot desaturate it. Accent only — the crosshair arms
+// stay ink, because VC's cross is a fine dark one.
+const SIGHT_ACCENT = '#e8801f';
+const SIGHT_ACCENT_DEEP = '#bd5415';
 
 /** Broad ink pass + chalk pass over the same path list. */
 function doubleStroke(d, { ink = SIGHT_INK, chalk = SIGHT_CHALK, w = 1.5, spread = 2.1 } = {}) {
@@ -436,29 +446,52 @@ export function crosshair({ size = 240, seed = 47, gap = 0.10, arm = 0.20 } = {}
     '" height="' + size + '">' +
     doubleStroke(arms.join(' '), { w: 1.25, spread: 1.9 }) +
     doubleStroke(roots, { w: 2.0, spread: 2.2 }) +
-    // the aiming dot: a blotted point of ink with a chalk highlight, not a circle
-    '<path d="' + splatPath(c, c, 2.4, { seed: seed + 41, lobes: 8, rough: 0.3 }) +
-    '" fill="' + SIGHT_INK + '" opacity="0.8"/>' +
-    '<path d="' + splatPath(c - 0.4, c - 0.4, 1.2, { seed: seed + 43, lobes: 7, rough: 0.3 }) +
-    '" fill="' + SIGHT_CHALK + '" opacity="0.85"/>' +
+    // The aiming dot: a blotted point, not a circle. R25 — carried in the sight
+    // accent (see SIGHT_ACCENT) so the exact aim point is the one warm mark at
+    // the centre of the frame; the arms around it stay ink.
+    '<path d="' + splatPath(c, c, 2.8, { seed: seed + 41, lobes: 8, rough: 0.3 }) +
+    '" fill="' + SIGHT_ACCENT_DEEP + '" opacity="0.9"/>' +
+    '<path d="' + splatPath(c - 0.4, c - 0.4, 1.5, { seed: seed + 43, lobes: 7, rough: 0.3 }) +
+    '" fill="' + SIGHT_ACCENT + '" opacity="0.95"/>' +
     '</svg>');
 }
 
-/** Dashed accuracy circle; radius is driven by the caller each frame. */
+/**
+ * The accuracy ring. Radius is driven by the caller each frame (the element is
+ * resized; this SVG scales to fit), so every stroke is `non-scaling-stroke`:
+ * stroke widths are in SCREEN px, not user units. Without it a ring sized to a
+ * real ballistic radius (~55 px across at 23 m) scaled its 3.4-unit strokes down
+ * to 0.7 px and vanished, while a wide one drew 9 px cables.
+ *
+ * Solid, not dashed, for the same reason: a dasharray IS in user units, so the
+ * dash pattern collapsed as the ring tightened. vc-088's ring is a continuous
+ * orange circle with four pale dispersion ticks standing off it.
+ */
 export function accuracyRing({ size = 260, seed = 53 } = {}) {
   const c = size / 2, r = size * 0.42;
+  const ns = ' vector-effect="non-scaling-stroke" stroke-linecap="round"';
   const d = roughCircle(c, c, r, { seed, amp: r * 0.035, segs: 44 });
+  // Four dispersion ticks, standing off the ring at the diagonals.
+  const tick = (a) => {
+    const dx = Math.cos(a), dy = Math.sin(a);
+    return 'M' + (c + dx * r * 1.13).toFixed(1) + ' ' + (c + dy * r * 1.13).toFixed(1) +
+      'L' + (c + dx * r * 1.33).toFixed(1) + ' ' + (c + dy * r * 1.33).toFixed(1);
+  };
+  const ticks = [Math.PI * 0.75, Math.PI * 0.25, Math.PI * 1.25, Math.PI * 1.75].map(tick).join(' ');
   return svgEl(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + size + ' ' + size + '" width="' + size +
     '" height="' + size + '">' +
-    '<path d="' + d + '" fill="none" stroke="' + SIGHT_INK + '" stroke-width="3.4" ' +
-    'stroke-dasharray="8 7" opacity="0.5"/>' +
-    '<path d="' + d + '" fill="none" stroke="' + SIGHT_CHALK + '" stroke-width="1.5" ' +
-    'stroke-dasharray="8 7" opacity="0.9"/>' +
+    '<path d="' + d + '" fill="none" stroke="' + SIGHT_ACCENT_DEEP + '" stroke-width="5.4"' +
+    ns + ' opacity="0.62"/>' +
+    '<path d="' + d + '" fill="none" stroke="' + SIGHT_ACCENT + '" stroke-width="2.6"' +
+    ns + ' opacity="0.96"/>' +
     // a second, drier pass just inside it — the compass slipped on the first go
-    '<path d="' + roughCircle(c, c, r * 0.965, { seed: seed + 7, amp: r * 0.025, segs: 40 }) +
-    '" fill="none" stroke="' + SIGHT_INK + '" stroke-width="0.9" stroke-dasharray="3 9" ' +
-    'opacity="0.42"/>' +
+    '<path d="' + roughCircle(c, c, r * 0.93, { seed: seed + 7, amp: r * 0.025, segs: 40 }) +
+    '" fill="none" stroke="' + SIGHT_ACCENT_DEEP + '" stroke-width="0.9"' + ns + ' opacity="0.5"/>' +
+    '<path d="' + ticks + '" fill="none" stroke="' + SIGHT_INK + '" stroke-width="4.2"' +
+    ns + ' opacity="0.5"/>' +
+    '<path d="' + ticks + '" fill="none" stroke="' + SIGHT_CHALK + '" stroke-width="2.0"' +
+    ns + ' opacity="0.95"/>' +
     '</svg>');
 }
 

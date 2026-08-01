@@ -68,20 +68,30 @@ export function setWind(x, y, z) { WIND.set(x, y, z); }
 const CAST = {
   'Alicia Melchiott': {
     feminine: true, bodyType: 'lean', hairStyle: 'ponytail',
-    face: { eye: 1.14, cranium: 1.30, nose: 0.80, jaw: 0.28, chin: 0.36,
+    face: { eye: 1.14, cranium: 1.30, nose: 0.45, jaw: 0.28, chin: 0.36,
             brow: 0.25, cheek: 0.55, width: 0.94, length: 0.95, ear: 0.86 },
     eyeColor: 0x4a6b8c,
     hair: 0x6b4b2e,                       // warm brown
     tunic: 0x3f7d78, tunicShade: 0x2f5f5c, // the teal jacket
-    collar: 0xe4dcc4, trouser: 0xe4dcc4,   // white dress under it
+    // ROUND 25 — the collar was 0xe4dcc4, the same cream as the dress, and
+    // rig.js:1995 says in so many words what the collar is FOR: "the dark ring
+    // that separates a pale face from a pale tunic". Cream inverted it — four
+    // tubes brighter than her cheek, which read as a surgical collar. In
+    // docs/reference/vc-072.jpg the throat is a TEAL TURTLENECK and the white
+    // is a panel down the front of the dress, well below the neck. Measured on
+    // the r24 cold `closeup`: collar ring mean L 214 against cheek 197, i.e.
+    // 17 LSB BRIGHTER than the face. Teal 0x2f5f5c is her own tunicShade.
+    collar: 0x2f5f5c, trouser: 0xe4dcc4,   // teal turtleneck; white dress under the jacket
     trim: 0xe9e0c6, accent: 0xb2342c,      // red
     scarf: 0xb2342c,                       // THE red headscarf
     cap: 0xb2342c, capShade: 0x7e2620,
     bare: true,                            // no steel helmet
+    headCloth: 0xb2342c,                   // the frilled red cloth, vc-072/088
+    hairLong: true,                        // side locks to the chest + a back mass
   },
   'Welkin Gunther': {
     feminine: false, bodyType: 'lean', hairStyle: 'swept',
-    face: { eye: 1.04, cranium: 1.24, nose: 0.82, jaw: 0.55, chin: 0.40,
+    face: { eye: 1.04, cranium: 1.24, nose: 0.58, jaw: 0.55, chin: 0.40,
             brow: 0.60, cheek: 0.60, width: 0.96, length: 0.96, ear: 0.90 },
     eyeColor: 0x5a4430,
     hair: 0x3a2c22,
@@ -93,7 +103,7 @@ const CAST = {
   },
   'Rosie Stark': {
     feminine: true, bodyType: 'medium', hairStyle: 'swept',
-    face: { eye: 1.12, cranium: 1.26, nose: 0.82, jaw: 0.30, chin: 0.38,
+    face: { eye: 1.12, cranium: 1.26, nose: 0.45, jaw: 0.30, chin: 0.38,
             brow: 0.28, cheek: 0.62, width: 0.95, length: 0.95, ear: 0.88 },
     eyeColor: 0x4a6b45,
     hair: 0x8a6a34,
@@ -102,6 +112,73 @@ const CAST = {
     trim: 0xe9e0c6, accent: 0x35506b, scarf: 0xd8cfb4,
     cap: 0xa8442c, capShade: 0x7c2f1e,
     bare: true,
+    // ROUND 25 WAVE 2 — THIS WAS 0xa8442c, THE SAME HEX AS HER TUNIC, AND IT IS
+    // WHY ROSIE READ AS A BALD PINK DOME IN `overview` AND `firefight`.
+    // gearHead's cloth runs from the crown to phi 0.545 at the nape, so from
+    // behind — which is every gameplay camera — the cloth IS the whole visible
+    // head. Painted in the tunic's own red-orange it made one unbroken salmon
+    // mass from crown to hem with no hair anywhere in it; sampled off a resident
+    // `overview` the dome measured rgb(168,119,92) against her tunic's
+    // rgb(176,129,104) — a 10 LSB difference across the neck, i.e. no edge at
+    // all, and far outside the ~1.7 LSB the resident path can account for.
+    // Proved by rebuilding her with the cloth at 0x2040ff: the dome went
+    // blue, so the "bald scalp" was never skin and never a missing haircut.
+    // Her blue is already authored (collar/accent 0x35506b) and it is the one
+    // value on her that is DARKER than the skin and the tunic both, so the head
+    // now reads as a dark mass over golden hair at 12 m and as a dark cap at
+    // 40 m. The hair below phi 0.545 shows against it either way.
+    //
+    // Her own deep red 0x7c2f1e was tried first and REJECTED on the plate: under
+    // this build's warm key a dark red on a domed shell blows straight back up
+    // to the same pale tan and the head reads bald again. Darkening the hue is
+    // not enough here — the cloth has to leave the tunic's hue family.
+    headCloth: 0x35506b,                   // her bandana; she is bare-headed otherwise
+  },
+  // ROUND 25 — HALF THE SQUAD HAD NO IDENTITY AND THE ONE LEAD WHO DID NEVER
+  // SPAWNED. mission.js:130-155 rosters Alicia, Edy, Rosie, Largo, Isara and
+  // Marina; this table held Alicia, Welkin, Rosie and Largo — so Welkin is a
+  // dead entry (kept: he is the obvious next spawn) and Edy, Isara and Marina
+  // rendered as anonymous procedural militia. Isara is the single most legible
+  // design in the reference set — she is in two of the five frames I was given,
+  // vc-072.jpg (centre) and vc-076.jpg — a black bob over a cream poncho and a
+  // green dress, and she was wearing a peaked service cap.
+  //
+  // The colour half of an identity is cheap and it is what actually lands: in
+  // `squad` at 20 m Alicia (teal + white) and Rosie (red-orange + blue) are told
+  // apart at a glance, which is the whole test.
+  'Isara Gunther': {
+    feminine: true, bodyType: 'petite', hairStyle: 'bob',
+    face: { eye: 1.12, cranium: 1.28, nose: 0.45, jaw: 0.26, chin: 0.34,
+            brow: 0.26, cheek: 0.54, width: 0.94, length: 0.95, ear: 0.86 },
+    eyeColor: 0x3f4a63,
+    hair: 0x2b2833,                        // near-black, blue-shifted
+    tunic: 0xd6cbae, tunicShade: 0xb3a684,  // the cream poncho
+    collar: 0x5d7a58, trouser: 0x5d7a58,    // green dress under it
+    trim: 0xa8543a, accent: 0xa8543a, scarf: 0x5d7a58,
+    cap: 0xd6cbae, capShade: 0xb3a684,
+    bare: true,                             // no service cap; the bob IS the read
+  },
+  'Edy Nelson': {
+    feminine: true, bodyType: 'lean', hairStyle: 'bob',
+    face: { eye: 1.13, cranium: 1.26, nose: 0.45, jaw: 0.28, chin: 0.36,
+            brow: 0.26, cheek: 0.58, width: 0.94, length: 0.96, ear: 0.88 },
+    eyeColor: 0x5a4430,
+    hair: 0xb08a4a,                        // fair
+    tunic: 0x8f7a52, tunicShade: 0x6a5a3a,
+    collar: 0x4c4433, trouser: 0x8a5d3c,   // she keeps the issued cap: a scout
+    trim: 0xe9e0c6, accent: 0x7a5c8a, scarf: 0xd8cfb4,
+    cap: 0x8f7a52, capShade: 0x6a5a3a,
+  },
+  'Marina Wulfstan': {
+    feminine: true, bodyType: 'lean', hairStyle: 'sidePart',
+    face: { eye: 1.10, cranium: 1.24, nose: 0.45, jaw: 0.30, chin: 0.38,
+            brow: 0.30, cheek: 0.56, width: 0.95, length: 0.97, ear: 0.88 },
+    eyeColor: 0x4a6b8c,
+    hair: 0xc9c2b0,                        // pale ash — the sniper's tell at 60 m
+    tunic: 0x55603f, tunicShade: 0x3d4630,
+    collar: 0x3d4630, trouser: 0x6b6b4e,
+    trim: 0xd8cfb4, accent: 0x4a5a6b, scarf: 0x8f9478,
+    cap: 0x55603f, capShade: 0x3d4630,
   },
   'Largo Potter': {
     feminine: false, bodyType: 'stocky', hairStyle: 'crop',
@@ -210,6 +287,13 @@ export function makeAppearance(seed, cls, team, name) {
   if (cast.trouser !== undefined) app.trouserCuff = rgbLin(cast.trouser);
   // Gallia's militia leads do not wear stamped steel. See vc-072/088/104.
   app.bare = !!cast.bare;
+  // ROUND 25. `bare` used to be read in exactly one place — the shock/lancer
+  // helmet branch — so a bare SCOUT (i.e. Alicia, the face of the demo) still
+  // got the garrison side cap and, because gearHead returned "covered", the
+  // stub under-hat hair instead of a haircut. It is now honoured for every
+  // class; `headCloth` is the personal cloth that replaces the issued headgear.
+  if (cast.headCloth !== undefined) app.headCloth = rgbLin(cast.headCloth);
+  app.hairLong = !!cast.hairLong;
   app.castName = name;
   return app;
 }
@@ -259,8 +343,17 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
       phiMin: 0.36,
       phiMax: (u) => {
         const back = clamp01(-Math.cos(u * TAU));
-        // 0.38 (just below the cap band) at the sides, 0.60 at the nape.
-        return 0.375 + 0.225 * smoothstep(0.25, 1.0, back);
+        // 0.38 (just below the cap band) at the sides, 0.70 at the nape.
+        //
+        // ROUND 25: 0.60 was measured wrong on the rear-view shots. The scout
+        // cap's own edge bottoms out at phi 0.510 at the back and its band at
+        // 0.540, so this tuft only ever showed a 0.06-wide strip of latitude —
+        // and everything from there down to the collar rendered as BARE SKIN.
+        // In `action` (an over-the-shoulder rear view) that is a pale scalp dome
+        // the full width of the head, which is the single loudest defect on any
+        // soldier seen from behind. 0.70 carries the hair to the hairline at the
+        // nape, ~9 mm clear of the collar's top edge.
+        return 0.375 + 0.325 * smoothstep(0.25, 1.0, back);
       },
       // Never under 1.05: a hair shell that dips inside the skull loses the
       // depth test and the back of the head renders as bare scalp — see the
@@ -462,6 +555,56 @@ function buildHair(b, rig, o, head, style, coveredByHat) {
       displace: (dx, dy) => 1 + 0.07 * Math.sin(dx * 14 + dy * 9),
     });
   }
+
+  // --- LONG HAIR -------------------------------------------------------------
+  //
+  // ROUND 25. The scalp cap above ends at the ear line, so before this the
+  // longest "hair" a named lead could have was a 19 mm fringe lock — and the
+  // audit's measurement against docs/reference/vc-072.jpg is that Alicia's hair
+  // is the LARGEST SINGLE ELEMENT of her head silhouette. Three masses do that
+  // and no fewer:
+  //   * a back fall from the occiput to the shoulder blades — this is what
+  //     makes the rear-three-quarter view (vc-088, the `closeup`/`aim` framing)
+  //     read as a person with hair rather than as a bald dome with a hat on;
+  //   * two face-framing locks from the temple down past the jaw, which is what
+  //     narrows the face in a front view and gives the outline pass a vertical
+  //     line either side of the head;
+  //   * a gathered tail behind, for `ponytail`.
+  // All of it is bound to the HEAD bone group like the rest of the hair, so it
+  // is rigid — that is fine at this length and is why the fall stops at the
+  // shoulder blade rather than at the waist.
+  if (o.hairLong) {
+    const back = style === 'ponytail' || style === 'bun' ? 1.0 : 0.82;
+    b.setColor(hc).setMottle(0.10);
+    // The fall. A wide, thin slab — rx is nearly the skull's own half-width so
+    // it is a MASS, and rz stays small so it lies against the back rather than
+    // ballooning into a sausage. A tail 60 mm wide and 11 mm thick (what the
+    // table used to imply) is a shoelace at 200 px.
+    b.addTube([
+      { p: [C[0], C[1] + R[1] * 0.42, C[2] - R[2] * 0.94], rx: R[0] * 0.94, rz: R[2] * 0.34 },
+      { p: [C[0], C[1] - R[1] * 0.30, C[2] - R[2] * 1.12], rx: R[0] * 1.14, rz: R[2] * 0.40 },
+      { p: [C[0], C[1] - R[1] * 1.30, C[2] - R[2] * 1.16], rx: R[0] * 1.20 * back, rz: R[2] * 0.42 },
+      { p: [C[0], C[1] - R[1] * 2.20, C[2] - R[2] * 1.00], rx: R[0] * 0.98 * back, rz: R[2] * 0.36 },
+      { p: [C[0], C[1] - R[1] * 2.80, C[2] - R[2] * 0.86], rx: R[0] * 0.52 * back, rz: R[2] * 0.22 },
+    ], { seg: seg(13), capStart: 'round', capEnd: 'round' });
+    // Face-framing locks. FIRST PASS RAN THEM AT x 1.06 R and z +0.20 R and the
+    // plate showed exactly what round 5 warned about: two hard-edged dark bars
+    // laid down the middle of the cheek, because +0.20 R[2] is the cheek's own
+    // meridian, not the ear's. They belong OUTBOARD of the widest part of the
+    // face (the zygomatic tent reaches ~1.05 R[0]) and BEHIND the ear axis, so
+    // in a three-quarter view they draw the silhouette instead of crossing it.
+    for (const side of (SIMPLE() ? [] : [1, -1])) {
+      b.setColor(side > 0 ? hc : mixCol(hc, [0.020, 0.016, 0.014], 0.22));
+      b.addTube([
+        { p: [C[0] + side * R[0] * 0.80, C[1] + R[1] * 0.56, C[2] + R[2] * 0.12], rx: 0.018, rz: 0.028 },
+        { p: [C[0] + side * R[0] * 1.16, C[1] - R[1] * 0.34, C[2] - R[2] * 0.04], rx: 0.024, rz: 0.034 },
+        { p: [C[0] + side * R[0] * 1.22, C[1] - R[1] * 1.30, C[2] - R[2] * 0.12], rx: 0.025, rz: 0.034 },
+        { p: [C[0] + side * R[0] * 1.14, C[1] - R[1] * 2.10, C[2] - R[2] * 0.20], rx: 0.019, rz: 0.026 },
+        { p: [C[0] + side * R[0] * 1.04, C[1] - R[1] * 2.60, C[2] - R[2] * 0.24], rx: 0.006, rz: 0.008 },
+      ], { seg: seg(9), capStart: 'flat', capEnd: 'round' });
+    }
+    b.setColor(hc).setMottle(0.09);
+  }
 }
 
 
@@ -581,6 +724,30 @@ function faceMasses(b, rig, o, head, f) {
   const MM = 1.896 * R[1];
   const tOf = (mAboveEye) => 0.500 + mAboveEye / MM;
 
+  // ROUND 25 — A DRAWN FACE HAS NO CHEEKBONE RIDGE ON IT.
+  //
+  // Rounds 15-18 built these borders to answer "the face is drawn on rather
+  // than modelled", and the measurement behind them is real: they took the best
+  // in-cheek value step from 24.1 to 39.2 LSB. But the target moved. Against
+  // docs/reference/vc-072.jpg and vc-076.jpg the CANVAS face carries five marks
+  // — two eyes, two brow strokes, a nose shadow and a mouth line — laid on a
+  // near-flat pale oval; it carries no malar crest, no infraorbital rim and no
+  // gonial angle at all. On the r25 `closeup` those three inked themselves into
+  // a nest of pale worms across the near cheek, which is the loudest single
+  // defect on the hero's face once the albedo amoeba is gone.
+  //
+  // So for an AUTHORED LEAD they come down to a third of their projection —
+  // still enough to turn a band, not enough for the composite's crease term
+  // (smoothstep(0.78, 1.45, |dN|) over a 2-texel cross) to find a line on them.
+  // The rank and file keep them: at 40 px a modelled cheekbone is the only
+  // thing distinguishing a head from an egg, and none of them is ever a
+  // portrait. The lid shelf (A2), the brow (A3) and the supraorbital shelf (A)
+  // are NOT scaled — those are three of the reference's five marks.
+  const boneK = o.castName ? 0.34 : 1;
+  /** Scale a border spine's lift and rx (the two projection terms) by k. */
+  const soften = (pts, k, i) => (k === 1 ? pts
+    : pts.map((p) => p.map((v, j) => (j === i || j === i + 1 ? v * k : v))));
+
   for (const side of [1, -1]) {
     // --- A2. THE UPPER LID / BROW-RIDGE SHELF ------------------------------
     // ROUND 17. The standing critique is "the eye is a faint darker smudge; no
@@ -685,14 +852,14 @@ function faceMasses(b, rig, o, head, f) {
     // smooth to four decimal places cannot give the outline pass anything else.
     // Proudness comes down a third at the same time: at 3.2 mm the plane below
     // still turns a full band, and it stops swallowing the whole lower face.
-    border(side, [
+    border(side, soften([
       [0.36, 0.418, 0.83, 0.0008, 0.0019, 1.6],
       [0.52, 0.439, 0.72, 0.0014, 0.0028, 1.5],
       [0.70, 0.462, 0.50, 0.0016, 0.0032, 1.5],
       [0.86, 0.479, 0.18, 0.0014, 0.0029, 1.4],
       [0.96, 0.474, -0.10, 0.0010, 0.0022, 1.4],
       [0.92, 0.468, -0.34, 0.0003, 0.0009, 1.4],
-    ]);
+    ], boneK, 3));
 
     // --- C. THE INFERIOR BORDER OF THE MANDIBLE ----------------------------
     // From the gonion — behind the midline, under the ear — forward along the
@@ -700,13 +867,13 @@ function faceMasses(b, rig, o, head, f) {
     // pulls the surface up and back at dy -0.955; this border sits above it, so
     // the two together make the jaw genuinely OVERHANG the throat, and the
     // 0.044-radius AO bake finds the wedge between them.
-    border(side, [
+    border(side, soften([
       [0.74, 0.190, -0.22, 0.0004, 0.0014, 1.5],
       [0.72, 0.148, 0.08, 0.0016, 0.0034, 1.5],
       [0.60, 0.115, 0.40, 0.0019, 0.0038, 1.4],
       [0.42, 0.090, 0.66, 0.0016, 0.0032, 1.4],
       [0.22, 0.072, 0.84, 0.0004, 0.0013, 1.4],
-    ]);
+    ], o.castName ? 0.55 : 1, 3));
 
     // --- C2. THE GONIAL ANGLE ----------------------------------------------
     // The posterior border of the ramus, running UP from the jaw angle toward
@@ -714,24 +881,24 @@ function faceMasses(b, rig, o, head, f) {
     // edge, so the mandible fairs smoothly into the neck and the profile is the
     // single unbroken crown-to-chin curve the critique names. A corner needs two
     // borders meeting, and this is the second one.
-    if (!SIMPLE()) border(side, [
+    if (!SIMPLE()) border(side, soften([
       [0.780, 0.330, -0.36, 0.0003, 0.0012, 1.3],
       [0.860, 0.268, -0.28, 0.0015, 0.0026, 1.2],
       [0.880, 0.212, -0.22, 0.0019, 0.0031, 1.1],
       [0.830, 0.176, -0.10, 0.0011, 0.0020, 1.2],
-    ]);
+    ], boneK, 3));
 
     // --- D. INFRAORBITAL RIM -----------------------------------------------
     // The socket's lower margin, tight under the eye and stopping at ax 0.52
     // before it can collide with the malar crest below it. With the shelf above
     // it the orbit is now bounded top and bottom, which is what "eye socket
     // depth" means: the eye is in a hole rather than drawn on a cheek.
-    if (!SIMPLE()) frontBorder(side, [
+    if (!SIMPLE()) frontBorder(side, soften([
       [0.150, 0.478, 0.0003, 0.0012, 1.5],
       [0.290, 0.463, 0.0009, 0.0019, 1.5],
       [0.430, 0.462, 0.0008, 0.0018, 1.5],
       [0.520, 0.471, 0.0003, 0.0011, 1.5],
-    ]);
+    ], boneK, 2));
 
     // --- F/G/H. THE THREE PADS OF THE LOWER FACE ---------------------------
     // ROUND 18. The blind judge's single most damning tell on this project:
@@ -802,13 +969,13 @@ function faceMasses(b, rig, o, head, f) {
     // inside the crease term's dead band while leaving the pad enough surface to
     // turn a wash. Their VALUE now comes from area and orientation, not from
     // sticking out.
-    if (!SIMPLE()) frontBorder(side, [
+    if (!SIMPLE()) frontBorder(side, soften([
       [0.360, 0.328, 0.0004, 0.0009, 7.6],
       [0.460, 0.344, 0.0007, 0.0015, 8.8],
       [0.560, 0.360, 0.0008, 0.0016, 9.0],
       [0.660, 0.373, 0.0006, 0.0013, 8.2],
       [0.730, 0.378, 0.0002, 0.0008, 7.0],
-    ]);
+    ], boneK, 2));
 
     // G. THE MODIOLUS MOUND — the muscular knot at the corner of the mouth,
     // outboard of the nasolabial fold and below the pad. Placed LATERAL of
@@ -818,12 +985,12 @@ function faceMasses(b, rig, o, head, f) {
     // stripe. It is also the one mark down here that is near-vertical in image
     // space at every yaw — which is rig.js's own argument for the chain, and the
     // reason it survives the three-quarter view every shot in the set uses.
-    frontBorder(side, [
+    frontBorder(side, soften([
       [0.300, 0.288, 0.0003, 0.0007, 4.4],
       [0.375, 0.225, 0.0007, 0.0012, 4.8],
       [0.420, 0.168, 0.0008, 0.0013, 4.6],
       [0.395, 0.118, 0.0004, 0.0008, 4.4],
-    ]);
+    ], boneK, 2));
 
     // H. THE MASSETER PLANE — the mandibular ramus, from below the buccal hollow
     // back to the gonion. Between F and H sits a gap at face fraction ~0.30,
@@ -831,13 +998,13 @@ function faceMasses(b, rig, o, head, f) {
     // above it and another below it, a 6% albedo whisper finally has two lit
     // planes to be a hollow BETWEEN. That is the third value the lower face
     // needs, and none of the three is painted.
-    if (!SIMPLE()) border(side, [
+    if (!SIMPLE()) border(side, soften([
       [0.500, 0.286, 0.74, 0.0004, 0.0008, 5.6],
       [0.620, 0.256, 0.62, 0.0008, 0.0015, 6.2],
       [0.740, 0.228, 0.44, 0.0009, 0.0017, 6.0],
       [0.830, 0.210, 0.20, 0.0005, 0.0010, 5.4],
       [0.860, 0.214, -0.06, 0.0002, 0.0005, 5.0],
-    ]);
+    ], boneK, 3));
   }
 
   // --- E. THE MENTAL PROTUBERANCE ------------------------------------------
@@ -955,7 +1122,12 @@ function eyeInk(b, rig, o, head, f) {
   // these and rig's puts the overlay off the eye it is overlaying.
   const eDX = 0.405, eDY = FY(head.T_EYE !== undefined ? head.T_EYE : 0.500);
   const eyeS = 1.0 + (f.eye - 1.0) * 1.25;
-  const eW = 0.0142 * eyeS, eH = 0.0060 * eyeS;
+  // KEEP THESE TWO IN LOCKSTEP WITH rig.js:3806. eH went 0.0060 -> 0.0135 in
+  // round 25: the fissure's aspect was 0.42 against the reference's measured
+  // 0.98 (docs/reference/vc-076.jpg at 6x — a 61 x 60 px almond on a 230 px
+  // face). This overlay was always the right idea starved by a slot half the
+  // height it needed.
+  const eW = 0.0142 * eyeS, eH = 0.0135 * eyeS;
 
   // Sclera. NOT rig's PALETTE.eyeWhite (0xcfc6b6) plus a lot — rig's note that a
   // brighter white "blooms into a pair of glowing dots where the eyes should be"
@@ -1014,12 +1186,15 @@ function eyeInk(b, rig, o, head, f) {
       // PICTURE, WHICH IS THE ONLY PLACE IT COULD HAVE BEEN CHECKED. Two 12 mm
       // wedges either side of an 11 mm iris makes the eye MOSTLY WHITE, and the
       // frame came out as a pair of bright vertical blobs with a dark sliver
-      // between them — an eye rolled back, not an eye. They are corner slivers now
-      // (8 mm, half the height) and the iris below is 53 % of the fissure, which
-      // is the proportion CANVAS actually draws.
-      for (const [cx, hw] of [[-eW * 0.78, eW * 0.25], [eW * 0.76, eW * 0.27]]) {
+      // between them — an eye rolled back, not an eye.
+      //
+      // ROUND 25 pushes the same way again. The iris below is now 82 % of the
+      // fissure width, which is what vc-076 measures (50 of 61 px), so the
+      // sclera survives only as two CORNER CRESCENTS: half-width 0.25 -> 0.17 eW
+      // so they sit outboard of the iris instead of under it.
+      for (const [cx, hw] of [[-eW * 0.86, eW * 0.16], [eW * 0.85, eW * 0.18]]) {
         b.addEllipsoid({
-          center: [cx, -eH * 0.16, 0], radius: [hw, eH * 0.56, 0.0016],
+          center: [cx, -eH * 0.10, 0], radius: [hw, eH * 0.46, 0.0016],
           seg: seg(9), rings: seg(6),
           // Pinched to a point at the canthus end, full height at the iris end.
           displace: (dx) => [1, Math.pow(clamp01(1 - dx * dx * 0.72), 0.55), 1],
@@ -1028,21 +1203,25 @@ function eyeInk(b, rig, o, head, f) {
     }
 
     // --- IRIS ----------------------------------------------------------------
-    // 11.4 x 13.7 mm and drawn OVER rig's 12.8 mm iris, so the eye comes out
-    // roughly a third iris. Taller than wide on purpose: the lash clips its top
-    // and the lower lid clips its bottom, which is what makes an iris read as a
-    // sphere behind lids instead of a disc on a cheek.
+    // Taller than wide on purpose: the lash clips its top and the lower lid
+    // clips its bottom, which is what makes an iris read as a sphere behind lids
+    // instead of a disc on a cheek.
+    //
+    // ROUND 25: 0.0075 -> 0.0116 eyeS, i.e. 23.3 mm across a 33.4 mm fissure.
+    // The round-17 note here said the eye should come out "roughly a third
+    // iris"; vc-076 measures 50 px of iris in a 61 px fissure — 82 %, with only
+    // corner crescents of white. The old theory was drawn from a photograph.
     b.setColor(iris).setMottle(0.018);
     b.setTransform(at(0.0052));
     b.addEllipsoid({
-      center: [0, eH * 0.10, 0], radius: [0.0075 * eyeS, 0.0074 * eyeS, 0.0016],
+      center: [0, eH * 0.10, 0], radius: [0.0116 * eyeS, 0.0122 * eyeS, 0.0016],
       seg: seg(11), rings: seg(7),
       displace: (dx, dy, dz) => [1, 1, 0.34 + 0.66 * clamp01(dz)],
     });
     b.setColor(pupil).setMottle(0.010);
     b.setTransform(at(0.0060));
     b.addEllipsoid({
-      center: [0, eH * 0.10, 0], radius: [0.0033 * eyeS, 0.0036 * eyeS, 0.0011],
+      center: [0, eH * 0.10, 0], radius: [0.0051 * eyeS, 0.0058 * eyeS, 0.0011],
       seg: seg(9), rings: seg(6),
     });
 
@@ -1079,19 +1258,25 @@ function eyeInk(b, rig, o, head, f) {
     b.setTransform(null);
 
     // --- LASH MARGIN ---------------------------------------------------------
-    // The heavy one. Spine 4.4 mm above the eye line with a 2.6 mm radius, so the
-    // dark occupies 1.8..7.0 mm — and the lid shelf built in faceMasses starts at
-    // 6.5 mm, so the two abut and what the frame carries is one continuous
-    // 6.5 mm dark lid line with lit skin immediately above it. Tapered to a point
-    // at both canthi and heaviest over the outer third, the way a drawn lash is.
+    // The heavy one. Tapered to a point at both canthi and heaviest over the
+    // outer third, the way a drawn lash is.
+    //
+    // ROUND 25 — the spine had to come UP with the fissure. Its heights are
+    // quoted in eH, and eH tripled; left at 0.56..0.72 the spine sat 7.6-9.7 mm
+    // above the eye line on a fissure whose top edge is now at 13.5 mm, i.e. a
+    // dark bar drawn ACROSS the iris rather than the margin above it. At
+    // 0.86..1.04 the dark occupies 9.0..16.5 mm and abuts the lid shelf
+    // faceMasses builds above it, which is the continuous lid line the whole
+    // construction depends on. Fatter too: on a 31 mm eye a 2.6 mm lash is
+    // proportionally the 1.1 mm it used to be on a 13 mm one.
     b.setColor(lashInk).setMottle(0.012);
     b.addTube([
-      { p: E(-eW * 0.98, eH * 0.10, 0.0040), rx: 0.0008, rz: 0.0008 },
-      { p: E(-eW * 0.60, eH * 0.56, 0.0058), rx: 0.0021, rz: 0.0017 },
-      { p: E(-eW * 0.12, eH * 0.72, 0.0066), rx: 0.0026, rz: 0.0020 },
-      { p: E(eW * 0.34, eH * 0.70, 0.0068), rx: 0.0027, rz: 0.0021 },
-      { p: E(eW * 0.74, eH * 0.44, 0.0062), rx: 0.0022, rz: 0.0017 },
-      { p: E(eW * 0.98, eH * 0.02, 0.0044), rx: 0.0009, rz: 0.0008 },
+      { p: E(-eW * 0.98, eH * 0.24, 0.0040), rx: 0.0009, rz: 0.0008 },
+      { p: E(-eW * 0.60, eH * 0.86, 0.0058), rx: 0.0028, rz: 0.0021 },
+      { p: E(-eW * 0.12, eH * 1.04, 0.0066), rx: 0.0034, rz: 0.0025 },
+      { p: E(eW * 0.34, eH * 1.02, 0.0068), rx: 0.0035, rz: 0.0026 },
+      { p: E(eW * 0.74, eH * 0.70, 0.0062), rx: 0.0029, rz: 0.0021 },
+      { p: E(eW * 0.98, eH * 0.14, 0.0044), rx: 0.0010, rz: 0.0009 },
     ], { seg: seg(8), capStart: 'round', capEnd: 'round' });
 
     // Outer canthus: the corner is a DARK notch on a real eye, and it is what
@@ -1503,6 +1688,94 @@ function gearHead(b, rig, o, head, cls) {
     });
   };
 
+  // --- BARE-HEADED LEADS, AND THE PERSONAL CLOTH -----------------------------
+  //
+  // ROUND 25. `o.bare` was read in EXACTLY ONE place in this file — the
+  // shock/lancer helmet test below — so it did nothing at all for a scout, an
+  // engineer or a sniper. Alicia is rostered `cls: 'scout'` (mission.js:130),
+  // so the hero of `closeup` wore the garrison side cap tinted with her own
+  // accent red: a maroon bucket with a band and a chinstrap. Worse, gearHead
+  // returning `true` sends buildHair down the coveredByHat path, which builds a
+  // nape tuft, two sideburns and four 19 mm fringe locks and nothing else — so
+  // she also had no hair. One unchecked flag produced the helmet, the missing
+  // ponytail and the bald forehead together.
+  //
+  // Returning FALSE here is the load-bearing half: it is what makes buildHair
+  // run its real haircut. In docs/reference/vc-072.jpg the hair mass is the
+  // largest single element of Alicia's head silhouette, and the red cloth is a
+  // small thing sitting ON it.
+  if (o.bare) {
+    if (o.headCloth) {
+      // THE FRILLED CLOTH, not a hat and not a headband. Measured off
+      // vc-088.jpg (the same rear-three-quarter framing as our `closeup`): a
+      // flat cloth square tied over the BACK-TOP of the crown, its front edge
+      // crossing the skull well above the hairline, its lower edge lost in the
+      // hair at the back, with a cream zig-zag frill along the front edge and a
+      // corner hanging behind the ear. It must never cross the brow — that is
+      // what turned every previous head covering in this file into a bucket.
+      //
+      // phi is in half-turns from the crown, so dy = cos(phi*pi). The FIRST pass
+      // ran the front edge at 0.235, which is dy 0.74 — that covers the whole
+      // crown and the plate read as a red skullcap, hair only below it. In the
+      // reference the cloth is tied BEHIND the crown: brown hair runs over the
+      // top of the head and the red starts at the back of it. 0.105 at the front
+      // (dy 0.95, a hand's breadth behind the vertex) against 0.545 at the nape
+      // is that asymmetry, and 0.545 is below the ear line so the corners are
+      // lost in the hair the way they are in vc-088.
+      const clothEdge = (u) => {
+        const cz = Math.cos(u * TAU);
+        return 0.105 + 0.440 * clamp01(-cz) + 0.150 * (1 - Math.abs(cz));
+      };
+      // 1.205, not the 1.045 floor: the bare-headed scalp cap that buildHair
+      // lays down below reaches 1.095 * 1.054 = 1.154 at the tufts, and cloth
+      // that sits inside the hair it is tied over is cloth the depth buffer
+      // eats. Same failure mode as the MINK note above, one layer out.
+      const CLOTH = 1.205;
+      b.setColor(o.headCloth).setMottle(0.05);
+      b.addEllipsoid({
+        center: [C[0], C[1] + 0.006, C[2] - 0.010],
+        radius: R, seg: seg(20), rings: seg(9),
+        phiMax: clothEdge,
+        // Softly domed over the hair rather than shrink-wrapped: cloth laid on
+        // a mass bridges it, so the crown reads flatter than the skull under it.
+        displace: shell(CLOTH, (dx, dy, dz) => [
+          1 + 0.05 * clamp01(-dz), 1 - 0.06 * clamp01(dy) * clamp01(dy), 1 + 0.06 * clamp01(-dz),
+        ]),
+      });
+      // The frill. A cream tube along the front edge whose RADIUS oscillates —
+      // that is the zig-zag in the reference, and a scalloped edge is the one
+      // detail that stops the cloth reading as a swim cap. Wobble period is
+      // tied to the segment count so it survives the LOD drop.
+      if (!SIMPLE()) {
+        b.setColor(mixCol(o.trim, o.headCloth, 0.12)).setMottle(0.03);
+        const N = seg(26), frill = [];
+        for (let i = 0; i <= N; i++) {
+          const u = i / N, a = u * TAU;
+          const ph = (clothEdge(u) + 0.004) * Math.PI;
+          const sp = Math.sin(ph), cp = Math.cos(ph);
+          const d = [sp * Math.sin(a), cp, sp * Math.cos(a)];
+          const k = shell(CLOTH + 0.012)(d[0], d[1], d[2]);
+          const zig = 0.0034 + 0.0026 * Math.abs(Math.sin(u * TAU * 7.0));
+          frill.push({
+            p: [d[0] * R[0] * k[0], 0.006 + d[1] * R[1] * k[1], -0.010 + d[2] * R[2] * k[2]],
+            rx: zig, rz: zig,
+          });
+        }
+        b.addTube(frill, { seg: seg(6) });
+      }
+      // The hanging corner, behind and below the ear on the wearer's left. It
+      // is what tells the eye the cloth is TIED rather than moulded.
+      b.setColor(o.headCloth).setMottle(0.06);
+      b.addTube([
+        { p: [-R[0] * 0.72, C[1] + R[1] * 0.30, C[2] - R[2] * 0.98], rx: 0.030, rz: 0.012 },
+        { p: [-R[0] * 0.86, C[1] - R[1] * 0.16, C[2] - R[2] * 1.02], rx: 0.034, rz: 0.013 },
+        { p: [-R[0] * 0.92, C[1] - R[1] * 0.62, C[2] - R[2] * 0.94], rx: 0.022, rz: 0.010 },
+        { p: [-R[0] * 0.94, C[1] - R[1] * 0.88, C[2] - R[2] * 0.88], rx: 0.005, rz: 0.004 },
+      ], { seg: seg(8), capStart: 'flat', capEnd: 'round' });
+    }
+    return false;
+  }
+
   if (cls === 'scout') {
     // --- GARRISON SIDE CAP. Pinched flat across the top into a fore-and-aft
     // crest, worn canted to the wearer's left. The cant matters more than any
@@ -1698,19 +1971,44 @@ function gearHead(b, rig, o, head, cls) {
         { p: [C[0] + R[0] * 0.92, C[1] - R[1] * 0.20, C[2] - R[2] * 0.62], rx: 0.010, rz: 0.026 },
       ], { seg: seg(9), capStart: 'round', capEnd: 'round' });
     }
-    // Chin strap, clear of the jaw, with a buckle on the wearer's right.
+    // CHIN STRAP — AND IT RUNS UNDER THE JAW, NOT ACROSS THE CHEEK.
+    //
+    // ROUND 25 WAVE 2. This tube is most of the r25 audit's "the foreground
+    // shocktrooper has a pale mask face with a heavy dark scribble across the
+    // mouth and jaw that reads as a bandage". It ran from the temple at
+    // 1.22 R[0] forward to 0.94 R[0] / +0.26 R[2] and then to +0.40 R[2] under
+    // the chin — i.e. it crossed the CHEEK, 8.5 mm of near-black leather laid
+    // diagonally down each side of the face and closed under the jaw. Two of
+    // those plus the shade on the lower face is a surgical mask, drawn exactly.
+    //
+    // Proved by building the same soldier with the whole strap suppressed and
+    // re-rendering `village`: the lower face went from a dark banded mass to a
+    // clean lit oval in one step, and nothing else on the head changed. That
+    // test is what identified this after two passes at the albedo map (wave 1's
+    // faceMap `dm`) and one at the bony borders and pads (`boneK`) had each
+    // measured no visible difference at all — none of them is a strap.
+    //
+    // It is rerouted rather than deleted: a helmet with no strap floats. The
+    // spine now leaves the shell behind the ear (dz -0.10 R[2]) and stays behind
+    // and below the mandible all the way to the midline, so from any camera
+    // above the horizon the jaw itself occludes it and only the two short runs
+    // beside the ear show. Section halved to 4.5 mm so what does show is a
+    // strap and not a bar.
     b.setColor(o.leather);
     b.addTube([
-      { p: [C[0] + R[0] * 1.22, C[1] - R[1] * 0.16, C[2] - 0.014], rx: 0.0085, rz: 0.0036 },
-      { p: [C[0] + R[0] * 0.94, C[1] - R[1] * 0.80, C[2] + R[2] * 0.26], rx: 0.0085, rz: 0.0036 },
-      { p: [C[0], C[1] - R[1] * 1.04, C[2] + R[2] * 0.40], rx: 0.0095, rz: 0.0036 },
-      { p: [C[0] - R[0] * 0.94, C[1] - R[1] * 0.80, C[2] + R[2] * 0.26], rx: 0.0085, rz: 0.0036 },
-      { p: [C[0] - R[0] * 1.22, C[1] - R[1] * 0.16, C[2] - 0.014], rx: 0.0085, rz: 0.0036 },
+      { p: [C[0] + R[0] * 1.20, C[1] - R[1] * 0.18, C[2] - R[2] * 0.10], rx: 0.0045, rz: 0.0026 },
+      { p: [C[0] + R[0] * 0.90, C[1] - R[1] * 0.86, C[2] - R[2] * 0.06], rx: 0.0045, rz: 0.0026 },
+      { p: [C[0], C[1] - R[1] * 1.10, C[2] + R[2] * 0.06], rx: 0.0050, rz: 0.0026 },
+      { p: [C[0] - R[0] * 0.90, C[1] - R[1] * 0.86, C[2] - R[2] * 0.06], rx: 0.0045, rz: 0.0026 },
+      { p: [C[0] - R[0] * 1.20, C[1] - R[1] * 0.18, C[2] - R[2] * 0.10], rx: 0.0045, rz: 0.0026 },
     ], { seg: seg(6), capStart: 'flat', capEnd: 'flat' });
     b.setColor(o.brass);
     if (!SIMPLE()) b.addRoundedBox({
-      center: [-R[0] * 0.62, C[1] - R[1] * 0.92, C[2] + R[2] * 0.36],
-      size: [0.013, 0.010, 0.006], bevel: 0.002, div: 1,
+      // On the rerouted spine, not on the old one — at ax 0.62 the strap now
+      // interpolates to dy -0.94 / dz -0.02, and a buckle left at the old
+      // +0.02 R[2] stands off the throat as a dark bar on bare skin.
+      center: [-R[0] * 0.62, C[1] - R[1] * 0.94, C[2] - R[2] * 0.02],
+      size: [0.010, 0.008, 0.005], bevel: 0.002, div: 1,
     });
     return true;
   }
@@ -2434,8 +2732,22 @@ function _rq2Inv(obj) { return _invM.copy(obj.matrixWorld).invert(); }
 const _farCache = new Map();
 const _farIdentity = new THREE.Matrix4();
 
-function makeFarBody(cls, team, rig) {
-  const key = `${cls}|${team}`;
+function makeFarBody(cls, team, rig, name) {
+  // A NAMED LEAD KEEPS HER IDENTITY PAST 26 m, AND UNTIL ROUND 25 SHE DID NOT.
+  //
+  // The cache was keyed `cls|team` and the appearance was rolled from a fixed
+  // synthetic seed with NO NAME, so every soldier of a class shared one generic
+  // militia body: past the LOD 2 boundary Alicia's teal jacket and white dress
+  // became olive drab, Rosie's red-orange became olive drab, and — because the
+  // opts object also omitted `bare` — both of them grew the issued class
+  // headgear they are explicitly authored not to wear. Walking one soldier
+  // across 26 m therefore swapped her clothes and put a helmet on her.
+  //
+  // The cast is six people, so keying the cache by cast name costs at most six
+  // more shared geometries for the whole game and every rank-and-file soldier
+  // still shares the one per class|team.
+  const castName = name && CAST[name] ? name : '';
+  const key = `${cls}|${team}|${castName}`;
   let entry = _farCache.get(key);
   if (entry === undefined) {
     let geo = null, inverses = null;
@@ -2443,10 +2755,16 @@ function makeFarBody(cls, team, rig) {
     try {
       setDetail(0.45);
       const canonRig = makeRig({ bodyType: 'medium', heightScale: 1 });
-      const app = makeAppearance(0x5eed ^ (cls.length * 977) ^ (team * 7919), cls, team);
+      const app = makeAppearance(0x5eed ^ (cls.length * 977) ^ (team * 7919), cls, team, castName || undefined);
       const b = new MeshBuilder();
       const opts = {
         girth: 1, shoulder: cls === 'shock' || cls === 'lancer' ? 1.05 : 1.0,
+        // The four fields the hero opts carry and this one used to drop. Without
+        // them gearHead cannot see that this soldier is bare-headed, has a
+        // personal cloth, or has long hair, and it falls back to the per-class
+        // issued headgear plus the stub under-hat hair.
+        bare: app.bare, headCloth: app.headCloth, hairLong: app.hairLong,
+        castName: app.castName,
         skin: app.skin, gloves: app.gloves,
         tunic: app.tunic, tunicShade: app.tunicShade, collar: app.collar,
         trouser: app.trouser, trouserCuff: app.trouserCuff,
@@ -2555,7 +2873,8 @@ export class Character {
     const opts = {
       girth: app.girth,
       shoulder: this.cls === 'shock' || this.cls === 'lancer' ? 1.05 : 1.0,
-      bare: app.bare,
+      bare: app.bare, headCloth: app.headCloth, hairLong: app.hairLong,
+      castName: app.castName,
       skin: app.skin, gloves: app.gloves,
       tunic: app.tunic, tunicShade: app.tunicShade, collar: app.collar,
       trouser: app.trouser, trouserCuff: app.trouserCuff,
@@ -2619,13 +2938,14 @@ export class Character {
     this.root.add(this.mesh);
 
     // --- distance LOD --------------------------------------------------------
-    // The far body is built ONCE PER CLASS from this same source at detail 0.45
-    // and shared by every soldier of that class. Skin weights resolved against
+    // The far body is built ONCE PER CLASS (and once per named lead, so the cast
+    // keeps its palette and its bare head past 26 m) from this same source at
+    // detail 0.45 and shared thereafter. Skin weights resolved against
     // the canonical rig still bind correctly to any other rig — bone.matrixWorld
     // * boneInverse is the identity at rest for BOTH — so the far mesh is simply
     // a medium-build soldier of the right class, which is exactly what 60 px of
     // screen height can carry.
-    this.meshFar = makeFarBody(this.cls, this.team, this.rig);
+    this.meshFar = makeFarBody(this.cls, this.team, this.rig, this.name);
     if (this.meshFar) { this.meshFar.visible = false; this.root.add(this.meshFar); }
     this._lodDist = 0;
     this._clothStale = false;

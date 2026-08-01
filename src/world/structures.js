@@ -21,7 +21,7 @@ import {
   rubblePile, raggedEdge, carveGeometry, worldUV, scorch,
   smoothNormals, extrudeElevation,
 } from './geoutil.js';
-import { makeSurfaceMaterial, PALETTE, ashlarMap, ASHLAR_TILE, ASHLAR_COURSE } from './worldMaterials.js';
+import { makeSurfaceMaterial, PALETTE, ashlarMap, cobbleMap, COBBLE_TILE, ASHLAR_TILE, ASHLAR_COURSE } from './worldMaterials.js';
 // stoneTexture() is deliberately NOT imported any more: see _commit.
 import { stuccoTexture, woodTexture, roofTileTexture } from './textures.js';
 import { makeBox } from './collider.js';
@@ -1189,6 +1189,8 @@ export class Structures {
     this._buildRiverWorks();
     this._buildWindmill();
     this._buildWalls();
+    this._buildVillageFences();
+    this._buildStreet();
     this._commit();
   }
 
@@ -1288,18 +1290,39 @@ export class Structures {
 
     // Candidate plots: two rows flanking the street through the village, plus
     // a back lane. Buildings face the street.
+    //
+    // ROUND 25 — THE STREET, NOT THIRTEEN DETACHED FARMHOUSES ON LAWN.
+    // The frontage used to stand off `roadHalfWidth + 4.6`, i.e. ~8.3 m from
+    // the centreline; with a 7 m-deep house that leaves its near face 4.8 m
+    // back from a 3.5 m road edge, so every plot had a metre of lawn in front
+    // of it AND the clash rule below guaranteed a 3-5 m gap to its neighbour.
+    // The result reads as four or five separate objects on a green, which is
+    // the one thing vc-072 and vc-092 are emphatically not: there the lane
+    // recedes between two CONTINUOUS frontages, gable touching gable, and that
+    // density is the recognition cue. The individual buildings here were
+    // already right; only their spacing was wrong.
+    //
+    // Candidates every 2nd road sample (~5 m) rather than every 3rd (~7.5 m),
+    // so the clash rule below has fine enough granularity to actually land
+    // buildings at gable-to-gable spacing instead of skipping a whole plot.
     const cands = [];
     for (let i = 0; i < road.n; i++) {
       const x = road.x[i], z = road.z[i];
       if (Math.hypot(x - V.x, z - V.z) > V.r * 1.05) continue;
-      if (i % 3 !== 0) continue;
+      if (i % 2 !== 0) continue;
       const j = Math.min(road.n - 2, Math.max(0, i - 1));
       let tx0 = road.x[j + 1] - road.x[j], tz0 = road.z[j + 1] - road.z[j];
       const tl = Math.hypot(tx0, tz0) || 1;
       const nx = -tz0 / tl, nz = tx0 / tl;
       for (const side of [-1, 1]) {
         for (const rank of [0, 1]) {
-          const off = side * (this.layout.roadHalfWidth(i / road.n) + 4.6 + rank * 11.5);
+          // 4.6 -> 4.0. Measured, not guessed: at 3.0 a barn's broadside landed
+          // 1.5 m off the `village` camera and filled the right half of the
+          // frame with one flat dark wall. 4.0 puts a 7 m house's near face
+          // ~1.2 m off the road edge and still clears the lens. The back rank
+          // drops from +11.5 to +8.6 so the second row reads as the same
+          // settlement rather than as outbuildings in a field.
+          const off = side * (this.layout.roadHalfWidth(i / road.n) + 4.0 + rank * 8.6);
           cands.push({
             x: x + nx * off + rngRange(rng, -1.2, 1.2),
             z: z + nz * off + rngRange(rng, -1.2, 1.2),
@@ -1318,17 +1341,54 @@ export class Structures {
 
     let count = 0;
     for (const c of cands) {
-      if (count >= 13) break;
+      if (count >= 19) break;
       if (!this.terrain.inBounds(c.x, c.z)) continue;
       if (this.terrain.heightAt(c.x, c.z) < WATER_Y + 1.0) continue;
       if (this.terrain.maxSlopeNear(c.x, c.z, 3.5) > 0.42) continue;
       const riv = this.layout.riverSDF(c.x, c.z);
       if (riv.d < this.layout.riverHalfWidth(riv.t) + 8) continue;
+      // ROUND 25 — 8.2 -> 3.9. `p.r` is half the placed building's largest
+      // dimension plus 0.6, so for a typical 9 m farmhouse (r ~= 5.1) the old
+      // rule forced 13.3 m centre-to-centre against an 8-10 m frontage: a
+      // guaranteed 3-5 m of daylight between EVERY pair of neighbours, on both
+      // ranks. 3.9 puts the minimum at ~9.0 m, which is gable-to-gable contact
+      // for that frontage and no interpenetration. The buildings are `solid`
+      // colliders, so this is also the number that decides how wide the AI's
+      // path through the village is — it must not go below the frontage width.
       let clash = false;
       for (const p of placed) {
-        if (Math.hypot(p.x - c.x, p.z - c.z) < p.r + 8.2) { clash = true; break; }
+        if (Math.hypot(p.x - c.x, p.z - c.z) < p.r + 3.9) { clash = true; break; }
       }
       if (clash) continue;
+
+      // KEEP THE MISSION OBJECTIVES OUT OF THE FRONTAGE.
+      //
+      // The clearance above went 8.2 -> 3.9 this round to make the street read as
+      // two continuous frontages, which is the right art call. Its own comment
+      // notes the number also decides how wide the AI's path through the village
+      // is — and nothing enforced that. The measured consequence: the Imperial
+      // flag's nearest walkable cell ended up in a SEVENTEEN-CELL ISLAND, while
+      // the squad's component held 10,613 cells and never touched it.
+      // `nav.findPath(squad -> camp)` returned null at 24k AND at 200k maxNodes,
+      // i.e. A* exhausted its open set because the goal was in a different
+      // connected component. The mission's primary win condition — stand on their
+      // flag — was physically unreachable, in every seed, on a build that
+      // otherwise rendered and played.
+      //
+      // Buildings are `solid` colliders, so an objective ringed by frontage is a
+      // sealed room. A disc keep-clear is the targeted fix: it costs the street
+      // nothing (no objective sits on the carriageway) and it guarantees the flag
+      // stands in open ground wide enough to path into from any bearing.
+      // `o.r` is the objective's own capture radius. OBJ_KEEP_CLEAR is a
+      // conservative building half-diagonal (the largest barn here is ~12 m, so
+      // r <= 6.6) plus 2 m of margin, applied BEFORE the build because the clash
+      // loop runs before we know which kind we drew.
+      const OBJ_KEEP_CLEAR = 8.6;
+      let sealsObjective = false;
+      for (const o of (this.layout.objectives || [])) {
+        if (Math.hypot(o.x - c.x, o.z - c.z) < (o.r || 6) + OBJ_KEEP_CLEAR) { sealsObjective = true; break; }
+      }
+      if (sealsObjective) continue;
 
       const kind = rng() < 0.18 ? 'barn' : 'house';
       const shelled = rng() < 0.42;
@@ -1632,6 +1692,319 @@ export class Structures {
           { cover: 0.35, solid: true, blocksLos: false, tag: 'fence', destructible: true, hp: 25 }
         ));
       }
+    }
+  }
+
+  /**
+   * The cobbled street through the village.
+   *
+   * ROUND 25. Measured on a cold `village` plate, the street surface (x 620-1140,
+   * y 590-850) contained a horizontally-streaked dry-brush field plus a uniform
+   * single-pixel speckle and NOTHING larger than about 3 px — mean rgb(134,119,82),
+   * a flat tan band across a fifth of the frame that the eye slides off. The
+   * terrain does paint rut/gravel/dust variation, but into a 0.625 m vertex grid,
+   * so none of it survives as a shape at this camera distance.
+   *
+   * This is deliberately NOT done in the terrain shader: its 4-layer splat has no
+   * free channel under VC_VCOL_ALBEDO and the vertex grid cannot carry a 0.18 m
+   * feature. A separate ribbon is cheaper and lower-risk — one mesh, one material,
+   * one draw call, and it can be deleted without touching the ground.
+   *
+   * UVs come from worldUV's xz-planar projection rather than arclength: the
+   * surface is flat, so planar mapping is exact, has no seam where the road
+   * curves, and cannot stretch on the outside of a bend.
+   */
+  _buildStreet() {
+    const V = this.layout.village;
+    const road = this.layout.road;
+
+    // Which contiguous stretch of the road is "in the village"? A little past
+    // V.r so the cobbles do not stop dead at the pad boundary.
+    const lo = [], hi = [];
+    for (let i = 0; i < road.n; i++) {
+      if (Math.hypot(road.x[i] - V.x, road.z[i] - V.z) <= V.r * 1.12) {
+        if (!lo.length || i === hi[hi.length - 1] + 1) { lo.push(i); hi.push(i); }
+      }
+      if (lo.length && i > hi[hi.length - 1]) break;
+    }
+    const i0 = lo.length ? lo[0] : -1;
+    let i1 = i0;
+    if (i0 < 0) return;
+    while (i1 + 1 < road.n
+      && Math.hypot(road.x[i1 + 1] - V.x, road.z[i1 + 1] - V.z) <= V.r * 1.12) i1++;
+    if (i1 - i0 < 3) return;
+
+    const cob = new THREE.Color(0xb9b3a4);   // pale grey-cream: vc-072's street
+    const edge = new THREE.Color(PALETTE.dirt);
+    const pos = [], col = [], nrm = [], idx = [];
+    // four columns: outer-left, inner-left, inner-right, outer-right. The outer
+    // pair carries the earth colour, so the ribbon fades into the road surface
+    // rather than ending on a ruled line.
+    const COLS = 4;
+    let rowN = 0;
+    for (let i = i0; i <= i1; i++) {
+      const x = road.x[i], z = road.z[i];
+      const j = Math.min(road.n - 2, Math.max(0, i - 1));
+      const tx0 = road.x[j + 1] - road.x[j], tz0 = road.z[j + 1] - road.z[j];
+      const tl = Math.hypot(tx0, tz0) || 1;
+      const nx = -tz0 / tl, nz = tx0 / tl;
+      const hw = this.layout.roadHalfWidth(i / road.n);
+      // the metalled width wanders: a cobbled street that is exactly as wide as
+      // the carriageway everywhere is a extruded ribbon, not a street
+      const wob = (valueNoise2(x * 0.21, z * 0.21, 91) - 0.5) * 1.1;
+      for (let k = 0; k < COLS; k++) {
+        const side = k < 2 ? -1 : 1;
+        const outer = (k === 0 || k === 3);
+        const w = outer ? hw * 0.99 + wob : hw * 0.74 + wob * 0.6;
+        const px = x + nx * w * side, pz = z + nz * w * side;
+        const py = this.terrain.heightAt(px, pz) + (outer ? 0.030 : 0.045);
+        pos.push(px, py, pz);
+        nrm.push(0, 1, 0);
+        const c = outer ? edge : cob;
+        col.push(c.r, c.g, c.b);
+      }
+      rowN++;
+    }
+    for (let r = 0; r < rowN - 1; r++) {
+      for (let k = 0; k < COLS - 1; k++) {
+        const a = r * COLS + k, b = a + 1, cq = a + COLS, d = cq + 1;
+        idx.push(a, cq, b, b, cq, d);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geo.setIndex(idx);
+    worldUV(geo, 1 / COBBLE_TILE);
+    geo.computeBoundingSphere();
+
+    const mat = makeSurfaceMaterial({
+      surface: 'masonry', color: 0xffffff, vertexColors: true,
+      map: cobbleMap({ seed: 53 }), rim: 0.25,
+    });
+    // Same treatment as the stone bins: the joint has to move the BAND DRIVE,
+    // not multiply the albedo by 4%. Slightly under the walls' 0.38 because a
+    // ground plane is seen at a grazing angle and its joints already crowd.
+    if (mat.uniforms.uMapDrive) mat.uniforms.uMapDrive.value = 0.32;
+    if (mat.uniforms.uMapFlat) mat.uniforms.uMapFlat.value = 0.68;
+    if (mat.uniforms.uBands) mat.uniforms.uBands.value = 4;
+    if (mat.uniforms.uBandBleed) mat.uniforms.uBandBleed.value = 0.13;
+    // The road corridor is already flattened by the terrain, so 3-4.5 cm of lift
+    // is enough; the polygon offset is belt and braces for the grazing angle in
+    // `village`, where a 4 cm lift is under a pixel of depth separation.
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -2;
+    mat.polygonOffsetUnits = -2;
+
+    const m = new THREE.Mesh(geo, mat);
+    m.name = 'structures:street';
+    m.receiveShadow = true;
+    m.castShadow = false;
+    // No ink: a street is a wash with joints drawn INTO it. An outline id here
+    // would put a full contour round the whole ribbon, which is a ruled line
+    // across the frame — the exact thing the wobbled edge exists to avoid.
+    m.userData.outline = false;
+    m.matrixAutoUpdate = false;
+    this.group.add(m);
+    this.streetMesh = m;
+  }
+
+  /**
+   * Fences in the village.
+   *
+   * Until round 25 there was exactly ONE fence in the whole world — the
+   * post-and-rail run along the farm track above — and nothing at all fenced
+   * the village, so every yard was bare ground running straight into the road.
+   * Both of the reference frames the finish plan cites have a fence as a large,
+   * foreground, immediately-readable element: vc-092's left-centre is a tall
+   * pointed PALISADE of vertical stakes occupying roughly a sixth of the frame,
+   * and vc-096/vc-092 line the yards with low limewashed palings. It is also
+   * the cheapest recognition prop in the list — same loop shape as the track
+   * fence, vertical members instead of horizontal ones.
+   *
+   * Two variants off one walk:
+   *  - PICKET, along the street frontage, wherever a building is not already
+   *    standing there. Low, limewashed, 0.35 cover, does not block line of
+   *    sight — a soldier can shoot over it, which is what keeps it from
+   *    changing the fight.
+   *  - PALISADE, one run on the village approach: full-height pointed stakes,
+   *    0.5 cover, blocks line of sight, i.e. real cover.
+   */
+  _buildVillageFences() {
+    const rng = this.rng;
+    const V = this.layout.village;
+    const road = this.layout.road;
+
+    // A fence must not grow through a building or through the buildings' yards
+    // — `footprints` is already the registry vegetation uses for exactly this.
+    const blocked = (x, z, pad = 0) => {
+      for (const f of this.footprints) {
+        if (Math.hypot(f.x - x, f.z - z) < f.r + pad) return true;
+      }
+      return false;
+    };
+
+    /** Walk a polyline dropping posts, then fill the bays. */
+    const run = (pts, o) => {
+      if (pts.length < 2) return;
+      for (const p of pts) {
+        this.bins.timber.push(box(o.postW, o.h + 0.22, o.postW, o.postColor,
+          { x: p.x, y: p.y + (o.h + 0.22) * 0.5 - 0.16, z: p.z,
+            ry: rng() * 0.2, rz: rngRange(rng, -0.04, 0.04), variation: 0.14 }));
+      }
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const l = Math.hypot(b.x - a.x, b.z - a.z);
+        if (l > o.maxBay || l < 0.4) continue;
+        const yaw = Math.atan2(b.z - a.z, b.x - a.x);
+        const n = Math.max(2, Math.round(l / o.pitch));
+        for (let k = 0; k <= n; k++) {
+          const t = (k + 0.5) / (n + 1);
+          const px = a.x + (b.x - a.x) * t, pz = a.z + (b.z - a.z) * t;
+          const py = a.y + (b.y - a.y) * t;
+          // per-paling height jitter: a ruled row of identical sticks reads as
+          // a comb, and the reference's stakes are visibly cut by hand
+          const hh = o.h * rngRange(rng, o.jitter[0], o.jitter[1]);
+          const g = box(o.paleW, hh, o.paleD, o.paleColor, { variation: 0.16 });
+          tx(g, { ry: -yaw });
+          g.translate(px, py + hh * 0.5, pz);
+          this.bins.timber.push(g);
+          // the point: a short capping wedge, scaled down in x/z, sitting on top
+          if (o.pointed) {
+            const c = box(o.paleW * 0.92, o.paleW * 1.5, o.paleD * 0.34, o.paleColor,
+              { variation: 0.16 });
+            tx(c, { ry: -yaw });
+            c.translate(px, py + hh + o.paleW * 0.62, pz);
+            this.bins.timber.push(c);
+          }
+        }
+        // rails behind the palings — without them a picket is a row of loose
+        // sticks with nothing holding it together
+        for (const hy of o.rails) {
+          const g = box(l, 0.075, 0.05, o.postColor, { variation: 0.12 });
+          tx(g, { ry: -yaw });
+          g.translate((a.x + b.x) * 0.5, (a.y + b.y) * 0.5 + o.h * hy,
+            (a.z + b.z) * 0.5);
+          this.bins.timber.push(g);
+        }
+        this.colliders.push(makeBox(
+          { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 + o.h * 0.5, z: (a.z + b.z) * 0.5 },
+          { x: l * 0.5, y: o.h * 0.5, z: 0.11 },
+          yaw, o.collider
+        ));
+      }
+    };
+
+    // --- picket along both street frontages -----------------------------------
+    const PICKET = {
+      h: 1.05, postW: 0.11, paleW: 0.085, paleD: 0.035, pitch: 0.16,
+      maxBay: 3.2, pointed: true, jitter: [0.90, 1.06],
+      rails: [0.34, 0.80],
+      postColor: PALETTE.timberDark, paleColor: PALETTE.plaster,
+      // NOT solid. This run lines both sides of the street for most of its
+      // length, and a solid collider there would turn the village into a
+      // corridor with two walls — the AI paths through the yards in three of
+      // the twelve shots. It is cover and it is drawing; it is not terrain.
+      collider: { cover: 0.35, solid: false, blocksLos: false, tag: 'fence', destructible: true, hp: 25 },
+    };
+    for (const side of [-1, 1]) {
+      let pts = [];
+      const flush = () => { if (pts.length >= 3) run(pts, PICKET); pts = []; };
+      for (let i = 0; i < road.n; i++) {
+        const x0 = road.x[i], z0 = road.z[i];
+        if (Math.hypot(x0 - V.x, z0 - V.z) > V.r * 0.95) { flush(); continue; }
+        const j = Math.min(road.n - 2, Math.max(0, i - 1));
+        const tx0 = road.x[j + 1] - road.x[j], tz0 = road.z[j + 1] - road.z[j];
+        const tl = Math.hypot(tx0, tz0) || 1;
+        const nx = -tz0 / tl, nz = tx0 / tl;
+        const off = side * (this.layout.roadHalfWidth(i / road.n) + 1.5);
+        const x = x0 + nx * off, z = z0 + nz * off;
+        if (!this.terrain.inBounds(x, z)) { flush(); continue; }
+        const y = this.terrain.heightAt(x, z);
+        if (y < WATER_Y + 0.8) { flush(); continue; }
+        // Break only where a building genuinely stands ON the line. The
+        // footprint radius is the whole plot (max dimension / 2 + 0.6, plus
+        // 1.4 of keep-out for vegetation), so testing it raw rejected the
+        // entire street: with the r25 frontage the picket line sits 2.5 m off
+        // a building centre and every point read as blocked. -4.2 shrinks the
+        // test to the building itself, which is what a fence has to miss.
+        if (blocked(x, z, -4.2)) { flush(); continue; }
+        // and leave gateways: two bays in nine, so the street is not hemmed
+        if (valueNoise2(x * 0.34, z * 0.34, 61) > 0.78) { flush(); continue; }
+        pts.push({ x, y, z });
+      }
+      flush();
+    }
+
+    // --- one palisade on the approach ----------------------------------------
+    // Full-height pointed stakes, the vc-092 element. Placed on the south-west
+    // edge of the pad, i.e. the side the road enters from and the side the
+    // `village` and `overview` cameras look across.
+    const PAL = {
+      h: 1.95, postW: 0.16, paleW: 0.155, paleD: 0.075, pitch: 0.19,
+      maxBay: 3.4, pointed: true, jitter: [0.86, 1.10],
+      rails: [0.30, 0.74],
+      postColor: PALETTE.barnBoardDark, paleColor: PALETTE.barnBoard,
+      collider: { cover: 0.5, solid: true, blocksLos: true, tag: 'fence', destructible: true, hp: 60 },
+    };
+    //
+    // The first candidate is NOT random. The road runs south-west out of the
+    // pad, and the west side of it at ~12-18 m short of the village centre is
+    // the ground the `village` lens looks across in the left half of its frame
+    // (camera 14.2,-24 looking at 30.5,-53: its left vector is ~(-0.87,-0.49),
+    // and the road's -1 normal there is ~(-0.93,-0.37), a 0.99 dot). Deriving
+    // it from the road rather than hard-coding a point keeps it correct if the
+    // spline moves. Random ring attempts follow as a fallback.
+    const approach = [];
+    {
+      let best = -1, bestErr = 1e9;
+      for (let i = 0; i < road.n; i++) {
+        const d = Math.hypot(road.x[i] - V.x, road.z[i] - V.z);
+        // south of the village centre, about two thirds of the way out
+        if (road.z[i] < V.z) continue;
+        const err = Math.abs(d - V.r * 0.62);
+        if (err < bestErr) { bestErr = err; best = i; }
+      }
+      if (best >= 0) {
+        const j = Math.min(road.n - 2, Math.max(0, best - 1));
+        const tx0 = road.x[j + 1] - road.x[j], tz0 = road.z[j + 1] - road.z[j];
+        const tl = Math.hypot(tx0, tz0) || 1;
+        const nx = -tz0 / tl, nz = tx0 / tl;
+        const off = -(this.layout.roadHalfWidth(best / road.n) + 6.5);
+        approach.push({
+          x0: road.x[best] + nx * off, z0: road.z[best] + nz * off,
+          dir: Math.atan2(tz0 / tl, tx0 / tl), len: 12.5,
+        });
+      }
+    }
+    for (let attempt = 0; attempt < 14 + approach.length; attempt++) {
+      const A = approach[attempt];
+      const a0 = rngRange(rng, Math.PI * 0.55, Math.PI * 1.35);
+      const len = A ? A.len : rngRange(rng, 9, 14);
+      const x0 = A ? A.x0 : V.x + Math.cos(a0) * V.r * rngRange(rng, 0.42, 0.62);
+      const z0 = A ? A.z0 : V.z + Math.sin(a0) * V.r * rngRange(rng, 0.42, 0.62);
+      const dir = A ? A.dir : a0 + Math.PI * 0.5 + rngRange(rng, -0.5, 0.5);
+      const pts = [];
+      let ok = true;
+      const segs = Math.max(4, Math.round(len / 2.4));
+      for (let i = 0; i <= segs; i++) {
+        const t = i / segs;
+        const x = x0 + Math.cos(dir) * len * t;
+        const z = z0 + Math.sin(dir) * len * t;
+        if (!this.terrain.inBounds(x, z)) { ok = false; break; }
+        const y = this.terrain.heightAt(x, z);
+        if (y < WATER_Y + 1.0) { ok = false; break; }
+        if (blocked(x, z, 0.8)) { ok = false; break; }
+        // never across the carriageway
+        const rd = this.layout.roadSDF ? this.layout.roadSDF(x, z) : null;
+        if (rd && rd.d < this.layout.roadHalfWidth(rd.t) + 1.2) { ok = false; break; }
+        pts.push({ x, y, z });
+      }
+      if (!ok || pts.length < 4) continue;
+      run(pts, PAL);
+      for (const p of pts) this.footprints.push({ x: p.x, z: p.z, r: 1.1 });
+      break;
     }
   }
 

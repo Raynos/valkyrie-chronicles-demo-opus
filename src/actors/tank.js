@@ -36,15 +36,32 @@ const _yAxis = new THREE.Vector3(0, 1, 0);
 //  Palette — CANVAS engine: warm in light, violet-blue in shade, never black.
 // ============================================================================
 const PAL = {
-  // Gallian regular armour: pale sage-grey field with warm ochre trim.
+  // Gallian regular armour: one flat dust-tan field with warm ochre trim.
   //
   // These are the values the band quantiser sees. They are pitched HIGH on
   // purpose: the detail map multiplies in at ~0.93 mean, and a quantiser can
   // only split a surface into a cream band and a violet band if the surface has
   // the headroom to go both ways. Armour authored at slate-green has nowhere to
   // go but darker, which is exactly how the hull ended up as one flat mass.
-  paint: 0xaeb5a6,
-  paintAlt: 0x9ea595,
+  //
+  // ROUND 25 — HUE STABILITY. r24's 0xaeb5a6 is hue 88 deg (sage green) at sat
+  // 0.083, and A HUE AT SAT 0.083 IS NOT A HUE — it is whatever the last thing to
+  // touch the pixel says it is. Measured on a cold `tank` plate, the turret side
+  // ran hue p10/p90 = 40/93 (a 53 deg span) and the glacis 24/62, with the two
+  // faces' medians 39 deg apart: irregular teal-green blobs over cream with
+  // orange freckles, i.e. a disruptive camouflage scheme. vc-104's tank spans
+  // 10-12 deg per face and 2 deg between faces, at sat 0.185-0.194.
+  //
+  // The cause is that makeArmourTexture's warm (hue ~35) and cool (hue ~225)
+  // gouache washes swing a near-neutral base right across the wheel. Fixing it
+  // means giving the base enough chroma to hold its own hue AND putting it in the
+  // warm lobe so the warm half of the mottle reinforces instead of fighting.
+  //
+  // Re-authored in HSV at the ORIGINAL luminance, not luminance-scaled (the r15
+  // lesson): 0xaeb5a6 is Rec.709 L 178.5; 0xbdb1a3 is hue 32.3, sat 0.138, L
+  // 177.4. paintAlt likewise holds its old L 162.4 at the same hue and chroma.
+  paint: 0xbdb1a3,
+  paintAlt: 0xaca194,
   darkMetal: 0x6d675d,       // gun, hatches, weld-proud steel
 
   // PANEL-LINE INK. The one dark value allowed to draw a *line* on painted
@@ -667,57 +684,85 @@ function makeArmourTexture(seed, tint = 0x000000, size = 256) {
 }
 
 /**
- * The Gallian roundel, as a decal sheet with alpha: a cream disc, a red bar
- * across it and a hand-drawn ink rim. Stencilled on, so the edges are ragged
- * and the paint is thin enough that the plate's own mottle reads through.
+ * The Gallian crest, as a stencilled decal sheet with alpha: a shield silhouette
+ * with a cream keyline, a cast shadow, and a knocked-out star inside it.
+ *
+ * ROUND 25 — THIS WAS A ROUNDEL AND IT SHOULD NEVER HAVE BEEN. r24 drew a cream
+ * disc with a horizontal maroon bar across it and a heavy soft brown ink ring,
+ * which at 4x reads as an aircraft roundel or a no-entry sign. Valkyria's
+ * factions are identified by a CREST or GLYPH and never by a roundel — vc-104's
+ * Imperial tank carries a drawn sigil with a crisp light outline and a cast
+ * shadow, no field disc at all — so the old marking told a player nothing about
+ * whose tank this is, which was the entire point of putting it there.
+ *
+ * Silhouette first, interior mark second, NO FIELD: the shape has to survive at
+ * the ~28 px the marking occupies in the `tank` framing, and a field disc is
+ * exactly the thing that makes a small marking read as a sign rather than as a
+ * painted-on crest. The keyline is cream rather than ink for the same reason the
+ * ring went: the ink budget is already 1.9x the reference and a light keyline is
+ * what vc-104 actually draws.
  */
 function makeInsigniaTexture(seed, size = 128) {
   const rng = makeRng(seed);
   const { c, g } = canvas2d(size);
   g.clearRect(0, 0, size, size);
-  const cx = size / 2, cy = size / 2, R = size * 0.40;
+  const cx = size / 2, cy = size / 2;
+  const W = size * 0.30, HT = size * 0.32, HB = size * 0.40;
 
-  // Ragged stencil disc — a polygon of jittered radii, not a perfect circle.
-  const ring = (rr, jitter) => {
+  // Hand-painted, so every vertex carries a little jitter — but a FIXED one, so
+  // the keyline, the fill and the shadow are all the same shape.
+  const jx = [], jy = [];
+  for (let i = 0; i < 8; i++) { jx.push((rng() - 0.5) * size * 0.022); jy.push((rng() - 0.5) * size * 0.022); }
+  const shield = (k, ox, oy) => {
+    const w = W * k, ht = HT * k, hb = HB * k;
+    const X = (i, v) => cx + ox + v + jx[i] * k;
+    const Y = (i, v) => cy + oy + v + jy[i] * k;
     g.beginPath();
-    for (let i = 0; i <= 48; i++) {
-      const a = (i / 48) * TAU;
-      const r = rr * (1 + (rng() - 0.5) * jitter);
-      const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
-    }
+    g.moveTo(X(0, -w), Y(0, -ht));
+    g.quadraticCurveTo(X(1, 0), Y(1, -ht * 1.14), X(2, w), Y(2, -ht));
+    g.lineTo(X(3, w), Y(3, hb * 0.06));
+    g.quadraticCurveTo(X(4, w * 0.90), Y(4, hb * 0.68), X(5, 0), Y(5, hb));
+    g.quadraticCurveTo(X(6, -w * 0.90), Y(6, hb * 0.68), X(7, -w), Y(7, hb * 0.06));
     g.closePath();
   };
 
-  g.globalAlpha = 0.88;
-  g.fillStyle = '#e6dcc0';
-  ring(R, 0.06); g.fill();
+  // Cast shadow, down-right of the sun-facing keyline.
+  g.globalAlpha = 0.34;
+  g.fillStyle = '#1d1712';
+  shield(1.02, size * 0.028, size * 0.034); g.fill();
 
-  // The bar.
-  g.globalAlpha = 0.92;
-  g.fillStyle = '#a34434';
-  g.save();
-  g.translate(cx, cy); g.rotate(-0.06);
-  g.fillRect(-R * 0.98, -R * 0.30, R * 1.96, R * 0.60);
-  g.restore();
+  // Cream keyline, then the crest field on top of it — a stroke drawn UNDER the
+  // fill keeps a constant weight instead of straddling the edge.
+  g.globalAlpha = 0.95;
+  g.fillStyle = '#efe6ce';
+  shield(1.14, 0, 0); g.fill();
 
-  // Ink rim, drawn twice with a wobble so it reads as a pen line.
-  g.globalAlpha = 0.85;
-  g.strokeStyle = '#3b3128';
-  for (let k = 0; k < 2; k++) {
-    g.lineWidth = 1.6 + k * 0.7;
-    ring(R * (1 - k * 0.015), 0.045);
-    g.stroke();
+  g.globalAlpha = 0.94;
+  g.fillStyle = '#8d3d30';
+  shield(1, 0, 0); g.fill();
+
+  // The interior mark: a six-point star knocked back out to the keyline cream,
+  // the one high-chroma-adjacent shape on the vehicle.
+  g.globalAlpha = 0.95;
+  g.fillStyle = '#efe6ce';
+  g.beginPath();
+  const R1 = size * 0.20, R2 = size * 0.082, cyS = cy - size * 0.012;
+  for (let i = 0; i < 12; i++) {
+    const a = -Math.PI / 2 + (i / 12) * TAU;
+    const r = (i % 2 === 0 ? R1 : R2) * (1 + (rng() - 0.5) * 0.10);
+    const x = cx + Math.cos(a) * r, y = cyS + Math.sin(a) * r;
+    if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
   }
+  g.closePath(); g.fill();
 
   // Wear: knock holes out of the paint so the stencil is not pristine.
   g.globalAlpha = 1;
   g.globalCompositeOperation = 'destination-out';
-  for (let i = 0; i < 40; i++) {
-    const a = rng() * TAU, r = R * (0.2 + rng() * 0.95);
+  for (let i = 0; i < 34; i++) {
+    const a = rng() * TAU, r = size * 0.42 * (0.15 + rng() * 0.95);
     g.beginPath();
     g.ellipse(cx + Math.cos(a) * r, cy + Math.sin(a) * r,
-      1 + rng() * 3.5, 1 + rng() * 3, rng() * Math.PI, 0, TAU);
+      1 + rng() * 3.0, 1 + rng() * 2.6, rng() * Math.PI, 0, TAU);
     g.fill();
   }
   g.globalCompositeOperation = 'source-over';
@@ -1061,8 +1106,15 @@ export class Tank {
         // to ~45 px brush variation. `mottle` is also pinned rather than left on
         // the 0.075 default — the shader term and the map were stacking, and the
         // armour is the one surface in frame big enough for both to be visible.
+        //
+        // bandBleed 1.7 -> 1.35 (r25). 1.7 was the highest value anywhere in this
+        // file — its neighbours run 0.45/1.3/1.35/1.5 — and a wet edge that wide
+        // spreads each band's hue into the next, which on a 5 m flank turns two
+        // bands into ~45 px blobs of DIFFERENT COLOUR rather than of different
+        // value. It is the second half of the 53-degree hue span measured on the
+        // turret side; PAL.paint is the first. 1.35 matches mat.gear.
         outlineWidth: 1.25, map: paintTex, mapRepeat: [4.5, 3.5], mottle: 0.042,
-        bandBleed: 1.7, hatchSpacing: 4.2, wrap: 0.26,
+        bandBleed: 1.35, hatchSpacing: 4.2, wrap: 0.26,
       }),
       // PANEL-LINE INK. See PAL.panelInk and inkRib().
       //
@@ -1136,9 +1188,19 @@ export class Tank {
       // where N.L alone gives no boundary at all — the screen-space curvature
       // term is what puts a wash edge on the flange instead of leaving the whole
       // wheel inside one value.
+      //
+      // ROUND 25 — rim 0.78 -> 0.45. `rim` was the highest value in the file (its
+      // neighbours run 0.30-0.62) and it was stacked on curvature 0.32 AND spec
+      // 0.22: three independent bright-edge terms on a face-on disc, which at 3x
+      // resolved into a cream 'C' plus a second unrelated pale wedge per wheel,
+      // at inconsistent angles between neighbouring wheels. That is the
+      // albedo-patch-instead-of-lit-band trap the rubric documents at
+      // CRITIQUE_RUBRIC.md:84-101 — the arcs did not follow the wheel form. The
+      // comment above argues for `curvature` on a face-on disc, so `rim` is the
+      // one that goes; one edge term per disc, not three.
       gear: mk('gear', {
         ...runningGear,
-        color: PAL.wheelDisc, roughness: 0.74, hatch: 0.20, rim: 0.78, paper: 0.85,
+        color: PAL.wheelDisc, roughness: 0.74, hatch: 0.20, rim: 0.45, paper: 0.85,
         outlineWidth: 1.15, instanced: true, bandBleed: 1.35, spec: 0.22,
         curvature: 0.32, mottle: 0.05,
       }),
@@ -2397,30 +2459,31 @@ export class Tank {
   }
 
   /**
-   * Painted markings. A stencilled Gallian roundel on each turret cheek and one
-   * on the glacis — the only high-chroma thing on the vehicle, and the thing
-   * that tells you at a glance whose tank it is.
+   * Painted markings. A stencilled Gallian crest on each turret cheek and one on
+   * the glacis — the only high-chroma thing on the vehicle, and the thing that
+   * tells you at a glance whose tank it is. See makeInsigniaTexture: it is a
+   * shield glyph, NOT a roundel (r25).
    */
   _buildMarkings() {
     this.markings = [];
     const seg = byQ([10, 18, 26]);
     /**
-     * A ROUNDEL SITS ON A PLATE.
+     * A MARKING SITS ON A PLATE.
      *
      * Round 16's was a bare 0.23 m alpha quad laid straight on the armour: a pale
      * disc with a red smear in it, no contour of any kind, floating on top of the
-     * camouflage mottle at very nearly the mottle's own amplitude. Three parts
-     * now, all in one local frame whose +Z is the plate normal, so the same code
-     * works on a vertical turret cheek and on a 33-degree glacis:
+     * camouflage mottle at very nearly the mottle's own amplitude. Two parts now,
+     * both in one local frame whose +Z is the plate normal, so the same code works
+     * on a vertical turret cheek and on a 33-degree glacis:
      *
      *   1. a shallow raised disc in the armour bin — its own silhouette, so the
      *      outline pass draws a real edge round the marking;
-     *   2. a hand-wobbled ink ring just outboard of the stencil (the stencil's
-     *      painted disc is 0.40 x w, see makeInsigniaTexture);
-     *   3. the stencil itself, on top.
+     *   2. the stencilled crest itself, on top, carrying its own cream keyline.
      *
-     * Enlarged 0.23 -> 0.30 as well. On a turret 1.7 m long a 0.23 m roundel is a
-     * 13% detail; the Edelweiss wears it as a statement.
+     * r24's third part, an ink torus just outboard of the stencil, is deleted:
+     * see the note at the call site. Enlarged 0.23 -> 0.30 as well. On a turret
+     * 1.7 m long a 0.23 m marking is a 13% detail; the Edelweiss wears it as a
+     * statement.
      */
     const add = (w, px, py, pz, rx, ry, parent) => {
       const grp = new THREE.Group();
@@ -2438,13 +2501,12 @@ export class Tank {
       plate.userData.outline = true;
       grp.add(plate);
 
-      const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(w * 0.462, 0.0125, 4, seg), this.mat.ink);
-      ring.position.z = 0.007;
-      ring.castShadow = false;
-      ring.receiveShadow = true;
-      ring.userData.outline = true;
-      grp.add(ring);
+      // THE INK TORUS IS GONE (r25). It drew a heavy soft brown ring round every
+      // marking — outlined on top of being ink — and between them the ring and the
+      // raised plate gave the decal a contour roughly 3x the reference's. vc-104's
+      // marking is a stencilled glyph with a crisp light keyline and a cast
+      // shadow, no ring and no field. The raised plate above still supplies the
+      // silhouette the outline pass needs, which was the ring's other job.
 
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w, w), this.mat.insignia);
       m.position.z = 0.011;
@@ -2533,7 +2595,14 @@ export class Tank {
     this.linkMesh = new THREE.InstancedMesh(geo, this.mat.track, this.linkCount * 2);
     this.linkMesh.castShadow = true;
     this.linkMesh.receiveShadow = true;
-    this.linkMesh.userData.outline = true;
+    // NO PER-LINK OUTLINE (r25). ~80 shoes each ~23 px across, each given its own
+    // ~1.05 px silhouette, collapse the whole track run into a solid black
+    // serrated strip — measured, the `tank` plate carried 5.16% ink against
+    // vc-104's 2.76%, the most over-inked shot in the demo. vc-104 draws ONE
+    // outline round the run and leaves the interior to light and shade. The run
+    // still gets a silhouette from the hull/sponson outline and from the shoes'
+    // own shading; what it loses is the serration.
+    this.linkMesh.userData.outline = false;
     this.linkMesh.frustumCulled = false;
     this.linkMesh.name = 'track';
     this.chassis.add(this.linkMesh);

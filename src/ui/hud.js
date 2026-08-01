@@ -282,13 +282,18 @@ export class HUD {
     this.apShown = 0;
     this.markers = [];
     this.orders = DEFAULT_ORDERS;
-    // The hand is DEALT in command mode. Round 2 filed the deck away behind a
-    // tab, which fixed the full-width toolbar but left the best-read element on
-    // the page as a hole; the answer was never "hide it", it was "make it a hand
-    // of cards instead of a strip of buttons". It sits in the lower-left
-    // quadrant, arced about a pivot below the page, clear of both the roster and
-    // the survey, and Q still gathers it back in.
-    this.ordersOpen = true;
+    // The hand is a HAND OF CARDS, not a toolbar: it sits in the lower-left
+    // quadrant, arced about a pivot below the page, cards overlapping and
+    // splayed, and Q deals it out and gathers it back in.
+    //
+    // R25 — it starts SHUT. Dealt open by default it spanned x=150..1290 across
+    // the middle of the tactical map on the player's very first view of the game,
+    // straight over the Vasel bridge the briefing had just spent a paragraph on,
+    // and at 1366x768 the leftmost card landed on top of a roster card. The
+    // bottom-left "ORDERS Q" tab already advertises the key, and it was
+    // simultaneously drawn in its closed state while the hand was open, so the UI
+    // contradicted itself. It also ate the player's first Esc (see _keys).
+    this.ordersOpen = false;
     this.objectives = normObjectives(this.mission.objectives) || [
       { type: 'capture', text: 'Seize the Imperial base camp.' },
       { type: 'defend', text: 'Hold the bridge until relief arrives.', sub: true },
@@ -635,7 +640,10 @@ export class HUD {
 
     // --- order cards -------------------------------------------------------
     // Dealt, not garrisoned: a compact arc of six in the lower-left quadrant.
-    this.ordersEl = h('div', { class: 'vc-orders open' });
+    // Built from `ordersOpen`, not hardcoded open: `_toggleOrders(false)`
+    // early-returns when the flag already says shut, so a hand built open with
+    // the flag false could never be gathered in.
+    this.ordersEl = h('div', { class: 'vc-orders ' + (this.ordersOpen ? 'open' : 'shut') });
     this.ordersIn = h('div', { class: 'vc-orders-in' });
     this.ordersEl.appendChild(this.ordersIn);
     L.appendChild(this.ordersEl);
@@ -1004,15 +1012,17 @@ export class HUD {
     // identifiable as Valkyria. See docs/reference/vc-088.jpg and vc-104.jpg.
     // The demo had the underlying numbers (the forecast publishes expectedDamage)
     // and simply never drew them.
-    const dt = panel({ seed: 913, cls: 'vc-dmg', tilt: 0.2 });
+    // `vc-dmgtable`, not `vc-dmg`: worldLabels.js's floating damage numeral owns
+    // `.vc-dmg` and the two rules were overwriting each other (style.js).
+    const dt = panel({ seed: 913, cls: 'vc-dmgtable', tilt: 0.2 });
     this.dmgPanel = dt.root;
     this.dmgCells = {};
-    const dtRow = h('div', { class: 'vc-dmg-row' });
+    const dtRow = h('div', { class: 'vc-dmgtable-row' });
     for (const [key, head] of [['kill', 'To kill'], ['shots', 'Shots'],
                                ['pers', 'vs Pers'], ['armor', 'vs Armor'], ['area', 'Area']]) {
-      const cell = h('div', { class: 'vc-dmg-cell' });
-      cell.appendChild(h('div', { class: 'vc-dmg-h', text: head }));
-      const v = h('div', { class: 'vc-dmg-v vc-num', text: '-' });
+      const cell = h('div', { class: 'vc-dmgtable-cell' });
+      cell.appendChild(h('div', { class: 'vc-dmgtable-h', text: head }));
+      const v = h('div', { class: 'vc-dmgtable-v vc-num', text: '-' });
       cell.appendChild(v);
       this.dmgCells[key] = v;
       dtRow.appendChild(cell);
@@ -1105,8 +1115,27 @@ export class HUD {
     const lp = panel({ seed: 841, cls: 'vc-legend', tilt: 0 });
     this.legendEl = h('div', { style: 'display:flex;gap:.85em;flex-wrap:wrap;justify-content:center' });
     lp.content.appendChild(this.legendEl);
+    // The legend PANEL, not its inner row — hiding the row would leave an empty
+    // paper strip glued to the bottom of the title card.
+    this.legendPanel = lp.root;
     this.root.appendChild(lp.root);
     this.setControls('command');
+    this._syncLegend(this.phase);
+  }
+
+  /**
+   * The control legend is only on screen while a battle phase is live.
+   *
+   * The HUD is constructed behind the front end (battle.phase starts at
+   * 'briefing'), so before R25 the strip "Drag Pan Map | LMB Select Unit | ..."
+   * was painted along the bottom edge of the title card, the chapter card and the
+   * briefing — the first frame of the demo looked like the menu had failed to
+   * cover the game.
+   */
+  _syncLegend(phase) {
+    if (!this.legendPanel) return;
+    const live = phase === 'command' || phase === 'action' || phase === 'aim' || phase === 'enemy';
+    this.legendPanel.classList.toggle('vc-hidden', !live);
   }
 
   /** Rebuild the controls legend for a mode key ('command'|'action'|'aim'|...). */
@@ -1488,6 +1517,20 @@ export class HUD {
     this._aimNearest = p.nearest || null;
     if (p.reticlePx != null && isFinite(p.reticlePx)) this.reticlePx = p.reticlePx;
     if (p.chance != null) this.hitChance = clamp01(p.chance > 1 ? p.chance / 100 : p.chance);
+    // SNAP THE FIRST READING; DAMP EVERY ONE AFTER IT.
+    //
+    // `hitShown` is damped toward `hitChance` in the update loop, and the capture
+    // harness settles at dt = 0 by design (the frozen shutter — see main.js). A
+    // damped value cannot converge across zero elapsed time, so on the fast path
+    // the chit rendered whatever `_clearAim()` had just zeroed it to: every
+    // resident `aim` plate read "0% Hit" beside a dossier saying "Solution:
+    // Locked" and "84 expected", because the game layer was publishing chance
+    // 0.99 correctly at that exact frame. It looked like a broken forecast and
+    // was a frozen readout. `_hitLast < 0` is already the "nothing has been shown
+    // yet" flag (set by _clearAim and by the why-changed branch), and snapping on
+    // the first sample is invisible in play — there is no prior reading to
+    // animate from. Any other damp() in this file has the same failure mode.
+    if (this._hitLast < 0) this.hitShown = this.hitChance;
     if (!p.target) { this.target = null; return; }
     const t = p.target;
     this.setTarget({
@@ -2047,8 +2090,11 @@ export class HUD {
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     const escSpent = this._escAt != null && now - this._escAt < 300;
     if (Input.pressed('escape') && !escSpent) {
-      if (this.ordersOpen) this._toggleOrders(false);
-      else if (this.dialogue.visible) this.dialogue.hide();
+      // R25 — Esc ALWAYS means Pause, which is what the legend two lines below it
+      // says. It used to gather the order hand in first, and because the hand was
+      // dealt on every entry to command mode the player's very first Esc went
+      // into a drawer they had never opened. Q owns the hand; Esc owns the book.
+      if (this.dialogue.visible) this.dialogue.hide();
       else if (this.briefing.visible || this.deployment.visible) { /* modal screens own Esc */ }
       else this._setPaused(!this.pause.visible);
     }
@@ -2693,20 +2739,36 @@ export class HUD {
   _updateTargeting(dt) {
     const on = this.aiming;
     this.tgtLayer.classList.toggle('on', on);
-    if (!on) return;
+    if (!on) { this._sightOn = false; return; }
 
     // Accuracy circle contracts as the shot settles. When the game publishes a
     // real ballistic radius (aim:target.reticlePx) we honour it exactly — the
     // circle then means "90% of shots land inside this", not "looks tense".
     const base = Math.min(innerWidth, innerHeight);
-    let r;
-    if (this.reticlePx > 0) {
-      this.spreadShown = damp(this.spreadShown, clamp01(this.reticlePx / (base * 0.32)), 9, dt);
-      r = clamp(this.spreadShown * base * 0.32, base * 0.022, base * 0.34);
-    } else {
-      this.spreadShown = damp(this.spreadShown, this.spread, 7, dt);
-      r = lerp(base * 0.035, base * 0.30, this.spreadShown);
-    }
+    const hasReal = this.reticlePx > 0;
+    const tgt = hasReal ? clamp01(this.reticlePx / (base * 0.32)) : this.spread;
+    // R25 — SNAP on the first aiming frame and whenever the clock is stopped.
+    // `spreadShown` starts at 1 and only ever walks to the truth through damp(),
+    // and the capture harness settles at dt = 0 (see the determinism contract in
+    // main.js), so damp() could never move: every aim plate photographed the ring
+    // at its ENTRY value, 345 px of radius — a dashed ellipse across most of the
+    // frame that read as anything but a reticle. Snapping also means the sight
+    // picture opens on the true dispersion instead of collapsing into it.
+    if (!(dt > 0) || !this._sightOn) this.spreadShown = tgt;
+    else this.spreadShown = damp(this.spreadShown, tgt, hasReal ? 9 : 7, dt);
+    this._sightOn = true;
+    // Bounded so the ring stays a RETICLE. vc-088's orange ring is ~50 px of
+    // radius on a 1080-tall frame (base*0.046); actionMode's ballistic radius can
+    // legitimately reach base*0.155 when the weapon is fully bloomed, and past
+    // roughly base*0.12 the circle stops being something you aim with and becomes
+    // a border round the picture.
+    // The floor is a LEGIBILITY floor sized off vc-088, whose orange ring is
+    // ~100 px across on a 1080-tall frame (base*0.046 of radius); a ring drawn at
+    // the bare ballistic radius at 25 m came out 55 px across and read as a dot.
+    // Flooring only ever draws the circle LARGER than the true dispersion, so the
+    // promise it makes is conservative, never optimistic.
+    const r = clamp(hasReal ? this.spreadShown * base * 0.32
+      : lerp(base * 0.035, base * 0.12, this.spreadShown), base * 0.040, base * 0.12);
     // add a slow sway so the reticle never looks pinned to the pixel grid
     const sway = Math.sin(this._time * 1.7) * 1.2 * this.spreadShown;
     this.accEl.style.width = (r * 2).toFixed(1) + 'px';
@@ -2920,9 +2982,15 @@ export class HUD {
     this.endTurnBtn.classList.toggle('vc-hidden', to !== 'command');
     this.ordersEl.classList.toggle('vc-hidden', to !== 'command');
     this.ordersTab.classList.toggle('vc-hidden', to !== 'command');
-    // Command mode deals the hand; every other phase gathers it back in.
-    this._toggleOrders(to === 'command');
+    // Leaving command mode gathers the hand in; ENTERING it no longer deals it
+    // (R25 — it covered the map on the first view of the game). Q deals it.
+    if (to !== 'command') this._toggleOrders(false);
     this.setControls(to === 'action' ? 'action' : to === 'enemy' ? 'enemy' : to === 'result' ? 'result' : 'command');
+    // The control legend belongs to the BATTLE, not to the front end. It used to
+    // be painted along the bottom edge of the title card, the chapter card and
+    // the briefing — keycaps for a game that has not started, which reads as the
+    // menu failing to cover the HUD.
+    this._syncLegend(to);
     if (cmd && !initial) {
       this._rosterKey = '';       // re-deal the roster with its slide-in
       this.cpShown = -1;
@@ -3026,8 +3094,54 @@ export class HUD {
     if (this._applyPause(on)) Bus.emit('ui:pause', { paused: on });
   }
 
+  /**
+   * The live engine, if there is one. The HUD is deliberately not given a
+   * reference to it (it is built from `battle`), but two pause-menu rows —
+   * Render Quality and Resolution — are settings on the RENDERER and there is no
+   * other channel to it from here. `Engine` publishes itself on window at
+   * construction (core/engine.js), so this is a read of an existing handle, not
+   * a new one, and every use is optional-chained: under a harness or a unit test
+   * there simply is no engine and the rows fall back to writing CFG.
+   */
+  _engine() {
+    return (typeof window !== 'undefined' && window.__ENGINE__) || null;
+  }
+
   _applyOption(key, value) {
-    if (key === 'quality') CFG.quality = ['Low', 'High', 'Ultra'].indexOf(value);
+    // R25 — this used to set CFG.quality and stop. Nothing reads CFG.quality
+    // again after boot: the pipeline caches its own `quality`, and the tier does
+    // real work (MaterialRegistry tiers, the composite's VC_DOUBLE_STROKE and the
+    // grade's VC_CA defines) only inside CanvasRenderPipeline.setQuality. So the
+    // menu's headline row was inert — it moved a number nobody read.
+    if (key === 'quality') {
+      const idx = ['Low', 'High', 'Ultra'].indexOf(value);
+      if (idx >= 0) {
+        CFG.quality = idx;
+        const pipe = this._engine()?.pipeline;
+        if (pipe && typeof pipe.setQuality === 'function') pipe.setQuality(idx);
+      }
+    }
+    // Resolution is the one lever that actually buys frames on a slow machine:
+    // the frame is fill-bound and its cost is quadratic in the pixel ratio
+    // (config.js has the measurements). `renderScale` multiplies the ratio the
+    // renderer runs at, and Engine.onResize is the one place that re-reads it.
+    if (key === 'resolution') {
+      const scale = { Half: 0.5, Reduced: 0.75, Full: 1.0 }[value];
+      if (scale) {
+        CFG.render.renderScale = scale;
+        // minPixelRatio moves WITH it. Its authored job is to stop a 1x display
+        // being rendered below its own resolution (0.5 x 1 is a genuine blur,
+        // 0.5 x 2 is not) — but it also means that on a 1x display renderScale is
+        // a no-op, so the row would have been inert for exactly the player who
+        // needs it. Choosing "Half" by hand IS the player asking for the blur in
+        // exchange for frames. pixelRatio() still floors the result at 0.75.
+        CFG.render.minPixelRatio = scale;
+        // Adaptive scalers (if one is installed) must not immediately overwrite a
+        // choice the player just made by hand.
+        if (CFG.render.autoScale !== undefined) CFG.render.autoScale = false;
+        this._engine()?.onResize?.();
+      }
+    }
     if (key === 'grain') {
       const s = { Off: '0', Subtle: '.16', Full: '.30' }[value] || '.30';
       this.root.querySelector('.vc-fibre').style.opacity = s;

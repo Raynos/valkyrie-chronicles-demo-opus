@@ -183,6 +183,42 @@ function cached(key, build) {
   return t;
 }
 
+/**
+ * The two 512² builders — `paper` (205 ms) and `ground` (187 ms) — are written
+ * as GENERATORS that yield between horizontal bands of the pixel loop, so the
+ * loading screen can drive them a band at a time instead of freezing the tab for
+ * a fifth of a second each. `cachedGen` is the ordinary synchronous entry point
+ * (drain it in one turn, exactly as before); `warmTextureCacheAsync` uses the
+ * band-wise one.
+ *
+ * The bands are a pure partition of an already-independent loop: every pixel is
+ * a function of (x, y) and hoisted seed tables only, nothing carries across
+ * rows, and the normalise/pack passes still see the whole array. Same bytes,
+ * fewer long tasks.
+ */
+const BAND = 128;   // rows per yield at S = 512, i.e. four slices of ~50 ms
+
+function cachedGen(key, makeGen) {
+  let t = _cache.get(key);
+  if (!t) {
+    const gen = makeGen();
+    let r = gen.next();
+    while (!r.done) r = gen.next();
+    t = r.value;
+    _cache.set(key, t);
+  }
+  return t;
+}
+
+async function cachedGenAsync(key, makeGen, yieldFn) {
+  if (_cache.has(key)) return _cache.get(key);
+  const gen = makeGen();
+  let r = gen.next();
+  while (!r.done) { if (yieldFn) await yieldFn(); r = gen.next(); }
+  _cache.set(key, r.value);
+  return r.value;
+}
+
 function make2d(w, h) {
   if (typeof document !== 'undefined' && document.createElement) {
     const c = document.createElement('canvas');
@@ -239,18 +275,30 @@ function coarseAt(a, x, y) {
 }
 
 function dataTex(size, fill) {
+  const gen = dataTexSteps(size, fill, size);
+  let r = gen.next();
+  while (!r.done) r = gen.next();
+  return r.value;
+}
+
+/** `dataTex`, yielding every `band` rows. See the note on cachedGen. */
+function* dataTexSteps(size, fill, band = BAND) {
   const data = new Uint8Array(size * size * 4);
   const inv = 1 / size;
   let p = 0;
   const out = [0, 0, 0, 0];
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++, p += 4) {
-      fill(x * inv, y * inv, out, x, y);
-      data[p] = out[0] * 255 + 0.5;
-      data[p + 1] = out[1] * 255 + 0.5;
-      data[p + 2] = out[2] * 255 + 0.5;
-      data[p + 3] = out[3] * 255 + 0.5;
+  for (let y0 = 0; y0 < size; y0 += band) {
+    const yEnd = Math.min(size, y0 + band);
+    for (let y = y0; y < yEnd; y++) {
+      for (let x = 0; x < size; x++, p += 4) {
+        fill(x * inv, y * inv, out, x, y);
+        data[p] = out[0] * 255 + 0.5;
+        data[p + 1] = out[1] * 255 + 0.5;
+        data[p + 2] = out[2] * 255 + 0.5;
+        data[p + 3] = out[3] * 255 + 0.5;
+      }
     }
+    if (yEnd < size) yield;
   }
   return new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
 }
@@ -299,7 +347,11 @@ const PAPER_MEAN = 0.60;
 const PAPER_SD = 0.078;
 
 export function getPaperTexture() {
-  return cached('paper', () => {
+  return cachedGen('paper', paperSteps);
+}
+
+function* paperSteps() {
+  {
     const S = 512;
     const seed = (CFG.seed ^ 0x51ab) >>> 0;
     const N = S * S;
@@ -332,7 +384,9 @@ export function getPaperTexture() {
       tfbm((u * d.a - v * d.b) * d.fa, (u * d.b + v * d.a) * d.fb, d.base, 3, 0.55, fibSeed[i])));
 
     let p = 0;
-    for (let y = 0; y < S; y++) {
+    for (let y0 = 0; y0 < S; y0 += BAND) {
+    const yEnd = Math.min(S, y0 + BAND);
+    for (let y = y0; y < yEnd; y++) {
       for (let x = 0; x < S; x++, p++) {
         const u = x * inv, v = y * inv;
 
@@ -400,6 +454,8 @@ export function getPaperTexture() {
         granF[p] = gran * 0.75 + (1 - clump) * 0.10 + speck * 0.15;
       }
     }
+    yield;   // one band of rows done — let the loading card breathe
+    }
 
     // Normalise the multiply channel onto the exact mean/sd the grade pass and
     // the surface shaders assume. Doing this measured rather than by hand is
@@ -426,7 +482,7 @@ export function getPaperTexture() {
       data[q + 3] = sat(granF[i]) * 255 + 0.5;
     }
     return finish(new THREE.DataTexture(data, S, S, THREE.RGBAFormat, THREE.UnsignedByteType));
-  });
+  }
 }
 
 // ============================================================ GRAPHITE GRAIN
@@ -638,7 +694,11 @@ export function getNoiseTexture3D() {
 // A: mud mottle (broad wet/dry patches)
 
 export function getGroundDetailTexture() {
-  return cached('ground', () => {
+  return cachedGen('ground', groundSteps);
+}
+
+function* groundSteps() {
+  {
     const S = 512;
     const seed = (CFG.seed ^ 0x60d5) >>> 0;
     const Pt1 = cellPoints(56, seed + 7);
@@ -650,7 +710,7 @@ export function getGroundDetailTexture() {
     const fPeb = coarseField(S, 8, (u, v) => tfbm(u, v, 6, 2, 0.6, seed + 59));
     const fMud = coarseField(S, 2, (u, v) => tfbm(u, v, 6, 4, 0.6, seed + 83));
     const _f2 = [0];
-    const tex = dataTex(S, (u, v, out, x, y) => {
+    const tex = yield* dataTexSteps(S, (u, v, out, x, y) => {
       // Grass tufts. This used to be `tfbm(u*1.6, v*0.42, ...)` mixed with a
       // ridge stretched the other way — a ROW-CORRELATED field, which under a
       // grazing camera projects to pure horizontal smear (round 2 measured a
@@ -682,7 +742,7 @@ export function getGroundDetailTexture() {
       out[3] = sat(mud);
     });
     return finish(tex);
-  });
+  }
 }
 
 // ============================================================ SPRITE SHEETS
@@ -832,18 +892,52 @@ export function getSplitToneRamp() {
 // Warm the whole cache in one go — call during a loading screen so the first
 // rendered frame doesn't hitch.
 export function warmTextureCache() {
-  getPaperTexture();
-  getGrainTexture();
-  getHatchTexture();
-  getBlotchTexture();
-  getNoiseTexture();
-  getGroundDetailTexture();
-  getSmokeTexture();
-  getFlashTexture();
-  getSparkTexture();
-  getSoftDiscTexture();
-  getSplitToneRamp();
+  for (const [, build] of WARM_LIST) build();
 }
+
+/**
+ * The same warm, one texture per frame.
+ *
+ * These bakes are not incidental: measured on the dev server, `paper` is 205 ms
+ * and `ground` is 189 ms, and until r25 they ran LAZILY inside the world build
+ * (worldMaterials.js:495 pulls getPaperTexture() while the terrain material is
+ * assembled). That put ~465 ms of canvas painting inside a stage the loading
+ * card could not interrupt, and it was invisible in the profile because it was
+ * attributed to the terrain.
+ *
+ * Warming them here changes WHEN they are baked, never WHAT: every builder in
+ * this file seeds its own `makeRng(CFG.seed ^ k)` and reads no shared stream and
+ * no clock, so the cache contents are identical whichever call site fills it.
+ *
+ * @param {() => Promise<void>} yieldFn awaited between textures
+ * @param {(name: string, i: number, n: number) => void} [onEach]
+ */
+export async function warmTextureCacheAsync(yieldFn, onEach) {
+  for (let i = 0; i < WARM_LIST.length; i++) {
+    const [name, build, gen] = WARM_LIST[i];
+    // The two banded ones go through the generator so each band is its own task;
+    // the rest are 0-26 ms and not worth the machinery.
+    if (gen) await cachedGenAsync(name, gen, yieldFn);
+    else build();
+    if (onEach) onEach(name, i + 1, WARM_LIST.length);
+    if (yieldFn) await yieldFn();
+  }
+}
+
+/** `[cache key, sync getter, banded generator or undefined]`. */
+const WARM_LIST = [
+  ['paper', getPaperTexture, paperSteps],
+  ['grain', getGrainTexture],
+  ['hatch', getHatchTexture],
+  ['blotch', getBlotchTexture],
+  ['noise', getNoiseTexture],
+  ['ground', getGroundDetailTexture, groundSteps],
+  ['smoke', getSmokeTexture],
+  ['flash', getFlashTexture],
+  ['spark', getSparkTexture],
+  ['disc', getSoftDiscTexture],
+  ['splitramp', getSplitToneRamp],
+];
 
 export function disposeTextures() {
   for (const t of _cache.values()) t.dispose?.();

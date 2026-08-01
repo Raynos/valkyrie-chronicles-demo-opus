@@ -2,6 +2,35 @@ import * as THREE from 'three';
 import { CFG, pixelRatio } from './config.js';
 import { Input } from './input.js';
 
+/**
+ * The frame clock.
+ *
+ * NOT `THREE.Clock`: that is deprecated in r185 and prints
+ * "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
+ * to the console on every page load — twice, once per context — which is the
+ * first thing anyone who opens DevTools on a published demo sees.
+ *
+ * THREE.Timer is NOT a drop-in replacement here and must not be used: its
+ * getDelta() returns the delta computed by a separate update() call, whereas
+ * main.js's determinism contract REPLACES this method outright
+ * (`engine.clock.getDelta = () => CAPTURE_DT` for capture, `() => 0` for the
+ * frozen shutter, and a bare call to drop background time on visibilitychange).
+ * Nothing reads elapsedTime. So this is exactly the three lines of THREE.Clock
+ * that the contract depends on, and nothing else.
+ */
+function makeClock() {
+  let prev = 0, started = false;
+  return {
+    getDelta() {
+      const t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+      if (!started) { started = true; prev = t; return 0; }
+      const dt = t - prev;
+      prev = t;
+      return dt;
+    },
+  };
+}
+
 export class Engine {
   constructor(canvas) {
     this.canvas = canvas;
@@ -27,7 +56,7 @@ export class Engine {
       CFG.camera.fov, innerWidth / innerHeight, CFG.camera.near, CFG.camera.far
     );
 
-    this.clock = new THREE.Clock();
+    this.clock = makeClock();
     this.systems = [];
     this.time = 0;
     this.frame = 0;

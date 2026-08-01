@@ -3,7 +3,23 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>Valkyrie Chronicles</title>
+<title>Valkyrie Chronicles — The Bridge at Vasel</title>
+<meta name="description" content="A browser tactical RPG drawn in watercolour and ink: command Squad 7 across the bridge at Vasel. A fan-made three.js technical demo." />
+<meta name="theme-color" content="#17120e" />
+<meta name="color-scheme" content="dark" />
+<!-- Inline SVG favicon — a wax seal with the Gallian V. Costs no request, and a
+     404 on /favicon.ico is what a shared link's tab icon looked like before. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='11' fill='%2317120e'/%3E%3Ccircle cx='32' cy='32' r='21' fill='%23a8322a'/%3E%3Ccircle cx='32' cy='32' r='21' fill='none' stroke='%236d1f1a' stroke-width='2'/%3E%3Cpath d='M21 21 L32 45 L43 21' fill='none' stroke='%23f0e2c6' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Valkyrie Chronicles — The Bridge at Vasel" />
+<meta property="og:description" content="A browser tactical RPG drawn in watercolour and ink. Command Squad 7 across the bridge at Vasel, then drop in and fight it soldier by soldier. A fan-made three.js technical demo." />
+<meta property="og:image" content="og.jpg" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Valkyrie Chronicles — The Bridge at Vasel" />
+<meta name="twitter:description" content="A browser tactical RPG drawn in watercolour and ink. A fan-made three.js technical demo." />
+<meta name="twitter:image" content="og.jpg" />
 <style>
   :root { color-scheme: dark; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -13,11 +29,73 @@
   #hud { position: fixed; inset: 0; pointer-events: none; user-select: none; z-index: 10; }
   #hud * { pointer-events: none; }
   #hud .clickable { pointer-events: auto; }
+
+  /* ---------------------------------------------------------------------
+     BOOT CARD. Static markup, inline CSS, zero JS — so it is on screen at
+     FIRST PAINT, before the module script has even been fetched.
+
+     Measured before this existed (production dist, warm local host): 2752 ms
+     to window.__ENGINE__, 3530 ms to the title card, and every one of those
+     milliseconds was a flat #17120e rectangle with nothing on it. Worse, a
+     page.screenshot() issued at t=500 ms could not be serviced until 3775 ms —
+     the main thread was blocked solid, so the tab was unresponsive, not merely
+     blank. That is the single biggest bounce risk in a published demo.
+
+     main.js drives #boot-stage / #boot-bar as it walks the build stages and
+     adds .gone when the title card mounts.
+     --------------------------------------------------------------------- */
+  #boot {
+    position: fixed; inset: 0; z-index: 40;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1.1rem; text-align: center; padding: 6vh 8vw;
+    background: radial-gradient(120% 90% at 50% 40%, #241c14 0%, #17120e 68%);
+    color: #e8d9be;
+    transition: opacity .28s ease-out;
+  }
+  #boot.gone { opacity: 0; pointer-events: none; }
+  #boot .bl {
+    font-size: clamp(.62rem, 1.5vw, .78rem); letter-spacing: .34em; text-transform: uppercase;
+    color: #a8977a; font-style: normal;
+  }
+  #boot h1 {
+    font-size: clamp(2rem, 6.4vw, 3.9rem); font-weight: 400; font-style: italic;
+    letter-spacing: .012em; line-height: 1.05; color: #f0e2c6;
+  }
+  /* The ink rule: a hairline that draws itself in, so the card is alive before
+     any JS has run and a stalled boot still looks like it is doing something. */
+  #boot .rule { width: min(26rem, 70vw); height: 2px; background: rgba(168,50,42,.22); overflow: hidden; }
+  #boot .rule i { display: block; height: 100%; width: 100%; background: #a8322a; transform-origin: left center;
+    animation: bootrule 2.6s cubic-bezier(.4,0,.2,1) infinite; }
+  @keyframes bootrule {
+    0%   { transform: scaleX(0); opacity: .25; }
+    45%  { transform: scaleX(1); opacity: 1; }
+    100% { transform: scaleX(1); opacity: .18; }
+  }
+  #boot .sub { font-size: clamp(.85rem, 2.1vw, 1rem); color: #c9b795; max-width: 30em; line-height: 1.5; }
+  #boot-stage { font-size: clamp(.66rem, 1.6vw, .8rem); letter-spacing: .2em; text-transform: uppercase; color: #8d7c62; min-height: 1.2em; }
+  #boot .bar { width: min(22rem, 62vw); height: 3px; background: rgba(232,217,190,.13); }
+  #boot-bar { display: block; height: 100%; width: 4%; background: #c9a24a; transition: width .3s ease-out; }
+  #boot .note { font-size: clamp(.6rem, 1.5vw, .72rem); color: #6f6250; line-height: 1.6; max-width: 34em; }
+  @media (prefers-reduced-motion: reduce) { #boot .rule i { animation: none; } }
 </style>
 </head>
 <body>
   <canvas id="view"></canvas>
   <div id="hud"></div>
+  <div id="boot">
+    <div class="bl">Gallian Militia · Squad 7</div>
+    <h1>Valkyrie Chronicles</h1>
+    <div class="rule"><i></i></div>
+    <div class="sub">The Bridge at Vasel</div>
+    <div class="bar"><b id="boot-bar"></b></div>
+    <div id="boot-stage">Preparing the field…</div>
+    <div class="note">A fan-made technical demo built in three.js · not affiliated with SEGA</div>
+  </div>
+  <noscript>
+    <div style="position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:#17120e;color:#e8d9be;padding:8vw;text-align:center;font-size:1.1rem;line-height:1.6">
+      Valkyrie Chronicles needs JavaScript and WebGL2. Please enable JavaScript and reload.
+    </div>
+  </noscript>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

@@ -2385,6 +2385,11 @@ export function makeGrassMaterial(opts = {}) {
     sway: 0.28,
     subsurface: 0.85,
     variation: 0.22,
+    // How much of the "blades darken sharply into the sward at the base" ramp
+    // this caller wants. 1 = full (grass, wheat, reeds — the term was authored
+    // for them). 0 = none, which is what a TREE LEAF CARD needs: see the
+    // uHeightShade note at the term itself.
+    heightShade: 1,
     bands: Math.max(3, CFG.render.bands - 1),
     hatch: 0.55,
     rim: 1.35,
@@ -2425,6 +2430,7 @@ export function makeGrassMaterial(opts = {}) {
       uTipColor: { value: new THREE.Color() },
       uVariation: { value: 0.22 },
       uBladeHeight: { value: 0.55 },
+      uHeightShade: { value: 1 },
       uSway: { value: 0.28 },
       uOpacity: { value: 1 },
       uBands: { value: 3 },
@@ -2483,6 +2489,7 @@ export function makeGrassMaterial(opts = {}) {
   uniforms.uTipColor.value.set(o.tipColor);
   uniforms.uVariation.value = o.variation;
   uniforms.uBladeHeight.value = o.bladeHeight;
+  uniforms.uHeightShade.value = o.heightShade;
   uniforms.uSway.value = o.sway;
   uniforms.uBands.value = o.bands;
   uniforms.uHatch.value = o.hatch * CFG.render.hatchStrength;
@@ -2514,6 +2521,7 @@ ${NPR_UNIFORMS_GLSL}
 uniform vec3 uRootColor;
 uniform vec3 uTipColor;
 uniform float uVariation;
+uniform float uHeightShade;
 #ifdef VC_MAP
   uniform sampler2D uMap;
   uniform vec2 uMapRepeat;
@@ -2546,8 +2554,20 @@ void main() {
   albedo = vcSageFinish( albedo, uPasture );
 
   // blades darken sharply into the sward at the base — that shadowed mat is
-  // most of what sells a grass field as painted rather than modelled
-  albedo *= mix( 0.52, 1.0, smoothstep( 0.0, 0.45, hN ) );
+  // most of what sells a grass field as painted rather than modelled.
+  //
+  // ROUND 25 — gated on uHeightShade, because this factory also draws TREE
+  // FOLIAGE and hN is the fragment's height in its OWN geometry, not in the
+  // crown. lobeCard() pivots at the card centre and matLeaf passes
+  // bladeHeight 0.5, so every 1.5 m leaf card was printing its own dark-bottom
+  // /light-top ramp: measured on a cold closeup plate, one card ran L=123
+  // across its top half against L=75 across its bottom half — a 1.64x step
+  // inside one card, aligned to world-up, on ~100 cards per tree. That
+  // per-card contour is exactly what made canopies read as a cluster of dark
+  // green cabbages. Grass/wheat/reed keep heightShade 1 and are unchanged;
+  // leaf and bush pass 0 and get their value gradient at CROWN scale instead,
+  // through the per-instance colour (see growTree/_buildTrees).
+  albedo *= mix( mix( 1.0, 0.52, uHeightShade ), 1.0, smoothstep( 0.0, 0.45, hN ) );
 
   float alpha = uOpacity;
   #ifdef VC_MAP

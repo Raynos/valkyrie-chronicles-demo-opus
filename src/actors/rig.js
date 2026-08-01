@@ -2752,7 +2752,23 @@ function buildHands(b, rig, o) {
     // capsule holds 2 px of ink in its valley at twelve metres where a 16.8 mm
     // one at a 6.4 mm pitch holds none, because the valley is what the outline
     // pass bites and the CAPSULE is what carries the skin between the valleys.
-    const FRAD = [0.0090, 0.0092, 0.0086, 0.0076];
+    // ROUND 25 — THE VALLEYS CLOSE. This is a reversal of rounds 4/6/16, and the
+    // reason is that the target moved from "a hand" to "a CANVAS hand". Rounds
+    // 4-17 chased the note "zero finger separation anywhere in the figure" and
+    // won it: at 0.0090 on a 0.0220 pitch there is a 4.0 mm valley between each
+    // pair, the outline pass bites every one of them, and the r25 cold `closeup`
+    // crop of the trigger hand is five pale sausages each carrying a full-weight
+    // dark contour down both sides — the second-highest-contrast object in the
+    // frame after the character's own outline, reading as spider legs on the
+    // stock. In docs/reference/vc-072.jpg EVERY hand in frame (Alicia's,
+    // Welkin's, Isara's) is a soft mitt with no interior line between the
+    // fingers at all: the whole hand carries ONE contour.
+    // Radii now SUM past the pitch (0.0122 + 0.0124 = 24.6 mm across a 22.0 mm
+    // pitch), so adjacent fingers interpenetrate by ~2.6 mm and the four merge
+    // into one mass with a scalloped edge. The knuckle bar above still gives the
+    // back of the hand its one line, and the thumb still opposes — which is the
+    // whole grammar of a grip. Nothing about the curl or the close changes.
+    const FRAD = [0.0122, 0.0124, 0.0118, 0.0106];
     const FPITCH = 0.0220;
     const vFing = b.vertexCount;
     // JOINT-WISE CURL, and this is the whole fix for "zero finger separation
@@ -2791,9 +2807,11 @@ function buildHands(b, rig, o) {
       const len = FLEN[f], r0 = FRAD[f];
       const px = fg.x + side * lat * 0.22, pz = fg.z + lat * 0.98;
       const y0 = fg.y + 0.026;
-      // alternate a touch of shade down the ring/little side so four identical
-      // sausages do not read as one mitten at 2 m
-      b.setColor(f >= 2 ? mixCol(col, [0.05, 0.036, 0.034], 0.15) : col);
+      // Round 6 alternated a touch of shade down the ring/little side "so four
+      // identical sausages do not read as one mitten at 2 m". One mitten at 2 m
+      // is now the requirement, so the alternation goes: a value break between
+      // fingers is a line between fingers, which is the thing being removed.
+      b.setColor(col);
       // A CIRCULAR ARC, not a straight sausage with an offset added. The finger
       // is swept along a constant-curvature path of total turn TH about the palm
       // normal:  p(t) = base + axis*sin(t*TH)/k + palm*(1-cos(t*TH))/k, k = TH/len.
@@ -3436,7 +3454,12 @@ export function buildHead(b, rig, o, f) {
     // The socket. A real bowl, 5 mm deep, wider than the eye and tilted so its
     // deepest point is under the outer half of the brow.
     const eyeY = FY(T_EYE);
-    const sock = blob(dy - (eyeY + 0.035), 0.155, ax - 0.42, 0.235) * smoothstep(0.34, 0.86, dz);
+    // 0.155 -> 0.215 in dy. That half-width was cut for a 13 mm fissure; the
+    // fissure is now 31 mm (see the eye block below), and a socket narrower than
+    // the eye it holds leaves the lash margin and the lower lid sitting on flat
+    // forehead with no bowl under them, which is what makes an enlarged eye read
+    // as a sticker. Widened in dy only — the lateral extent was already right.
+    const sock = blob(dy - (eyeY + 0.048), 0.215, ax - 0.42, 0.235) * smoothstep(0.34, 0.86, dz);
     sz -= sock * 0.076;
     sy += sock * 0.010;
 
@@ -3628,7 +3651,29 @@ export function buildHead(b, rig, o, f) {
       const up = gauss(dy - FY(T_LIPUP - 0.004), 0.052) * mSpan * mFront;
       const lo = gauss(dy - FY(T_LIPLOW + 0.002), 0.050) * mSpan * mFront;
       const sm = gauss(dy - FY(T_MOUTH), 0.026) * mSpan * mFront;
-      sz += (up * 0.0040 + lo * 0.0044 - sm * 0.0062) / rz;
+      // ROUND 25 WAVE 2 — THE ROLLS COME DOWN, THE SEAM DOES NOT. 4.0 / 4.4 mm.
+      //
+      // The r25 audit's "surgical mask / bandage across the mouth and jaw" on
+      // the rank and file is drawn HERE, in the surface, which is why two
+      // separate passes at it failed: wave 1 halved the faceMap modelling terms
+      // and reported "no visible difference at all", and I softened every
+      // faceMasses bony border and pad to the lead's 0.34 projection and
+      // measured the same nothing. Neither touches a normal discontinuity, and
+      // a normal discontinuity is the only thing the composite's crease term
+      // can see. Counted off a resident `village` at 18x on the foreground
+      // shocktrooper, the lower face carries FOUR near-parallel inked strokes
+      // in 25 px — and every one of them is a crease cut into the skull right
+      // here and in section 7: upper roll, seam, lower roll, labiomental
+      // sulcus. vc-076.jpg draws ONE short mouth line and nothing else between
+      // the nose and the chin.
+      //
+      // So the two ROLLS drop to 55 %. They are what makes the mouth a groove
+      // between two masses at portrait range, and at 2.2 mm they still are —
+      // but 2.2 mm no longer turns the normal far enough for the crease term
+      // (smoothstep(0.78, 1.45, |dN|) over a 2-texel cross) to lay a line along
+      // each of them. The SEAM keeps its full 6.2 mm: it is the one mark the
+      // reference draws, and it is the mark round 6 measured as missing.
+      sz += (up * 0.0022 + lo * 0.0024 - sm * 0.0062) / rz;
       // The commissures: the mouth ENDS, and it ends in a dimple. A seam that
       // fades out is a scratch; a stop at each end is a mouth, and it is the
       // one part of it that survives a three-quarter view.
@@ -3671,7 +3716,17 @@ export function buildHead(b, rig, o, f) {
     sx += chin * 0.075 * clamp01(ax * 2.6 - 0.15);
     // Labiomental sulcus — the furrow between the lower lip and the button. It
     // has to be DEEPER than the button is proud is wide, or the two merge.
-    sz -= blob(dy - FY(T_MENTAL + 0.006), 0.048, dx, 0.300) * smoothstep(0.16, 0.62, dz) * 0.125;
+    //
+    // ROUND 25 WAVE 2 — 0.125 -> 0.062. On R[2] = 98 mm that furrow was 12 mm
+    // deep over a half-width of 0.048 in dy, i.e. the single hardest normal
+    // break on the whole lower face, sitting 8 mm under the mouth seam and
+    // running the full width of the chin. It is the fourth of the four parallel
+    // strokes the r25 audit reads as a bandage, and it is the one the reference
+    // never draws at all — vc-076 has a lit chin with no line above it. The
+    // chin still steps out: the button (+13 mm) and the 1/dz plane trick above
+    // are what cure round 6's "anatomically a muzzle", not this groove, and
+    // both are untouched. 6 mm still gives the button a shadow to sit over.
+    sz -= blob(dy - FY(T_MENTAL + 0.006), 0.048, dx, 0.300) * smoothstep(0.16, 0.62, dz) * 0.062;
 
     // --- 8. SUBMANDIBULAR UNDERCUT ----------------------------------------
     // The single most important thing separating a head from a neck. The plane
@@ -3717,6 +3772,25 @@ export function buildHead(b, rig, o, f) {
   /** Same, addressed by face fraction. */
   const faceT = (dx, t, lift = 0) => face(dx, FY(t), lift);
 
+  /**
+   * The front skin's z at a WORLD (x, y) on the face — i.e. "how far forward is
+   * the cheek right here". `face()` maps a direction to a point; this inverts
+   * it, by fixed point, because every clamp below is expressed in world space.
+   * Four iterations is convergence to well under a tenth of a millimetre: the
+   * displacement's gain is ~1, so the residual contracts by roughly its own
+   * gradient each pass. Costs eleven evaluations per head, at build time.
+   */
+  const frontZ = (wx, wy) => {
+    let dx = (wx - cx) / R[0], dy = (wy - cy) / R[1];
+    let p = face(dx, dy);
+    for (let i = 0; i < 4; i++) {
+      dx = clamp(dx + (wx - p[0]) / R[0], -0.96, 0.96);
+      dy = clamp(dy + (wy - p[1]) / R[1], -0.96, 0.96);
+      p = face(dx, dy);
+    }
+    return p[2];
+  };
+
   // --- NOSE ------------------------------------------------------------------
   // A MASS, not a blade. Round 3's nose was a 4 mm tube standing 12 mm off a
   // flat face with two detached spheres at the bottom, and in a front view it
@@ -3733,8 +3807,42 @@ export function buildHead(b, rig, o, f) {
     const base = faceT(0, T_SUBNAS);
     const w = 0.0074 * f.width;               // half-width unit
     const pj = 0.0118 * f.nose;               // projection unit
+
+    // THE PALE WEDGE WAS A DEPTH COINCIDENCE, NOT A DEFORMATION LIMIT.
+    //
+    // character.js used to carry a note saying an anime nose (f.nose 0.62) had
+    // been tried and "produced a degenerate wedge across the middle of the face
+    // - the mesh is only built to deform over the range makeAppearance rolls".
+    // That diagnosis was wrong and it cost the cast their proportions. The r25
+    // audit probed the built mesh: the skull displacement's clamp at
+    // clamp(sx,0.45,1.45) is hit by 0.00% of 25,600 sampled directions at every
+    // parameter set, including nose 0.62 / jaw 0.24. Nothing deforms degenerately.
+    //
+    // What actually happens is here: `pj` scales BOTH this tube's stand-off from
+    // the skin AND its radius, so lowering f.nose walks the tube backwards INTO
+    // the skull. Measured front-face protrusion past the skin, per station:
+    //     f.nose 0.80 (the shipped floor)   nasion +0.4 mm, alar base +0.1 mm
+    //     f.nose 0.62                       nasion -0.7 mm, alar base -0.6 mm
+    // Two coincident surfaces 0.1-0.7 mm apart z-fight, and this tube's colour is
+    // 5% toward white — so the artefact is a PALE wedge across the middle of the
+    // face. At the shipped 0.80 it was 0.1 mm from the same failure.
+    //
+    // So clamp it, the same way gearHead's MINK clamps a hat shell off the
+    // skull. Every station from the nasion down must stand PROUD by at least
+    // NOSE_MIN; the root is left alone because it is deliberately 9 mm inside
+    // the glabella, which is far outside the fighting band, and pushing it out
+    // would draw a bar across the brow. With this in place f.nose is free down
+    // to ~0.35 and an anime nose is a parameter, not a rebuild.
+    const NOSE_MIN = 0.0030;
+    const proud = (st, i0) => {
+      for (let i = i0; i < st.length; i++) {
+        const s = st[i];
+        s.p[2] = Math.max(s.p[2], frontZ(s.p[0], s.p[1]) + NOSE_MIN - s.rz);
+      }
+      return st;
+    };
     b.setColor(mixCol(o.skin, [0.92, 0.90, 0.88], 0.05)).setMottle(0.018);
-    b.addTube([
+    b.addTube(proud([
       { p: [0, root[1], root[2] - 0.0150], rx: w * 1.85, rz: 0.0060 },        // root, inside the glabella
       { p: [0, nasion[1], nasion[2] - 0.0045], rx: w * 1.10, rz: pj * 0.52 },  // nasion pinch
       { p: [0, supra[1], supra[2] + pj * 0.42], rx: w * 1.34, rz: pj * 0.76 },
@@ -3742,12 +3850,18 @@ export function buildHead(b, rig, o, f) {
       { p: [0, tipS[1] - 0.0032, tipS[2] + pj * 0.80], rx: w * 1.94, rz: pj * 0.94 },   // tip ball
       { p: [0, base[1] + 0.0026, base[2] + pj * 0.36], rx: w * 2.14, rz: pj * 0.54 },   // alar base
       { p: [0, base[1] - 0.0022, base[2] - 0.0035], rx: w * 1.72, rz: pj * 0.24 },
-    ], { seg: seg(12), capStart: 'round', capEnd: 'round' });
+    ], 1), { seg: seg(12), capStart: 'round', capEnd: 'round' });
     // Alae — folded round the tip, overlapping the tube rather than sitting
-    // outboard of it, so the whole thing is one continuous mass.
+    // outboard of it, so the whole thing is one continuous mass. Same clamp:
+    // these sit 10 mm off the midline where the skin has already turned back,
+    // so they z-fight at a HIGHER f.nose than the tube does.
     for (const side of [1, -1]) {
+      const ay = lerp(tipS[1], base[1], 0.70);
+      const ax = side * w * 1.36;
+      const az = Math.max(lerp(tipS[2], base[2], 0.46) + pj * 0.34,
+        frontZ(ax, ay) + NOSE_MIN - pj * 0.60);
       b.addEllipsoid({
-        center: [side * w * 1.36, lerp(tipS[1], base[1], 0.70), lerp(tipS[2], base[2], 0.46) + pj * 0.34],
+        center: [ax, ay, az],
         radius: [w * 0.94, 0.0062, pj * 0.60], seg: seg(9), rings: seg(6),
         displace: (dx, dy, dz) => [1, 1, 0.55 + 0.45 * clamp01(dz)],
       });
@@ -3758,8 +3872,10 @@ export function buildHead(b, rig, o, f) {
     if (!simple()) {
       b.setColor(mixCol(o.skin, [0.026, 0.018, 0.019], 0.66)).setMottle(0.008);
       for (const side of [1, -1]) {
+        const nx = side * w * 0.86, ny = base[1] + 0.0026;
         b.addEllipsoid({
-          center: [side * w * 0.86, base[1] + 0.0026, lerp(base[2], tipS[2], 0.34) + pj * 0.30],
+          center: [nx, ny, Math.max(lerp(base[2], tipS[2], 0.34) + pj * 0.30,
+            frontZ(nx, ny) + NOSE_MIN - pj * 0.28)],
           radius: [w * 0.48, 0.0028, pj * 0.28], seg: seg(7), rings: seg(4),
         });
       }
@@ -3803,7 +3919,18 @@ export function buildHead(b, rig, o, f) {
     const at = (z) => new THREE.Matrix4().compose(
       new THREE.Vector3(p[0] + fwd.x * z, p[1] + fwd.y * z, p[2] + fwd.z * z),
       q, new THREE.Vector3(1, 1, 1));
-    const eW = 0.0142 * eyeS, eH = 0.0060 * eyeS;
+    // THE FISSURE'S ASPECT IS THE WHOLE BALLGAME, and it was 0.42.
+    //
+    // Quoted against a LIFE eye (31 x 13 mm) for twenty rounds, which is right
+    // for a photograph and wrong for this game. Measured at 6x on
+    // docs/reference/vc-076.jpg (crop origin 1180,420): the dark almond is 61
+    // source px wide by 60 tall on a 230 px face — aspect 0.98, and 26.5% of
+    // face width by 26% of face width tall. Ours measured 33.4 x 14.1 mm on a
+    // 120.8 mm face: the right width and LESS THAN HALF the right height. No
+    // amount of work on the lash, the catchlight or the sclera can make a 0.42
+    // slot read as a drawn eye — that is why round 17's overlay pass, which is
+    // itself well built, never landed. 0.0135 puts the aspect at 0.95.
+    const eW = 0.0142 * eyeS, eH = 0.0135 * eyeS;
 
     // LAYER ORDER MATTERS AND IS EXPLICIT. Everything here is a shallow disc on
     // the same face normal, so if the sclera's own depth exceeds the iris's
@@ -3825,7 +3952,11 @@ export function buildHead(b, rig, o, f) {
     b.setColor(f.eyeColor).setMottle(0.016);
     b.setTransform(at(0.0022));
     b.addEllipsoid({
-      center: [-0.0007 * side, 0.0009, 0], radius: [0.0062 * eyeS, 0.0064 * eyeS, 0.0016],
+      // 0.0062 -> 0.0110. On the reference the iris spans 50 of the fissure's
+      // 61 px, i.e. 82% of its width, with the sclera surviving only as two
+      // corner crescents. At 0.0062 it was 44%, which is the proportion of a
+      // photographed adult eye and reads as a bead in a slot.
+      center: [-0.0007 * side, 0.0009, 0], radius: [0.0110 * eyeS, 0.0116 * eyeS, 0.0016],
       seg: seg(11), rings: seg(6),
       displace: (dx, dy, dz) => [1, 1, 0.34 + 0.66 * clamp01(dz)],
     });
@@ -3834,14 +3965,14 @@ export function buildHead(b, rig, o, f) {
       b.setColor(mixCol(f.eyeColor, [0.010, 0.009, 0.012], 0.74)).setMottle(0);
       b.setTransform(at(0.0021));
       b.addEllipsoid({
-        center: [-0.0007 * side, 0.0009, 0], radius: [0.0071 * eyeS, 0.0073 * eyeS, 0.0013],
+        center: [-0.0007 * side, 0.0009, 0], radius: [0.0122 * eyeS, 0.0128 * eyeS, 0.0013],
         seg: seg(11), rings: seg(4), phiMin: 0.36, phiMax: () => 0.64,
       });
       // Pupil.
       b.setColor(mixCol(f.eyeColor, [0.006, 0.006, 0.008], 0.88));
       b.setTransform(at(0.0031));
       b.addEllipsoid({
-        center: [-0.0007 * side, 0.0009, 0], radius: [0.0027 * eyeS, 0.0029 * eyeS, 0.0010],
+        center: [-0.0007 * side, 0.0009, 0], radius: [0.0046 * eyeS, 0.0050 * eyeS, 0.0010],
         seg: seg(8), rings: seg(5),
       });
     }
@@ -4144,6 +4275,38 @@ export function buildHead(b, rig, o, f) {
      * @param sock  weight of the tight eye-slot mark (0 on the drawn eye itself)
      * @param mark  weight of the tight landmark marks generally
      */
+    // A DRAWN FACE CARRIES FIVE MARKS. THIS MAP LAYS TWENTY.
+    //
+    // ROUND 25, and it is subtractive. In one pass this closure lays: eye slot,
+    // orbital socket, inner canthus, mouth lozenge, commissure, mental shadow,
+    // lower-lip light, nostril, brow bar, brow ridge light, hairline, ear whorl,
+    // temple, perioral chain, buccal hollow, subnasal, forehead light, crown,
+    // occiput shelf, under-jaw wedge, cheekbone division, side-plane falloff and
+    // a three-lobe blush. config.js `bands: 4` then quantises all of it into four
+    // levels, so the broad soft ones (the 0.215 socket at 0.150 x 0.240, the
+    // 0.090 temple, the 0.062 buccal) come out as hard-edged plateaus — and on
+    // the r24 `closeup` they fused into one mid-dark amoeba with a bright rim
+    // running ear-to-nose, which reads as a surgical mask over the lower face.
+    // The same shape appeared on the foreground shocktrooper in `village` under
+    // completely different lighting, so it is albedo plus quantiser, not shade.
+    //
+    // Against docs/reference/vc-076.jpg the reference face has FIVE marks and
+    // nothing else: two lash-and-iris eyes, two brow strokes, one 4 mm nose
+    // shadow, one short mouth line. No jaw line, no nasolabial, no ear whorl, no
+    // cheek wash. So for an authored lead — the only faces that ever get close
+    // to camera — `dm` switches the modelling half of the map off and leaves the
+    // landmarks and the two block-in terms that carry the head at distance. The
+    // rank and file keep the full map: it is the right map for a 40 px head.
+    const drawnFace = !!o.castName;
+    // 0 for a lead, 1 for everyone else — deliberately NOT a middle value.
+    // Halving these terms for the rank and file was tried this round and
+    // rendered a `village` frame with no visible difference at all on the
+    // foreground shocktrooper, whose lower face still carries the mask shape.
+    // That says the mask on a PROCEDURAL head is not (only) this map; the next
+    // suspect is faceMasses' three lower-face pads in character.js, which are
+    // softened for leads here but left at full strength for everyone else.
+    // Left at 1 rather than shipping an unmeasured constant.
+    const dm = drawnFace ? 0 : 1;
     const faceMap = (sock, mark) => (x, y, z) => {
       // RECOVER THE DIRECTION, INVERTING THE DISPLACEMENT.
       //
@@ -4182,7 +4345,7 @@ export function buildHead(b, rig, o, f) {
       k -= 0.430 * mark * sock * blob(dy - (eyeYv + 0.012), 0.062, ax - 0.42, 0.135) * fw;
       // ...with a shallower socket AROUND it, so the slot sits in a hollow
       // rather than being painted on a flat cheek.
-      k -= 0.215 * blob(dy - (eyeYv + 0.055), 0.150, ax - 0.42, 0.240) * fw;
+      k -= (drawnFace ? 0.085 : 0.215) * blob(dy - (eyeYv + 0.055), 0.150, ax - 0.42, 0.240) * fw;
       // the deep inner corner, beside the nose
       k -= 0.130 * mark * blob(dy - eyeYv, 0.090, ax - 0.17, 0.105) * fw;
       // THE MOUTH. A hard horizontal lozenge on the stomion, 60 mm wide and
@@ -4207,7 +4370,7 @@ export function buildHead(b, rig, o, f) {
       k -= 0.400 * mark * blob(dy - (mouthYv + 0.004), 0.078, ax - 0.335, 0.070) * smoothstep(0.16, 0.56, dz);
       // ...and the shadow the lower lip casts on the chin, which is what gives
       // the mouth a THIRD dimension instead of a drawn line.
-      k -= 0.150 * blob(dy - FY(T_MENTAL + 0.010), 0.055, dx, 0.245) * smoothstep(0.24, 0.70, dz);
+      k -= 0.150 * dm * blob(dy - FY(T_MENTAL + 0.010), 0.055, dx, 0.245) * smoothstep(0.24, 0.70, dz);
       // The lower lip itself CATCHES light — a mouth is a light-over-dark pair
       // exactly like a brow, and without the pale roll the seam reads as a cut.
       k += 0.105 * blob(dy - FY(T_LIPLOW + 0.004), 0.038, dx, 0.260) * mouthLoz * smoothstep(0.20, 0.62, dz);
@@ -4229,11 +4392,11 @@ export function buildHead(b, rig, o, f) {
       // EAR whorl: a dark on the side of the head at ear height, behind the
       // midline. Two pixels of it is the difference between a head and an egg in
       // profile.
-      k -= 0.220 * mark * blob(dy - FY(0.415), 0.115, ax - 0.93, 0.130) * clamp01(-dz + 0.35);
+      k -= 0.220 * mark * dm * blob(dy - FY(0.415), 0.115, ax - 0.93, 0.130) * clamp01(-dz + 0.35);
 
       // --- MODELLING. Half round 4's amplitude. ----------------------------
       // temple: a flat plane, not a bruise
-      k -= 0.090 * blob(dy - 0.30, 0.26, ax - 0.86, 0.220) * smoothstep(-0.7, 0.5, dz);
+      k -= 0.090 * dm * blob(dy - 0.30, 0.26, ax - 0.86, 0.220) * smoothstep(-0.7, 0.5, dz);
       // THE PERIORAL CHAIN — nasolabial fold, commissure, marionette line — as
       // ONE continuous dark running down the corner of the mouth rather than as
       // three unrelated blobs. This is the mark that makes the interior mouth
@@ -4251,7 +4414,7 @@ export function buildHead(b, rig, o, f) {
         // then tucks back in along the marionette
         const cx2 = 0.250 + 0.090 * smoothstep(FY(0.300), FY(0.170), dy)
           - 0.055 * smoothstep(FY(0.150), FY(0.080), dy);
-        k -= 0.245 * mark * dn * Math.exp(-Math.pow((ax - cx2) / 0.056, 2)) * smoothstep(0.20, 0.62, dz);
+        k -= 0.245 * mark * dm * dn * Math.exp(-Math.pow((ax - cx2) / 0.056, 2)) * smoothstep(0.20, 0.62, dz);
       }
       // Buccal hollow under the cheekbone, wide and shallow. ROUND 6 found an
       // 80x36 px cross-hatch cluster at (725,502) — meanL 114.8 / sd 15.84
@@ -4260,11 +4423,11 @@ export function buildHead(b, rig, o, f) {
       // so a wide 0.105 albedo dark on the masseter is enough to drop a fully
       // lit cheek into band 1 and turn the graphite on. Narrowed and halved: the
       // hollow is a modelling nudge, and the shading is what should carry it.
-      k -= 0.062 * blob(dy - FY(0.300), 0.115, ax - 0.50, 0.165) * front;
+      k -= 0.062 * dm * blob(dy - FY(0.300), 0.115, ax - 0.50, 0.165) * front;
       // under the nose: the plane between the alar base and the upper lip, which
       // is in shade under any key above the horizon and is what stops a nose
       // reading as a bump drawn on a flat mask.
-      k -= 0.155 * blob(dy - FY(T_SUBNAS - 0.030), 0.052, dx, 0.135) * smoothstep(0.30, 0.72, dz);
+      k -= 0.155 * dm * blob(dy - FY(T_SUBNAS - 0.030), 0.052, dx, 0.135) * smoothstep(0.30, 0.72, dz);
       // forehead is the most exposed plane on a head: it is always the palest
       k += 0.085 * blob(dy - 0.44, 0.230, dx, 0.560) * smoothstep(0.20, 0.80, dz);
       // crown, in shade under any headgear
@@ -4322,7 +4485,7 @@ export function buildHead(b, rig, o, f) {
       // have been: a whisper of local colour under the cheekbone, not the
       // cheekbone. The overall 1.150 lift is unchanged, so the face's mean
       // albedo does not move.
-      k *= 1.150 - 0.072 * smoothstep(FY(0.560), FY(0.300), dy) * (0.45 + 0.55 * front);
+      k *= 1.150 - 0.072 * dm * smoothstep(FY(0.560), FY(0.300), dy) * (0.45 + 0.55 * front);
       // ...and the side planes of the head turn away from the sky as well.
       k *= 1.0 - 0.085 * smoothstep(0.35, 0.92, ax);
 
@@ -4334,7 +4497,7 @@ export function buildHead(b, rig, o, f) {
       const blush = 0.55 * blob(dy - FY(0.430), 0.170, ax - 0.60, 0.24) * front
         + 0.70 * blob(dy - FY(T_NOSETIP), 0.110, dx, 0.20) * front
         + 0.45 * blob(dy - FY(0.470), 0.20, ax - 0.94, 0.16);
-      const bl = clamp01(blush);
+      const bl = clamp01(blush) * (drawnFace ? 0.35 : 1);
       return [k * (1 + bl * 0.034), k * (1 - bl * 0.014), k * (1 - bl * 0.026)];
     };
     b.paintRange(vHead0, vSkull1, faceMap(1, 1));            // skull: everything

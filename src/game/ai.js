@@ -181,6 +181,7 @@ export class EnemyAI {
     this._speed = 0;
     this._stuck = 0;
     this._repathed = false;
+    this._arrived = false;          // arrival actions are one-shot per sortie; see tickSettling()
     unit.beginAction();
     // Budget the sortie from the length of the walk, not a flat number — a scout crossing
     // sixty metres must not be cut off halfway by the watchdog.
@@ -349,8 +350,18 @@ export class EnemyAI {
     u.velocity.set(0, 0, 0);
     if (this._lastClip !== 'idle') { u.actor?.play?.(p?.crouch ? 'crouchIdle' : 'idle'); this._lastClip = 'idle'; }
 
-    // Capture / rescue / repair business that happens on arrival.
-    if (this.stateT < 0.05) this.doArrivalActions(u, p);
+    // Capture / rescue / repair business that happens on arrival — exactly once per sortie.
+    //
+    // This used to be `if (this.stateT < 0.05)`, which is a TIME window measured against a
+    // SPEED-SCALED accumulator: update() does `stateT += dt * this.speedScale` before it
+    // dispatches here, and speedScale is 6 in capture mode (ai.js:81). At 6x the very first
+    // settling frame already reads stateT = 0.1, so the window never opened and the AI could
+    // not capture a camp, throw a grenade, rescue a body or repair a tank at all. Measured:
+    // a 20-turn AI-vs-AI game at speedScale 6 replanned kind:'grenade' every activation for
+    // twenty turns because u.grenades never decremented; the same seed at speedScale 1 threw
+    // them. A one-shot flag has no timing dependency, so ENEMY_PACE sub-stepping cannot
+    // resurrect this.
+    if (!this._arrived) { this._arrived = true; this.doArrivalActions(u, p); }
 
     const target = p?.target;
     // Lost sight of him while we were walking? Then there is nothing to swivel onto. Holding

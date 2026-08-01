@@ -218,12 +218,24 @@ export const MISSION_VASEL = {
         { cls: 'lancer', name: 'Imperial Lanzentruppe' },
       ],
     },
-    // Gallian relief only arrives if you have actually taken ground.
+    // Gallian relief. This used to be `turn: 6, requiresCamp: 'imperial'` — dead content:
+    // battle.js spawnReinforcements() only fires it once camp 'imperial' is OWNED by team 0,
+    // but captureCamp() calls checkObjectives() on the same frame it flips the owner, and
+    // 'take-camp' is the win. The mission therefore always ended before any later startTurn()
+    // could reach the wave. Measured across two victory runs: both finished on 'take-camp' the
+    // instant the flag flipped, and Wavy and Nancy never existed.
+    //
+    // Now it is unconditional at turn 3 — the beat the intel line already promises, arriving
+    // one turn BEFORE the Imperial reserve platoon below. Both are capture-capable (shock and
+    // engineer), which is the whole point: the crossing is where capturers die, and the squad
+    // only fields four of them. They spawn just behind the start line (the road up from the
+    // staging post) rather than at the camp 40 m further back, so they are reinforcements
+    // rather than a second walk.
     {
-      turn: 6, team: 0, camp: 'imperial', requiresCamp: 'imperial', label: 'Squad 7 second section',
+      turn: 3, team: 0, camp: 'gallian', label: 'Squad 7 second section',
       units: [
-        { cls: 'shock', name: 'Wavy Cranston' },
-        { cls: 'engineer', name: 'Nancy Dufour' },
+        { cls: 'shock', name: 'Wavy Cranston', pos: [3, 37] },
+        { cls: 'engineer', name: 'Nancy Dufour', pos: [-4, 39] },
       ],
     },
   ],
@@ -239,8 +251,15 @@ export const MISSION_VASEL = {
       label: 'Stand on their flag: Scout, Trooper or Engineer' },
     { id: 'rout', type: 'rout', team: 1, win: true, label: 'Or destroy every Imperial in the sector' },
     { id: 'lose-tank', type: 'tankDestroyed', team: 0, fail: true, label: 'The Edelweiss must survive' },
-    { id: 'lose-camp', type: 'captureCamp', campId: 'gallian', team: 1, fail: true,
-      label: 'Do not let them take the staging post' },
+    // 'lose-camp' (the Imperials taking the Gallian staging post) is DELETED. It was
+    // unreachable and the panel advertised it as a live threat for twenty turns. pushRange[1]
+    // is 52 m (above) and ai.js `pickObjective()` refuses a camp beyond that reach; the
+    // staging post at (-2,62) is ~114 m from the Imperial line, so pickObjective() fell
+    // through to holdPoints[1] every single time. Three full 20-turn playthroughs: not one
+    // Imperial ever walked toward the Gallian camp. Making it real means a counter-attack
+    // doctrine the garrison is explicitly not written to have (aggression 0.5, "only
+    // counter-attacks locally"), so the honest fix is to stop advertising it. The remaining
+    // failures — the Edelweiss, the squad, the last capturer, the clock — are all live.
     { id: 'timeout', type: 'turnLimit', turns: 20, fail: true, label: 'Twenty turns' },
   ],
 

@@ -48,12 +48,80 @@ const _nav = { walkable: false, cost: 1, cover: 0, height: 0, material: 'grass',
 const _rayOut = { collider: null, distance: 0, point: new THREE.Vector3(), normal: new THREE.Vector3() };
 const _terrainHit = { point: new THREE.Vector3(), normal: new THREE.Vector3(), distance: 0 };
 
+/** The stage names `_buildSteps` yields, in order — only used to size progress. */
+const BUILD_STAGES = [
+  'Surveying the Vasel valley', 'Carving the riverbed', 'Hanging the sky',
+  'Raising the village', 'Stacking the sandbags', 'Sowing the wheat',
+  'Letting the river in', 'Marking the cover',
+];
+
 export class World {
   /**
    * @param {THREE.Scene} scene
    * @param {number} seed
+   * @param {{defer?: boolean}} [opts] `defer: true` builds nothing here — the
+   *   caller must then drive `runDeferredBuild()`. See `World.build()`.
    */
-  constructor(scene, seed = CFG.seed) {
+  constructor(scene, seed = CFG.seed, opts = {}) {
+    this._steps = this._buildSteps(scene, seed);
+    if (!opts.defer) { while (!this._steps.next().done) { /* drain */ } this._steps = null; }
+  }
+
+  /**
+   * Build the world in stages that YIELD TO THE EVENT LOOP between them.
+   *
+   * Why this exists. The constructor was one synchronous 1.7 s block (dev; ~2.0 s
+   * in a production build under load), and because it never yielded, the browser
+   * could not paint the loading card index.html puts up at first paint, and could
+   * not service a screenshot or a click either. A `page.screenshot()` issued at
+   * t = 500 ms did not come back until t = 5.2 s. The tab was FROZEN, not merely
+   * blank, for the first seconds of a published demo. That is a bounce, not a
+   * slow load.
+   *
+   * What is safe about it. The stages are the SAME calls in the SAME order from
+   * the SAME seed — `_buildSteps` is literally the old constructor body with
+   * `yield` statements punctuating it. Nothing in the world build reads a clock
+   * or `Math.random` (checked), so where the work happens on the timeline cannot
+   * change what it produces. The determinism contract in CLAUDE.md is about
+   * identical shot name => identical pixels, and it survives by construction —
+   * which is also why capture mode keeps using the plain synchronous
+   * constructor, so a cold render is bit-for-bit the code path it always was.
+   *
+   * @param {THREE.Scene} scene
+   * @param {number} seed
+   * @param {(name: string, frac: number) => void} [onStage] progress reporter,
+   *   called with the name of the stage ABOUT to run and how far through we are.
+   * @returns {Promise<World>}
+   */
+  static async build(scene, seed = CFG.seed, onStage = null) {
+    const w = new World(scene, seed, { defer: true });
+    await w.runDeferredBuild(onStage);
+    return w;
+  }
+
+  /** Drive a `{ defer: true }` construction to completion, one stage per frame. */
+  async runDeferredBuild(onStage = null) {
+    if (!this._steps) return this;
+    const total = BUILD_STAGES.length;
+    for (let i = 0; ; i++) {
+      const r = this._steps.next();
+      if (r.done) break;
+      if (onStage) onStage(r.value, (i + 1) / total);
+      // rAF *and then a task*: resuming off a bare rAF lands in the same frame's
+      // microtask checkpoint, i.e. still before the paint, which is no yield at
+      // all for the purpose of getting the loading card on screen.
+      await new Promise((res) => requestAnimationFrame(() => setTimeout(res, 0)));
+    }
+    this._steps = null;
+    return this;
+  }
+
+  /**
+   * The old constructor body, punctuated. Every `yield` names the stage that has
+   * just finished; the ordering comments at the top of this file are the reason
+   * the seams are where they are — each stage consumes the previous one's output.
+   */
+  *_buildSteps(scene, seed) {
     this.scene = scene;
     this.seed = seed;
     this.time = 0;
@@ -63,10 +131,14 @@ export class World {
     this.root.name = 'world';
     scene.add(this.root);
 
-    // --- layout + terrain
+    // --- layout
     this.layout = new MissionLayout(seed);
+    yield 'Surveying the Vasel valley';
+
+    // --- terrain
     this.terrain = new Terrain({ size: MAP_SIZE, seed, layout: this.layout });
     this.root.add(this.terrain.mesh);
+    yield 'Carving the riverbed';
 
     // --- sky and the key light. If src/render has already installed a dome,
     // do not stack a second one in front of it.
@@ -86,21 +158,28 @@ export class World {
     }
     this._fogK = -1;
     this._makeLights(scene);
+    yield 'Hanging the sky';
 
     // --- built environment
     this.structures = new Structures(this.root, this.terrain, this.layout, { seed });
+    yield 'Raising the village';
+
     this.props = new Props(this.root, this.terrain, this.layout, {
       seed,
       occupied: (x, z) => this.structures.occupied(x, z),
     });
+    yield 'Stacking the sandbags';
+
     this.vegetation = new Vegetation(this.root, this.terrain, this.layout, {
       seed,
       exclude: (x, z) => this.structures.occupied(x, z) || this.props.occupied(x, z),
     });
+    yield 'Sowing the wheat';
 
     // --- water last: it samples the finished bed
     this.water = new Water(this.layout, this.terrain, {});
     this.root.add(this.water.mesh);
+    yield 'Letting the river in';
 
     // --- broadphase
     this.colliders = [];
@@ -127,6 +206,7 @@ export class World {
     this._offExplosion = Bus.on('explosion', (p) => {
       if (p?.pos) this.damageArea(p.pos, p.radius ?? 5, p.power ?? 0);
     });
+    yield 'Marking the cover';
   }
 
   _addCollider(c) {

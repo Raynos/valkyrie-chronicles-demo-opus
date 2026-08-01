@@ -285,8 +285,14 @@ void main() {
   vec4 tx = texture2D(uMap, vUv);
   float a = max(tx.r, max(tx.g, tx.b)) * vAlpha;
   if (a < 0.004) discard;
-  // deliberately over 1.0 so the bloom chain blows it out to cream
-  gl_FragColor = vec4(vTint * a * 2.6, a * vcSoftFade(vViewZ, 0.35));
+  // Deliberately far over 1.0 so the core clips to paper white through tonemap
+  // and the bloom chain blows the surround out to cream. 2.6 was authored against
+  // exposure 1.06; at r24's 0.84 it landed the flash core at L 211 on a frame
+  // whose own p99 was 225 — a flash dimmer than sunlit stone. See muzzleFlash().
+  // Measured on a cold firefight plate: 2.6 gave a flash core of L 211 against
+  // the frame's own p99 of 225; 6.0 gave 230; 13.0 is what finally clips the core
+  // through the tonemap and the paper mix to the frame's own white point.
+  gl_FragColor = vec4(vTint * a * 13.0, a * vcSoftFade(vViewZ, 0.35));
 }
 `;
 
@@ -701,12 +707,20 @@ export class FxSystem {
    * @param {object|string|number} [weapon] payload `weapon`; a WEAPONS record,
    *   a ballistics profile name, or a bare scale. Scale 0 draws nothing.
    */
-  /** Which comic word a weapon shouts. See onomatopoeia(). */
+  /**
+   * Which comic word a weapon shouts. See onomatopoeia().
+   *
+   * Every entry must be a SOUND. r24 had the anti-tank lance shout "DOOM", which
+   * is a mood, not a noise — the reference's vocabulary is strictly percussive
+   * (RATTA / DAKKA / BAM / KA-BOOM). Short words also matter now that the sprite
+   * is half its old size: a five-letter word is the practical ceiling before the
+   * glyphs go sub-legible at the `firefight` framing.
+   */
   _weaponWord(weapon) {
     const k = String((weapon && (weapon.kind || weapon.type || weapon.id)) || weapon || '')
       .toLowerCase();
     if (k.includes('mg') || k.includes('machine') || k.includes('smg')) return 'RATTA';
-    if (k.includes('lance') || k.includes('rocket') || k.includes('at')) return 'DOOM';
+    if (k.includes('lance') || k.includes('rocket') || k.includes('at')) return 'BLAM';
     if (k.includes('snip')) return 'CRACK';
     if (k.includes('cannon') || k.includes('shell')) return 'BOOM';
     return 'BAM';
@@ -717,28 +731,53 @@ export class FxSystem {
     const W = this._weaponFx(weapon);
     const s = W.scale;
     if (!(s > 0)) return;                 // thrown / tool / repair: no muzzle
-    this.onomatopoeia(pos, this._weaponWord(weapon), { scale: 0.9 + s * 0.5 });
     const d = _v0.copy(dir || _up).normalize();
     const bore = W.bore;
+
+    // The word goes BESIDE the bore, on the axis perpendicular to the shot: on
+    // the bore it lands across whatever is being shot at, which is exactly how
+    // r24's "DOOM" ended up painted over a building in `action`.
+    _w0.crossVectors(d, _up);
+    if (_w0.lengthSq() < 1e-6) _w0.set(1, 0, 0);
+    _w0.normalize();
+    this.onomatopoeia(pos, this._weaponWord(weapon), {
+      // Calibrated on the plate, not in the abstract: r24's 0.9 + s*0.5 rendered
+      // "RATTA" 595 px wide (31% of a 1920 frame); 0.45 + s*0.25 rendered it 220
+      // px (11.5%); vc-108's is 278 px (14.5%). 0.55 + s*0.30 lands ~14%.
+      scale: 0.55 + s * 0.30, lateral: _w0,
+    });
 
     const i = this.flashPool.alloc();
     _c0.set(0xfff4d8);
     this._write(this.flashPool, i,
       pos.x + d.x * bore, pos.y + d.y * bore, pos.z + d.z * bore,
       d.x * 1.2 * s, d.y * 1.2 * s, d.z * 1.2 * s,
-      this._rand(0.055, 0.085) * (1 + 0.5 * (s - 1)),
+      // LIFE RAISED (r25) from 0.055-0.085. The word lives 0.62 s; at 70 ms the
+      // flash-to-word duty cycle was 1:9, so most frames that showed the word
+      // showed no flash at all — including the cold `firefight` plate, where you
+      // could not tell from the picture whether the hero's weapon had fired.
+      this._rand(0.10, 0.14) * (1 + 0.5 * (s - 1)),
       this._rand(0.26, 0.40) * s, 0, this.rng(), 0,
       _c0.r, _c0.g, _c0.b, 1);
 
-    // A second, smaller, hotter core. It is pure white at 2.6x in the fragment
-    // shader — comfortably over the 0.72 bloom threshold, so the centre always
-    // blows out to cream through the bloom chain instead of reading as a decal.
+    // A second, smaller, hotter core. The claim that used to live here — "pure
+    // white at 2.6x, comfortably over the 0.72 bloom threshold" — was written
+    // before r24 dropped exposure 1.06 -> 0.84 and added the drawing falloff, and
+    // it stopped being true. Measured on a cold `firefight` plate: the brightest
+    // pixel inside the lancer's flash was L 211 and inside the hero's L 217,
+    // against the SAME FRAME's p99 of 225 — i.e. the flash was dimmer than
+    // ordinary sunlit stone, which is why it read as a smudge of fog.
+    // vc-108's brightest combat highlight is 251.
+    //
+    // The fix is peak luminance, not area: the core keeps its 0.10-0.16 m radius
+    // and its 0.05 s life, and gains headroom in FLASH_FRAG (2.6 -> 6.0) so the
+    // hot centre clips through tonemap instead of landing mid-grey.
     const j = this.flashPool.alloc();
     _c0.set(0xffffff);
     this._write(this.flashPool, j,
       pos.x + d.x * bore * 1.8, pos.y + d.y * bore * 1.8, pos.z + d.z * bore * 1.8,
       d.x * 2.0 * s, d.y * 2.0 * s, d.z * 2.0 * s,
-      0.05, this._rand(0.10, 0.16) * s, 0, this.rng(), 0,
+      0.09, this._rand(0.10, 0.16) * s, 0, this.rng(), 0,
       _c0.r, _c0.g, _c0.b, 1);
 
     // propellant gas: pale, fast, gone in under a second
@@ -1139,6 +1178,25 @@ export class FxSystem {
   // It is a sprite, not a HUD element, on purpose: it has to sit in the scene at
   // the muzzle and be occluded and scaled by distance the way the real game's is.
   // Textures are cached per word, so the whole feature is a handful of canvases.
+  //
+  // ROUND 25 — TYPOGRAPHY. r24 set this in `900 150px Georgia` on one flat
+  // baseline, which at 3x reads as a carved stone sign or a film title card, not
+  // as a drawn comic word. Measured against vc-108: its letters are uniform-weight
+  // marker strokes with closed counters, EACH LETTER individually canted (R
+  // upright, A ~+8deg, T ~-6, T ~-12, A ~-20) so the word descends in an arc, and
+  // the contour is a true near-black. So: a heavy grotesque display face, drawn
+  // letter by letter with a deterministic per-letter cant and drop, contour
+  // #141014 (r24's #2b1d10 is already a mid-brown BEFORE the grade drains it).
+  //
+  // The fill is authored at full chroma (255,190,5 - sat 1.0) rather than r24's
+  // #f2c02c (sat 0.82). Measured on a cold `firefight` plate, the composite
+  // drains the word by ~0.28 of saturation (authored 0.82 -> rendered 0.54)
+  // because the sprite is excluded from the G-buffer prepass and therefore gets
+  // the BACKGROUND's haze and drawing-falloff terms applied over it. Until the
+  // words can be composited late (they cannot be from this file - the prepass
+  // skips `o.isSprite` unconditionally at canvasRenderPipeline.js:3341), the only
+  // lever here is to author at the ceiling so what survives is still saturated.
+  // vc-108 measures (255,194,8) at sat 0.97.
   _wordTexture(word) {
     this._wordCache = this._wordCache || new Map();
     const hit = this._wordCache.get(word);
@@ -1148,16 +1206,68 @@ export class FxSystem {
     cv.width = S * 2; cv.height = S;
     const g = cv.getContext('2d');
     g.clearRect(0, 0, cv.width, cv.height);
-    g.font = '900 150px Georgia, "Times New Roman", serif';
+    // Heavy grotesque, no serif modulation. Arial Black first because it is the
+    // widest and blackest of the system-safe faces and closest to a marker;
+    // Impact/Haettenschweiler are the narrow fallbacks.
+    const face = (px) =>
+      `900 ${px}px "Arial Black", Impact, Haettenschweiler, "Franklin Gothic Heavy", sans-serif`;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     g.lineJoin = 'round';
-    // The outline is drawn first and fat, so the letter keeps a dark contour at
-    // any distance - the same reason the rest of this renderer inks silhouettes.
-    g.strokeStyle = '#2b1d10'; g.lineWidth = 20;
-    g.strokeText(word, cv.width / 2, S / 2);
-    g.fillStyle = '#f2c02c';
-    g.fillText(word, cv.width / 2, S / 2);
+    g.lineCap = 'round';
+
+    const chars = String(word).split('');
+    // Fit the word inside the sheet, leaving room for the fat contour and for
+    // the outer letters' cant to swing out of the box.
+    let px = 150;
+    const track = 0.03;                      // extra tracking, in ems
+    const measure = () => {
+      g.font = face(px);
+      const adv = chars.map((ch) => g.measureText(ch).width);
+      return { adv, total: adv.reduce((a, b) => a + b, 0) + (chars.length - 1) * px * track };
+    };
+    let m = measure();
+    const maxW = cv.width - 92;
+    if (m.total > maxW) { px = Math.max(48, Math.floor(px * (maxW / m.total))); m = measure(); }
+
+    // Deterministic per-letter jitter. Same contract as the sprite rotation
+    // below: the capture harness demands identical pixels for identical input,
+    // so this is a hash of the word, never Math.random.
+    const hash = (i) => {
+      let h = 2166136261;
+      for (let k = 0; k < chars.length; k++) h = Math.imul(h ^ chars[k].charCodeAt(0), 16777619);
+      h = Math.imul(h ^ (i * 2654435761), 16777619);
+      return ((h >>> 8) & 0xffff) / 0xffff;
+    };
+
+    let x = (cv.width - m.total) / 2;
+    for (let i = 0; i < chars.length; i++) {
+      const t = chars.length > 1 ? i / (chars.length - 1) : 0;
+      const j = hash(i);
+      // Monotone cant plus a small jitter: the word leans progressively and
+      // descends, which is the hand-lettered arc vc-108 shows.
+      const deg = -19 * t + (j - 0.5) * 9;
+      const dy = 30 * t * t + (j - 0.5) * 7;
+      const sc = 0.94 + j * 0.13;
+      g.save();
+      g.translate(x + m.adv[i] / 2, S / 2 - 10 + dy);
+      g.rotate(deg * Math.PI / 180);
+      g.scale(sc, sc);
+      // Contour first and fat, so the letter keeps a dark edge at any distance —
+      // the same reason the rest of this renderer inks silhouettes.
+      // 0.17 em, not r24's 0.133. Measured on the rendered plate: at 0.135 em the
+      // contour's darkest core landed L 59 where vc-108's measures ~42, because a
+      // ~4 px line minified through anisotropy averages with the fill either side
+      // of it before the grade ever sees it. Fat also closes the counters, which
+      // is what the reference's marker lettering does.
+      g.strokeStyle = '#141014'; g.lineWidth = px * 0.17;
+      g.strokeText(chars[i], 0, 0);
+      g.fillStyle = '#ffbe05';
+      g.fillText(chars[i], 0, 0);
+      g.restore();
+      x += m.adv[i] + px * track;
+    }
+
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 4;
@@ -1165,12 +1275,21 @@ export class FxSystem {
     return tex;
   }
 
+  /**
+   * @param {THREE.Vector3} pos   muzzle point
+   * @param {string} word
+   * @param {object} [opts]  `scale` world half-height, `lateral` a unit vector to
+   *   push the word off the bore along, `max` how many words may coexist.
+   */
   onomatopoeia(pos, word = 'RATTA', opts = {}) {
     if (!this.enabled || typeof document === 'undefined') return;
     this._words = this._words || [];
-    // One at a time per burst: a machine gun firing 8 rounds must not stack 8
-    // copies of the same word on top of each other.
-    if (this._words.length >= (opts.max ?? 3)) return;
+    // ONE AT A TIME. r24 allowed three, and the `firefight` finale's eight
+    // muzzleFlash calls handed all three slots to arbitrary units: measured on a
+    // cold plate, "RATTA" spanned 595 px (31% of frame width) and "DOOM" another
+    // ~480, together burying the bridge, the burning village and both damage
+    // plates. vc-108, vc-104 and vc-066/068/070 every one show exactly ONE word.
+    if (this._words.length >= (opts.max ?? 1)) return;
     const tex = this._wordTexture(word);
     if (!tex) return;
     const mat = new THREE.SpriteMaterial({
@@ -1181,8 +1300,14 @@ export class FxSystem {
     });
     const sp = new THREE.Sprite(mat);
     sp.position.copy(pos);
-    sp.position.y += 0.35;
-    const scale = opts.scale ?? 1.35;
+    // BESIDE the muzzle, not across the target. r24 sat the word on the bore and
+    // only lifted it 0.35 m, so it landed over whatever was being shot at.
+    if (opts.lateral) sp.position.addScaledVector(opts.lateral, 0.62 * (opts.scale ?? 0.62) * 2);
+    sp.position.y += 0.30;
+    // HALVED against r24's 1.35. Measured: at 1.35 the word rendered 595 px wide
+    // on a 1920 plate (31%); vc-108's is 278 px (14.5%). The texture is 2:1, so
+    // the sprite is `scale*2` wide.
+    const scale = opts.scale ?? 0.62;
     sp.scale.set(scale * 2, scale, 1);
     sp.renderOrder = 12;
     this.scene.add(sp);
@@ -1251,6 +1376,7 @@ const _v3 = new THREE.Vector3();
 const _r0 = new THREE.Vector3();   // frame right
 const _r1 = new THREE.Vector3();   // frame up
 const _s0 = new THREE.Vector3();   // _spark only — never aliased by a caller
+const _w0 = new THREE.Vector3();   // onomatopoeia lateral — never aliased by a caller
 const _up = new THREE.Vector3(0, 1, 0);
 const _forward = new THREE.Vector3(0, 0, -1);
 const _c0 = new THREE.Color();

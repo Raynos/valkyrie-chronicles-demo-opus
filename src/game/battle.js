@@ -43,6 +43,25 @@ export const SQUAD_LOST = Object.freeze({
   id: 'squad-lost', type: 'squadLost', fail: true, label: 'The squad must not be wiped out',
 });
 
+/**
+ * The same rule as SQUAD_LOST, one notch earlier — because SQUAD_LOST was written too narrow.
+ *
+ * Round 25's playtest lost the two scouts, the engineer and the shocktrooper by turn 2. Largo
+ * (lancer) and Marina (sniper) both have `canCapture: false`, so infantryStanding(0) was still
+ * 2 and squadWiped() stayed false — and the mission ran turns 3 through 21 with the objective
+ * panel still promising twenty turns, then ended on 'timeout'. Nobody left could ever stand on
+ * the flag, and a downed capturer never comes back: rescue() sets `deployed = false` (units.js
+ * :931) and a bleed-out kills them outright.
+ *
+ * The theoretical escape is the 'rout' win — the Edelweiss alone killing every Imperial — so
+ * this only fires while Imperials are still on the field. In practice one tank against a
+ * garrison with a tankHunter lancer is not a win path, but the guard costs nothing and keeps
+ * the rule true rather than merely usually-true.
+ */
+export const NO_CAPTURERS = Object.freeze({
+  id: 'no-capturers', type: 'noCapturers', fail: true, label: 'Someone has to reach their flag',
+});
+
 // Beat between the last soldier falling and the results screen, so the fall reads.
 const WIPE_GRACE = 1.5;
 
@@ -146,6 +165,8 @@ export class Battle {
     this._transition = 0;
     this._pendingPhase = null;
     this._wipeT = 0;                  // seconds the squad has been wiped out (see update())
+    this._noCapT = 0;                 // seconds with no capture-capable soldier (NO_CAPTURERS)
+    this._sawCapturers = false;       // a capturer was on the field at least once
     this._actionCharge = null;        // what the current sortie cost (see refundEmptySortie())
 
     // NEAR MISSES SUPPRESS. Without this, "shoot the man covering the bridge" only worked if
@@ -325,7 +346,7 @@ export class Battle {
           const p = pts[i].clone ? pts[i].clone() : new THREE.Vector3(pts[i].x, pts[i].y, pts[i].z);
           out.push({ camp: this.camps[0]?.id ?? 'hq', index: i, pos: this.snapSlot(p.add(off), used) });
         }
-        return out;
+        return this.orderSlotsByDepth(out, off);
       }
     }
     for (const c of this.camps) {
@@ -339,7 +360,34 @@ export class Battle {
         out.push({ camp: c.id, index: out.length, pos: this.snapSlot(new THREE.Vector3(x, 0, z), used) });
       }
     }
-    return out;
+    return this.orderSlotsByDepth(out, off);
+  }
+
+  /**
+   * Front-to-back, along the axis the squad is actually attacking down.
+   *
+   * autoDeploy() sorts the roster by weightOf() so "the heavy classes get the low slot
+   * indices" (see its comment), but the slots themselves came out of world.deployPositions()
+   * in whatever order the sampler happened to produce, so the index meant nothing about
+   * depth. Measured on the shipped seed: Isara — engineer, 60 HP, the squishiest infantry in
+   * the squad — landed at (13.25, 17.75), the single most forward and most exposed slot, with
+   * Rosie (shocktrooper, 96 HP) 15 m BEHIND her. The start line read as random on the exact
+   * frame the opening cinematic ends on.
+   *
+   * The attack axis is startLineOffset(): the vector the whole squad was already slid along,
+   * i.e. the first leg of the real nav path from the staging post to the Imperial flag. Sort
+   * descending along it, so slot 0 is genuinely the closest to the enemy. Falls back to -Z
+   * (map north, the objective side) if the advance is zero.
+   */
+  orderSlotsByDepth(slots, off) {
+    if (slots.length < 2) return slots;
+    let fx = off?.x || 0, fz = off?.z || 0;
+    const len = Math.hypot(fx, fz);
+    if (len < 1e-4) { fx = 0; fz = -1; } else { fx /= len; fz /= len; }
+    slots.sort((a, b) => (b.pos.x * fx + b.pos.z * fz) - (a.pos.x * fx + a.pos.z * fz));
+    // Re-index so `index` still identifies the slot — deploy() dedupes on it.
+    for (let i = 0; i < slots.length; i++) slots[i].index = i;
+    return slots;
   }
 
   /**
@@ -872,6 +920,18 @@ export class Battle {
         id: SQUAD_LOST.id, type: SQUAD_LOST.type, fail: true, done: standing === 0,
         label: total ? `Keep the squad alive — ${standing} of ${total} standing` : SQUAD_LOST.label,
       });
+      // The capture-capable count, shown only ONCE YOU HAVE LOST ONE. At full strength it is
+      // redundant with the take-camp line above and just costs a panel row; the moment a
+      // scout goes down it is the most important number on the screen, because at zero the
+      // mission is over. See NO_CAPTURERS.
+      const capStand = this.capturersStanding(0);
+      const capTotal = this.capturersTotal(0);
+      if (capTotal && capStand < capTotal) {
+        out.push({
+          id: NO_CAPTURERS.id, type: NO_CAPTURERS.type, fail: true, done: capStand === 0,
+          label: `Keep someone who can take the flag — ${capStand} of ${capTotal} able`,
+        });
+      }
     }
     Bus.emit('ui:objectives', { objectives: out });
   }
@@ -970,6 +1030,8 @@ export class Battle {
     // The squad resolves before anything a mission declares: with no infantry on the field
     // there is no win condition left to reach. See SQUAD_LOST.
     if (this.squadWiped()) { this.finish(false, SQUAD_LOST); return true; }
+    // ...and one notch earlier, the last soldier who could stand on the flag. See NO_CAPTURERS.
+    if (this.captureLost()) { this.finish(false, NO_CAPTURERS); return true; }
     // Failure conditions resolve first: losing the Edelweiss ends the mission even if you
     // stepped into their camp on the same frame.
     for (const o of M.objectives) {
@@ -1041,6 +1103,40 @@ export class Battle {
     if (this.turn < 1 || this.phase === 'briefing' || this.phase === 'deploy') return false;
     if (this.infantryStanding(0) > 0) return false;
     return this._sawInfantry === true;      // never fire before anybody deployed
+  }
+
+  /** Soldiers of `team` still standing who could actually plant a flag. See NO_CAPTURERS. */
+  capturersStanding(team = 0) {
+    let n = 0;
+    for (const u of this.units) {
+      if (u.team === team && u.active && !u.isVehicle && u.classDef?.canCapture) n++;
+    }
+    return n;
+  }
+
+  /** Same, but "was ever on the field" — for the "N of M" readout. */
+  capturersTotal(team = 0) {
+    let n = 0;
+    for (const u of this.units) {
+      if (u.team === team && u.deployed && !u.isVehicle && u.classDef?.canCapture) n++;
+    }
+    return n;
+  }
+
+  /**
+   * The capture win is gone for good and the rout win is not available. See NO_CAPTURERS.
+   * Only meaningful for a mission whose win condition IS a capture; a rout-only mission is
+   * unaffected.
+   */
+  captureLost() {
+    if (this.turn < 1 || this.phase === 'briefing' || this.phase === 'deploy') return false;
+    if (!this._sawCapturers) return false;                 // never fire before anybody deployed
+    if (this.capturersStanding(0) > 0) return false;
+    const M = this.mission;
+    if (!M?.objectives?.some((o) => o.type === 'captureCamp' && !o.fail)) return false;
+    // Rout is still on the table while any Imperial breathes; if none do, the rout win fires
+    // this same frame and it is a VICTORY, not this.
+    return this.units.some((u) => u.team === 1 && u.alive && u.deployed);
   }
 
   finish(victory, objective) {
@@ -1139,6 +1235,31 @@ export class Battle {
       if (u !== this.activeUnit) u.syncActor();
     }
 
+    // THE FLAG MUST FLIP UNDER THE MAN, NOT ONE SORTIE LATER.
+    //
+    // updateCamps() ran in exactly three places — setup(), startTurn() and onUnitActionEnd()
+    // — and nowhere in this loop. So the mission's primary win condition was sampled only at
+    // the END of a sortie: a soldier could walk onto the Imperial pole, stand on it, watch the
+    // objective panel not change and the ring not fill, and conclude the capture was broken.
+    // He would then usually walk off it again looking for whatever he had missed. MEASURED
+    // headless: Alicia placed exactly on camp 'imperial' pos, 400 frames of battle.update(),
+    // camp.owner still 1 and battle.over still false; the same state with one updateCamps()
+    // call flips the camp and finishes the mission on the frame it is called.
+    //
+    // Throttled at 0.1 s because it is O(camps x units) — 2 x ~24 distance tests here — and
+    // nothing it publishes wants 60 Hz. publishCampState() is already keyed so an unchanged
+    // camp emits nothing, and captureCamp() no-ops once the owner matches, so the extra calls
+    // are free when nothing is happening.
+    //
+    // Capture renders are excluded deliberately: a posed shot may stand any unit anywhere, and
+    // a camp flipping inside a screenshot would fire checkObjectives() (ending the battle) and
+    // emit ui:alert into the plate. Shots get the old three-call cadence, which is what every
+    // existing plate was authored against.
+    if (!CFG.capture && (this.phase === 'action' || this.phase === 'enemy')) {
+      this._campT = (this._campT || 0) + dt;
+      if (this._campT >= 0.1) { this._campT = 0; this.updateCamps(); }
+    }
+
     if (this.phase === 'action') {
       this.actionMode?.update(dt, gdt);
       this.interception.update(gdt);
@@ -1182,6 +1303,16 @@ export class Battle {
         }
         this._wipeT += dt;
         if (this._wipeT >= WIPE_GRACE) this.finish(false, SQUAD_LOST);
+      }
+      // Same watcher, one notch earlier: the last soldier who could take the flag. Largo and
+      // Marina still standing is not a win path. See NO_CAPTURERS.
+      if (this.capturersStanding(0) > 0) { this._sawCapturers = true; this._noCapT = 0; }
+      else if (!this.over && this.captureLost()) {
+        if (this._noCapT === 0) {
+          Bus.emit('ui:alert', { text: 'NO ONE LEFT TO TAKE THE FLAG', sub: 'scouts, troopers and engineers are all down' });
+        }
+        this._noCapT += dt;
+        if (this._noCapT >= WIPE_GRACE) this.finish(false, NO_CAPTURERS);
       }
     }
   }
