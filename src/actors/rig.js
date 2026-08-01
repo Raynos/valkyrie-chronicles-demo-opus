@@ -2883,16 +2883,41 @@ function buildHands(b, rig, o) {
       const base = at(0.00), bDir = at(0.06);
       const back = [base[0] - (bDir[0] - base[0]) * 2.3, base[1] - (bDir[1] - base[1]) * 2.3,
                     base[2] - (bDir[2] - base[2]) * 2.3];
+      // ROUND 25 WAVE 3 — THE MERGE ONLY REACHED THE KNUCKLES, AND THE FORE HAND
+      // IS THE END THE CAMERA SEES. Wave 2 made the radii sum past the pitch and
+      // verified it on the TRIGGER hand, which presents its metacarpal heads and
+      // proximal shafts (0.0122 x 1.24 and x 1.12 — 30 and 27 mm across a 22 mm
+      // pitch) and duly reads as one mass with four grooves. The support hand on
+      // the foregrip presents the opposite end: only the DISTAL phalanges and
+      // tips clear the wood, and at 0.84 / 0.50 those were 20.5 and 12.2 mm on
+      // the same 22 mm pitch — a 1.5 mm and a 9.8 mm gap. So the r25 `closeup`
+      // has a correctly merged fist on the trigger and, 200 px above it, four
+      // detached pale beans plus a thumb lying on the foregrip, each carrying its
+      // own full-weight contour. Third recurrence of "fix every instance, verify
+      // the one you did not fix".
+      //
+      // Every station from the PIP waist to the distal phalanx now sums past the
+      // pitch for its own neighbour pair — worst case ring+little at the DIP
+      // waist, (0.0118 + 0.0106) * 0.98 = 22.0 mm against 22.0 — so the four
+      // interpenetrate all the way down and carry ONE silhouette. Only the last
+      // station stays under (0.82: index+middle 20.2 mm, a 1.8 mm notch), which
+      // is what keeps the end of the mitt scalloped instead of blunt. The
+      // knuckle-side stations are untouched: this cannot undo the trigger hand.
       b.addTube([
         { p: back, rx: r0 * 0.86, rz: r0 * 0.80 },       // sunk INTO the palm
         { p: at(0.00), rx: r0 * 1.10, rz: r0 * 1.00 },
         { p: at(0.11), rx: r0 * 1.24, rz: r0 * 1.10 },   // metacarpal head — welded
         { p: at(0.30), rx: r0 * 1.12, rz: r0 * 1.00 },   // proximal shaft
-        { p: at(0.47), rx: r0 * 0.80, rz: r0 * 0.74 },   // waist at the PIP
-        { p: at(0.62), rx: r0 * 0.98, rz: r0 * 0.90 },   // middle phalanx
-        { p: at(0.84), rx: r0 * 0.74, rz: r0 * 0.70 },   // waist at the DIP
-        { p: at(1.00), rx: r0 * 0.84, rz: r0 * 0.78 },   // distal phalanx
-        { p: at(1.16), rx: r0 * 0.50, rz: r0 * 0.46 },   // tip, clear of the stock
+        // rz stays at the ~0.92 of rx the whole chain has always run at: the
+        // tube's section axes come out of a parallel-transport frame, not out of
+        // world x/z, so which of the two faces the neighbouring finger changes
+        // down the curl. Raising only one axis would merge the fingers from some
+        // angles and not others, which is the bug being fixed.
+        { p: at(0.47), rx: r0 * 1.02, rz: r0 * 0.94 },   // waist at the PIP
+        { p: at(0.62), rx: r0 * 1.08, rz: r0 * 1.00 },   // middle phalanx
+        { p: at(0.84), rx: r0 * 0.98, rz: r0 * 0.90 },   // waist at the DIP
+        { p: at(1.00), rx: r0 * 1.02, rz: r0 * 0.94 },   // distal phalanx
+        { p: at(1.16), rx: r0 * 0.82, rz: r0 * 0.75 },   // tip, clear of the stock
       ], { seg: seg(8), capStart: 'none', capEnd: 'round' });
     }
     // THE PAINTED VALLEY. Geometry buys finger separation down to about ten
@@ -3459,7 +3484,11 @@ export function buildHead(b, rig, o, f) {
     // the eye it holds leaves the lash margin and the lower lid sitting on flat
     // forehead with no bowl under them, which is what makes an enlarged eye read
     // as a sticker. Widened in dy only — the lateral extent was already right.
-    const sock = blob(dy - (eyeY + 0.048), 0.215, ax - 0.42, 0.235) * smoothstep(0.34, 0.86, dz);
+    // r25 wave 3: 0.215 -> 0.190 with the fissure, which came back from 31.4 mm
+    // tall to 27.7. A socket sized for the overshot eye is a bowl the eye no
+    // longer fills, and its rim is one more broad soft term for the 4-band
+    // quantiser to harden into a plateau across the mid-face.
+    const sock = blob(dy - (eyeY + 0.048), 0.190, ax - 0.42, 0.235) * smoothstep(0.34, 0.86, dz);
     sz -= sock * 0.076;
     sy += sock * 0.010;
 
@@ -3930,7 +3959,22 @@ export function buildHead(b, rig, o, f) {
     // amount of work on the lash, the catchlight or the sclera can make a 0.42
     // slot read as a drawn eye — that is why round 17's overlay pass, which is
     // itself well built, never landed. 0.0135 puts the aspect at 0.95.
-    const eW = 0.0142 * eyeS, eH = 0.0135 * eyeS;
+    //
+    // ROUND 25 WAVE 3 — THE ASPECT WAS RIGHT AND THE ABSOLUTE SIZE OVERSHOT.
+    // Wave 1 took eH 0.0060 -> 0.0135 while leaving eW at 0.0142, so the fissure
+    // grew in one axis only and ended up 33.4 x 31.4 mm on a 120.8 mm face —
+    // 27.6% of face width by 26.0% tall against the reference's 26.5 x 26.0. The
+    // proportions arrived; the eye ASSEMBLY under it did not shrink with them, so
+    // on a lead it read as a bulging wet lens proud of a flat mask ("an injury"),
+    // and on procedural militia — who still carried the full modelling map — it
+    // compounded with the crease blobs into what reads as scarring at 90 px.
+    // Both axes now come back ~8%, keeping the aspect at 0.908 (the ballgame) and
+    // putting Alicia's fissure at 30.6 x 27.7 mm, i.e. 25.3% x 22.9% of face
+    // width: inside the reference's width and a shade under its height, which is
+    // the "between the old and the new" the audit asked for. Every disc in the
+    // assembly below is scaled by the same two ratios so the layer stand-offs —
+    // which are correct and were expensive to find — keep their proportions.
+    const eW = 0.0130 * eyeS, eH = 0.0118 * eyeS;
 
     // LAYER ORDER MATTERS AND IS EXPLICIT. Everything here is a shallow disc on
     // the same face normal, so if the sclera's own depth exceeds the iris's
@@ -3956,7 +4000,9 @@ export function buildHead(b, rig, o, f) {
       // 61 px, i.e. 82% of its width, with the sclera surviving only as two
       // corner crescents. At 0.0062 it was 44%, which is the proportion of a
       // photographed adult eye and reads as a bead in a slot.
-      center: [-0.0007 * side, 0.0009, 0], radius: [0.0110 * eyeS, 0.0116 * eyeS, 0.0016],
+      // r25 wave 3: 0.0110/0.0116 -> 0.0101/0.0102, the same 0.915 / 0.874 the
+      // fissure came back by, so the iris stays 78% of the fissure width.
+      center: [-0.0007 * side, 0.0009, 0], radius: [0.0101 * eyeS, 0.0102 * eyeS, 0.0016],
       seg: seg(11), rings: seg(6),
       displace: (dx, dy, dz) => [1, 1, 0.34 + 0.66 * clamp01(dz)],
     });
@@ -3965,14 +4011,14 @@ export function buildHead(b, rig, o, f) {
       b.setColor(mixCol(f.eyeColor, [0.010, 0.009, 0.012], 0.74)).setMottle(0);
       b.setTransform(at(0.0021));
       b.addEllipsoid({
-        center: [-0.0007 * side, 0.0009, 0], radius: [0.0122 * eyeS, 0.0128 * eyeS, 0.0013],
+        center: [-0.0007 * side, 0.0009, 0], radius: [0.0112 * eyeS, 0.0112 * eyeS, 0.0013],
         seg: seg(11), rings: seg(4), phiMin: 0.36, phiMax: () => 0.64,
       });
       // Pupil.
       b.setColor(mixCol(f.eyeColor, [0.006, 0.006, 0.008], 0.88));
       b.setTransform(at(0.0031));
       b.addEllipsoid({
-        center: [-0.0007 * side, 0.0009, 0], radius: [0.0046 * eyeS, 0.0050 * eyeS, 0.0010],
+        center: [-0.0007 * side, 0.0009, 0], radius: [0.0042 * eyeS, 0.0044 * eyeS, 0.0010],
         seg: seg(8), rings: seg(5),
       });
     }
@@ -4306,7 +4352,21 @@ export function buildHead(b, rig, o, f) {
     // suspect is faceMasses' three lower-face pads in character.js, which are
     // softened for leads here but left at full strength for everyone else.
     // Left at 1 rather than shipping an unmeasured constant.
-    const dm = drawnFace ? 0 : 1;
+    // ROUND 25 WAVE 3 — THE GATE IS NOW UNCONDITIONAL. Wave 1 shipped
+    // `drawnFace ? 0 : 1` and left the rank and file on the full map, on the
+    // argument above that it is "the right map for a 40 px head". It is not the
+    // map for a 90 px head, which is what `village` actually puts in the
+    // foreground: with the enlarged eye landing in the same pass, the procedural
+    // militia came out with a face criss-crossed by brown incisions that reads as
+    // SCARRING — the two changes compounding, exactly as wave 1's own note
+    // predicted it could not rule out. The landmarks (eye slot, inner canthus,
+    // mouth lozenge, commissure, nostril, brow bar and its ridge light, hairline)
+    // are all outside `dm` and still carry a distant head; what goes is the
+    // modelling half — temple, perioral chain, buccal hollow, subnasal, mental
+    // shadow, cheekbone division and the side-plane falloff — which is the
+    // subtractive half of the five-marks-not-twenty finding and applies to every
+    // face in the game, not just the four with names.
+    const dm = 0;
     const faceMap = (sock, mark) => (x, y, z) => {
       // RECOVER THE DIRECTION, INVERTING THE DISPLACEMENT.
       //

@@ -29,7 +29,7 @@ import {
   icon, ribbon, cpToken, classBadge, bookmark, cornerFlourish, frameRule,
   aimBrackets, crosshair, accuracyRing, bodyFigure, ammoPip, terrainSketch,
   wobblyPath, hatchPath, splatPath, roughRect, inkRule, compassRose, mapScaleBar,
-  unitBlip, keyCap, inkGauge, marchLine, rankChevrons, marginBracket, contourMap,
+  unitBlip, keyCap, inkGauge, hpTone, marchLine, rankChevrons, marginBracket, contourMap,
   dialGauge, compassPip, compassTick, viewWedge,
 } from './icons.js';
 import { AudioEngine } from '../audio/engine.js';
@@ -37,7 +37,7 @@ import { portraitFor } from './portraits.js';
 import { WorldLabels } from './worldLabels.js';
 import {
   ChapterCard, BriefingScreen, DeploymentScreen, ResultsScreen, PauseMenu, DialogueBar,
-  ribbonButton,
+  ribbonButton, fitLine,
 } from './screens.js';
 
 const CLASS_NAME = {
@@ -52,7 +52,7 @@ const CLASS_NAME = {
 // full sentence stays as the card's tooltip.
 const DEFAULT_ORDERS = [
   { id: 'caution', name: 'Caution', cost: 1, icon: 'shield', short: 'Evades fire, two turns.', desc: 'One soldier evades and shrugs off fire for two turns.' },
-  { id: 'resupply', name: 'Resupply', cost: 2, icon: 'ammo', short: 'Ammunition and ragnaid.', desc: 'Restore ammunition and ragnaid to one unit.' },
+  { id: 'resupply', name: 'Resupply', cost: 2, icon: 'ammo', short: 'Ammunition and Ragnaid.', desc: 'Restore ammunition and Ragnaid to one unit.' },
   { id: 'attackBoost', name: 'Attack Boost', cost: 2, icon: 'shock', short: 'Damage and aim raised.', desc: 'Raise one soldier’s damage and accuracy.' },
   { id: 'demolitionBoost', name: 'Demolition Boost', cost: 2, icon: 'lancer', short: 'Anti-armour raised.', desc: 'Anti-armour damage raised by seven tenths.' },
   { id: 'enemyRecon', name: 'Enemy Recon', cost: 2, icon: 'eye', short: 'Every position revealed.', desc: 'Reveal every enemy position on the map.' },
@@ -92,7 +92,15 @@ function prettyId(id) {
  */
 function normObjectives(list) {
   if (!Array.isArray(list) || !list.length) return null;
-  const out = list.map((o) => {
+  // The turn limit is a CLOCK, not an objective. Printed in the objective card
+  // it read "Twenty turns" in words while the turn tab across the frame read
+  // "03" in numerals, so a player had to subtract across two panels and two
+  // registers. It is lifted out here and shown on the tab as "/ 20".
+  let limit = 0;
+  for (const o of list) {
+    if (o && (o.type === 'turnLimit' || o.id === 'timeout') && o.turns > 0) limit = o.turns | 0;
+  }
+  const out = list.filter((o) => !(o && (o.type === 'turnLimit' || o.id === 'timeout'))).map((o) => {
     const type = OBJ_TYPE[o.type] || (OBJ_ICON[o.type] ? o.type : 'capture');
     return {
       type,
@@ -104,7 +112,9 @@ function normObjectives(list) {
   if (!out.length) return null;
   // Win conditions first, failure conditions beneath them as fine print.
   out.sort((a, b) => (a.sub === b.sub ? 0 : a.sub ? 1 : -1));
-  return out.slice(0, 5);
+  const kept = out.slice(0, 5);
+  kept.turnLimit = limit;                 // read by _syncTurnLimit()
+  return kept;
 }
 
 // Degrees of tick tape generated for the compass: three revolutions, so the
@@ -344,6 +354,7 @@ export class HUD {
     this._setPhase(this.phase, true);
     this._renderCp();
     this.turnNum.textContent = pad(this.turn);
+    this._syncTurnLimit();
     this._onResize = () => { this.labels.resize(); this._mapW = 0; this._compassW = 0; };
     addEventListener('resize', this._onResize);
 
@@ -574,6 +585,12 @@ export class HUD {
     tP.content.appendChild(label('Turn'));
     this.turnNum = h('b', { class: 'vc-num', text: '01' });
     tP.content.appendChild(this.turnNum);
+    // THE CLOCK BELONGS TO THE CLOCK. The turn limit was printed as the words
+    // "Twenty turns" on the objective card at the far side of the frame, so a
+    // player counting down had to read two panels and convert between a numeral
+    // and a word. The tab that carries the turn now carries the limit with it.
+    this.turnMaxEl = h('span', { class: 'vc-turn-max vc-label' });
+    tP.content.appendChild(this.turnMaxEl);
     this.turnTeam = h('div', { class: 'vc-label vc-tight', text: 'Gallian' });
     tP.content.appendChild(this.turnTeam);
     top.appendChild(tP.root);
@@ -696,14 +713,23 @@ export class HUD {
     // The hand advances by slightly MORE than a card width. Overlapping cards
     // look like a hand, but they also crop the next card's title — round 2's
     // deck read "RECT COMMAND" — and an unreadable order is not an order.
-    const step = Math.min(5.4, 30 / n);        // degrees of cock per card
+    // THE HAND IS DEALT, NOT THROWN.
+    //
+    // At 5.4 deg of cock per card the outermost card leaned 12.5 deg, and the
+    // pivot is 240% of a card height BELOW the card (see .vc-card in style.js),
+    // so that lean swung the leftmost card roughly 5 em to the left — straight
+    // under the roster column, where its left third was occluded by a unit card.
+    // The same fan spread the six titles over ~100 px of baseline, which reads
+    // as scatter rather than as a hand. Clamped to 2 deg and a third of the lift
+    // the row still arcs, still overlaps, and stays inside its own gutter.
+    const step = Math.min(2.0, 11 / n);        // degrees of cock per card
     const pitch = Math.min(7.3, 44 / n);       // em of hand advance per card
     this.orders.forEach((o, i) => {
       const p = panel({ seed: 900 + i * 37, cls: 'vc-card', tilt: 0, under: false, amp: 1.1, soft: true });
       p.root.style.setProperty('--fx', ((i - mid) * pitch).toFixed(2) + 'em');
       p.root.style.setProperty('--fan', ((i - mid) * step).toFixed(2) + 'deg');
       // The middle of the hand stands proudest, as a fan of cards does.
-      p.root.style.setProperty('--lift', (-(mid - Math.abs(i - mid)) * 0.55).toFixed(2) + 'em');
+      p.root.style.setProperty('--lift', (-(mid - Math.abs(i - mid)) * 0.19).toFixed(2) + 'em');
       p.root.style.zIndex = String(10 + (i <= mid ? i : n - 1 - i));
       p.root.style.animationDelay = (i * 0.045).toFixed(3) + 's';
       const in_ = h('div', { class: 'vc-card-in' });
@@ -810,7 +836,11 @@ export class HUD {
     // Name plate + class badge, on its own torn slip of paper. Set naked over
     // the frame the serif ink had no ground to sit on and the class line was
     // unreadable against dark terrain.
-    const npP = panel({ seed: 823, cls: 'vc-name', tilt: 0.5, soft: true });
+    // amp 2.2, not the 0.9 default: deckleClip's amplitude is a PERCENTAGE of the
+    // box, so the same number tears a 26em action-point card visibly and a 14em
+    // name slip not at all — which is why r25 read the name plate as a hard-edged
+    // rectangle sitting on a deckled one. Scaled by the width ratio it matches.
+    const npP = panel({ seed: 823, cls: 'vc-name', tilt: 0.5, soft: true, amp: 2.2 });
     const np = h('div', { class: 'vc-name-in' });
     this.badgeEl = h('div', { class: 'vc-badge' });
     np.appendChild(this.badgeEl);
@@ -827,6 +857,28 @@ export class HUD {
     // AP meter
     const apP = panel({ seed: 821, cls: 'vc-ap', tilt: 0.25 });
     this.apPanel = apP.root;
+
+    // HOW HURT YOU ARE, ON THE SHEET THAT IS ABOUT YOU.
+    //
+    // Until r25 the acting soldier's slip carried her name, her class, her action
+    // points and her magazine — and nothing at all about her health. The player
+    // could read an ENEMY's health off the dossier 300 px away but not her own,
+    // so "can I cross that square" had no number behind it. The reference's own
+    // bottom-right unit panel always carries HP with a numeral (00220 / 00230).
+    // Same widget, same pigment ramp, same numeral style as the roster cards —
+    // composition, not new machinery.
+    const hpHead = h('div', { class: 'vc-ap-head vc-hp-head' });
+    hpHead.appendChild(label('Health'));
+    this.hpNum = h('b', { class: 'vc-num', text: '0' });
+    hpHead.appendChild(this.hpNum);
+    this.hpMaxEl = h('span', { class: 'vc-label', text: '/ 0' });
+    hpHead.appendChild(this.hpMaxEl);
+    apP.content.appendChild(hpHead);
+    const hpMeter = h('div', { class: 'vc-ap-meter vc-hp-meter' });
+    this.hpGauge = inkGauge({ w: 460, h: 15, seed: 89, segs: 8, tone: 'hp' });
+    hpMeter.appendChild(this.hpGauge);
+    apP.content.appendChild(hpMeter);
+
     const head = h('div', { class: 'vc-ap-head' });
     head.appendChild(label('Action Points'));
     this.apNum = h('b', { class: 'vc-num', text: '0' });
@@ -850,11 +902,24 @@ export class HUD {
     // ammo
     const amP = panel({ seed: 822, cls: 'vc-ammo', tilt: -0.3 });
     this.ammoPanel = amP.root;
-    amP.content.appendChild(label('Ammunition'));
+    // THE DEAD HALF OF THE CARD NOW CARRIES THE WEAPON.
+    //
+    // Every reading on this slip was right-aligned into a 14.5em box, so its
+    // left ~45% was blank paper in every action and aim frame — the one panel
+    // the reference is most recognisable by, drawn half empty. vc-088 and
+    // vc-104 both put the weapon's line drawing beside the count, and the icon
+    // set already has one per class (scout = rifle, shock = SMG, lancer = lance).
+    const amRow = h('div', { class: 'vc-ammo-row' });
+    this.ammoGlyph = h('div', { class: 'vc-ammo-w' });
+    amRow.appendChild(this.ammoGlyph);
+    const amCol = h('div', { class: 'vc-ammo-col' });
+    amCol.appendChild(label('Ammunition'));
     this.ammoNum = h('div', { class: 'vc-ammo-n vc-num' }, h('span', { text: '0' }), h('small', { text: ' / 0' }));
-    amP.content.appendChild(this.ammoNum);
+    amCol.appendChild(this.ammoNum);
     this.ammoPips = h('div', { class: 'vc-ammo-pips' });
-    amP.content.appendChild(this.ammoPips);
+    amCol.appendChild(this.ammoPips);
+    amRow.appendChild(amCol);
+    amP.content.appendChild(amRow);
     // THE WEAPON'S REACH, ON SCREEN, ALWAYS.
     //
     // A playtester fired 41 rounds for 0 hits and reported the game as broken. He
@@ -882,7 +947,7 @@ export class HUD {
     // sit on top of a letter. 1.15em, not 1.7em: the tape's paper is 1.05em tall
     // since round 18 slimmed it, and a pin row hanging 0.65em clear of it was a
     // second band of chrome floating unsupported over the sky.
-    this.compassPins = h('div', { class: 'vc-compass-tape', style: 'width:100%;top:1.15em;height:auto' });
+    this.compassPins = h('div', { class: 'vc-compass-tape', style: 'width:100%;top:1.62em;height:auto' });
     this.compass.appendChild(this.compassPins);
     this._buildCompassTape();
     L.appendChild(this.compass);
@@ -910,10 +975,17 @@ export class HUD {
       const deg = ((d % 360) + 360) % 360;
       const card = CARD[deg];
       const major = deg % 15 === 0;
+      // ONE RED MARK ON THE STRIP, AND IT IS THE HEADING CARET.
+      //
+      // Due north used to be inked red as well, so the ribbon carried two red
+      // marks 40 px apart pointing at two different bearings and read as a
+      // widget arguing with itself. North is a LABEL — it is ink like every
+      // other cardinal — and the caret nailed to the centre is the only thing
+      // that says "you are looking this way".
       const el = h('div', {
         class: 'vc-compass-pin' + (card ? ' card' : ''),
         style: 'left:' + ((d / TAPE_DEG) * 100).toFixed(4) + '%;color:' +
-          (card ? (deg === 0 ? '#8d3730' : '#3a2f28') : '#6b5a44'),
+          (card ? '#3a2f28' : '#6b5a44'),
       });
       if (card) {
         // Sized to the 1.05em tape, not the old 2.2em one: the cardinal has to
@@ -933,7 +1005,7 @@ export class HUD {
       tk.appendChild(compassTick({
         major: card ? 2 : major ? 1 : 0,
         seed: 11 + d,
-        color: card ? (deg === 0 ? '#8d3730' : '#3a2f28') : '#6b5a44',
+        color: card ? '#3a2f28' : '#6b5a44',
       }));
       el.appendChild(tk);
       this.compassTape.appendChild(el);
@@ -1039,7 +1111,7 @@ export class HUD {
     th.appendChild(this.tcardName);
     tc.content.appendChild(th);
     const hpBar = h('div', { class: 'vc-tcard-hp' });
-    this.tcardHp = inkGauge({ w: 250, h: 13, seed: 143, segs: 8, tone: 'foe' });
+    this.tcardHp = inkGauge({ w: 250, h: 13, seed: 143, segs: 8, tone: 'hp' });
     hpBar.appendChild(this.tcardHp);
     tc.content.appendChild(hpBar);
     this.tcardRows = h('div', { class: 'vc-tcard-rows' });
@@ -1159,6 +1231,14 @@ export class HUD {
   // Bus wiring
   // ======================================================================
 
+  /** Print "/ NN" beside the turn numeral when the mission runs on a clock. */
+  _syncTurnLimit() {
+    if (!this.turnMaxEl) return;
+    const n = (this.objectives && this.objectives.turnLimit) | 0;
+    const txt = n > 0 ? '/ ' + pad(n) : '';
+    if (txt !== this.turnMaxEl.textContent) this.turnMaxEl.textContent = txt;
+  }
+
   _on(evt, fn) { this._unsubs.push(Bus.on(evt, fn)); }
 
   _wire() {
@@ -1275,10 +1355,12 @@ export class HUD {
       if (!p) return;
       this.objectives = normObjectives(p.objectives) ||
         normObjectives([p]) || this.objectives;
+      this._syncTurnLimit();
       this._renderObjectives();
     });
     this._on('ui:objectives', (p) => {
       this.objectives = normObjectives(p && p.objectives) || this.objectives;
+      this._syncTurnLimit();
       this._renderObjectives();
     });
     this._on('ui:target', (p) => this.setTarget(p));
@@ -1611,8 +1693,13 @@ export class HUD {
       const key = state + (blink ? '1' : '0');
       if (row.key === key) continue;
       row.key = key;
+      // ONE REGISTER PER COLUMN. The key used to read "Gallian Staging Post —
+      // HELD" beside "Imperial Base Camp — IMPERIAL", i.e. a STATUS word in one
+      // row and a FACTION word in the next, so "Held" had no holder and the two
+      // rows could not be compared. The column now always answers the same
+      // question — WHOSE IS IT — and 'Contested' is the answer 'nobody's, yet'.
       row.st.textContent = busy ? 'CONTESTED'
-        : state === 'held' ? 'Held' : state === 'imperial' ? 'Imperial' : 'Neutral';
+        : state === 'held' ? 'Gallian' : state === 'imperial' ? 'Imperial' : 'Unclaimed';
       row.st.style.color = busy ? 'var(--red)'
         : state === 'held' ? 'var(--ally)' : state === 'imperial' ? 'var(--enemy)' : 'var(--ink-3)';
       row.st.style.opacity = busy && !blink ? '0.35' : '1';
@@ -1753,15 +1840,29 @@ export class HUD {
     const hp = t.hp != null ? t.hp : u.hp, maxHp = t.maxHp != null ? t.maxHp : u.maxHp;
     if (hp != null && maxHp) {
       const f = clamp01(hp / maxHp);
-      this.tcardHp.set(f, f <= 0.25 ? 'crit' : f <= 0.55 ? 'warn' : 'foe');
+      // Olive → amber → red, the same ramp a friendly gets. A full-health enemy
+      // used to paint the SAME terracotta as a dying one (see hpTone in
+      // icons.js), so the bar contradicted the "96 / 96" printed under it.
+      this.tcardHp.set(f, hpTone(f));
     }
     this.tcard.classList.toggle('soft', !!t.soft);
     clear(this.tcardRows);
     // A hard lock (the game's own ray landed on him) versus a designation (he is
     // simply inside the sights). The reader must be able to tell them apart.
+    // "Solution — Locked" was firing-solution jargon; the sights are either on
+    // him or they are not, so the row says that in words a player already owns.
+    //
+    // The second row used to gloss the header: a card headed IMPERIAL
+    // STURMTRUPPE with "Class — Shocktrooper" under it names one man twice in
+    // two languages and spends a row saying nothing. His WEAPON is the thing the
+    // header does not already carry and the thing that decides whether standing
+    // here is survivable — the class icon beside the header still carries class.
+    const tw = (t.unit && t.unit.weapon) || t.weapon || null;
     const rows = [
-      ['Solution', t.soft ? 'Designated' : 'Locked'],
-      ['Class', CLASS_NAME[cls] || 'Infantry'],
+      ['Sight', t.soft ? 'Loose' : 'Locked'],
+      tw && tw.name
+        ? ['Weapon', tw.name]
+        : ['Class', CLASS_NAME[cls] || 'Infantry'],
       ['Health', (hp != null ? Math.max(0, Math.round(hp)) : '—') + ' / ' + (maxHp || '—')],
       ['Distance', (t.distance != null ? Math.round(t.distance) : '—') + ' m'],
       ['Aim Point', partName(t.part)],
@@ -1837,6 +1938,7 @@ export class HUD {
     this._cardShown = false;
     this._softTimer = 0;
     this._tcardHpFor = null;
+    this.labels?.setLocked?.(null);
     this.tgtLayer.classList.remove('on');
     if (this.hitPanel) this.hitPanel.style.display = 'none';
     if (this.tcard) this.tcard.style.display = 'none';
@@ -2171,8 +2273,18 @@ export class HUD {
       p.root.style.animationDelay = (i * 0.05).toFixed(2) + 's';
       const in_ = h('div', { class: 'vc-ru-in' });
 
+      // A TANK HAS NO FACE. The Edelweiss — 1250 HP, class 'tank' — was drawing a
+      // helmeted human portrait in the same box as its crew, which reads as
+      // placeholder art the moment you look at two cards at once. The card
+      // already names the vehicle and already carries the tank glyph beside the
+      // word TANK; the portrait box now shows the same silhouette, drawn large.
       const por = h('div', { class: 'vc-ru-por' });
-      por.appendChild(portraitFor(u, { w: 100, frame: true }));
+      if (u.isVehicle || String(u.cls || '').toLowerCase() === 'tank') {
+        por.classList.add('veh');
+        por.appendChild(icon('tank', { size: 84, width: 1.5, rough: true }));
+      } else {
+        por.appendChild(portraitFor(u, { w: 100, frame: true }));
+      }
       in_.appendChild(por);
 
       const cls = String(u.cls || 'scout').toLowerCase();
@@ -2268,6 +2380,11 @@ export class HUD {
       });
 
       this.rosterEl.appendChild(p.root);
+      // In the document now, so the name and the class line can be fitted to the
+      // card instead of being truncated to "Marin…" / "SHOCKTROOPE". Same helper
+      // the briefing and deployment chips use.
+      fitLine(top.firstChild, { start: 0.92, min: 0.62 });
+      fitLine(clsRow.children[1], { start: 0.66, min: 0.42 });
       this._rosterCards.set(u, {
         root: p.root, hpG, apM, hpNum, apNum, st, stamp, rib, rd,
         hpKey: -1, apKey: -1, stKey: '', rdKey: -2,
@@ -2303,7 +2420,7 @@ export class HUD {
         const k = Math.round(clamp01(u.hp / u.maxHp) * 100);
         if (k !== c.hpKey) {
           c.hpKey = k;
-          c.hpG.set(k / 100, k <= 25 ? 'crit' : k <= 55 ? 'warn' : 'hp');
+          c.hpG.set(k / 100, hpTone(k / 100));
           c.hpNum.firstChild.textContent = String(Math.max(0, Math.round(u.hp)));
           c.hpNum.lastChild.textContent = '/' + Math.round(u.maxHp);
         }
@@ -2403,6 +2520,13 @@ export class HUD {
     this._reach = held && held.maxRange
       ? (held.name ? held.name + ' · ' : '') + 'reaches ' + Math.round(held.maxRange) + ' m'
       : '';
+    // The weapon's own line drawing, redrawn only when the class changes.
+    const wc = String(u.cls || 'scout').toLowerCase();
+    if (this.ammoGlyph && wc !== this._ammoGlyphFor) {
+      this._ammoGlyphFor = wc;
+      clear(this.ammoGlyph);
+      this.ammoGlyph.appendChild(icon(wc, { size: 46, width: 1.5, rough: true }));
+    }
   }
 
   _flashSelected() {
@@ -2566,6 +2690,7 @@ export class HUD {
       this.apRangeEl.textContent = Math.round(this.apShown / perM) + ' m of march';
     }
     this.apPanel.classList.toggle('low', low);
+    this._setSelfHp(u);
 
     // ammo can be driven by the unit directly if the game does not emit ui:ammo
     const wasA = this._ammo, wasM = this._mag;
@@ -2617,8 +2742,31 @@ export class HUD {
       this.apRangeEl.textContent = Math.round(ap / (u.apPerMetre || 1)) + ' m of march';
       this._apLast = Math.round(ap);
       this.apPanel.classList.toggle('low', low);
+      this._setSelfHp(u);
     }
     this._updateCompass();
+  }
+
+  /**
+   * The acting soldier's own health row. Written only on change (the gauge
+   * rebuilds an SVG clip on every set), and snapped rather than eased so it
+   * photographs the truth at the harness's dt = 0.
+   */
+  _setSelfHp(u) {
+    if (!this.hpGauge || !u) return;
+    const maxHp = u.maxHp || 0;
+    const hp = clamp(u.hp != null ? u.hp : maxHp, 0, maxHp || 1);
+    // Keyed on WHO as well as how much: the resident renderer re-poses one HUD
+    // across shots, and two soldiers at the same fraction must not share a cache
+    // hit that leaves the previous man's numerals on the slip.
+    const key = (u.id != null ? u.id : u.name) + '|' + Math.round(hp) + '/' + Math.round(maxHp);
+    if (key === this._selfHpKey) return;
+    this._selfHpKey = key;
+    const f = maxHp ? clamp01(hp / maxHp) : 0;
+    this.hpGauge.set(f, hpTone(f));
+    this.hpNum.textContent = String(Math.round(hp));
+    this.hpMaxEl.textContent = '/ ' + Math.round(maxHp);
+    this.apPanel.classList.toggle('hurt', f <= 0.4);
   }
 
   /**
@@ -2736,10 +2884,58 @@ export class HUD {
 
   // -------------------------------------------------------------- targeting
 
+  /**
+   * The locked target's projected screen box — head to boots, in CSS pixels,
+   * or null if there is nothing bracketable.
+   *
+   * Reuses two scratch results so the aiming path stays allocation-free.
+   * @returns {null|{x:number,y:number,w:number,h:number,unit:object}}
+   */
+  _targetBox() {
+    const u = this.target && this.target.unit;
+    if (!u || !u.pos || !this.camera || !this.labels) return null;
+    const hgt = u.isVehicle ? 2.9 : 1.86;
+    const A = this._tbA || (this._tbA = { x: 0, y: 0, depth: 0, visible: false });
+    const B = this._tbB || (this._tbB = { x: 0, y: 0, depth: 0, visible: false });
+    const P = this._tbP || (this._tbP = { x: 0, y: 0, z: 0 });
+    P.x = u.pos.x; P.y = u.pos.y + hgt; P.z = u.pos.z;
+    this.labels.project(P, A);
+    P.y = u.pos.y;
+    this.labels.project(P, B);
+    if (!A.visible || !B.visible) return null;
+    const base = Math.min(innerWidth, innerHeight);
+    // 1.16 of the standing height so the box has air round the helmet and the
+    // boots, and floors/ceilings so a man at 60 m is still a box you can see and
+    // a man at 3 m is not a frame round the whole picture.
+    const h0 = Math.abs(B.y - A.y) * 1.16;
+    const hh = clamp(h0, base * 0.085, base * 0.62);
+    return {
+      x: (A.x + B.x) * 0.5,
+      y: (A.y + B.y) * 0.5,
+      w: clamp(hh * 0.60, base * 0.05, base * 0.42),
+      h: hh,
+      unit: u,
+    };
+  }
+
   _updateTargeting(dt) {
     const on = this.aiming;
+    // THE HEADING TAPE AND THE DAMAGE TABLE WANT THE SAME STRIP OF PAPER.
+    // Both are pinned to the top centre, and the table — opaque kraft tape — is
+    // drawn over the tape, so in aim mode the compass was simply invisible while
+    // still costing a layout. It is also the reading you least need with a man
+    // in your sights: the tape answers "which way am I facing", the table
+    // answers "can I kill him". The table wins the strip while the sights are up.
+    if (this.compass && this._compassOff !== on) {
+      this._compassOff = on;
+      this.compass.classList.toggle('vc-hidden', on);
+    }
     this.tgtLayer.classList.toggle('on', on);
-    if (!on) { this._sightOn = false; return; }
+    if (!on) {
+      this._sightOn = false;
+      this.labels?.setLocked?.(null);      // give him his slip back
+      return;
+    }
 
     // Accuracy circle contracts as the shot settles. When the game publishes a
     // real ballistic radius (aim:target.reticlePx) we honour it exactly — the
@@ -2778,13 +2974,40 @@ export class HUD {
 
     this.accRadiusPx = r;
 
-    // The corner brackets frame the accuracy circle rather than sitting at a
-    // fixed size, so they mean something: they ARE the shot's dispersion box.
-    const bw = r * 2 + Math.min(innerWidth, innerHeight) * 0.11;
-    const bh = r * 2 + Math.min(innerWidth, innerHeight) * 0.075;
-    this.bracketsEl.style.width = bw.toFixed(1) + 'px';
-    this.bracketsEl.style.height = bh.toFixed(1) + 'px';
-    this.bracketsEl.style.opacity = (0.5 + 0.5 * (1 - this.spreadShown)).toFixed(2);
+    // THE CORNER BRACKETS ARE THE TARGET, NOT THE DISPERSION.
+    //
+    // They used to be a second dispersion figure — the accuracy circle plus a
+    // fixed 0.11/0.075 of the frame, pinned to screen centre — which made them
+    // roughly THREE TIMES the locked soldier's height and put them wherever the
+    // muzzle was pointing rather than round the man. r25: "two different target
+    // indicators disagree about where the target is, and neither encloses him."
+    //
+    // Now they are a designator: the box is the locked unit's own projected
+    // extent, head to boots. The ring keeps saying "the rounds go here"; the box
+    // says "this is who you have"; they agree when the shot is good and their
+    // disagreement is now INFORMATION rather than a contradiction. Nothing in
+    // actionMode is touched — this reads the same unit position the world tags
+    // read, through the same projector.
+    const box = this._targetBox();
+    if (box) {
+      this.bracketsEl.style.left = box.x.toFixed(1) + 'px';
+      this.bracketsEl.style.top = box.y.toFixed(1) + 'px';
+      this.bracketsEl.style.width = box.w.toFixed(1) + 'px';
+      this.bracketsEl.style.height = box.h.toFixed(1) + 'px';
+      this.bracketsEl.style.opacity = '0.92';
+    } else {
+      // No unit to frame (a designation on scenery, or no camera yet): fall back
+      // to the dispersion box at centre so the sight picture is never empty.
+      this.bracketsEl.style.left = '50%';
+      this.bracketsEl.style.top = '50%';
+      this.bracketsEl.style.width = (r * 2 + base * 0.055).toFixed(1) + 'px';
+      this.bracketsEl.style.height = (r * 2 + base * 0.040).toFixed(1) + 'px';
+      this.bracketsEl.style.opacity = (0.5 + 0.5 * (1 - this.spreadShown)).toFixed(2);
+    }
+    // The man the brackets are on already has his name, class, health and range
+    // in the dossier — his world nameplate is pure duplication, and the ring's
+    // stroke was drawing straight through it and erasing the middle of the word.
+    this.labels?.setLocked?.(box ? box.unit : null);
 
     // If the game's own ray is not on a soldier, fall back to the man standing
     // inside the sights. VC keeps the dossier up for whoever is under the
@@ -2825,7 +3048,7 @@ export class HUD {
       if (k !== this._tcardHpKey) {
         this._tcardHpKey = k;
         const f = k / 200;
-        this.tcardHp.set(f, f <= 0.25 ? 'crit' : f <= 0.55 ? 'warn' : 'foe');
+        this.tcardHp.set(f, hpTone(f));
       }
     }
     if (this._tcardHitT > 0) {
@@ -2846,7 +3069,14 @@ export class HUD {
       this.hitArc.style.opacity = why ? '0.3' : '1';
     }
 
-    this.hitShown = damp(this.hitShown, this.hitChance, 9, dt);
+    // SNAP WHEN THE CLOCK IS STOPPED — the same rule the AP meter already
+    // follows (see _updateAction, and the determinism contract in main.js).
+    // damp() cannot move at dt = 0, so the capture harness photographed whatever
+    // reading the PREVIOUS pose left in the chit: r25 measured cold at "99% Hit"
+    // and a resident daemon at "84%", and a resident `aim` rendered after another
+    // shot came out at "0% Hit" beside "84 damage expected" — a HUD number that
+    // varies fifteen points between two renders of one pose is not a number.
+    this.hitShown = dt > 0 ? damp(this.hitShown, this.hitChance, 9, dt) : this.hitChance;
     const pct = Math.round(this.hitShown * 100);
     if (pct !== this._hitLast) {
       this._hitLast = pct;
@@ -2869,9 +3099,12 @@ export class HUD {
     // The shot report holds the line for a couple of seconds after the trigger,
     // because what the volley DID beats what the next one might do.
     const reporting = this._shotReportUntil && this._time < this._shotReportUntil;
+    // "84 expected" under "84% Hit" is two identical numerals meaning a
+    // percentage and a damage figure, with no unit on either. The word DAMAGE is
+    // what separates them at a glance.
     const sub = reporting ? this._shotReport
       : !t ? '' : t.lethal ? 'Lethal' :
-        t.expectedDamage ? Math.round(t.expectedDamage) + ' expected' :
+        t.expectedDamage ? Math.round(t.expectedDamage) + ' damage expected' :
           (t.part ? partName(t.part) : '');
     if (sub !== this._hitSubLast) { this._hitSubLast = sub; this.hitSub.textContent = sub; }
     // Guarded: writing display every frame forces a style recalc for nothing.

@@ -947,14 +947,36 @@ export function frameRule({ w = 1600, h = 900, seed = 202 } = {}) {
  *   b    the body of the colour
  *   pool where the pigment settled and dried darkest
  */
+/*
+ * THE HEALTH RAMP IS MONOTONIC AND FACTION-NEUTRAL, and it has to stay that way.
+ *
+ * Until r25 an enemy gauge ran foe (#9c4a3f) → warn (#b8862f) → crit (#9d4331).
+ * foe and crit are the same terracotta to an eye, with the amber BETWEEN them,
+ * so a Sturmtruppe at 96/96 and one at 10/285 painted the same colour and the
+ * middle of the ramp looked healthier than either end — the gauge said nothing
+ * at all, and on a full-health dossier it flatly contradicted the "96 / 96"
+ * printed one line below it.
+ *
+ * Health now reads olive → amber → red for EVERYONE, exactly as vc-088 does
+ * (its Imperial 00110/00110 scout carries a green bar). Faction is carried by
+ * the panel's red header band and the red name — the two channels the build
+ * already has — not by the gauge. `foe` is deliberately gone rather than
+ * retired-in-place, so nothing can quietly re-enter it into the ramp.
+ */
 const PIGMENT = {
   hp: { a: '#aeac89', b: '#818458', pool: '#575c37' },
   warn: { a: '#e0c184', b: '#b8862f', pool: '#8a5f1c' },
   crit: { a: '#c58b6c', b: '#9d4331', pool: '#71271f' },
   ap: { a: '#e8dcc0', b: '#c08a3e', pool: '#966522' },
-  foe: { a: '#c2926f', b: '#9c4a3f', pool: '#6f2b23' },
   ink: { a: '#a89372', b: '#6f5738', pool: '#463218' },
 };
+
+/**
+ * The one place a health fraction becomes a pigment. Both HUD dossiers and the
+ * world nameplates call it, so the three of them cannot drift apart again.
+ * @param {number} frac 0..1
+ */
+export const hpTone = (frac) => (frac <= 0.25 ? 'crit' : frac <= 0.55 ? 'warn' : 'hp');
 
 let _gid = 0;
 

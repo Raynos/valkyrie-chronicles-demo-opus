@@ -60,8 +60,27 @@ const PAL = {
   // Re-authored in HSV at the ORIGINAL luminance, not luminance-scaled (the r15
   // lesson): 0xaeb5a6 is Rec.709 L 178.5; 0xbdb1a3 is hue 32.3, sat 0.138, L
   // 177.4. paintAlt likewise holds its old L 162.4 at the same hue and chroma.
-  paint: 0xbdb1a3,
-  paintAlt: 0xaca194,
+  //
+  // ROUND 25, SECOND PASS — VALUE AND CHROMA. Holding the OLD luminance was the
+  // half of the r15 lesson that does not apply here: the old luminance was
+  // itself wrong. Measured cold on the `tank` plate at 0xbdb1a3, the glacis
+  // renders V 220 / sat 0.332 and the turret side V 150 / sat 0.275, against
+  // vc-104's tank at V 118 / sat 0.190. At `overview` and `command` framing the
+  // vehicle is a jumble of pale cream boxes indistinguishable from the bridge
+  // deck it is standing on — nothing about it out-values the road.
+  //
+  // So this IS a luminance re-author, and the hue is carried through it rather
+  // than recomputed: h 32 deg both, V 0.741 -> 0.565 on `paint` (a 0.76 factor,
+  // between the 0.68 the glacis wants and the 0.79 the turret side wants), and
+  // sat 0.138 -> 0.11 because the pipeline multiplies authored chroma by ~2.4
+  // on the way to the plate. Note wave 1 measured a pipeline chroma FLOOR near
+  // 0.20 rendered saturation independent of albedo, so 0.19 is the floor of
+  // what is reachable from here and not a target to chase past.
+  //
+  // The dust-tan direction and the Gallian crest are NOT what changed. This is
+  // the same paint, mixed darker.
+  paint: 0x908980,
+  paintAlt: 0x837d75,
   darkMetal: 0x6d675d,       // gun, hatches, weld-proud steel
 
   // PANEL-LINE INK. The one dark value allowed to draw a *line* on painted
@@ -145,7 +164,15 @@ const PAL = {
   canvasDuck: 0x6d6c5d,      // rolled tarp, mud flaps, retaining straps
   wood: 0x94734c,
   glass: 0xd8d2b8,
-  grille: 0x5f767a,          // radiator: cool teal so it reads as "the spot"
+  // Radiator: the cool spot on a warm vehicle — but a SPOT, not a colour field.
+  // r24's 0x5f767a is hue 188 deg at sat 0.21, and at `overview`/`command`
+  // framing the engine deck is the tank's largest unbroken plane, so that teal
+  // rectangle out-chroma'd the whole hull and was a good part of why the critics
+  // read a monochrome dust-tan vehicle as camouflaged. Same value, same cool
+  // direction, a third of the chroma: it still ranks below the paint and still
+  // reads as the one thing on the tank that is not painted armour.
+  grille: 0x63706d,
+
   hot: 0xd8763a,
   scorch: 0x3a2f33,          // the darkest value permitted in frame
 };
@@ -1113,8 +1140,25 @@ export class Tank {
         // bands into ~45 px blobs of DIFFERENT COLOUR rather than of different
         // value. It is the second half of the 53-degree hue span measured on the
         // turret side; PAL.paint is the first. 1.35 matches mat.gear.
+        // CHROMA IS NOT REACHABLE FROM THIS FILE — measured, r25 second pass.
+        // The plate's saturation on the hull side is 0.350 and it does not move:
+        // authored sat 0.138 -> 0.11 changed it by +0.02 (the WRONG way), and
+        // `cream` 1.0 -> 0.72 with `mottle` 0.042 -> 0.034 changed it by -0.001.
+        // Three independent albedo-side levers, no response: the ~0.20+ floor
+        // wave 1 measured is real and it lives downstream of this material, in
+        // the pigment/wash stage. Do not spend another round on tank albedo
+        // trying to reach vc-104's 0.190 — the lever is in the pipeline.
         outlineWidth: 1.25, map: paintTex, mapRepeat: [4.5, 3.5], mottle: 0.042,
-        bandBleed: 1.35, hatchSpacing: 4.2, wrap: 0.26,
+        // `wrap` 0.26 -> 0.42, and it is the OTHER HALF of the value re-author
+        // above, not a separate idea. Darkening the albedo dropped the turret
+        // shell's away-facing planes across a band boundary into the shade wash,
+        // and the shade wash in this engine is violet-blue: measured, the turret
+        // rendered hue p10 9 deg / p50 22 at V 105 — a mauve turret on a tan hull,
+        // exactly the "darkening a colour is not a luminance-only operation" trap
+        // the rubric records. `wrap` lifts LOW N.L only (hl = (raw+w)/(1+w)), so it
+        // buys the shaded facets back out of the violet band without touching the
+        // sunlit glacis the darkening was for.
+        bandBleed: 1.35, hatchSpacing: 4.2, wrap: 0.42,
       }),
       // PANEL-LINE INK. See PAL.panelInk and inkRib().
       //

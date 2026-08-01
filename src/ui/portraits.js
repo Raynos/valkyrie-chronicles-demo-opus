@@ -31,6 +31,66 @@ const CLASS_ACCENT = {
   engineer: '#4f7378', sniper: '#6a5a7c', tank: '#6b6553',
 };
 
+/**
+ * THE NAMED LEADS ARE NOT ROLLED.
+ *
+ * Everything above this line makes a face out of a seed, which is exactly right
+ * for the rank and file — and exactly wrong for Alicia Melchiott, whose roster
+ * portrait came out dark-haired in an olive uniform and a green cap while her
+ * 3D model in the same session is auburn under a red headcloth in a teal
+ * jacket. r25: "Both read as placeholder art the moment you compare two panels."
+ * A player looking at one screen and then the other must see one person.
+ *
+ * These entries MIRROR `CAST` in src/actors/character.js, which is the source of
+ * truth and which dresses the model — this file only holds the portrait-visible
+ * subset (hair colour and cut, coat, headgear, eyes) in the CSS hex the drawing
+ * uses. UI code cannot import character.js without dragging three.js and the
+ * whole rig into every screen module, so the two tables are kept in step by
+ * hand: if you change a lead's hair, tunic or headgear over there, change it
+ * here, and re-render `closeup` beside the roster to check.
+ *
+ * `gear` is what sits ON the head: cast members marked `bare` in character.js
+ * wear no steel, and the ones with a `headCloth` wear that cloth's colour as a
+ * bandana. Anyone absent from this table keeps the procedural appearance.
+ */
+const CAST_LOOK = {
+  'Alicia Melchiott': {
+    hair: '#6b4b2e', style: 'ponytail', gear: 'bandana', gearCol: '#b2342c',
+    coat: '#3f7d78', coatDark: '#2f5f5c', tab: '#b2342c', trim: '#e4dcc4',
+    eye: '#4a6b8c', skin: 1,
+  },
+  'Welkin Gunther': {
+    hair: '#3a2c22', style: 'swept', gear: null,
+    coat: '#6d5a3e', coatDark: '#51422c', tab: '#8a6a3c', trim: '#d8cfb4',
+    eye: '#5a4430', skin: 1,
+  },
+  'Rosie Stark': {
+    hair: '#8a6a34', style: 'swept', gear: 'bandana', gearCol: '#35506b',
+    coat: '#74140b', coatDark: '#480c06', tab: '#35506b', trim: '#e9e0c6',
+    eye: '#4a6b45', skin: 1,
+  },
+  'Isara Gunther': {
+    hair: '#2b2833', style: 'bob', gear: null,
+    coat: '#d6cbae', coatDark: '#b3a684', tab: '#a8543a', trim: '#5d7a58',
+    eye: '#3f4a63', skin: 2,
+  },
+  'Edy Nelson': {
+    hair: '#b08a4a', style: 'bob', gear: 'cap', gearCol: '#6a5a3a',
+    coat: '#8f7a52', coatDark: '#6a5a3a', tab: '#7a5c8a', trim: '#d8cfb4',
+    eye: '#5a4430', skin: 0,
+  },
+  'Marina Wulfstan': {
+    hair: '#c9c2b0', style: 'part', gear: 'cap', gearCol: '#3d4630',
+    coat: '#55603f', coatDark: '#3d4630', tab: '#4a5a6b', trim: '#d8cfb4',
+    eye: '#4a6b8c', skin: 0,
+  },
+  'Largo Potter': {
+    hair: '#4a3a28', style: 'crop', gear: 'cap', gearCol: '#3c3624',
+    coat: '#7d7048', coatDark: '#5c5233', tab: '#92392a', trim: '#d8cfb4',
+    eye: '#33302c', skin: 3,
+  },
+};
+
 /** Stable 32-bit hash so a soldier's name alone can seed their face. */
 export function seedFromName(name = '') {
   let h = 0x811c9dc5;
@@ -196,28 +256,40 @@ function headgearPaths(kind, rx, ry, cy, uni) {
  */
 export function portraitMarkup({
   seed = 1, cls = 'scout', team = 0, w = 100, frame = true, mood = 'calm', bg = true,
+  name = '',
 } = {}) {
   const s = typeof seed === 'string' ? seedFromName(seed) : ((seed >>> 0) || 1);
   const rng = makeRng(s);
-  const uni = UNIFORM[team === 1 ? 1 : 0];
+  // A named lead's appearance comes from the table, not the die. Everything
+  // that is NOT in the table (proportions, mis-registration, mood) still rolls
+  // off the same seed, so the face is still hand-drawn and still stable.
+  const look = CAST_LOOK[typeof seed === 'string' ? seed : name] || CAST_LOOK[name] || null;
+  const uni = look
+    ? { coat: look.coat, coatDark: look.coatDark, tab: look.tab, trim: look.trim }
+    : UNIFORM[team === 1 ? 1 : 0];
   const accent = CLASS_ACCENT[String(cls).toLowerCase()] || CLASS_ACCENT.scout;
 
-  const skinIdx = Math.floor(rng() * SKIN.length);
+  const skinIdx = look ? look.skin : Math.floor(rng() * SKIN.length);
+  if (look) rng();                              // keep the roll count identical
   const skin = SKIN[skinIdx], skinShade = SKIN_SHADE[skinIdx];
-  const hairCol = HAIR[Math.floor(rng() * HAIR.length)];
-  const eyeCol = EYES[Math.floor(rng() * EYES.length)];
+  const rolledHair = HAIR[Math.floor(rng() * HAIR.length)];
+  const hairCol = look ? look.hair : rolledHair;
+  const rolledEye = EYES[Math.floor(rng() * EYES.length)];
+  const eyeCol = look ? look.eye : rolledEye;
 
   const rx = 20 + rng() * 2.4;
   const ry = 24 + rng() * 2.6;
   const cy = 46 + rng() * 2;
   const jaw = rng();
-  const style = HAIR_STYLES[Math.floor(rng() * HAIR_STYLES.length)];
+  const rolledStyle = HAIR_STYLES[Math.floor(rng() * HAIR_STYLES.length)];
+  const style = look ? look.style : rolledStyle;
 
   // Headgear probability is class-flavoured: lancers wear helmets, snipers caps.
   const gearRoll = rng();
   let gear = null;
   const c = String(cls).toLowerCase();
-  if (c === 'lancer' || c === 'tank') gear = gearRoll < 0.75 ? 'helmet' : 'cap';
+  if (look) gear = look.gear;
+  else if (c === 'lancer' || c === 'tank') gear = gearRoll < 0.75 ? 'helmet' : 'cap';
   else if (c === 'sniper') gear = gearRoll < 0.6 ? 'cap' : null;
   else if (c === 'engineer') gear = gearRoll < 0.45 ? 'cap' : null;
   else if (team === 1) gear = gearRoll < 0.8 ? 'helmet' : 'cap';
@@ -225,6 +297,8 @@ export function portraitMarkup({
 
   const hair = hairPaths(style, rx, ry, cy, rng);
   const hg = gear ? headgearPaths(gear, rx, ry, cy, uni) : null;
+  // The cast's headgear is their OWN cloth colour, not the militia tab.
+  if (hg && look && look.gearCol) hg.col = look.gearCol;
 
   // Mis-registration offset of the colour plate under the ink plate.
   const ox = (rng() * 2 - 1) * 1.9, oy = 0.9 + rng() * 1.3;
@@ -384,6 +458,9 @@ export function portraitFor(unit, opts = {}) {
   if (!unit) return portrait(opts);
   return portrait({
     seed: unit.portraitSeed != null ? unit.portraitSeed : (unit.name || 'soldier'),
+    // Passed SEPARATELY from the seed: a unit with a numeric portraitSeed would
+    // otherwise never be recognised as a named lead (CAST_LOOK is keyed by name).
+    name: unit.name || '',
     cls: unit.cls || unit.class || 'scout',
     team: unit.team | 0,
     mood: unit.downed || !unit.alive ? 'down'

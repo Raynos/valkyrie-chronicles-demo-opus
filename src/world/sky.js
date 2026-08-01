@@ -95,16 +95,26 @@ void main() {
   // A single smoothstep across 0..27 degrees (round 2's uGradSpan 0.46) only
   // reaches g=0.53 at the top of the frame, i.e. the visible sky was still half
   // horizon-cream. TWO stacked ramps fix that without making the dome flat for
-  // a camera that does look up: the first spends 78% of the travel inside the
-  // bottom 8.6 degrees (which is all a gameplay camera ever sees), the second
-  // carries the remaining 22% on up to the true zenith for the cinematic and
-  // dusk framings.
-  // 70% of the travel inside the bottom 6.3 degrees (all a battlefield camera
-  // sees), the remaining 30% carried on to 36 degrees so a camera that DOES
-  // look up — the bridge and dusk framings put the skyline a third of the way
-  // up the page — still gets a gradient instead of one flat teal slab.
-  float g = 0.70 * smoothstep(0.0, uGradSpan, up)
-          + 0.30 * smoothstep(uGradSpan * 0.64, 0.62, up);
+  // a camera that does look up: the first spends most of the travel inside the
+  // bottom few degrees, the second carries the rest on up to the true zenith
+  // for the cinematic and dusk framings.
+  //
+  // ROUND 25 — THE RAMP WAS OVER-CORRECTED AND THE GAMEPLAY BAND WENT FLAT
+  // AGAIN, at the other end. The r24 pair (0.70 inside uGradSpan 0.11, 0.30 on
+  // to 0.62) reached g = 0.70 by 6.3 degrees and only 0.88 by 22 — so across
+  // the WHOLE sky a battlefield camera can see, the dome moved 18% of its
+  // travel and the other 82% was spent in a strip a couple of degrees tall,
+  // usually behind the skyline. Measured on the tank shot (lens 1.75 deg UP at
+  // a 40 deg vertical field, so the visible band is 1.75..21.75 deg): every
+  // sampled row from 4% to 23% of frame height read the same colour to within
+  // 5 LSB. A flat slab, just a bluer one than round 2's.
+  //
+  // The band that has to carry the gradient is 0..22 degrees, so that is where
+  // the travel goes: 50% inside uGradSpan (4.9 deg) and 50% carried on to 23,
+  // which puts g at 0.30 / 0.52 / 0.61 / 0.76 / 0.99 at 3 / 5 / 8.6 / 13 / 22
+  // degrees. A camera that looks further up still reaches the zenith by 35.
+  float g = 0.50 * smoothstep(0.0, uGradSpan, up)
+          + 0.50 * smoothstep(uGradSpan * 0.55, 0.40, up);
   g = pow(clamp(g, 0.0, 1.0), uGradPow);
   // THREE stops, not two. A two-stop lerp from a warm horizon to a cool zenith
   // crosses through neutral grey exactly halfway up, and that dead band is what
@@ -134,9 +144,14 @@ void main() {
   // widens from 11 degrees to about 28 and roughly triples in weight, and its
   // azimuthal falloff softens so the ember wraps a third of the compass instead
   // of sitting in one quadrant.
-  float lowGold = pow(1.0 - clamp(up * mix(5.2, 2.0, uDusk), 0.0, 1.0), 2.0)
+  // ROUND 25 — the daylight half is trimmed again (0.34 -> 0.24 over 11 -> 8.8
+  // degrees). Every reference frame's low sky is still BLUE: vc-104 reads
+  // (166,196,206) and vc-072 (180,199,218), i.e. B leads R by 26-38 at every
+  // altitude a gameplay camera sees. A gold wash that is still worth 9% of the
+  // pixel at 5 degrees is enough on its own to put R back on top down there.
+  float lowGold = pow(1.0 - clamp(up * mix(6.5, 2.0, uDusk), 0.0, 1.0), 2.0)
                 * pow(sunAz, mix(1.5, 0.85, uDusk));
-  sky = mix(sky, uGold, lowGold * (0.34 + uDusk * 0.46));
+  sky = mix(sky, uGold, lowGold * (0.24 + uDusk * 0.56));
 
   // Soft glow around the sun. Deliberately restrained: the terrain's cream
   // highlights are the brightest thing in frame and the sky must sit under
@@ -282,14 +297,43 @@ void main() {
 // dead band is what made the mid-sky read as sepia mud. The WARMTH at the
 // skyline is the job of uHaze and the low gold term, both of which die within
 // ~10 degrees.
+//
+// ROUND 25 — THE HORIZON STOP WAS A STRAW-CREAM WITH BLUE AS ITS LOWEST
+// CHANNEL, AND THAT IS THE COLOUR EVERY GAMEPLAY FRAME WAS PRINTING.
+// 0xe0dcc4 is (224,220,196): R > G > B, hue 48, i.e. the dome's own bottom stop
+// was warm. The r24 ramp then spent 70% of its travel inside 6.3 degrees, so in
+// practice the visible sky was that stop plus a little zenith and nothing else.
+// Measured cold on `village` and `tank`, mid-frame, well inside the sheet
+// margin: (227,222,211) at hue 43, sat 0.07, B-R = -16 at EVERY row from 2% to
+// 23% of frame height. Every reference frame is the other way round —
+// vc-104 (166,196,206) sat 0.194 hue 195, vc-072 (180,199,218) sat 0.174 hue
+// 215 — B leads R by 26-38 and the chroma is two and a half times ours.
+//
+// So the bottom stop is re-authored BLUE-DOMINANT and pale rather than warm and
+// pale. This does NOT contradict the round-2 note below about not "correcting
+// the horizon back toward orange": that note forbids a WARM bottom stop, and
+// r24's stop was warm. A blue-leaning bottom stop is the one that keeps the
+// ramp off neutral for its whole length, because now both ends are cool and the
+// mid stop between them (their exact midpoint in daylight) is cool too.
+//
+// The paper-cream the reference genuinely has along the TOP of the sheet is not
+// the dome's job and must not be authored into it — vc-072's top 25 rows read
+// (241,239,228) at sat 0.053 because the SHEET cuts the picture off there, and
+// its blue sky starts at row 55. That edge belongs to the drawing falloff in
+// GRADE_FRAG, not here.
 const SKY = {
-  // muted teal overhead. Authored DEEPER than it should look: the composite
-  // adds a warm bloom (tint 0xffdcae at 0.52) from the cream ground and houses,
-  // which measured +27R/+14G/+2B on the sky at the top of the overview frame.
-  zenith: 0x4d8ea6,
-  // pale straw-cream at the skyline — cooler and less saturated than it looks,
-  // because the grade puts the ochre back
-  horizon: 0xe0dcc4,
+  // Muted teal overhead, but PALER than r24's. Authored deeper than it should
+  // look — the composite adds a warm bloom (tint 0xffdcae at 0.52) from the
+  // cream ground and houses, measured at +27R/+14G/+2B on the sky at the top of
+  // the overview frame — but 0x4d8ea6 (77,142,166, sat 0.54, L 128) was deeper
+  // than the grade could ever give back, and the rubric's target sky is pale
+  // and airy, not a poster blue. 0x7aabc2 is (122,171,194): the same hue
+  // family (200 vs 194), 30% less chroma, 34 LSB more value.
+  zenith: 0x7aabc2,
+  // Pale blue-grey at the skyline — the same value the straw-cream had (L 213
+  // against 219) with the channel order turned round, so a low camera's sky is
+  // still light and airy but is no longer the warmest thing above the roofline.
+  horizon: 0xc9d8de,
   cloudLit: 0xefe7d2,
   // Cool greys. Round 2's 0xc8c3b2 / 0x8b8698 were a warm putty and a mauve;
   // over a 28%-of-frame surface that alone pins the whole palette in the 30 deg
@@ -299,9 +343,18 @@ const SKY = {
   cirrus: 0xd9ded6,
   gold: null,          // null => PALETTE.skyGold
   haze: null,          // null => PALETTE.haze
-  gradSpan: 0.11,
+  // 0.085 == 4.9 degrees; see the two-stage ramp in the fragment shader. The
+  // second stage carries the rest of the travel out to 23 degrees, so the whole
+  // gameplay band gets a gradient instead of the top 18% of one.
+  gradSpan: 0.085,
   gradPow: 0.92,
-  exposure: 0.72,
+  // 0.72 -> 0.82. The dome has to sit under the terrain's cream highlights or
+  // the upper half clips through the bloom, and the grade's shoulder starts
+  // around 0.55 linear — at full zenith this dome now peaks at 0.524 * 0.82 =
+  // 0.43 linear, still clear of both that shoulder and the dome's own soft knee
+  // at 0.80. The reference sky is PALE; 0.72 was leaving it 40-50 LSB darker
+  // than vc-104's (166,196,206).
+  exposure: 0.82,
 };
 
 // The SAME dome at nine to thirteen degrees of sun elevation.
@@ -401,7 +454,7 @@ export class Sky {
         uCoverage: { value: opts.coverage ?? 0.46 },
         uBands: { value: 3.0 },
         uGradPow: { value: this.day.gradPow },
-        // 0.11 == 6.3 degrees; see the two-stage ramp in the fragment shader.
+        // 0.085 == 4.9 degrees; see the two-stage ramp in the fragment shader.
         uGradSpan: { value: this.day.gradSpan },
         uExposure: { value: this.day.exposure },
         uDusk: { value: 0 },

@@ -425,7 +425,16 @@ export const SHOTS = {
     // right-hand corner and inside the drawing falloff's drained margin — measured.
     const DX = -4.4, DZ = -2.35;
 
-    const hx = -7.7 + DX, hz = 30.1 + DZ;
+    // R25: the near section was CHOPPED by the bottom edge — one man bisected at the waist by
+    // the control-legend strip and two more cut at the shin. A shipped screenshot does not
+    // amputate its own squad on the frame edge. The near group is pushed 2.6 m further down
+    // the view axis (f = (0.472, -0.882) from the lens at (-14,40) to the look-at at (1,12)),
+    // which is a pure recession: their screen COLUMNS are unchanged, so the left-third
+    // staggering and the four-plane build survive, and they simply stand clear of the crop.
+    // Only the near group moves — the Edelweiss and the far bank are already well placed.
+    const PUSH = 2.6, PX = 0.472 * PUSH, PZ = -0.882 * PUSH;
+
+    const hx = -7.7 + DX + PX, hz = 30.1 + DZ + PZ;
     pose(ctx, unitNamed(ctx, 'Alicia Melchiott'), hx, hz, facing(hx, hz, bx, bz),
       'walk', STANCE.STAND, { phase: 0.31 });
 
@@ -436,7 +445,7 @@ export const SHOTS = {
       ['Marina Wulfstan', 0.7, 19.7, 'walk', STANCE.STAND, 0.12],
     ];
     for (const [name, x0, z0, clip, stance, ph] of section) {
-      const x = x0 + DX, z = z0 + DZ;
+      const x = x0 + DX + PX, z = z0 + DZ + PZ;
       pose(ctx, unitNamed(ctx, name), x, z, facing(x, z, bx, bz), clip, stance, { phase: ph });
     }
     const tx = 2.90 + DX, tz = 19.55 + DZ;      // the Edelweiss, dollied with everything else
@@ -691,7 +700,11 @@ export const SHOTS = {
     // 7.2 / 15.0 m, i.e. 72% / 56% / 38% / 18% of page height) and the reading
     // order now runs lancer -> scout -> shocktrooper -> engineer in a Z across
     // the plate instead of left-right across an empty middle.
-    put(largo, 3.6, 0.66);                           // lancer, near right, launcher across
+    // R25: at 0.66 the lancer's launcher ran OFF the right edge and ended in a cropped
+    // salmon tip — the frame amputating the one weapon silhouette it is meant to show.
+    // 0.54 pulls the whole tube inside the page. The corner does not re-open, because at
+    // 3.6 m the tube itself is what fills it: it is the widest object in the frame.
+    put(largo, 3.6, 0.54);                           // lancer, near right, launcher across
     put(rosie, 4.9, -0.52);                          // shocktrooper, whole, boots down
     put(alicia, 7.4, 0.12, 'crouchIdle', STANCE.CROUCH);    // scout, into the middle
     put(isara, 13.5, -0.18);                         // engineer, against the sky gap
@@ -1156,9 +1169,22 @@ export const SHOTS = {
     // matters too: +shoulder swings the lens left and throws her to the RIGHT edge, so
     // vc-088's left-third placement needs a NEGATIVE shoulder.
     // 1.25 m put her head across a third of the page height and her forearm through the
-    // middle of the frame; vc-088's head is ~28% of frame height. Back off to 1.85 and hold
+    // middle of the frame; vc-088's head is ~28% of frame height. Back off and hold
     // the 16 deg lateral angle by scaling the shoulder with the arm.
-    am.fovTarget = 32; am.armTarget = 1.85; am.shoulderTarget = -0.53;
+    //
+    // R25: 1.85 m was still a 1 m close-up, and it dragged hand-and-weapon geometry that
+    // was only ever authored to survive at 40 px into the middle of the page — a claw of
+    // fingers around empty air next to a flat tan slab with no barrel, bolt or sights.
+    // Note what vc-088 actually does: Alicia is BIG there (hair mass ~34% of frame height),
+    // but her forearms are folded across her chest and the rifle is entirely occluded by
+    // her own body — the reference never shows the grip at that scale either. We cannot
+    // fold her arms from a shot file, so the lens backs off instead until the hand is no
+    // longer the subject. 2.9 m drops the hand from ~330 px to ~210 px, below the size at
+    // which the missing grip reads, and still leaves her on the left third from mid-torso
+    // up with the target at centre. The shoulder scales with the arm so the lateral angle
+    // atan(shoulder/arm) stays at 16 deg against the 27 deg half-field, i.e. she stays at
+    // 0.56 of the half-width left of centre no matter which arm length we settle on.
+    am.fovTarget = 32; am.armTarget = 2.9; am.shoulderTarget = -0.83;
     am.aimHold = shooter.weapon.settle * 0.72;   // partly converged — the circle is visible
     am.timeScale = am.timeScaleTarget = CFG.gameplay.aimSlowFactor;
     for (let i = 0; i < 30; i++) {
@@ -1618,7 +1644,20 @@ export const SHOTS = {
     // wants him — and the aim point is thrown 16 m down the axis so the pitch is measured
     // over a long baseline instead of over five metres of lumpy field.
     const FOV = 42, CX = -22.6, CZ = 65.2;
-    const AX = -11.3, AZ = 54.9;
+    // R25: the GALLIAN objective ring was sliced in half by the right edge with its caption
+    // cut off mid-word — the one thing in the frame a viewer reads as a UI bug rather than a
+    // painting. Yaw the whole shot three degrees to swing it clear. This is a rotation of the
+    // AIM POINT, which means staging() rotates with it: the three soldiers are authored as
+    // (depth, lateral) against that axis, so their screen positions are unchanged and only
+    // world-fixed things — the ring, the poplar row, the far farmhouse — swing. On a 68.6 deg
+    // horizontal field that is 28 px per degree. Measured on the plate: +0.052 rad swings the
+    // ring INWARD, from half off the right edge to x = 1740..1860 with the GALLIAN caption
+    // whole — which is the better of the two outs, so it stays. Do not flip the sign to push
+    // it off instead; a complete marker reads as a game, a bisected one reads as a bug.
+    const AR = 0.052;                 // ~3 deg
+    const A0X = -11.3, A0Z = 54.9, adx = A0X - CX, adz = A0Z - CZ;
+    const AX = CX + adx * Math.cos(AR) - adz * Math.sin(AR);
+    const AZ = CZ + adx * Math.sin(AR) + adz * Math.cos(AR);
     const S = staging(CX, CZ, AX, AZ);
     const put = (u, d, f, clip, opts) => {
       const [x, z] = S.at(d, S.halfWidth(d, FOV) * f);
@@ -1665,7 +1704,22 @@ export const SHOTS = {
     // IN FRONT of the lens, so the squad keeps its contre-jour rim). t = 0.95 holds the sun
     // at thirteen degrees — a 4.4:1 shadow — on the ember end of the ramp, and azimuth is
     // AZ - (t - 0.5) * 1.15 = -1.868.
-    setSun(ctx, 0.95, -1.868);
+    // R25: the near field had NO HIGHLIGHTS AT ALL — measured p95 102 across the bottom 45%
+    // against the real game's 188 — and the reason is in this line, not in the grade. AZ =
+    // -1.35 resolves to depth +0.34, i.e. the sun twenty degrees IN FRONT of the lens, and
+    // the poplar row and telegraph poles that close the LEFT edge of this frame stand between
+    // that sun and the whole near field. Every metre of it was in their shadow, so the
+    // composition split into a white sky and a black foreground with nothing between.
+    //
+    // Same solve, opposite sign. AZ = +1.35 gives screen-x = 0.844*sin - 0.537*cos = +0.71,
+    // so the shadows still rake the full width of the page (the other way, out of the
+    // right-hand tank group), and depth = -0.537*sin - 0.844*cos = -0.71, i.e. the sun is
+    // forty-five degrees BEHIND the lens. That is three-quarter front on a thirteen-degree
+    // sun: the near field takes the ember key directly and finally has a light end, which is
+    // what a CANVAS dusk is — warm and low, not crushed. It costs the contre-jour rim on the
+    // squad, and that is the right trade: a rim on a black mass is not a rim.
+    // Azimuth passed is AZ - (t - 0.5)*1.15 = 1.35 - 0.5175 = 0.833.
+    setSun(ctx, 0.95, 0.833);
     field(ctx);
     b.setPhase('command');
     b.activeUnit = null;
@@ -1693,9 +1747,15 @@ export const SHOTS = {
       // ...and -0.46 of the half-width projects to x = 518, which at this depth puts her
       // body behind the roster plate in the lower-left corner (x < 520). -0.20 lands her
       // at x = 768: still left of the centre column, clear of every HUD panel.
-      ['Marina Wulfstan', 3.6, -0.20],
+      // R25: the whole LEFT half of the near and middle field — roughly x 0..700 below the
+      // horizon, a fifth of the page — came back as unbroken pasture with one 20 px figure
+      // in it, while Marina at -0.20 sat within 4% of the centre column (composition rule 1)
+      // and Largo at -0.13 stacked directly behind her. Walk Marina out to the left third
+      // and drop Largo into the empty near-left at nine metres, where he is big enough to
+      // read as a figure and small enough not to compete with her.
+      ['Marina Wulfstan', 3.4, -0.42],
       ['Edy Nelson', 10.5, 0.34],
-      ['Largo Potter', 15.0, -0.13],
+      ['Largo Potter', 9.0, -0.66],
       ['Alicia Melchiott', 20.0, 0.66],
       ['Isara Gunther', 25.0, -0.74],
       ['Rosie Stark', 30.0, 0.10],

@@ -107,10 +107,50 @@ const CAST = {
             brow: 0.28, cheek: 0.62, width: 0.95, length: 0.95, ear: 0.88 },
     eyeColor: 0x4a6b45,
     hair: 0x8a6a34,
-    tunic: 0xa8442c, tunicShade: 0x7c2f1e,  // red-orange
+    // ROUND 25 WAVE 3 — THE BLOCKER "ONE SQUAD MEMBER RENDERS FLESH-PINK FROM
+    // SHOULDERS TO HIPS WITH NO TUNIC: BROWN STRAPS OVER BARE SKIN, A STRAY
+    // BLUE/GOLD PATCH AT THE BELT". That is this hex, and nothing is missing or
+    // mis-assigned — the straps are her webbing, the blue/gold is trouser +
+    // buckle, and the "bare skin" is the tunic itself. Verified by forcing
+    // makeAppearance's skin to magenta and re-rendering `firefight`: her back
+    // stayed salmon while every real skin surface in the frame went magenta, so
+    // the torso material is present and is this colour.
+    //
+    // Measured on the r25 `firefight` plate, Rosie from behind (the framing every
+    // gameplay camera gives her): upper back rgb(223,160,122) and hip
+    // rgb(215,147,113), against lit skin elsewhere in the set at rgb(223,183,137)
+    // — 5 LSB apart in red and 17 in green, at the same hue. 0xa8442c is (168,68,44)
+    // in sRGB, i.e. this build's warm key and fill lift a mid-chroma vermilion
+    // 90 LSB and desaturate it straight onto the skin ramp. Her SLEEVES are the
+    // same cloth, so the arms match the torso and the whole figure reads nude.
+    //
+    // Same lesson as her headCloth below: darkening alone is not the fix and
+    // neither is hue alone. Re-authored at a lower luminance AND rotated off the
+    // skin's 30-degree orange to a 5-degree crimson, so what the key lifts is a
+    // red that cannot land on the flesh ramp. Still unambiguously "the red-orange
+    // one" beside Alicia's teal at 20 m, which is the read the audit protects.
+    //
+    // CYCLE 2. 0x8e2118 moved the lit band from rgb(223,160,122) to (201,133,106)
+    // — a real separation (G is now 50 LSB under skin's 183, was 17) and still
+    // not enough: it reads as dusty rose, not as cloth. The reason a 26-LSB drop
+    // in the hex bought only 22 on the plate is that this scene's fill plus the
+    // paper wash apply a near-constant lift — solving the two measured points
+    // gives R_out ~ 0.85*R_in + 80, G_out ~ 0.77*G_in + 108 — so GREEN CANNOT GO
+    // BELOW ~108 on a lit surface however dark the hex is, and chroma alone can
+    // never carry this. What can is R_in: the lift is affine, so dropping red
+    // moves the whole value down. 0x74140b lands the lit band near (178,123,96),
+    // ~45 LSB under lit skin in every channel.
+    //
+    // That is also what docs/reference/vc-072.jpg does, and it is the general
+    // rule this file kept breaking: in the reference the SKIN is the brightest
+    // thing in the frame and every garment — Alicia's teal, Isara's cream poncho,
+    // Welkin's olive — sits below it. There is no high-luminance saturated
+    // garment anywhere in the set. A tunic brighter than a cheek is a tunic that
+    // will read as a cheek.
+    tunic: 0x74140b, tunicShade: 0x480c06,  // oxblood; below skin in value
     collar: 0x35506b, trouser: 0x35506b,    // blue
     trim: 0xe9e0c6, accent: 0x35506b, scarf: 0xd8cfb4,
-    cap: 0xa8442c, capShade: 0x7c2f1e,
+    cap: 0x74140b, capShade: 0x480c06,      // unused while `bare`, kept in step
     bare: true,
     // ROUND 25 WAVE 2 — THIS WAS 0xa8442c, THE SAME HEX AS HER TUNIC, AND IT IS
     // WHY ROSIE READ AS A BALD PINK DOME IN `overview` AND `firefight`.
@@ -1127,7 +1167,11 @@ function eyeInk(b, rig, o, head, f) {
   // 0.98 (docs/reference/vc-076.jpg at 6x — a 61 x 60 px almond on a 230 px
   // face). This overlay was always the right idea starved by a slot half the
   // height it needed.
-  const eW = 0.0142 * eyeS, eH = 0.0135 * eyeS;
+  // ROUND 25 WAVE 3: 0.0142/0.0135 -> 0.0130/0.0118. Wave 1 grew eH alone and
+  // overshot the absolute size — the aspect target (0.98 in vc-076) was right,
+  // the assembly built to fill it was not, and on a lead the result read as a
+  // bulging wet lens on a flat mask. Both axes back ~8%, aspect held at 0.908.
+  const eW = 0.0130 * eyeS, eH = 0.0118 * eyeS;
 
   // Sclera. NOT rig's PALETTE.eyeWhite (0xcfc6b6) plus a lot — rig's note that a
   // brighter white "blooms into a pair of glowing dots where the eyes should be"
@@ -1140,7 +1184,43 @@ function eyeInk(b, rig, o, head, f) {
   // warning about glowing dots is a real effect and this is where it bites. Two
   // steps down puts them just under the forehead, which is where sclera belongs —
   // it is a wet grey surface in a shadowed socket, not a highlight.
-  const sclera = rgbLin(0xc6bcab);
+  //
+  // ROUND 25 WAVE 3 — "THE EYE HAS NO WHITE." Both notes above are about
+  // LUMINANCE and they are both right; the defect they left behind is CHROMA.
+  // 0xc6bcab is a warm mid-tan sitting 15 LSB from the skin it is embedded in
+  // and in the same hue family, so the sclera, the iris rim and the lid all
+  // arrive at the 4-band quantiser inside one band and the eye comes out as a
+  // single muddy lens with no value step in it at all. The round-17 failure
+  // (0xd0c7b6 reading as two glowing dots) was a WARM near-white going brighter
+  // than the forehead — the fix for that is not to make the white tan, it is to
+  // take the warmth OUT. 0xdcdad0 is cool-neutral (R-B 12 against the old 39 and
+  // against lit skin's 86): at a comparable luminance it reads as paper white
+  // beside an orange cheek instead of as a lighter piece of cheek, and the two
+  // corner crescents it paints are 5 mm each, not a lens. Colour only — the
+  // layer stand-offs in this block are correct and were expensive to find.
+  // CYCLE 2: 0xdcdad0 -> 0xe6e2d6. At 0xdcdad0 the crescents resolved as white
+  // at 9x but only 14 px in the eye box cleared value 200, against the audit's
+  // asked-for 30. The audit's own suggestion was 0xe8dfd0, which is WARM and is
+  // the round-17 glowing-dots hex within 6 LSB; this is the same luminance with
+  // the warmth taken out (R-B 16 against 0xe8dfd0's 24 and 0xc6bcab's 39). The
+  // crescents cannot get much past this without geometry — they are 5 mm each,
+  // and the audit is explicit that the assembly's stand-offs must not be touched.
+  //
+  // AND THE NUMERIC HALF OF THE ACCEPTANCE TEST IS UNREACHABLE FROM THIS LINE.
+  // 0xdcdad0 -> 0xe6e2d6 (+10 LSB of albedo) moved the count of pixels over
+  // value 200 in the eye box from 14 to 13 — i.e. nothing, twice the size of the
+  // change. The crescents were confirmed present and confirmed to be THESE
+  // crescents by rebuilding them at 0x00ff00 and re-rendering `closeup`: green
+  // appears as a clean sliver either side of the iris, so the overlay is landing
+  // and is not being swallowed by rig's lens. What caps them is the note 90 lines
+  // up: this block is built AFTER the AO bake, and a disc at the bottom of a
+  // modelled orbit comes back ~26% darker. 230 of albedo lands near 170 on the
+  // plate, so "a contiguous region >= 30 px at value >= 200" cannot be bought
+  // with a hex — it needs either more crescent (geometry, forbidden here) or an
+  // AO exemption for the eye assembly (materials.js, not this file). What this
+  // line CAN deliver, and now does, is the value and hue STEP against the iris
+  // and the lid, which is what "the eye has no white" was actually about.
+  const sclera = rgbLin(0xe6e2d6);
   // Iris and pupil, darkened toward a WARM near-ink rather than toward neutral —
   // the rubric's round-15 entry is explicit that dropping luminance without
   // re-authoring hue and chroma is what turned this hero's outlines violet.
@@ -1214,14 +1294,17 @@ function eyeInk(b, rig, o, head, f) {
     b.setColor(iris).setMottle(0.018);
     b.setTransform(at(0.0052));
     b.addEllipsoid({
-      center: [0, eH * 0.10, 0], radius: [0.0116 * eyeS, 0.0122 * eyeS, 0.0016],
+      // r25 wave 3: scaled by the same 0.915 / 0.874 the fissure came back by,
+      // so the iris stays at 82% of the fissure width — the measured reference
+      // proportion — while the whole eye stops bulging.
+      center: [0, eH * 0.10, 0], radius: [0.0106 * eyeS, 0.0107 * eyeS, 0.0016],
       seg: seg(11), rings: seg(7),
       displace: (dx, dy, dz) => [1, 1, 0.34 + 0.66 * clamp01(dz)],
     });
     b.setColor(pupil).setMottle(0.010);
     b.setTransform(at(0.0060));
     b.addEllipsoid({
-      center: [0, eH * 0.10, 0], radius: [0.0051 * eyeS, 0.0058 * eyeS, 0.0011],
+      center: [0, eH * 0.10, 0], radius: [0.0047 * eyeS, 0.0051 * eyeS, 0.0011],
       seg: seg(9), rings: seg(6),
     });
 
@@ -1722,15 +1805,43 @@ function gearHead(b, rig, o, head, cls) {
       // (dy 0.95, a hand's breadth behind the vertex) against 0.545 at the nape
       // is that asymmetry, and 0.545 is below the ear line so the corners are
       // lost in the hair the way they are in vc-088.
+      // ROUND 25 WAVE 3 — "A SMOOTH PALE TEAL DOME WITH A SPECULAR HIGHLIGHT AND
+      // NO HAIR MASS: THE BALD-DOME DEFECT IN A NEW HUE." Wave 2 fixed the hue
+      // (tunic-red -> 0x35506b blue) and the head still reads bald from behind,
+      // which is the framing every gameplay camera gives Rosie. Two causes, both
+      // here, and neither is the hex:
+      //
+      //   1. COVERAGE. 0.545 at the nape is below the ear line, so from directly
+      //      behind the cloth IS the entire visible head — there is no hair in
+      //      the silhouette to be bald relative to. Wave 2's own note claimed
+      //      "the hair below phi 0.545 shows against it either way"; on the r25
+      //      `firefight` plate it does not, because at that phi what is left is
+      //      the nape, which the collar then covers. 0.545 -> 0.415 leaves a band
+      //      of skull from phi 0.415 to the collar for buildHair's real haircut
+      //      to fill, so the cloth is a thing tied ON a head of hair.
+      //   2. VALUE, and it is a SHADER-WINDOW problem, not a colour problem. This
+      //      cloth was being emitted under gearHead's blanket `setZone(ZONE.KIT)`
+      //      — the window rig.js:576 documents as "the BOTTOM, plus a hard
+      //      specular band", which is right for steel and leather and wrong for a
+      //      cotton bandana. That specular band is the "pale dome with a
+      //      highlight": measured on the r25 `firefight` plate the cloth body sat
+      //      at rgb(82,87,94) while its sheen blob hit rgb(128,156,144), a 70 LSB
+      //      step on a smooth dome, which is exactly how a bald scalp is drawn.
+      //      Under ZONE.CLOTH the same hex has no sheen term at all.
       const clothEdge = (u) => {
         const cz = Math.cos(u * TAU);
-        return 0.105 + 0.440 * clamp01(-cz) + 0.150 * (1 - Math.abs(cz));
+        return 0.105 + 0.310 * clamp01(-cz) + 0.135 * (1 - Math.abs(cz));
       };
       // 1.205, not the 1.045 floor: the bare-headed scalp cap that buildHair
       // lays down below reaches 1.095 * 1.054 = 1.154 at the tufts, and cloth
       // that sits inside the hair it is tied over is cloth the depth buffer
       // eats. Same failure mode as the MINK note above, one layer out.
       const CLOTH = 1.205;
+      // See (2) above: cloth is CLOTH, not KIT. gearHead sets KIT for the whole
+      // function because everything else it builds is steel, leather or stamped
+      // felt; a bandana borrowing KIT's specular band is what put a bald-scalp
+      // highlight on the back of Rosie's head. Restored to KIT after the corner.
+      b.setZone(ZONE.CLOTH);
       b.setColor(o.headCloth).setMottle(0.05);
       b.addEllipsoid({
         center: [C[0], C[1] + 0.006, C[2] - 0.010],
@@ -1772,6 +1883,7 @@ function gearHead(b, rig, o, head, cls) {
         { p: [-R[0] * 0.92, C[1] - R[1] * 0.62, C[2] - R[2] * 0.94], rx: 0.022, rz: 0.010 },
         { p: [-R[0] * 0.94, C[1] - R[1] * 0.88, C[2] - R[2] * 0.88], rx: 0.005, rz: 0.004 },
       ], { seg: seg(8), capStart: 'flat', capEnd: 'round' });
+      b.setZone(ZONE.KIT);
     }
     return false;
   }
@@ -1919,9 +2031,35 @@ function gearHead(b, rig, o, head, cls) {
     // which flares to 1.34 R and hangs. At 60 m the soldier is 20 px tall and the
     // only thing resolving is that his head is wider than his neck by half again
     // and has a hard shadow under it.
+    // ROUND 25 WAVE 3 — "THE FACE IS A SEMI-TRANSPARENT DECAL: YOU CAN SEE THE
+    // HELMET BRIM THROUGH IT."  It was never transparency. Nothing in this file
+    // or rig.js sets `transparent` or touches depthWrite. The crown's lower edge
+    // is a function of azimuth (`helmEdge`) while the brim below it is a ring at
+    // a FIXED phi 0.365-0.460, and at the face (cz = +1) the old crown stopped at
+    // 0.385 - 0.085 = 0.300. That leaves an uncovered annulus of skull between
+    // phi 0.300 and 0.365 across the whole front of the head — so the SKIN was
+    // drawn there, in a band the same colour as the cheek, and the eye joined it
+    // to the face and read the brim as a line laid over a face.
+    //
+    // Proved, not guessed: makeAppearance's skin was temporarily forced to
+    // magenta and hair to blue and `squad`/`village` re-rendered. A magenta wedge
+    // appeared INSIDE the helmet silhouette above the brim on both the `village`
+    // shocktrooper and the `squad` lancer, with the blue fringe under it — i.e.
+    // the pale band is the skull, not a shading plateau and not a decal.
+    // (Sampled on the r25 `village` plate the band read rgb(223,183,137) against
+    // the lit cheek's rgb(223,183,137) — the same value to the LSB.)
+    //
+    // The scout cap two branches up never had this bug because its band is built
+    // FROM capEdge (`phiMin: capEdge(u) - 0.075`), so it tracks the crown. The
+    // helmet's brim can't do that — its phiMax is fixed, and at the nape helmEdge
+    // already runs past it — so the crown is brought down to meet the brim
+    // instead: every azimuth now ends at or below 0.405, i.e. at least 0.040 past
+    // the brim's 0.365 inner ring. dy at phi 0.405 is cos(0.405 pi) = +0.295 of
+    // R[1], still 0.22 R above the brow ridge at +0.073, so the sacred brow line
+    // is untouched — the crown lip hides UNDER the brim, it does not cross a face.
     const helmEdge = (u) => {
       const cz = Math.cos(u * TAU);
-      return 0.385 - 0.085 * clamp01(cz) + 0.150 * clamp01(-cz);
+      return 0.415 - 0.010 * clamp01(cz) + 0.130 * clamp01(-cz);
     };
     b.setColor(mixCol(o.metal, o.tunicShade, 0.42));
     b.addEllipsoid({

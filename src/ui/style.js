@@ -499,7 +499,9 @@ function css() {
 .vc-cp-note{ margin-top:.42em; font-size:.66em; font-style:italic; line-height:1.42;
   color:var(--ink-2); letter-spacing:.02em; max-width:15em; }
 .vc-turn{ padding:.5em .95em .55em; text-align:center; }
-.vc-turn b{ font-size:1.7em; font-weight:400; display:block; line-height:1; }
+.vc-turn b{ font-size:1.7em; font-weight:400; display:inline; line-height:1; }
+/* The limit is subordinate to the turn, the way "5 / 5" is on the magazine. */
+.vc-turn-max{ margin-left:.22em; color:var(--ink-3); letter-spacing:.08em; }
 
 .vc-roster{
   position:absolute; left:1.5em; top:50%; transform:translateY(-50%);
@@ -538,6 +540,10 @@ function css() {
 .vc-ru-in{ display:flex; gap:.5em; padding:.4em .5em .46em; align-items:stretch; }
 .vc-ru-por{ width:3.5em; height:3.9em; flex:0 0 auto; position:relative; }
 .vc-ru-por svg{ width:100%; height:100%; }
+/* A vehicle's box holds its silhouette, not a portrait: no frame, no ground,
+   centred, and inked at the same weight as the rest of the card. */
+.vc-ru-por.veh{ display:grid; place-items:center; }
+.vc-ru-por.veh svg{ width:88%; height:auto; opacity:.86; }
 .vc-ru-body{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:.14em; }
 .vc-ru-top{ display:flex; align-items:flex-start; gap:.3em; }
 .vc-ru-name{ font-size:.92em; letter-spacing:.02em; white-space:nowrap; overflow:hidden;
@@ -567,12 +573,23 @@ function css() {
   min-width:4.95em; text-align:right; font-variant-numeric:lining-nums tabular-nums; }
 .vc-ru-gr .n b{ font-weight:400; color:var(--ink); font-size:1.16em; }
 /* A rubber stamp in the corner of the personnel card, clear of the name. */
+/* r25: the stamp was clipped by the card's own right edge and printed straight
+   through the rank chevrons under it. Two causes, both here. (1) right:.26em
+   with rotate(-8deg) about the CENTRE swings the stamp's top-right corner out
+   past the paper — rotating about the top-right corner instead keeps every
+   corner inside the box it was inset into, and .62em of inset covers the
+   remaining swing at every card width. (2) It shared its corner with the
+   chevrons; .acted now walks them left out from under it (see below). */
 .vc-ru-stamp{
-  position:absolute; right:.26em; top:.26em; white-space:nowrap;
+  position:absolute; right:.62em; top:.24em; white-space:nowrap;
   font-variant:small-caps; letter-spacing:.12em; font-size:.46em;
-  color:var(--red); padding:.12em .38em .16em;
-  transform:rotate(-8deg); opacity:.82;
+  color:var(--red); padding:.12em .38em .16em; z-index:2;
+  transform:rotate(-7deg); transform-origin:100% 0; opacity:.82;
 }
+/* The chevrons live in the stamp's corner, so a spent card yields the corner to
+   the stamp rather than printing both on top of each other. visibility, not
+   display, so the row's widths — and the name's — do not change under it. */
+.vc-ru.acted .vc-ru-rank{ visibility:hidden; }
 .vc-ru-stamp svg{ position:absolute; inset:0; width:100%; height:100%; }
 .vc-ru-stamp span{ position:relative; }
 /* 2.5em, not 3.3: at 3.3 the stamp's reservation ate "Marina Wulfstan" down to
@@ -690,7 +707,10 @@ function css() {
 .vc-rbtn-t .vc-key path{ fill:rgba(90,20,26,.35); }
 .vc-endturn{ position:absolute; right:2.0em; bottom:1.5em; }
 .vc-endturn:hover{ transform:translateX(-.5em) scale(1.03); }
-.vc-btnrow{ display:flex; gap:1.0em; justify-content:flex-end; align-items:center; margin-top:1.2em; }
+/* flex:0 0 auto so a spread's height budget can never squeeze the call to
+   action out of the sheet — see .vc-page-in below for why that mattered. */
+.vc-btnrow{ display:flex; gap:1.0em; justify-content:flex-end; align-items:center;
+  margin-top:1.2em; flex:0 0 auto; }
 
 /* The hand of orders. A six-card strip spanning the full width of the page
    turned the reconnaissance drawing into a toolbar; filing it behind a tab left
@@ -765,9 +785,19 @@ function css() {
 .vc-ap-meter .vc-g{ position:absolute; inset:0; height:100%; }
 .vc-ap-meter .vc-bar-ghost{ z-index:0; }
 .vc-ap-range{ margin-left:auto; letter-spacing:.13em; color:var(--ink-3); }
+/* The health row sits ABOVE action points and reads quieter than it: the same
+   ruled trough and brushed pigment, a smaller numeral, and a hairline of space
+   between the two so they read as two entries on one slip rather than one
+   two-storey meter. */
+.vc-hp-head b{ font-size:1.16em; }
+.vc-hp-meter{ height:.86em; margin-bottom:.5em; }
+.vc-ap.hurt .vc-hp-head b{ color:var(--red); }
 .vc-ap.low .vc-ap-head b{ color:var(--red); animation:vc-throb 1.05s ease-in-out infinite; }
 
-.vc-name{ position:absolute; left:2.0em; bottom:6.9em; }
+/* 9.9em, not 6.9em: the slip sits ON TOP of the action-point card, and that card
+   grew a health row in r25. At the old offset the AP paper covered the bottom
+   half of the soldier's own name. */
+.vc-name{ position:absolute; left:2.0em; bottom:9.9em; }
 .vc-name-in{ display:flex; align-items:center; gap:.55em; padding:.34em .95em .4em .5em; }
 .vc-badge{ position:relative; width:2.9em; height:3.1em; flex:0 0 auto; }
 .vc-badge svg{ position:absolute; inset:0; width:100%; height:100%; }
@@ -776,6 +806,11 @@ function css() {
 
 .vc-ammo{ position:absolute; right:2.0em; bottom:1.9em; width:14.5em; padding:.5em .75em .65em;
   text-align:right; }
+/* Weapon drawing on the left, count on the right — the card is FULL now. */
+.vc-ammo-row{ display:flex; align-items:center; gap:.6em; }
+.vc-ammo-w{ flex:0 0 auto; width:4.6em; opacity:.82; }
+.vc-ammo-w svg{ width:100%; height:auto; }
+.vc-ammo-col{ flex:1 1 auto; min-width:0; }
 .vc-ammo-pips{ display:flex; gap:.22em; justify-content:flex-end; margin-top:.25em; }
 .vc-ammo-pips svg{ width:.62em; height:1.5em; }
 .vc-ammo-pips .spent{ opacity:.30; }
@@ -803,22 +838,35 @@ function css() {
 
    The running head this used to be clearing at 2.5em is display:none in
    gameplay (page furniture, book screens only), so nothing is under it now. */
+/* THE HEADING STRIP IS A PIECE OF GUMMED PAPER, NOT A GLASS OVERLAY.
+   r25 found three faults in it and all three were assembly:
+     - it sat at top:.5em, inside the plate's own deckled paper margin, so the
+       tick strip was cropped by the frame edge in every action and aim frame;
+       1.75em clears the margin and lands the tape on the picture;
+     - at opacity .78 over a .5-.6 alpha wash a CHIMNEY rendered through it —
+       a paper tape you can see a roof through is a HUD, not a prop, so the
+       backing is now effectively opaque and the layer's own opacity is gone;
+     - the caret was pinned at top:-.10em inside overflow:hidden, i.e. the one
+       mark that carries the heading was the one mark being clipped. The strip
+       now reserves a row above the tape for it and the tape starts below.
+   The horizontal mask stays: the strip has to FADE OFF at both ends or it is a
+   bar across the frame. */
 .vc-compass{
-  position:absolute; top:.5em; left:50%; transform:translateX(-50%);
-  width:19em; max-width:34vw; height:2.0em; overflow:hidden; opacity:.78;
+  position:absolute; top:1.75em; left:50%; transform:translateX(-50%);
+  width:19em; max-width:34vw; height:2.1em; overflow:hidden;
   -webkit-mask-image:linear-gradient(90deg,transparent,#000 17%,#000 83%,transparent);
   mask-image:linear-gradient(90deg,transparent,#000 17%,#000 83%,transparent);
 }
 .vc-compass::before{
-  content:''; position:absolute; left:0; right:0; top:.04em; height:1.05em; z-index:0;
+  content:''; position:absolute; left:0; right:0; top:.52em; height:1.05em; z-index:0;
   background-image:var(--grain),
-    linear-gradient(180deg, rgba(250,244,228,.62) 0%, rgba(238,227,201,.57) 62%, rgba(214,197,163,.50) 100%);
+    linear-gradient(180deg, rgba(250,244,228,.985) 0%, rgba(240,229,203,.975) 62%, rgba(219,203,169,.965) 100%);
   background-blend-mode:multiply, normal;
   background-size:160px 160px, 100% 100%;
-  box-shadow:0 1px 2px rgba(58,47,51,.13);
+  box-shadow:0 1px 3px rgba(58,47,51,.30);
   clip-path:var(--tape-clip, none);
 }
-.vc-compass-tape{ position:absolute; top:0; left:0; height:100%; will-change:transform; z-index:1; }
+.vc-compass-tape{ position:absolute; top:.48em; left:0; height:1.1em; will-change:transform; z-index:1; }
 .vc-compass-pin{ position:absolute; top:.05em; transform:translateX(-50%); text-align:center; }
 .vc-compass-pin svg{ width:1.1em; height:1.1em; margin:0 auto; }
 .vc-compass-pin span{ font-size:.56em; font-variant:small-caps; letter-spacing:.14em; }
@@ -829,7 +877,7 @@ function css() {
 .vc-compass-pin .tick svg{ width:100%; height:100%; }
 /* Heading pip: an inked caret nailed to the centre, outside the scrolling tape. */
 .vc-compass-pip{
-  position:absolute; left:50%; top:-.10em; width:.56em; transform:translateX(-50%);
+  position:absolute; left:50%; top:.02em; width:.56em; transform:translateX(-50%);
   filter:drop-shadow(0 1px 1px rgba(58,47,51,.35)); z-index:2;
 }
 .vc-compass-pip svg{ width:100%; height:auto; }
@@ -889,7 +937,10 @@ function css() {
 .vc-cross{ position:absolute; left:50%; top:50%; width:15em; height:15em; transform:translate(-50%,-50%); }
 .vc-cross svg{ width:100%; height:100%; }
 .vc-acc{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); }
-.vc-brackets{ position:absolute; left:50%; top:50%; width:21em; height:15em; transform:translate(-50%,-50%); }
+/* left/top are written per frame by _updateTargeting(): the brackets ride the
+   locked soldier's projected box, not the centre of the screen. */
+.vc-brackets{ position:absolute; left:50%; top:50%; width:21em; height:15em;
+  transform:translate(-50%,-50%); }
 .vc-brackets svg{ width:100%; height:100%; }
 /* The firing solution, pinned on its own chit clear of the sight picture. */
 .vc-hit{
@@ -1074,8 +1125,47 @@ function css() {
 .vc-screens{ position:absolute; inset:0; }
 .vc-screen{ position:absolute; inset:0; display:grid; place-items:center; perspective:2400px; }
 .vc-scrim{ position:absolute; inset:0; background:rgba(38,29,26,.62); backdrop-filter:blur(2px) saturate(.8); }
-.vc-page{ position:relative; width:min(74em, 88vw); max-height:88vh; }
-.vc-page-in{ padding:2.0em 2.4em 2.2em; }
+/* THE SHEET OWNS THE HEIGHT BUDGET; THE CONTENT DOES NOT SET IT.
+   Until r25 .vc-page capped the PAPER at 88vh while the column inside it was
+   capped by nothing, so on the briefing — the second screen a stranger sees —
+   the "Begin Mission" ribbon and its "moving out in N s" hint rendered BELOW
+   the viewport at every size measured (button top 1085 px against a 1080 px
+   viewport; 816 against 810 at 1440x810; 756 against 720) and the squad-roll
+   chips hung past the paper's own deckled bottom edge. The demo's primary call
+   to action was invisible and the sheet read as broken.
+   The fix is a three-band page: masthead and button ribbon are pinned at their
+   natural size, and exactly one child — .vc-page-body — is the flexible band
+   that gives way, scrolling only when a short viewport leaves it no choice. */
+.vc-page{ position:relative; width:min(74em, 88vw); max-height:88vh; display:flex; }
+.vc-page > .vc-content{ flex:1 1 auto; min-width:0; min-height:0;
+  display:flex; flex-direction:column; }
+.vc-page-in{ padding:2.0em 2.4em 2.2em; display:flex; flex-direction:column;
+  flex:1 1 auto; min-height:0; }
+/* Everything in the column is rigid by default; only the marked band flexes. */
+.vc-page-in > *{ flex:0 0 auto; }
+.vc-page-in > .vc-page-body{ flex:1 1 auto; min-height:0;
+  overflow-y:auto; overflow-x:hidden; }
+/* If it does have to scroll it must not sprout an OS scrollbar on a sheet of
+   1935 field-journal paper: a thin sepia thumb on a transparent track. */
+.vc-page-body{ scrollbar-width:thin; scrollbar-color:rgba(96,76,54,.42) transparent; }
+.vc-page-body::-webkit-scrollbar{ width:6px; height:6px; }
+.vc-page-body::-webkit-scrollbar-track{ background:transparent; }
+.vc-page-body::-webkit-scrollbar-thumb{ background:rgba(96,76,54,.42); border-radius:3px; }
+/* On a short viewport the root font-size clamp has already bottomed out at 13px,
+   so the sheet buys its height budget back from its own margins rather than
+   scrolling the squad roll off the paper. Measured: at 1024x640 the briefing
+   body overflowed by 57 px before this rule and by 0 after. */
+@media (max-height:780px){
+  .vc-page-in{ padding:1.3em 1.9em 1.5em; }
+  .vc-page-in .vc-cols{ gap:1.2em; }
+  .vc-page-in .vc-obj-list{ gap:.38em; }
+  .vc-page-body .vc-body{ font-size:.9em; line-height:1.28; }
+  .vc-btnrow{ margin-top:.75em; }
+}
+@media (max-height:660px){
+  .vc-page-in{ padding:1.0em 1.6em 1.15em; }
+  .vc-page-body .vc-body{ font-size:.84em; line-height:1.26; }
+}
 
 /* Every full-screen spread is a PAGE TURN, not a web modal: the sheet swings in
    about its left edge while the scrim inks up behind it, and swings out the
@@ -1118,7 +1208,15 @@ function css() {
 .vc-obj-list{ display:flex; flex-direction:column; gap:.55em; }
 .vc-obj-item{ display:flex; gap:.6em; align-items:flex-start; }
 .vc-obj-item svg{ width:1.5em; height:1.5em; flex:0 0 auto; }
-.vc-squad{ display:flex; flex-wrap:wrap; gap:.5em; }
+/* THE SQUAD ROLL IS ONE ROW, and it fits by SHRINKING rather than by wrapping.
+   A wrapped second row is what pushed the briefing's chips past the bottom of
+   their own sheet (r25): six 6.4em chips in a 561px column wrapped 4 + 2 and
+   cost 358px of a 684px body. Nowrap plus a shrinkable flex-basis on the chip
+   (screens.js sets flex:0 1 <size>em) turns that into a single 6-up row that
+   narrows with the column, and squadChip's fit pass then sizes the class line
+   to whatever width the chip ended up with. */
+.vc-squad{ display:flex; flex-wrap:nowrap; gap:.5em; align-items:flex-start; }
+.vc-squad > .vc-chip{ min-width:0; }
 .vc-chip{
   position:relative; width:6.4em; cursor:pointer;
   transition:transform .18s cubic-bezier(.2,.9,.3,1.3);
@@ -1129,6 +1227,15 @@ function css() {
 .vc-chip-in{ padding:.35em .35em .45em; text-align:center; }
 .vc-chip-in svg.por{ width:100%; height:auto; }
 .vc-chip-n{ font-size:.68em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:.15em; }
+/* The class line is a single unbreakable word ("Shocktrooper" is the longest in
+   CLASS_NAME) so it cannot wrap out of trouble — before r25 it simply ran off
+   the right edge of the paper on the briefing sheet, the deployment sheet and
+   the roster row. nowrap makes the overflow measurable; fitLine() in screens.js
+   then shrinks it until it is inside the card. */
+.vc-chip-c{ white-space:nowrap; }
+/* The measuring wrapper fitLine() puts round a line it has to shrink. It must be
+   inline-block and nowrap so offsetWidth is the width of the whole line. */
+.vc-fit{ display:inline-block; white-space:nowrap; }
 
 /* A mission with a single deployment camp must not stretch that camp into a
    page-wide letterbox — cap it and centre the row instead. */

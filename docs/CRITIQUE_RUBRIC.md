@@ -281,3 +281,74 @@ The critic returns strict JSON:
 
 `verdict` may only be `PASS` when every scored axis is ≥8 **and** `blindPick` is `"ours"` or the
 critic states it genuinely could not tell.
+
+---
+
+## Round 25 — four dead ends and one false wall, all measured
+
+Recorded so no future round re-derives them. Each was found by an agent that reported an honest
+negative result, which is why they are worth more than the fixes around them.
+
+### A full-frame `mix-blend-mode: multiply` DOM layer is a hard p99 ceiling
+
+The project chased p99 in the **shader** for twenty-four rounds while carrying **two** full-frame
+multiply layers in the DOM — `.vc-vignette` and `.vc-fibre` in `ui/style.js`. A multiply layer caps
+the maximum achievable luminance at `base * (1 - a + a*ink)` no matter what the renderer outputs.
+The grade agent raised its own paper-lift uniform to maximum, measured **no movement in p99 at
+all**, and only then went looking outside its own file.
+
+**Rule: before attributing a whole-frame tonal limit to the renderer, ablate every DOM layer
+composited over the canvas and re-measure.** With both layers ablated the ceiling was still 227 —
+which correctly redirected the search to the falloff's sky and near-depth gates.
+
+### `renderScale` is not the only harness blind spot — `dt = 0` freezes damped readouts too
+
+The resident settle runs at `dt = 0` by design (the frozen shutter). That freezes **every**
+`damp()`-driven HUD value at whatever `resetShotState()` left in it, not just CSS animations. The
+symptom was an `aim` plate reading **"0% Hit" beside "Solution: Locked" and "84 expected"** — which
+looked exactly like a broken forecast and was not: the game layer was publishing `chance: 0.99` at
+that frame. Two agents disagreed about it in good faith because neither owned both files.
+
+**Rule: a readout that disagrees between `--cold` and the resident path is a harness artefact until
+proven otherwise.** Grep `damp(` in `ui/hud.js` before believing any HUD number on a fast-path plate.
+
+### Suppressing an albedo map cannot remove a mark the crease term is cutting from geometry
+
+Two separate agents tried to remove the "surgical mask" on rank-and-file faces by gating the face
+**albedo** map (`dm`), and both measured **no visible difference at all**. The mask was the
+shock/lancer **chin strap** — 8.5 mm of near-black leather crossing the cheek — and the residual
+scribble around it is cut into the **skull surface**, where the composite's crease term inks any
+sufficiently hard normal discontinuity.
+
+**Rule: the crease term sees normals, not albedo.** If a mark survives zeroing the albedo map, it is
+geometry or it is the crease term's weight — and the crease term has no per-material gate, so a
+face gets inked on exactly the same terms as a riveted tank plate.
+
+### A "the mesh cannot deform past here" wall that was never there
+
+`finish_plan.md` recorded, for two rounds, that anime face proportions were blocked because "the
+parameters are already at the edge of the range the mesh deforms cleanly over", evidenced by a
+"degenerate pale wedge" at `nose 0.62`. An agent probed the skull displacement's clamp across
+**25,600 sampled directions at every parameter value and found it is never hit — 0.00%**. The real
+cause was a sub-millimetre depth coincidence: the nose is a separate tube whose stand-off *and*
+radius both scale with `f.nose`, so at 0.62 two of its seven stations sat 0.6–0.7 mm **behind** the
+skin instead of proud of it. Three lines, and the wall was gone.
+
+**Rule: a recorded blocker with a plausible mechanism and no measurement behind it is a hypothesis.
+Probe it before planning around it.** This one cost two rounds of scope.
+
+### Densifying the village sealed the mission's win condition into a 17-cell island
+
+`_placeBuildings` went 13 → 19 buildings at a clash clearance of 8.2 → 3.9 m to make the street read
+as two continuous frontages — the right art call, made by an agent that even wrote "this is also the
+number that decides how wide the AI's path through the village is" in the same diff. Nothing enforced
+it. `nav.findPath(squad → Imperial flag)` then returned null at 24k *and* 200k maxNodes, because the
+goal was in a different connected component: 17 cells against the squad's 10,613.
+
+**Rule: any change to building placement, footprints or colliders must run the nav acceptance test
+before it ships.** It is one probe and it is definitive:
+
+```js
+vc.battle.nav.findPath({x: 2.75, z: 52.25},
+                       vc.battle.camps.find((c) => c.id === 'imperial').pos, {}) !== null
+```

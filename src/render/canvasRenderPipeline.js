@@ -552,8 +552,20 @@ float planeError(vec3 P, vec3 N, vec2 uvn, float lzN) {
   return abs(lzN - expected) * uFar;      // metres
 }
 
-struct Gb { vec3 n; float lz; vec2 id; float w; };
+struct Gb { vec3 n; float lz; vec2 id; float w; float cw; };
 
+// gMeta.b carries TWO per-object numbers packed into one half-float channel:
+// the silhouette line weight (0..1) in the low part, and an INTERIOR-CREASE
+// weight as an integer code 0..7 in units of 2. See _prepassBegin for the
+// encoder and materials.js creaseWeight for why the crease term needs its own
+// channel at all (short version: a skinned face is not a roof hip, and the
+// normal-difference crease term cannot tell them apart on its own).
+//
+// The packing is exact, not approximate: the G-buffer is HALF float, so a code
+// of 7 puts the sum in [14,16) where the ulp is 2^-7 — three decimal digits
+// still left under the line weight, which is a multiplier no one can see to
+// better than a percent. It would NOT survive a UNORM8 target; if this buffer's
+// format ever changes, this goes back to two channels.
 Gb sampleGb(vec2 uv) {
   vec4 nd = texture2D(tND, uv);
   vec4 mt = texture2D(tMeta, uv);
@@ -561,7 +573,14 @@ Gb sampleGb(vec2 uv) {
   g.n = nd.xyz;
   g.lz = nd.w;
   g.id = mt.rg;
-  g.w = mt.b;
+  // The 0.002 bias is a guard, not a rounding fudge: the encoder never emits a
+  // line weight in (0, 0.05), so nothing legitimate lives close enough to a
+  // code boundary for the bias to steal it, and it makes a code with weight
+  // EXACTLY zero (an un-outlined object) decode as its own code rather than
+  // falling one short.
+  float cc = floor(mt.b * 0.5 + 0.002);
+  g.w  = mt.b - cc * 2.0;
+  g.cw = cc * (1.0 / 7.0);
   return g;
 }
 
@@ -871,7 +890,11 @@ void main() {
   // barely any graphite, and broken up hard by the tooth so they read as a
   // pencil skipping over cold-press rather than a traced contour.
   float silLine = sil * mix(0.42, 1.0, silMag);
-  float creaseLine = crease * 0.44 * mix(0.30, 1.0, grain);
+  // ...and the crease — and ONLY the crease — is scaled by the per-object
+  // weight. The silhouette above stays at full strength whatever object it is
+  // drawn on: a head must always keep its outer contour, the reference is
+  // emphatic about that. What a head must NOT have is a stroke on the cheek.
+  float creaseLine = crease * 0.44 * mix(0.30, 1.0, grain) * c.cw;
   float line = max(silLine, creaseLine) * lineW * 2.0;
   line = max(line, skyEdge * uHorizonLine);
   line *= 1.0 - isSky;                     // never draw inside the sky itself
@@ -1968,7 +1991,31 @@ void main() {
     // fall 0.14 and the sheet never appeared.
     float near01 = solid * (1.0 - smoothstep(6.0, 30.0, dz));
     fall *= mix(1.0, 0.15, near01);               // near geometry keeps its paint
-    float far01 = solid * smoothstep(70.0, 220.0, dz);
+    // THE SKY IS NOT FAR GEOMETRY, AND THE solid GUARD ABOVE DOES NOT CATCH IT.
+    //
+    // The comment at the head of this block asserts "sky reads distG = 0", so the
+    // step(0.0001) guard was believed to exempt it. Measured, it does not: sky
+    // fragments arrive with a far-plane depth, so far01 evaluates to 1 across the
+    // whole dome and max(fall, far01 * uDrawFallAmt) pins the entire sky at fall
+    // 0.95 — at any screen position, including dead centre.
+    //
+    // The consequence was that the sky was not a sky. Sampled down the centre of
+    // village at 3/8/14/20/28/38% of frame height it read (234,231,220) ...
+    // (216,216,203) at sat 0.06-0.08 and RED-dominant — which is uPaperWhite, not a
+    // sky. The reference reads sat 0.165-0.212 and BLUE-dominant throughout
+    // (vc-104 (166,196,206), vc-072 (180,199,218)).
+    //
+    // Proved by ablation before changing anything: with the sky's share of fall
+    // forced to zero the same shot renders (126,170,187) at 3% falling to
+    // (154,177,181) at 38%, sat 0.32 -> 0.15, blue-dominant — i.e. the sky dome was
+    // correct all along and this term was erasing it. Two agents re-authored the
+    // dome in earlier waves and neither change could reach the page.
+    //
+    // Sky keeps the MARGIN term (below), which is what cuts it off at the sheet
+    // edge exactly as the reference does — vc-072's top 25 rows genuinely are paper
+    // at sat 0.053, with blue starting around row 55 of 1080. It is only the DEPTH
+    // term it must be exempt from: a dome has no distance to recede into.
+    float far01 = solid * (1.0 - sky) * smoothstep(70.0, 220.0, dz);
     fall = max(fall, far01 * uDrawFallAmt);       // distance drains anywhere in frame
 
     // ROUND 25 — THE SKY EXEMPTION WAS SIZED FOR A DIFFERENT EFFECT. r24 held it
@@ -3106,7 +3153,8 @@ export class CanvasRenderPipeline {
     const w = this.bw, h = this.bh;
 
     // MRT G-buffer. Attachment 0: view normal (xyz) + linear depth (w, 0..1).
-    // Attachment 1: object id (rg) + outline weight (b).
+    // Attachment 1: object id (rg) + outline weight AND interior-crease weight
+    // packed together (b, see sampleGb) + form scale (a).
     this.gbuf = new THREE.WebGLRenderTarget(w, h, {
       count: 2,
       type: HALF,
@@ -3666,7 +3714,19 @@ export class CanvasRenderPipeline {
       const widthMul = o.userData.outlineWidth !== undefined
         ? o.userData.outlineWidth
         : (ud.vcOutlineWidth !== undefined ? ud.vcOutlineWidth : 1);
-      o.userData.__vcMetaW = want ? Math.max(0.05, Math.min(1, widthMul * 0.5)) : 0;
+      // The interior-crease weight travels in the SAME channel as the line
+      // weight, quantised to eight levels and multiplied by 2 so it sits above
+      // the weight's own 0..1 range. `ud` is material[0] for a multi-material
+      // mesh, which for a soldier is the skin material — one prepass draw covers
+      // all three zones, so per-object is the finest granularity there is here
+      // and material[0] is the right place to read it from. See sampleGb for the
+      // decoder and materials.js `creaseWeight` for the art rule.
+      const creaseMul = o.userData.creaseWeight !== undefined
+        ? o.userData.creaseWeight
+        : (ud.vcCreaseWeight !== undefined ? ud.vcCreaseWeight : 1);
+      const creaseCode = Math.max(0, Math.min(7, Math.round(creaseMul * 7)));
+      o.userData.__vcMetaW = (want ? Math.max(0.05, Math.min(1, widthMul * 0.5)) : 0)
+                           + creaseCode * 2;
       o.userData.__vcForm = this._formScale(o, camPos, pxPerRad);
 
       this._ensureHook(o);

@@ -297,15 +297,20 @@ export class BriefingScreen {
     in_.appendChild(head);
     in_.appendChild(inkRule({ w: 900, seed: seed + 1 }));
 
-    const cols = h('div', { class: 'vc-cols', style: 'margin-top:.9em' });
+    // `vc-page-body` marks the ONE band of the sheet that may give way when the
+    // viewport is short. Without it the masthead, map, intel and squad roll all
+    // pushed the Begin Mission ribbon off the bottom of the screen (r25).
+    const cols = h('div', { class: 'vc-cols vc-page-body', style: 'margin-top:.9em' });
 
     // left: map
     const mapWrap = h('div');
     mapWrap.appendChild(label('Theatre Map'));
+    // 16/10, not 4/3: the survey is a landscape theatre map and the taller box
+    // spent 90 px of the sheet's height budget on empty paper (r25).
     const mapBox = h('div', {
-      style: 'position:relative;width:100%;aspect-ratio:4/3;margin-top:.3em;background:rgba(238,226,199,.5)',
+      style: 'position:relative;width:100%;aspect-ratio:16/10;margin-top:.3em;background:rgba(238,226,199,.5)',
     });
-    mapBox.appendChild(terrainSketch({ w: 400, h: 300, seed }));
+    mapBox.appendChild(terrainSketch({ w: 400, h: 250, seed }));
     const pins = h('div', { style: 'position:absolute;inset:0' });
     for (const m of (d.markers || defaultMarkers())) {
       const pin = h('div', {
@@ -368,6 +373,7 @@ export class BriefingScreen {
     p.content.appendChild(in_);
     this.root.appendChild(p.root);
     pageIn(this);
+    fitChips(this.root);     // in the document now, so the chips have a width
 
     // The briefing used to be the end of the road for a keyboard: it drew an
     // Enter keycap and bound nothing, and unattended it never handed over at all
@@ -400,13 +406,69 @@ function defaultMarkers() {
   ];
 }
 
+/**
+ * Shrink a one-line label until it is inside its box.
+ *
+ * These cards are hand-set, not web boxes: a class name that runs off the paper
+ * is the first thing an eye lands on, and it did exactly that on three separate
+ * screens before r25 because `squadChip` sized the BOX and nothing sized the
+ * TEXT. A Range measures the true inline width even though the element does not
+ * clip, so this works on a `overflow:visible` label. Bounded to six passes and
+ * to `min`, so it can neither loop nor shrink the type into illegibility.
+ */
+export function fitLine(el, { min = 0.30, start = 0.52 } = {}) {
+  // MEASURE IN LAYOUT SPACE, NOT IN SCREEN SPACE. These sheets are mid page-turn
+  // when the fit runs — .vc-screen.in animates a perspective transform on the
+  // whole page — and getBoundingClientRect()/Range report TRANSFORMED pixels, so
+  // a rect-based fit reads the text as narrower than it is and stops a pass
+  // early. offsetWidth on an inline-block wrapper is untransformed, and
+  // clientWidth on the block is the width the line has to live in. Both are
+  // layout-space, so the comparison is honest at any point in the animation.
+  let span = el.firstElementChild;
+  if (!span || !span.classList.contains('vc-fit')) {
+    span = h('span', { class: 'vc-fit', text: el.textContent });
+    clear(el);
+    el.appendChild(span);
+  }
+  let size = start;
+  el.style.fontSize = size + 'em';
+  const avail = el.clientWidth - 1;
+  if (!(avail > 4)) return;                     // not laid out yet
+  for (let i = 0; i < 6; i++) {
+    const w = span.offsetWidth;
+    if (w <= avail || size <= min) break;
+    size = Math.max(min, size * Math.max(0.55, (avail / w) * 0.98));
+    el.style.fontSize = size.toFixed(3) + 'em';
+  }
+}
+
+/**
+ * Run the fit pass over every squad chip under `root`. Must be called AFTER the
+ * chips are in the document — a detached element has clientWidth 0 and there is
+ * nothing to fit to.
+ */
+export function fitChips(root) {
+  if (!root) return;
+  for (const c of root.querySelectorAll('.vc-chip')) {
+    const cls = c.querySelector('.vc-chip-c');
+    if (cls) fitLine(cls, { start: Number(c.dataset.clsSize || 0.52) });
+    const nm = c.querySelector('.vc-chip-n');
+    if (nm) fitLine(nm, { start: 0.68, min: 0.42 });
+  }
+}
+
 function squadChip(u, { onClick = null, size = 6.4 } = {}) {
   const seed = (u && (u.portraitSeed || (u.name || 'x').length * 977)) || 7;
   const p = panel({ seed: seed + 5, cls: 'vc-chip', tilt: 1.4, amp: 1.4, soft: true });
+  // flex-basis, not width: `.vc-squad` is a nowrap row, so a chip must be able
+  // to give ground rather than wrap the roll onto a second line that falls off
+  // the bottom of the sheet. `width` stays as the non-flex fallback.
   p.root.style.width = size + 'em';
+  p.root.style.flex = '0 1 ' + size + 'em';
   const in_ = h('div', { class: 'vc-chip-in' });
   const por = portrait({
     seed: u?.portraitSeed != null ? u.portraitSeed : (u?.name || 'soldier'),
+    name: u?.name || '',            // named leads follow CAST_LOOK, not the die
     cls: u?.cls || 'scout', team: u?.team | 0, w: 100,
     mood: u && u.alive === false ? 'down' : 'calm',
   });
@@ -414,7 +476,7 @@ function squadChip(u, { onClick = null, size = 6.4 } = {}) {
   in_.appendChild(por);
   in_.appendChild(h('div', { class: 'vc-chip-n', text: (u?.name || 'Soldier') }));
   in_.appendChild(h('div', {
-    class: 'vc-label vc-tight', style: 'font-size:.52em',
+    class: 'vc-label vc-tight vc-chip-c', style: 'font-size:.52em',
     text: CLASS_NAME[String(u?.cls || 'scout').toLowerCase()] || 'Scout',
   }));
   p.content.appendChild(in_);
@@ -465,6 +527,10 @@ export class DeploymentScreen {
     this._build();
     if (this.autoPost) this._postAll();
     pageIn(this);
+    // _build/_postAll ran while the sheet was still vc-hidden (display:none), so
+    // every chip measured 0 wide and the fit pass inside _refresh() bailed. This
+    // is the first moment the camp slots have a real width.
+    fitChips(this.root);
     autoGo(this, {
       hint: this._hint, secs: d.autoConfirm != null ? d.autoConfirm : 20,
       verb: 'moving out', fire: () => this._confirm(),
@@ -567,6 +633,9 @@ export class DeploymentScreen {
     let total = 0;
     for (const arr of this.assign.values()) total += arr.length;
     this._btn.setEnabled(total >= this.minDeploy);
+    // _refresh() rebuilds every chip, so the fit pass has to run every time —
+    // the camp-slot chips are 5.0em and "Shocktrooper" does not fit one unaided.
+    fitChips(this.root);
   }
 
   _place(unit) {
@@ -975,6 +1044,7 @@ export class DialogueBar {
       // the box. A framed portrait read as a boxed thumbnail bolted on the side.
       this.porBox.innerHTML = portraitMarkup({
         seed: line.seed != null ? line.seed : (line.name || 'narrator'),
+        name: line.name || '',
         cls: line.cls || 'scout', team: line.team | 0, w: 100, mood: line.mood || 'calm',
         frame: false, bg: false,
       });

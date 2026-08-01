@@ -2028,6 +2028,9 @@ function resolveSun(sun) {
  *  emissiveIntensity                                                default 1
  *  subsurface       0..1 backlit translucency                       default 0
  *  outlineWidth     per-object graphite line weight multiplier      default 1
+ *  creaseWeight     per-object INTERIOR (normal-break) ink weight   default 1
+ *                   — 0 draws only the silhouette. Skinned material
+ *                   defaults are low; see the note on the default.
  *  outline          write into the outline id buffer                default true
  *  vertexColors     use the geometry colour attribute               default false
  *  map              THREE.Texture albedo/alpha map                  default null
@@ -2050,6 +2053,43 @@ export function makeCanvasMaterial(opts = {}) {
     emissiveIntensity: 1,
     subsurface: 0,
     outlineWidth: 1,
+    // ROUND 25 — THE FACE WAS BEING DRAWN AS WRINKLES.
+    //
+    // The outline pass's crease term (canvasRenderPipeline.js, "crease term:
+    // normal discontinuity at a tight radius") is driven purely by the normal
+    // difference across a 1-texel cross, with no idea what it is drawing on. On
+    // a hard-surface object that is exactly right: a roof hip, a turret ring, a
+    // sandbag course and an ashlar arris are all real folds and all want a
+    // hairline. On a SKINNED, SMOOTHLY-SUBDIVIDED head it is catastrophic —
+    // every zygomatic crest, nostril wing, lip roll and knuckle is a few degrees
+    // of curvature change, so a 19-year-old's cheek comes back covered in a
+    // field of thin interior strokes that read as wrinkles and cracked plaster,
+    // and a hand comes back as five separately-contoured sausages.
+    //
+    // docs/reference/vc-076.jpg is the measurement: a face at that scale carries
+    // FIVE marks in total — two eyes, two brow strokes, one nose shadow and one
+    // mouth line, all of them DRAWN into the albedo — and ZERO interior contour
+    // ink anywhere on the cheek plane. The head still has its full outer
+    // contour, so the fix is not "less line", it is "no INTERIOR line": the
+    // silhouette term keeps full weight and only the crease term is scaled.
+    //
+    // Granularity is per-OBJECT, not per-material-group: a soldier is one
+    // SkinnedMesh drawn into the G-buffer with one shared prepass material, and
+    // the pipeline reads the meta off material[0] (skin). So skinned cloth and
+    // kit ride on the same number as skin. That is the right answer anyway —
+    // Valkyria's jacket folds are band boundaries and painted shadow, not
+    // contour ink — and a small non-zero weight leaves the very hardest folds
+    // whispering rather than deleting the term outright.
+    //
+    // 1/7 is not a rounded-looking number by accident: the channel carries
+    // eight levels, so this is code 1 — the smallest non-zero weight there is,
+    // and the nearest the encoder can get to the critique's "~0.12 on skin".
+    // Measured on a tight crop of Alicia's face in `closeup` (x 700-795,
+    // y 250-395): ink density 7.92% at weight 1.0 against 4.75% at weight 0,
+    // i.e. the crease term owned 40% of the marks on that face. What survives
+    // at 0 is the DRAWN face — brow, lash, iris, mouth — which is albedo and is
+    // supposed to survive.
+    creaseWeight: opts.skinning ? 1 / 7 : 1,
     outline: true,
     vertexColors: false,
     map: null,
@@ -2336,6 +2376,7 @@ ${NPR_SHADE_BODY}
 
   mat.userData.vcOutline = o.outline;
   mat.userData.vcOutlineWidth = o.outlineWidth;
+  mat.userData.vcCreaseWeight = o.creaseWeight;
   mat.userData.vcKind = 'canvas';
   // A see-through mesh (a move-range ghost, a glass pane) must not stamp opaque
   // depth into the G-buffer or it will occlude the outlines of everything

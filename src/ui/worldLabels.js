@@ -11,7 +11,7 @@ import { V0, clamp01, easeOutBack, easeOutCubic } from '../core/math.js';
 import { makeRng } from '../core/rng.js';
 import { h, clear, svgEl } from './dom.js';
 import {
-  captureRing, inkRule, inkGauge, damagePlate, wobblyPath, splatPath, hatchPath,
+  captureRing, inkRule, inkGauge, hpTone, damagePlate, wobblyPath, splatPath, hatchPath,
   iconMarkup, roughCircle, fieldFigure,
 } from './icons.js';
 import { deckleClip } from './style.js';
@@ -300,6 +300,17 @@ export class WorldLabels {
   setSelf(unit) { this.selfUnit = unit || null; }
 
   /**
+   * The soldier currently under the sights wears NO world slip.
+   *
+   * His name, class, health and range are already set in the dossier a few
+   * hundred pixels away, so the floating ribbon is duplication — and the
+   * accuracy ring's stroke ran straight through it, erasing the middle of the
+   * word ("STURM" of STURMTRUPPE) in every aim frame. The dossier is the better
+   * of the two readings, so the ribbon is the one that goes.
+   */
+  setLocked(unit) { this.lockedUnit = unit || null; }
+
+  /**
    * How the page annotates units this phase.
    * @param {{filter?:function|null, occlusion?:boolean, lift?:number}} o
    *   `filter(unit)` -> may this unit be annotated at all
@@ -391,9 +402,9 @@ export class WorldLabels {
     if (showHp) {
       // A drawn gauge, not a coloured div: at tag size a flat fill reads as a
       // CSS progress bar hanging in the world.
-      gauge = inkGauge({
-        w: 96, h: 8, seed: seed ^ 0x77, segs: 4, tone: foe ? 'foe' : 'hp',
-      });
+      // Same olive→amber→red ramp for both sides (see hpTone in icons.js): the
+      // tag's RED NAME says whose it is, the gauge says how hurt he is.
+      gauge = inkGauge({ w: 96, h: 8, seed: seed ^ 0x77, segs: 4, tone: 'hp' });
       gauge.classList.add('hp');
       el.appendChild(gauge);
     }
@@ -575,6 +586,7 @@ export class WorldLabels {
       t.show = false;
       if (!unit.pos || (unit.alive === false && !unit.downed)) continue;
       if (this.filter && !this.filter(unit)) continue;
+      if (unit === this.lockedUnit) continue;      // he is in the dossier instead
       // The camera's own soldier does not wear a slip — but only when the lens
       // is actually ON him. A scripted wide shot of the same phase still wants
       // his name, so the suppression is a distance test, not a flag test.
@@ -693,8 +705,7 @@ export class WorldLabels {
         const key = Math.round((unit.hp / unit.maxHp) * 100);
         if (key !== t.hpKey) {
           t.hpKey = key;
-          t.gauge.set(Math.max(0, key) / 100,
-            key <= 25 ? 'crit' : key <= 55 ? 'warn' : (t.foe ? 'foe' : 'hp'));
+          t.gauge.set(Math.max(0, key) / 100, hpTone(Math.max(0, key) / 100));
         }
       }
     }
