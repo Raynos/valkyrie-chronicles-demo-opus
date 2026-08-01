@@ -110,30 +110,55 @@ Then the standard checks: `git status --short`, `npx vite build`,
 node tools/shoot.mjs bridge shots/bridge.png
 ```
 
-## Where the visual loop currently stands (round 14)
+## Where it stands (round 25)
 
-**Playable and rendering:** 36.5k lines, full BLiTZ battle system, 12 deterministic capture shots
-at 72–189 fps, zero console errors. `docs/HARNESS.md` explains the ~3× render speedup and why
-frames are now byte-deterministic (which is what makes regression diffs meaningful).
+**Shippable-adjacent.** 65k lines, 61 modules. `node --check` clean, `vite build` clean, all 12
+capture shots render with **zero console errors**. The mission is winnable and loseable, verified
+by a scripted headless playthrough of all seven win/lose conditions across ~32k simulated frames.
 
-**Verified working:** cast shadows (under-arch water 67 LSB below open water, from an *inverted*
-−9.6 several commits ago), the lit tank, hatching in shadowed masses, hands with legible fingers,
-a tunic that reads as cloth rather than camouflage, composition 7–8, palette 7–8.
+### The three things a resumer most needs to know
 
-**The open defect, precisely located.** Shade hue is dominated by the ambient "pole" colour in
-`render/lighting.js`, so every surface shades to roughly the same tint regardless of its albedo.
-Sweeping the pole's chroma gives moss green (99°) → teal grey (163°) → blue-violet (192°); none is
-right, because the fix is to reduce **how much** the pole glazes over albedo, not to pick a better
-pole colour. The acceptance test is that stone, grass and cloth must shade to three *different*
-hues. Full detail in `docs/CRITIQUE_RUBRIC.md`'s last three sections.
+1. **Run the nav acceptance test after ANY change to buildings, footprints or colliders.**
+   Densifying the village in r25 sealed the Imperial flag into a 17-cell island and made the
+   primary win condition physically unreachable — in a build that otherwise rendered and played.
+   ```js
+   vc.battle.nav.findPath({x: 2.75, z: 52.25},
+                          vc.battle.camps.find((c) => c.id === 'imperial').pos, {}) !== null
+   ```
+   Objectives now carry a keep-clear radius in `world/structures.js`; do not remove it.
 
-**Also open:** the face is drawn but not modelled (no zygomatic arch for a terminator to fall
-under); the lancer's arm in `tank`; characters don't band at `overview` scale; ~half of character
-footprints lack contact darkening.
+2. **The review loop lies in two specific ways, both now fixed but both worth knowing.** The
+   resident path used to render the entire aim overlay at opacity 0 (a frozen CSS animation the
+   daemon could never restart), and `dt = 0` freezes every `damp()`-driven HUD readout at whatever
+   `resetShotState()` left in it. Anything that disagrees between `--cold` and the fast path is a
+   harness artefact until proven otherwise.
 
-**Read `docs/CRITIQUE_RUBRIC.md` before measuring anything.** Its last three sections record how
-these metrics have been gamed and how they have misled — including five dead ends already ruled
-out by measurement, so no round re-tests them.
+3. **Read `docs/CRITIQUE_RUBRIC.md` before measuring anything.** It now records **ten** dead ends
+   ruled out by measurement, including the r25 five: the p99 ceiling was two DOM `multiply` layers
+   and not the shader; the crease term sees normals so zeroing an albedo map cannot remove a mark;
+   the sky was pinned to paper by the falloff's depth term, which is why two separate re-authorings
+   of the sky dome could not reach the page; and the "mesh cannot deform past here" wall recorded
+   in `finish_plan.md` for two rounds never existed (probed 25,600 directions, clamp never hit).
+
+### Verified good — do not churn these
+
+The `command` map, the HUD's design vocabulary (a critic called it "in two places better than the
+reference"), the book chrome from boot card to results screen, r23's aim-line convergence maths,
+the CAST colour-identity table, and the margin drain — whose left-edge saturation ramp measures
+0.08/0.10/0.24/0.39 against `vc-072`'s 0.07/0.09/0.17/0.25, the first thing this project has built
+that measures like the reference.
+
+### Open, measured, and honestly reported
+
+- **Ink is 4.3–8.4% against the reference's 1.8–2.8.** Deleting the *entire* outline pass only
+  moves `village` 8.68 → 6.30, so it is **not** linework — it is texture inside shadow masses.
+  Do not re-try `outlineWidth`; that lever is ruled out.
+- **`dusk` is over-inked (22%) and its near field is crushed.** Three agents each ruled out their
+  own half (shot sun bearing, sky/light blend, composite near-field term). Cause still unlocated.
+- **Faces read at closeup but are not yet drawn faces**, and hair is a solid mass rather than locks.
+- **Frame budget** is calibrated per session (`calibrateBudget`, target 13.5 ms). Every number
+  behind it was measured under another project's CPU load — re-measure on a quiet machine with
+  `node tools/frametime.mjs`.
 
 ## Build phase order (so you know where to pick up)
 
@@ -141,6 +166,8 @@ out by measurement, so no round re-tests them.
 2. ~~Subsystem build (7 parallel agents, 59 modules)~~ — done, committed `043c624`
 3. ~~Integration: `main.js` + defects S1–S15, then the boot doctor~~ — done
 4. ~~Harness performance + determinism~~ — done, `docs/HARNESS.md`
-5. Visual critique loop: shoot → harsh critic → fix → re-shoot, per `docs/CRITIQUE_RUBRIC.md` —
-   *in progress, round 14*
-6. Playtest / balance / performance pass — not started
+5. ~~Visual critique loop~~ — rounds 1–25. r25 = 8-concern audit + 3 fix waves + 5 blind critics;
+   all findings and verdicts are in `docs/critiques/r25/`.
+6. ~~Playtest / balance~~ — mission verified winnable and loseable headless (r25)
+7. Publish pass — README, meta/social tags, favicon, loading screen and static `dist/` all done;
+   remaining art work is the "Open" list above, not blockers to running it.
