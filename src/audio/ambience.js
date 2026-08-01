@@ -290,9 +290,17 @@ export class Ambience {
     this.riverPan.rolloffFactor = 1.1;
     this.riverPan.maxDistance = 220;
     this.riverFilt.connect(this.riverGain);
-    this.riverGain.connect(this.riverPan);
     this.riverPan.connect(this.out);
+    // THE RIVER STARTS AUDIBLE. It used to be built, started, and left at gain 0
+    // waiting for a setRiver() call that NOTHING IN THE TREE EVER MAKES
+    // (`grep -rn setRiver src/` finds only this file) — so a valley with a river
+    // and a bridge in it rendered five seconds of stereo water DSP every session
+    // and played it at silence. Undirected it is the "quiet stereo bed" the
+    // docstring below promises: straight to the bus, no panner, because a bed
+    // with no position must not fade with the camera's distance from the origin.
     this._riverPositional = false;
+    this.riverGain.gain.value = 0.22;
+    this.riverGain.connect(this.out);
 
     // --- crickets ----------------------------------------------------------
     this.cricketBuf = null;
@@ -377,6 +385,12 @@ export class Ambience {
   setRiver(pos, level = 1) {
     const now = this.ctx.currentTime;
     if (pos) {
+      if (!this._riverPositional) {
+        // Move off the flat bed onto the panner. Both legs reach `out`, so this
+        // has to be an either/or or a placed river would be heard twice.
+        try { this.riverGain.disconnect(this.out); } catch (e) { /* not wired */ }
+        this.riverGain.connect(this.riverPan);
+      }
       this._riverPositional = true;
       const p = this.riverPan;
       if (p.positionX) {

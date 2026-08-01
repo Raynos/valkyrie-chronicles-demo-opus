@@ -463,19 +463,35 @@ export class CommandMode {
   readSelectionInput() {
     const b = this.battle;
 
+    // TURN CONTROL BELONGS TO THE COMMAND PHASE ONLY.
+    //
+    // CommandMode stays entered and updating through the Imperial phase on purpose — that is
+    // how the player watches the enemy turn on the map — and every OTHER end-turn route is
+    // already gated on it (main.js `ui:endTurn`, hud.js's E key and its End Turn ribbon). This
+    // one was not, so pressing N while the Imperials were moving called battle.endTurn()
+    // mid-plan: the turn counter advanced, the player got a fresh 7 CP, and the Imperial phase
+    // simply never happened. A player who mashes N to end their own turn hits it by accident.
+    //
+    // Selection/confirm are gated with it: Battle.selectUnit() already refuses outside
+    // 'command', so pressing Enter during the enemy phase only fired a denial sound.
+    const cmdPhase = b.phase === 'command' && !b.over;
+
     if (Input.pressed('tab')) this.cycleSelection(Input.down('shift') ? -1 : 1);
     if (Input.pressed('t')) { this.showThreat = !this.showThreat; Bus.emit('sfx', { name: 'uiSelect' }); }
     if (Input.pressed('escape') || Input.pressed('backspace')) {
       if (this.orderMode) { this.cancelOrder(); }
       else this.clearSelection();
     }
-    if (Input.pressed('n')) { Bus.emit('command:endTurnRequest', {}); b.endTurn(); return; }
+    if (Input.pressed('n')) {
+      if (!cmdPhase) { Bus.emit('sfx', { name: 'uiDeny' }); return; }
+      Bus.emit('command:endTurnRequest', {}); b.endTurn(); return;
+    }
 
     // Left click: hover -> select -> confirm
     if (Input.mouse.leftJust) {
       if (this.orderMode) { this.applyOrderAt(this.hovered, this.cursor); return; }
       if (this.hovered && this.hovered.team === 0) {
-        if (this.selected === this.hovered) this.confirmSelection();
+        if (this.selected === this.hovered && cmdPhase) this.confirmSelection();
         else this.select(this.hovered);
       } else if (this.hovered) {
         Bus.emit('command:inspect', { unit: this.hovered });
@@ -483,7 +499,7 @@ export class CommandMode {
       }
     }
     if (Input.pressed('enter') || Input.pressed(' ')) {
-      if (this.selected) this.confirmSelection();
+      if (this.selected && cmdPhase) this.confirmSelection();
     }
   }
 

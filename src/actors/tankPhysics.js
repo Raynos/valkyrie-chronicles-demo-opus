@@ -490,8 +490,24 @@ export class TankPhysics {
     // Integrate the planar body in hull space.
     const az = Fz / this.mass;
     const ax = Fx / this.mass;
-    const newVz = vz + az * h;
-    const newVx = vx + ax * h;
+    let newVz = vz + az * h;
+    let newVx = vx + ax * h;
+
+    // STICTION. `trackAuthority` is a VISCOUS slip model — force proportional to
+    // (commanded speed - actual speed) — so it delivers exactly zero holding
+    // force where a parked vehicle needs it most, and the slope term above then
+    // free-rolls the hull downhill for ever. Measured with the sticks centred on
+    // the Edelweiss' own deployment slope: 2.8 m of drift in 6 s and still
+    // accelerating (1.05 m/s), which walked the ride model, the track imprints,
+    // the dust and `Tank.speed` (audio, exhaust) away from where the tank
+    // actually is. Real final drives are self-locking and the driver sits on the
+    // brakes; when nothing is commanding track speed, grip holds the hull.
+    const cmdMag = Math.abs(cmdL) + Math.abs(cmdR);
+    if (cmdMag < 0.02 && !this.airborne) {
+      const holdDv = (grip * (loadL + loadR) / this.mass) * h;
+      newVz = Math.abs(newVz) <= holdDv ? 0 : newVz - Math.sign(newVz) * holdDv;
+      newVx = Math.abs(newVx) <= holdDv ? 0 : newVx - Math.sign(newVx) * holdDv;
+    }
     this.accelLocal.set(
       damp(this.accelLocal.x, ax, 14, h),
       0,
@@ -558,8 +574,14 @@ export class TankPhysics {
       this.vel.z -= _n.z * into * 1.05;
     }
     // Glancing a wall nudges the hull round — tracked vehicles slew off cover.
+    // This is an ACCELERATION, so it is scaled by h. It used to be scaled by
+    // `(1 - h)` — 0.983 at 60 Hz, i.e. an unscaled per-frame velocity kick of
+    // up to 0.88 rad/s, or ~53 rad/s² sustained, which pegs `yawRate` at its
+    // clamp for as long as the hull is touching anything. (Harmless until now
+    // only because the deep-penetration mtv above was vertical and got thrown
+    // away; the collision fix makes this path live.)
     const fx = sy, fz = cy;
-    this.yawRate += (fx * _n.z - fz * _n.x) * 0.9 * clamp01(len * 4) * (1 - h);
+    this.yawRate += (fx * _n.z - fz * _n.x) * 3.0 * clamp01(len * 4) * h;
   }
 
   /**

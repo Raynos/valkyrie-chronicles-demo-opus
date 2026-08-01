@@ -38,6 +38,7 @@ const _kC = new THREE.Vector3();
 const _kD = new THREE.Vector3();
 const _kE = new THREE.Vector3();
 const _lA = new THREE.Vector3();     // lineOfSight
+const _lB = new THREE.Vector3();
 
 /** Surface materials — consumed by FX (impact decals, sparks) and audio. */
 export const SURFACE = {
@@ -551,15 +552,25 @@ export function capsuleVsWorld(p0, p1, radius, world, out = _capOut) {
           pen = radius - d;
           nx = _kC.x / d; ny = _kC.y / d; nz = _kC.z / d;
         } else {
-          // Deep inside: push out along the shallowest box axis.
+          // Deep inside: push out along the shallowest box axis — but NEVER
+          // downwards. A body that has ended up inside a solid volume came in
+          // from the side or the top; the floor the volume stands on is the one
+          // direction it cannot leave through. Measured before this guard: a
+          // 0.35 m capsule in the village wall cluster got an mtv of
+          // (-0.24, -1.77, 0.60) — 1.8 m straight into the terrain — and the
+          // tank's hull capsule half inside a building got (0, -2.07, 0), which
+          // TankPhysics._collide discards as "the ride model owns Y", leaving
+          // the Edelweiss parked inside the house with zero push-out.
           _kD.subVectors(_kA, box.center);
           if (!box.axisAligned) _kD.applyQuaternion(box.invQuat);
           const ox = box.half.x - Math.abs(_kD.x);
           const oy = box.half.y - Math.abs(_kD.y);
           const oz = box.half.z - Math.abs(_kD.z);
+          // Only consider the Y escape when it points up out of the volume.
+          const oyUp = _kD.y >= 0 ? oy : Infinity;
           _kE.set(0, 0, 0);
-          if (ox <= oy && ox <= oz) { _kE.x = Math.sign(_kD.x) || 1; pen = ox + radius; }
-          else if (oy <= oz) { _kE.y = Math.sign(_kD.y) || 1; pen = oy + radius; }
+          if (ox <= oyUp && ox <= oz) { _kE.x = Math.sign(_kD.x) || 1; pen = ox + radius; }
+          else if (oyUp <= oz) { _kE.y = 1; pen = oy + radius; }
           else { _kE.z = Math.sign(_kD.z) || 1; pen = oz + radius; }
           if (!box.axisAligned) _kE.applyQuaternion(box.quat);
           nx = _kE.x; ny = _kE.y; nz = _kE.z;
@@ -573,11 +584,46 @@ export function capsuleVsWorld(p0, p1, radius, world, out = _capOut) {
   return out;
 }
 /**
+ * How far a ray origin sitting on (or a hair under) the heightfield is lifted
+ * before the terrain occlusion test runs. See lineOfSight.
+ *
+ * rayVsHeightfield deliberately reports an origin at or below ground as an
+ * immediate hit at t = 0 so a projectile cannot tunnel out of a hill. For a
+ * SIGHT ray that rule is wrong, and it was silently quartering every explosion
+ * in the game: `Ballistics._detonate` passes `hit.point`, and a terrain hit
+ * point comes out of the bisection on the *below* side of the surface, so
+ * `p.y - heightAt(p.xz)` is exactly 0 or a hair negative for every shell and
+ * grenade that lands on the ground. lineOfSight therefore returned 0 — fully
+ * blocked — for a blast standing in the open, and Explosions.detonate scales by
+ * `0.25 + 0.75 * los`. Measured: los 1.0 at 2 cm above the surface, 0.0 at the
+ * real detonation point.
+ *
+ * A quarter of a metre is under every wall, parapet and sandbag line on the
+ * map, so lifting by it cannot see over cover, and a blast on the far side of a
+ * crest still reads as blocked because the lifted ray still marches into the
+ * crest. Anything more than LOS_BURIED_DEPTH under the surface is genuinely
+ * inside a hill and keeps the old behaviour.
+ */
+export const LOS_GROUND_LIFT = 0.25;
+/** Deeper than this under the heightfield is genuinely inside a hill: no lift. */
+export const LOS_BURIED_DEPTH = 1.0;
+
+/**
  * Line-of-sight test against world colliders + terrain.
  * @returns {number} 0 = fully blocked .. 1 = clear. Partial cover attenuates.
  */
 export function lineOfSight(world, from, to, ignoreCollider = null) {
-  _lA.subVectors(to, from);
+  const terrain = (world && world.terrain) || null;
+  // Lift an origin that is sitting on the ground out of the surface first — see
+  // LOS_GROUND_LIFT. Everything below traces from `start`, not `from`.
+  let start = from;
+  if (terrain && terrain.heightAt) {
+    const gh = terrain.heightAt(from.x, from.z);
+    if (from.y < gh + LOS_GROUND_LIFT && from.y > gh - LOS_BURIED_DEPTH) {
+      start = _lB.set(from.x, gh + LOS_GROUND_LIFT, from.z);
+    }
+  }
+  _lA.subVectors(to, start);
   const dist = _lA.length();
   if (dist < 1e-4) return 1;
   _lA.divideScalar(dist);
@@ -591,8 +637,8 @@ export function lineOfSight(world, from, to, ignoreCollider = null) {
       const box = normalizeCollider(raw);
       if (!box.blocksLos) continue;
       let t;
-      if (box.type === 'sphere') t = rayVsSphere(from, _lA, dist, box.center, box.radius, null);
-      else t = rayVsBox(from, _lA, dist, box, null);
+      if (box.type === 'sphere') t = rayVsSphere(start, _lA, dist, box.center, box.radius, null);
+      else t = rayVsBox(start, _lA, dist, box, null);
       // t ~ 0 means the ray *starts* inside this collider (a grenade landed on
       // the sandbag it is meant to be clearing). It cannot occlude itself.
       if (t > 0.06 && t < dist - 0.06) {
@@ -602,7 +648,7 @@ export function lineOfSight(world, from, to, ignoreCollider = null) {
       }
     }
   }
-  if (world && world.terrain && rayVsHeightfield(world.terrain, from, _lA, dist, _hitB)) {
+  if (terrain && rayVsHeightfield(terrain, start, _lA, dist, _hitB)) {
     if (_hitB.distance < dist - 0.15) return 0;
   }
   return vis;

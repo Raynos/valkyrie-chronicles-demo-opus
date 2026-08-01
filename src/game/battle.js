@@ -534,6 +534,13 @@ export class Battle {
     this._enemyT = 0;
     this.aiFocus = null;
     this._aiActor = null;
+    // A player turn never starts with the Imperial plan still in flight. Nothing should be
+    // able to leave the AI running across a boundary any more (see
+    // CommandMode.readSelectionInput), but a half-executed Imperial plan surviving into the
+    // player's turn is the kind of state that produces a soldier walking on his own during a
+    // command phase, so refuse it here. (team 1 needs no abort: ai.begin() resets everything.)
+    if (team === 0 && this.ai?.running) this.ai.abort();
+    if (this.over) return;
     if (team === 0) {
       this.turn++;
       this.stats.turns = this.turn;
@@ -553,6 +560,10 @@ export class Battle {
     Bus.emit('sfx', { name: team === 0 ? 'turnPlayer' : 'turnEnemy' });
 
     this.spawnReinforcements(team);
+    // "Was ever on the field", stamped after the wave so reinforcements count from the turn
+    // they arrive. die() and rescue() both clear `deployed`, so it cannot be recovered later.
+    // See infantryTotal().
+    for (const u of this.units) if (u.deployed) u._wasOnField = true;
     this.refreshFog();
     this.updateCamps();
     this.publishObjectives();
@@ -598,6 +609,14 @@ export class Battle {
   // -------------------------------------------------------------------------
 
   selectCost(unit) { return unit?.freeAction ? 0 : 1; }
+
+  /** Is a soldier of `team` still holding an unspent free sortie? See endAction(). */
+  hasPendingFreeAction(team = 0) {
+    for (const u of this.units) {
+      if (u.team === team && u.freeAction && this.canSelect(u, team)) return true;
+    }
+    return false;
+  }
 
   previewAp(unit) { return unit ? unit.previewAp() : 0; }
 
@@ -660,7 +679,13 @@ export class Battle {
     if (this.over) return;
     if (this.checkObjectives()) return;
 
-    if (this.cp[0] <= 0 && this.team === 0) {
+    // A PENDING FREE SORTIE IS NOT "OUT OF COMMAND POINTS".
+    //
+    // Direct Command costs 3 CP and grants one soldier a sortie that costs 0. Buy it with your
+    // last points and the very next `endAction()` saw cp 0 and posted the enemy-turn
+    // transition — so the thing you just paid three points for was thrown away before you
+    // could spend it. The turn is only over when there is nothing left to do.
+    if (this.cp[0] <= 0 && this.team === 0 && !this.hasPendingFreeAction(0)) {
       this.setPhase('command');
       this.commandMode?.enter();
       // Give the player a beat to read the map before the Imperials move.
@@ -708,7 +733,11 @@ export class Battle {
       this.stats.cpSpent = Math.max(0, this.stats.cpSpent - charge.cost);
       Bus.emit('cp:changed', { team: 0, cp: this.cp[0] });
     } else {
-      u.freeAction = true;              // a free action spent on nothing is still free
+      // A free action spent on nothing is still free — and Direct Command's full-AP half has
+      // to come back with it, or backing out of a commanded sortie silently downgrades it to
+      // an ordinary decayed one.
+      u.freeAction = true;
+      u.freshSortie = true;
     }
     Bus.emit('cp:refunded', { unit: u, cp: charge.cost, team: 0, reason: 'noAction' });
     Bus.emit('ui:alert', {
@@ -734,11 +763,27 @@ export class Battle {
     const o = ORDERS[id];
     if (!o) return false;
     const team = this.team;
+
+    // ORDERS ARE A COMMAND-PHASE ACTION OF THE SIDE WHOSE PHASE IT IS.
+    //
+    // There was no guard here at all, and `team` is read off `this.team` while the TARGET is
+    // whatever the caller passed. Measured headless: with the battle in the Imperial phase,
+    // `useOrder('attackBoost', alicia)` took TWO COMMAND POINTS OFF THE IMPERIALS (6 -> 4) and
+    // put the buff on a Gallian scout. The HUD hides the deck outside 'command' so a mouse
+    // cannot reach it today, but `ui:order` is a public Bus channel and main.js pipes it
+    // straight in — one stray emit and the player is buying orders with the enemy's budget.
+    // The same hole let an order be bought mid-sortie ('action') and after the mission ended.
+    if (this.over || (this.phase !== 'command' && this.phase !== 'enemy')) {
+      Bus.emit('command:denied', { order: o, reason: 'Not in command' });
+      return false;
+    }
     if (this.cp[team] < o.cost) {
       Bus.emit('command:denied', { order: o, reason: 'Not enough Command Points' });
       return false;
     }
-    if (o.target === 'unit' && (!target || !o.filter(target, this))) {
+    // ...and you may only order your OWN soldiers. No order filter checks the team, so
+    // `attackBoost` on a hostile passed cheerfully and spent your point buffing him.
+    if (o.target === 'unit' && (!target || target.team !== team || !o.filter(target, this))) {
       Bus.emit('command:denied', { order: o, reason: 'Invalid target' });
       return false;
     }
@@ -960,17 +1005,32 @@ export class Battle {
   // Reinforcements
   // -------------------------------------------------------------------------
 
+  /**
+   * WAVE BOOKKEEPING BELONGS TO THE BATTLE, NOT TO THE MISSION MODULE.
+   *
+   * This used to stamp `w._done = true` on the wave objects inside MISSION_VASEL — a
+   * module-level singleton. A second `new Battle(...)` in the same page therefore inherited
+   * every wave already spent and spawned NOBODY. Measured: build a battle, run it past turn 8,
+   * build a fresh one, call spawnReinforcements() at turn 9 — 0 units spawned, so no Imperial
+   * reserve platoon, no counter-attack, and no Squad 7 second section.
+   *
+   * `ui:restart` currently reloads the page, which hides it. It is still a live landmine for
+   * every headless playtest: the harness builds Battle after Battle in one page, and from the
+   * second one on it is silently testing a mission with no reinforcements in it.
+   */
   spawnReinforcements(team) {
     const waves = this.mission.waves || [];
-    for (const w of waves) {
-      if (w._done) continue;
+    const done = this._wavesDone || (this._wavesDone = new Set());
+    for (let wi = 0; wi < waves.length; wi++) {
+      const w = waves[wi];
+      if (done.has(wi)) continue;
       if (w.team !== team) continue;
       if (w.turn > this.turn) continue;
       if (w.requiresCamp) {
         const c = this.camps.find((x) => x.id === w.requiresCamp);
         if (!c || c.owner !== team) continue;
       }
-      w._done = true;
+      done.add(wi);
       const camp = this.camps.find((c) => c.id === w.camp) || this.camps.find((c) => c.owner === team);
       const spawned = [];
       for (let i = 0; i < w.units.length; i++) {
@@ -1087,10 +1147,23 @@ export class Battle {
     return n;
   }
 
-  /** Infantry of `team` that were ever on the field, for the "N of M standing" readout. */
+  /**
+   * Infantry of `team` that were ever on the field, for the "N of M standing" readout.
+   *
+   * `u.deployed` is the WRONG test and it read as the right one for a long time, because the
+   * three ways off the field are not alike: die() and rescue() both clear `deployed`. So
+   * evacuating a casualty SHRANK THE DENOMINATOR. Measured: down Rosie, rescue her with Isara,
+   * and the objective panel goes from "5 of 6 standing" to "5 of 5 standing" — the squad reads
+   * at full strength over a stretcher. Same for the capturer row, which is worse: it only
+   * appears at all when `capStand < capTotal`, so rescuing a scout hid the one number that
+   * tells you the mission is about to become unwinnable.
+   *
+   * `_wasOnField` is stamped in startTurn() for anyone standing on the map that turn, so it
+   * covers the start line, reinforcement waves, and nobody who was left in the truck.
+   */
   infantryTotal(team = 0) {
     let n = 0;
-    for (const u of this.units) if (u.team === team && !u.isVehicle && u.deployed) n++;
+    for (const u of this.units) if (u.team === team && !u.isVehicle && (u.deployed || u._wasOnField)) n++;
     return n;
   }
 
@@ -1114,11 +1187,11 @@ export class Battle {
     return n;
   }
 
-  /** Same, but "was ever on the field" — for the "N of M" readout. */
+  /** Same, but "was ever on the field" — for the "N of M" readout. See infantryTotal(). */
   capturersTotal(team = 0) {
     let n = 0;
     for (const u of this.units) {
-      if (u.team === team && u.deployed && !u.isVehicle && u.classDef?.canCapture) n++;
+      if (u.team === team && (u.deployed || u._wasOnField) && !u.isVehicle && u.classDef?.canCapture) n++;
     }
     return n;
   }
@@ -1309,7 +1382,13 @@ export class Battle {
       if (this.capturersStanding(0) > 0) { this._sawCapturers = true; this._noCapT = 0; }
       else if (!this.over && this.captureLost()) {
         if (this._noCapT === 0) {
-          Bus.emit('ui:alert', { text: 'NO ONE LEFT TO TAKE THE FLAG', sub: 'scouts, troopers and engineers are all down' });
+          // Not "all down" — evacuating a casualty clears `deployed` too, so this fires just
+          // as readily when you rescued your last scout as when he bled out, and blaming the
+          // player for a death that did not happen reads as a bug.
+          Bus.emit('ui:alert', {
+            text: 'NO ONE LEFT TO TAKE THE FLAG',
+            sub: 'no scout, trooper or engineer left on the field',
+          });
         }
         this._noCapT += dt;
         if (this._noCapT >= WIPE_GRACE) this.finish(false, NO_CAPTURERS);

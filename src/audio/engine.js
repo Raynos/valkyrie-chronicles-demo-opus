@@ -55,6 +55,10 @@ const DEDUPE_DIST2 = 4;       // metres², i.e. 2 m apart still counts as "here"
 // described a second time, so it yields to the derived (radius-aware) play.
 const BLAST_KEYS = ['explosion', 'explosionBig', 'explosionDistant'];
 
+// Bus levels under the pause-menu duck, as a fraction of their normal setting.
+// Music stays audible on purpose: the menu's Music row has to be auditionable.
+const DUCK = { music: 0.18, ambience: 0, dry: 0 };
+
 /**
  * One playback slot. Node chain is built once and reused; only the
  * AudioBufferSourceNode (which is single-use by spec) is created per trigger.
@@ -218,6 +222,8 @@ export class AudioEngine {
     this._unwire = [];
     this._musicState = 'menu';
     this._tensionUntil = 0;
+    this._suspended = false;         // ctx.suspend()ed by us (tab-out)
+    this._ducked = false;            // pause-menu duck (ctx still running)
     this._listenerReady = false;
     this._baked = 0;
     this._bakeTotal = 0;
@@ -351,13 +357,54 @@ export class AudioEngine {
     return buf;
   }
 
-  suspend() { return this.ctx?.suspend?.(); }
-  resume() { return this.ctx?.resume?.(); }
+  /**
+   * Quieten everything. main.js calls this from TWO places that want different
+   * things, and treating them the same was a bug:
+   *
+   *   * the PAUSE MENU — which is where the Music and Effects rows live. A real
+   *     ctx.suspend() freezes `currentTime`, so every UI click made in the menu
+   *     is scheduled at the SAME frozen timestamp: _isDuplicate() then drops all
+   *     but the first (measured: 1 of 6 clicks survived), and the survivor is
+   *     held until resume and fires on the way out. The player hears nothing
+   *     while adjusting the volume and a stale blip when he closes the menu.
+   *   * a TAB-OUT — which genuinely wants the context stopped so a backgrounded
+   *     game costs no battery.
+   *
+   * So: hidden document => really suspend. Paused in the foreground => duck the
+   * battle (spatial sfx, ambience) and lean on the music, and leave the 2D UI
+   * bus alive so the menu keeps clicking and the volume rows can be auditioned.
+   */
+  suspend() {
+    if (!this.ready) return Promise.resolve();
+    const hidden = typeof document !== 'undefined' && document.hidden;
+    this._duck(!hidden);
+    if (!hidden) return Promise.resolve();
+    this._suspended = true;
+    return this.ctx.suspend?.() || Promise.resolve();
+  }
+
+  resume() {
+    if (!this.ready) return Promise.resolve();
+    this._duck(false);
+    this._suspended = false;
+    return this.ctx.resume?.() || Promise.resolve();
+  }
+
+  /** Pause-menu mix duck. The context keeps running, so nothing queues up. */
+  _duck(on) {
+    if (this._ducked === !!on || !this.ctx) return;
+    this._ducked = !!on;
+    const now = this.ctx.currentTime;
+    const tc = 0.06;
+    this.musicBus.gain.setTargetAtTime(this.musicVolume * (on ? DUCK.music : 1), now, tc);
+    this.ambienceBus.gain.setTargetAtTime(this.ambienceVolume * (on ? DUCK.ambience : 1), now, tc);
+    this.dryIn.gain.setTargetAtTime(on ? DUCK.dry : 1, now, tc);
+  }
 
   dispose() {
     for (const u of this._unwire) u();
     this._unwire.length = 0;
-    for (const t of this._tanks.values()) t.stop(0.05);
+    for (const t of this._tanks.values()) { t.stop(0.05); this._retireTankNodes(t, 0.05); }
     this._tanks.clear();
     this.music?.dispose();
     this.ambience?.dispose();
@@ -429,7 +476,10 @@ export class AudioEngine {
    * @returns Voice | null
    */
   play(name, opts) {
-    if (!this.ready) return null;
+    // A suspended context has a frozen `currentTime`: everything started while
+    // it is stopped lands on one timestamp, gets eaten by the de-duper, and
+    // whatever survives fires in a lump the instant it resumes.
+    if (!this.ready || this._suspended) return null;
     const o = opts || EMPTY;
     const key = resolveSfxName(name, o.material);
     if (!key) {
@@ -694,6 +744,16 @@ export class AudioEngine {
     if (!t) return;
     t.stop(fade);
     this._tanks.delete(id);
+    // TankEngineVoice.stop() only drops its own `out`; the panner and the reverb
+    // send belong to US and would stay wired into dryIn/verbIn for the life of
+    // the context, one pair per destroyed vehicle.
+    this._retireTankNodes(t, fade);
+  }
+
+  _retireTankNodes(t, fade) {
+    setTimeout(() => {
+      try { t._panner?.disconnect(); t._send?.disconnect(); } catch (e) { /* gone */ }
+    }, (fade + 0.4) * 1000);
   }
 
   // -------------------------------------------------------------------------
@@ -703,13 +763,19 @@ export class AudioEngine {
   _alloc(spatial, pri) {
     const free = spatial ? this._freeSpatial : this._freeFlat;
     if (free.length) return free.pop();
-    // Steal: the oldest active voice of strictly lower priority. Looping
-    // voices are never stolen — someone is holding a reference to them.
+    // Steal the oldest active voice that is no more important than this one.
+    // Looping voices are never stolen — someone is holding a reference to them.
+    //
+    // `>=` here meant a voice could never displace an EQUAL-priority one, so
+    // once the eight flat voices were full of pri-3 UI blips the ninth UI sound
+    // was simply dropped — measured: six of twenty-six 2D sounds fired half a
+    // second apart never started at all. Oldest-first among equals is the
+    // standard rule and is what keeps a busy results screen from going mute.
     let best = null, bestT = Infinity;
     for (let i = 0; i < this._voices.length; i++) {
       const v = this._voices[i];
       if (!v.active || v.looping || v.spatial !== spatial) continue;
-      if (v.pri >= pri) continue;
+      if (v.pri > pri) continue;
       if (v.startedAt < bestT) { bestT = v.startedAt; best = v; }
     }
     if (!best) return null;
@@ -753,13 +819,19 @@ export class AudioEngine {
     this.masterVolume = v;
     if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
   }
+  // Both of these are driven from the PAUSE MENU, i.e. while the mix is ducked,
+  // so they must write the ducked value or the first row change undoes the duck.
   setMusicVolume(v) {
     this.musicVolume = v;
-    if (this.musicBus) this.musicBus.gain.setTargetAtTime(v, this.ctx.currentTime, 0.08);
+    if (!this.musicBus) return;
+    const k = this._ducked ? DUCK.music : 1;
+    this.musicBus.gain.setTargetAtTime(v * k, this.ctx.currentTime, 0.08);
   }
   setAmbienceVolume(v) {
     this.ambienceVolume = v;
-    if (this.ambienceBus) this.ambienceBus.gain.setTargetAtTime(v, this.ctx.currentTime, 0.08);
+    if (!this.ambienceBus) return;
+    const k = this._ducked ? DUCK.ambience : 1;
+    this.ambienceBus.gain.setTargetAtTime(v * k, this.ctx.currentTime, 0.08);
   }
 
   // -------------------------------------------------------------------------

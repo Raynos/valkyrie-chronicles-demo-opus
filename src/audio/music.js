@@ -816,6 +816,13 @@ export class MusicEngine {
   update(dt = 1 / 60) {
     if (!this.running) return;
     const now = this.ctx.currentTime;
+    // WALL-CLOCK GAP RECOVERY. update() is driven by the render loop, which the
+    // pause menu stops while the AudioContext keeps running — so the transport
+    // comes back sitting in the PAST. A normal frame leaves `_barTime` at least
+    // `lookahead` ahead of now, so anything behind now is lost time, and
+    // scheduling those bars would start every one of them at `t <= now`, i.e.
+    // dump a whole minute of orchestra into a single instant.
+    if (this._barTime < now) this._barTime = now + 0.05;
     // Smooth the intensity so layer cross-fades never step.
     if (Math.abs(this.intensity - this._intensitySm) > 0.004) {
       this._intensitySm += (this.intensity - this._intensitySm) * (1 - Math.exp(-2.2 * dt));

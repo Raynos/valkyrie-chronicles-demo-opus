@@ -300,7 +300,15 @@ export class NavGrid {
     const start = this.nearestWalkable(from.x, from.z);
     const goal = this.nearestWalkable(to.x, to.z);
     if (start < 0 || goal < 0) return null;
-    if (start === goal) { this._path.length = 0; this._path.push(new THREE.Vector3(to.x, this.heightAt(to.x, to.z), to.z)); return this._path.slice(); }
+    if (start === goal) {
+      // Same rule as the tail of _smooth(): never hand back a waypoint a body cannot stand on.
+      const ok = this.walkableAt(to.x, to.z);
+      const ex = ok ? to.x : this.worldX(goal % this.w);
+      const ez = ok ? to.z : this.worldZ((goal / this.w) | 0);
+      this._path.length = 0;
+      this._path.push(new THREE.Vector3(ex, this.heightAt(ex, ez), ez));
+      return this._path.slice();
+    }
 
     const epoch = ++this._epoch;
     const { w, h, cell, g, f, from: prev, stamp, closed, flags, cost, threat } = this;
@@ -378,7 +386,35 @@ export class NavGrid {
         out.push(new THREE.Vector3(this.worldX(p % this.w), 0, this.worldZ((p / this.w) | 0)));
       }
     }
-    out.push(new THREE.Vector3(to.x, 0, to.z));
+    // THE LAST WAYPOINT MUST BE GROUND A BODY CAN STAND ON.
+    //
+    // A* runs to `nearestWalkable(to)`, which is NOT `to` whenever the caller asked for a point
+    // inside a building, a river or a prop — and every caller does that routinely (the AI aims
+    // at a camp pole, the player clicks a wall, a plan's dest is snapped later). Appending the
+    // caller's RAW point as the final waypoint is what makes a soldier orbit a wall forever:
+    // the follower retires a waypoint at 0.45 m, the resolver holds him metres off a point
+    // buried in masonry, so the waypoint never retires, `pathIndex` never reaches the end, and
+    // the stuck detector never fires either — sliding around the obstruction IS movement.
+    // Measured: findPath((4,24) -> (6,-26)), which is 3.80 m inside the mill: 2872 frames
+    // (48 s) at a closest approach of 2.73 m, 60.8 m of AP billed, never arrived. The same walk
+    // to (0,-20) burned 3140 frames at 0.66 m — a whole sortie spent walking in a circle.
+    //
+    // So the path ends at the goal CELL CENTRE, and only continues to the caller's exact point
+    // when that point is walkable. The anchor loop above already guarantees a clear line from
+    // out[last] to the goal cell, and a walkable `to` is inside the goal cell by construction,
+    // so neither leg can cut a corner.
+    const gc = cells[cells.length - 1];
+    const gcx = this.worldX(gc % this.w), gcz = this.worldZ((gc / this.w) | 0);
+    const tail = out[out.length - 1];
+    const toOk = this.walkableAt(to.x, to.z);
+    if (toOk && this._clearLine(tail.x, tail.z, to.x, to.z)) {
+      out.push(new THREE.Vector3(to.x, 0, to.z));      // unchanged: the usual case
+    } else {
+      if (Math.abs(tail.x - gcx) > 1e-3 || Math.abs(tail.z - gcz) > 1e-3) {
+        out.push(new THREE.Vector3(gcx, 0, gcz));
+      }
+      if (toOk) out.push(new THREE.Vector3(to.x, 0, to.z));
+    }
     for (let i = 0; i < out.length; i++) out[i].y = this.heightAt(out[i].x, out[i].z);
     // Copy out so callers can hold the result while we reuse _path.
     const res = new Array(out.length);
@@ -599,6 +635,7 @@ function subStep(pos, ux, uz, len, radius, nav, world) {
   // A body standing on ground the grid calls blocked is DIGGING OUT: nav cannot be allowed to
   // veto its escape (see the note below). `gate` is nav wherever nav is entitled to an opinion.
   const gate = !nav || nav.walkableAt(bx, bz) ? nav : null;
+  const probe = Math.max(len, radius + 0.12);
   let dx = ux, dz = uz;
   if (gate) {
     // LOOK AHEAD A BODY WIDTH, NOT ONE SUB-STEP.
@@ -610,7 +647,6 @@ function subStep(pos, ux, uz, len, radius, nav, world) {
     // crossing and held there, 26 m short of the north bank, because his 3 cm sidestep could
     // not reach the free cell. Probing at radius+0.12 m and then steering the whole sub-step
     // along the chosen heading is what accumulates the lateral metres that get him round it.
-    const probe = Math.max(len, radius + 0.12);
     const ihx = ux / len, ihz = uz / len;
     if (!gate.walkableAt(bx + ihx * probe, bz + ihz * probe)) {
       // Fan out to either side, nearest heading first. Capped at 67.5 deg so a body that walks
@@ -636,8 +672,59 @@ function subStep(pos, ux, uz, len, radius, nav, world) {
   world.resolvePosition(pos, radius);
   if (((pos.x - bx) * dx + (pos.z - bz) * dz) / len >= len * 0.35) return true;
 
-  // Blocked by geometry the grid has no opinion about. The eject IS the contact normal.
-  if (slide(pos, bx, bz, dx, dz, len, pos.x - cx, pos.z - cz, radius, gate, world)) return true;
+  // Blocked by geometry the grid has no opinion about. The eject IS the contact normal — read it
+  // now, because `slide` rewinds `pos` to (bx,bz) on the failure paths below.
+  const nrx = pos.x - cx, nrz = pos.z - cz;
+  if (slide(pos, bx, bz, dx, dz, len, nrx, nrz, radius, gate, world)) return true;
+
+  // A SANDBAG IS NOT A WALL, AND `slide` CANNOT TELL THE DIFFERENCE.
+  //
+  // `slide` only removes the component INTO the contact, and that tangent is zero when you walk
+  // square into something — which is the correct answer for a wall and the wrong one for a 1.8 m
+  // revetment with seven metres of clear ground beside it. The nav gate above never sees these:
+  // `build()` only BLOCKS a cell whose centre is >0.5 m inside a prop, so a beam or a sandbag
+  // line lying between two cell centres leaves both cells walkable, `_clearLine` string-pulls a
+  // waypoint straight through it, and the body arrives perpendicular to a contact it can neither
+  // slide along nor route around.
+  //
+  // Measured before this block, driving a 0.36 m body due south from (2.5,-3.2) at 4 m/s into
+  // the deck sandbag at (2.04,-3.75): 1499 of 1500 frames blocked, 0.10 m covered in 25 s. Twelve
+  // of thirteen straight lanes across the north-bank belt wedged the same way. That is the funnel
+  // failure the note above claims to have fixed; it was only ever fixed for NAV-blocked geometry.
+  //
+  // So fan the heading out and VALIDATE each candidate by actually taking the step: whatever buys
+  // real ground wins. Capped at 45 deg, and gated on `gate` — a nav-BLOCKED lookahead already went
+  // through the gate fan-out above, so a body facing a wall squarely still stops dead.
+  //
+  // THE SIDE IS NOT A FREE CHOICE. `slide` picks its lateral direction from the residual intent;
+  // a fan that starts from a FIXED sign disagrees with it on alternate frames, and the two then
+  // fight: measured at the same sandbag, the body ping-ponged +0.066 / -0.041 m every frame for
+  // 25 s and netted 0.5 m. So derive the preferred side from the same tangent `slide` uses, and
+  // both mechanisms push the body off the obstacle the same way.
+  if (gate) {
+    const dhx = dx / len, dhz = dz / len;
+    let pref = 1;
+    const nl = Math.hypot(nrx, nrz);
+    if (nl > 1e-5) {
+      const inx = nrx / nl, inz = nrz / nl;
+      const dot = dhx * inx + dhz * inz;
+      // Tangent of the intent along the contact, projected onto the heading's left normal.
+      if ((dhx - inx * dot) * -dhz + (dhz - inz * dot) * dhx < 0) pref = -1;
+    }
+    for (let k = 1; k <= 2; k++) {
+      const a = k * 0.3927;                       // 22.5 deg, then 45
+      const ca = Math.cos(a), sa = Math.sin(a);
+      for (let s = 0; s < 2; s++) {
+        const sgn = s === 0 ? pref : -pref;
+        const hx = dhx * ca - dhz * sa * sgn, hz = dhx * sa * sgn + dhz * ca;
+        if (!gate.walkableAt(bx + hx * probe, bz + hz * probe)) continue;
+        pos.x = bx + hx * len; pos.z = bz + hz * len;
+        world.resolvePosition(pos, radius);
+        if (Math.hypot(pos.x - bx, pos.z - bz) >= len * 0.5) return true;
+      }
+    }
+  }
+
   // Genuinely wedged (walked square into a wall). Stay put — and, because we bill realised
   // displacement, stay put for free.
   pos.x = bx; pos.z = bz;

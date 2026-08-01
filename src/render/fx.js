@@ -449,14 +449,31 @@ void main() {
 
 // ==================================================================== SYSTEM
 
+// KEYS MUST COVER physics/collision.js SURFACE, which is the vocabulary that
+// actually arrives on `shot:hit`: dirt grass rock mud stone brick wood metal
+// sandbag water flesh. Four of those eleven had no entry and silently fell
+// through to `default` — including `brick`, which is what EVERY building and
+// wall in the village reports, and `sandbag`, the game's main infantry cover.
+// `default` carries 6 sparks, so hessian sacks full of sand threw the same
+// yellow spall as granite. The audio side's MATERIAL_IMPACT already covered all
+// eleven; this table is now the same shape.
 const MAT_PRESETS = {
   stone:    { dust: 0xb9b2a2, sparks: 10, sparkCol: 0xffe0a8, smoke: 0.5 },
+  rock:     { dust: 0xb9b2a2, sparks: 10, sparkCol: 0xffe0a8, smoke: 0.5 },
+  // Fired brick powders where granite spalls: more dust, warmer, fewer sparks.
+  brick:    { dust: 0xb0977f, sparks: 6, sparkCol: 0xffdca0, smoke: 0.7 },
+  masonry:  { dust: 0xb9b2a2, sparks: 10, sparkCol: 0xffe0a8, smoke: 0.5 },
   concrete: { dust: 0xc4bdae, sparks: 8, sparkCol: 0xffe6b6, smoke: 0.6 },
   metal:    { dust: 0x8d8b86, sparks: 22, sparkCol: 0xfff0c8, smoke: 0.25 },
   wood:     { dust: 0x9c7748, sparks: 12, sparkCol: 0xd9a463, smoke: 0.35 },
   dirt:     { dust: 0x8a6c48, sparks: 2, sparkCol: 0xd8a86a, smoke: 0.9 },
   earth:    { dust: 0x8a6c48, sparks: 2, sparkCol: 0xd8a86a, smoke: 0.9 },
+  gravel:   { dust: 0x8a6c48, sparks: 4, sparkCol: 0xd8a86a, smoke: 0.8 },
+  // Wet earth throws a heavy, dark, sparkless gout.
+  mud:      { dust: 0x6d5535, sparks: 0, sparkCol: 0xd8a86a, smoke: 1.0 },
   sand:     { dust: 0xc3ac82, sparks: 0, sparkCol: 0xe8cf9e, smoke: 1.0 },
+  // Hessian and sand: a soft cough of fill, no spall at all.
+  sandbag:  { dust: 0xc0ab84, sparks: 0, sparkCol: 0xe8cf9e, smoke: 1.0 },
   grass:    { dust: 0x7c8551, sparks: 1, sparkCol: 0xcbbc72, smoke: 0.5 },
   water:    { dust: 0xa8bcc0, sparks: 0, sparkCol: 0xdff0f2, smoke: 0.8 },
   flesh:    { dust: 0x6d2f2c, sparks: 0, sparkCol: 0x8c3a33, smoke: 0.15 },

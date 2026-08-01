@@ -615,6 +615,7 @@ export class Unit {
     this.attackUsed = false;               // VC: one attack per selection
     this.extraAttacks = 0;                 // granted by the Stormy Attack order
     this.freeAction = false;               // granted by Direct Command
+    this.freshSortie = false;              // ...and the same order un-decays that sortie
     this.stealth = false;                  // granted by Caution
     this.movedThisAction = 0;              // metres
     this.suppression = 0;                  // 0..1, holds then decays — see applySuppression()
@@ -981,6 +982,7 @@ export class Unit {
    */
   beginAction() {
     this.ap = this.previewAp();
+    this.freshSortie = false;              // consumed by the sortie it paid for
     this.attackUsed = false;
     this.movedThisAction = 0;
     this.hasActed = true;
@@ -1013,9 +1015,17 @@ export class Unit {
       || this.grenades < s.grenades;
   }
 
-  /** AP this unit WOULD receive if selected right now. Side-effect free. */
+  /**
+   * AP this unit WOULD receive if selected right now. Side-effect free.
+   *
+   * `freshSortie` (Direct Command) skips the nth-selection decay: the commander is putting a
+   * soldier who has already gone back on his feet with a full tank, which is the only reading
+   * of that order that is worth its three Command Points. See orders.js `directCommand`.
+   */
   previewAp() {
-    const decay = AP_DECAY[Math.min(AP_DECAY.length - 1, this.actionsThisTurn)];
+    const decay = this.freshSortie
+      ? AP_DECAY[0]
+      : AP_DECAY[Math.min(AP_DECAY.length - 1, this.actionsThisTurn)];
     const m = this.evalPotentials('ap', { battle: this.battleRef || null }, true);
     return Math.round(this.maxAp * decay * m.ap);
   }

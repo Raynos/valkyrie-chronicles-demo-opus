@@ -312,11 +312,10 @@ export class Ballistics {
 
   /** Swept sphere vs every unit's hit volumes. */
   _sweepUnits(origin, dir, maxDist, radius, proj) {
-    const units = this.units;
-    if (!units || !units.length) return null;
+    const units = this.units || null;
     let bestT = maxDist;
     let found = false;
-    for (let i = 0; i < units.length; i++) {
+    for (let i = 0; units && i < units.length; i++) {
       const u = units[i];
       if (!u || u.alive === false) continue;
       if (proj && (u === proj.owner || (proj.owner && u.character === proj.owner) ||
@@ -324,13 +323,16 @@ export class Ballistics {
       const t = hitVolumesSweep(u, origin, dir, bestT, radius, _hitUnit);
       if (t) { bestT = _hitUnit.distance; found = true; }
     }
-    if (!found) return null;
+    // Extra volumes (destructible props). This loop used to sit AFTER the
+    // `if (!found) return null` below, so an extra target could only ever be
+    // struck by a round that had already hit a Unit further away — i.e. never.
     for (let i = 0; i < this.extraTargets.length; i++) {
       const t = this.extraTargets[i];
       if (!t || t.dead) continue;
       const d = rayVsSphere(origin, dir, bestT, t.center, (t.radius || 0.5) + radius, _n);
       if (d >= 0) {
         bestT = d;
+        found = true;
         _hitUnit.distance = d;
         _hitUnit.point.copy(origin).addScaledVector(dir, d);
         _hitUnit.normal.copy(_n);
@@ -341,6 +343,7 @@ export class Ballistics {
         _hitUnit.kind = 'unit';
       }
     }
+    if (!found) return null;
     return _hitUnit;
   }
 
@@ -444,6 +447,14 @@ export class Ballistics {
     const dx = to.x - from.x, dz = to.z - from.z;
     const horiz = Math.hypot(dx, dz);
     const dy = to.y - from.y;
+    // Straight up (or straight down) has no tangent solution: `tanT` below goes
+    // to Infinity and `out.normalize()` then produces (0, NaN, 0), which a
+    // caller has no way of telling apart from a valid direction. Answer the
+    // degenerate case directly.
+    if (horiz < 1e-4) {
+      if (dy > 0 && speed * speed < 2 * GRAVITY * gravScale * dy) return null;
+      return out.set(0, dy >= 0 ? 1 : -1, 0);
+    }
     const s2 = speed * speed;
     const disc = s2 * s2 - g * (g * horiz * horiz + 2 * dy * s2);
     if (disc < 0) return null;

@@ -180,6 +180,10 @@ export class EnemyAI {
     this.pathIndex = 1;
     this._speed = 0;
     this._stuck = 0;
+    this._detours = 0;
+    this._wpIndex = -1;
+    this._wpBest = Infinity;
+    this._wpT = 0;
     this._repathed = false;
     this._arrived = false;          // arrival actions are one-shot per sortie; see tickSettling()
     unit.beginAction();
@@ -248,6 +252,31 @@ export class EnemyAI {
       if (this.pathIndex >= p.path.length) { this.state = STATE.SETTLING; this.stateT = 0; }
       return;
     }
+
+    // RETIRE A WAYPOINT THAT HAS STOPPED GETTING CLOSER.
+    //
+    // The `_stuck` counter below only sees a body that is not moving, and a body orbiting a
+    // waypoint it cannot physically reach IS moving — it slides around the contact at full
+    // speed forever. So the waypoint never retires, `pathIndex` never reaches the end, and the
+    // sortie runs until the watchdog kills it with the whole AP budget spent walking in a
+    // circle. nav.js no longer emits an unreachable final waypoint, but a path is only as good
+    // as the collider set it was string-pulled against, so this is the backstop.
+    if (this.pathIndex !== this._wpIndex) {
+      this._wpIndex = this.pathIndex; this._wpBest = dist; this._wpT = 0;
+    } else if (dist < this._wpBest - 0.08) {
+      this._wpBest = dist; this._wpT = 0;
+    } else {
+      this._wpT += dt;
+      if (this._wpT > 1.5) {
+        this._wpT = 0;
+        this.pathIndex++;
+        if (this.pathIndex >= p.path.length) {
+          u.speed = 0; u.velocity.set(0, 0, 0);
+          this.state = STATE.SETTLING; this.stateT = 0;
+        }
+        return;
+      }
+    }
     _v0.multiplyScalar(1 / dist);
 
     const cls = u.classDef;
@@ -272,7 +301,16 @@ export class EnemyAI {
       if (this._stuck === 8 || this._stuck === 23) this.maxActionTime += 3.5;
       if (this._stuck === 8) {
         // Try to step around: shove the intermediate waypoint sideways.
-        const side = ((this._stuck / 8) | 0) % 2 ? 1 : -1;
+        //
+        // `((this._stuck / 8) | 0) % 2` was written to alternate sides across detours, but it
+        // sits inside `this._stuck === 8`, so it evaluated to 1 every single time: every detour
+        // in the game went the same way, into the obstacle whenever the gap was on the other
+        // side. Ask nav which side is open, and alternate only when it has no preference.
+        this._detours = (this._detours || 0) + 1;
+        let side = this._detours % 2 ? 1 : -1;
+        const openSide = (s) => !this.nav
+          || this.nav.walkableAt(u.pos.x - _v0.z * s * 2.4, u.pos.z + _v0.x * s * 2.4);
+        if (!openSide(side) && openSide(-side)) side = -side;
         _v1.set(-_v0.z * side * 2.4, 0, _v0.x * side * 2.4).add(u.pos);
         _v1.y = this.nav ? this.nav.heightAt(_v1.x, _v1.z) : u.pos.y;
         p.path.splice(this.pathIndex, 0, _v1.clone());
@@ -310,7 +348,7 @@ export class EnemyAI {
 
     // Opportunistic: if we planned no attack and something wandered into point-blank range,
     // stop and shoot it.
-    if (!p.target && this.stateT > 0.4) {
+    if (!p.target && !p.grenadeAt && this.stateT > 0.4) {
       const opp = this.findOpportunity(u);
       if (opp) { p.target = opp; p.kind = 'attack'; u.ap = Math.min(u.ap, 40); }
     }
@@ -448,6 +486,12 @@ export class EnemyAI {
   throwGrenade(u, point) {
     if (u.grenades <= 0) return;
     u.grenades--;
+    // A GRENADE IS THE SORTIE'S ATTACK, for them exactly as for us. actionMode.js:1010-1017
+    // spends `attacksLeft` on the player's throw and sets `attackUsed`, so a Gallian soldier
+    // throws OR shoots. The AI decremented only `grenades`, so an Imperial whose plan was
+    // kind:'grenade' could still pick up an opportunity target on the walk in (tickMoving) and
+    // put a burst into him after the grenade landed — two attacks for one Command Point.
+    u.attackUsed = true;
     u.muzzlePoint(_muzzle);
     _muzzle.y += 0.25;
     const vel = solveArc(_muzzle, point, GRENADE.throwSpeed);

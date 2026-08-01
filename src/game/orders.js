@@ -9,6 +9,19 @@ import { Bus } from '../core/bus.js';
 
 const _v = new THREE.Vector3();
 
+/**
+ * WHAT `turns: 2` IS WORTH, so the blurbs stop lying about it.
+ *
+ * Unit.tickBuffs() runs from Unit.beginTurn(), which Battle.startTurn() calls only for the
+ * side whose turn is starting. An order bought during player turn N therefore ticks 2->1 at
+ * the start of turn N+1 (still active) and 1->0 at the start of N+2. So `turns: 2` means:
+ * the rest of turn N, the whole Imperial phase, and the whole of turn N+1 — TWO player turns,
+ * not one. Measured: attackBoost bought on turn 1 still returned dmg x1.45 on turn 2 and x1.0
+ * on turn 3. `battle.reconTurns = 2` decays on exactly the same schedule.
+ *
+ * The behaviour is deliberate (the HUD's Caution card has always said "two turns"); it was
+ * only these `desc` strings that said "one turn". They now say what the code does.
+ */
 export const ORDERS = {
   resupply: {
     id: 'resupply', name: 'Resupply', cost: 2, target: 'unit', icon: 'R',
@@ -19,7 +32,7 @@ export const ORDERS = {
 
   attackBoost: {
     id: 'attackBoost', name: 'Attack Boost', cost: 2, target: 'unit', icon: 'A',
-    desc: '+45% weapon power for one turn.',
+    desc: '+45% weapon power for two turns.',
     filter: (u) => u.active,
     apply(battle, u) {
       u.addBuff({ id: 'attackBoost', name: 'Attack Boost', turns: 2, kinds: ['attack'], mods: { dmg: 1.45, acc: 0.06 } });
@@ -29,7 +42,7 @@ export const ORDERS = {
 
   defenseBoost: {
     id: 'defenseBoost', name: 'Defence Boost', cost: 2, target: 'unit', icon: 'D',
-    desc: 'Take 35% less damage for one turn.',
+    desc: 'Take 35% less damage for two turns.',
     filter: (u) => u.active,
     apply(battle, u) {
       u.addBuff({ id: 'defenseBoost', name: 'Defence Boost', turns: 2, kinds: ['defend'], mods: { def: 0.65 } });
@@ -39,7 +52,7 @@ export const ORDERS = {
 
   demolitionBoost: {
     id: 'demolitionBoost', name: 'Demolition Boost', cost: 2, target: 'unit', icon: 'X',
-    desc: '+70% anti-armour damage for one turn.',
+    desc: '+70% anti-armour damage for two turns.',
     filter: (u) => u.active && (u.cls === 'lancer' || u.isVehicle),
     apply(battle, u) {
       u.addBuff({ id: 'demolitionBoost', name: 'Demolition Boost', turns: 2, kinds: ['attack'], mods: { aa: 1.7 } });
@@ -49,7 +62,7 @@ export const ORDERS = {
 
   doubleMovement: {
     id: 'doubleMovement', name: 'Double Movement', cost: 3, target: 'unit', icon: '>>',
-    desc: 'The next sortie is made on double AP.',
+    desc: 'Every sortie is made on double AP for two turns.',
     filter: (u) => u.active,
     apply(battle, u) {
       u.addBuff({ id: 'doubleMovement', name: 'Double Movement', turns: 2, kinds: ['ap'], mods: { ap: 2.0 } });
@@ -70,7 +83,7 @@ export const ORDERS = {
 
   awakenPotential: {
     id: 'awakenPotential', name: 'Awaken Potential', cost: 4, target: 'unit', icon: '!',
-    desc: 'Every good potential fires regardless of circumstance for one turn.',
+    desc: 'Every good potential fires regardless of circumstance for two turns.',
     filter: (u) => u.active && !u.isVehicle,
     apply(battle, u) {
       u.addBuff({
@@ -91,7 +104,7 @@ export const ORDERS = {
 
   enemyRecon: {
     id: 'enemyRecon', name: 'Enemy Recon', cost: 2, target: 'none', icon: 'O',
-    desc: 'Every enemy position is marked for one turn.',
+    desc: 'Every enemy position is marked for two turns.',
     filter: () => true,
     apply(battle) {
       battle.reconTurns = 2;
@@ -113,14 +126,37 @@ export const ORDERS = {
     },
   },
 
+  /**
+   * THREE POINTS HAVE TO BUY MORE THAN ONE POINT'S WORTH.
+   *
+   * As shipped this set `freeAction` and nothing else, so 3 CP bought a sortie that costs 1 CP
+   * — and it did not even reset the AP decay, so a soldier who had already gone twice got the
+   * same 0.32x stub he would have got for a single point. Measured: cp 7 -> 4 on the order,
+   * then a free selection at 4, granting 1062 AP because it happened to be Alicia's FIRST
+   * sortie. Spending the same three points normally buys three sorties. There is no board
+   * state in which this card was the right play; it was strictly dominated by ignoring it.
+   *
+   * `freshSortie` is what makes the price honest and matches what the card actually says the
+   * commander is doing: the sortie is free AND it comes at full AP, ignoring the nth-selection
+   * decay. That is a real tactical tool — put your spent scout back on the flag — at a real
+   * price. See units.js previewAp().
+   *
+   * The reach test is deliberate and unchanged: the Edelweiss is Squad 7's commander
+   * (mission.js `commander: true`), so this only works within 22 m of the tank.
+   */
   directCommand: {
     id: 'directCommand', name: 'Direct Command', cost: 3, target: 'unit', icon: 'DC',
-    desc: 'The commander orders a soldier forward — the next sortie is free.',
+    desc: 'The commander sends a soldier back in — a free sortie, at full AP.',
     filter: (u, battle) => {
       const cmd = battle.commanderOf(u.team);
       return u.active && cmd && cmd !== u && cmd.pos.distanceTo(u.pos) < 22;
     },
-    apply(battle, u) { u.freeAction = true; Bus.emit('order:freeAction', { unit: u }); return true; },
+    apply(battle, u) {
+      u.freeAction = true;
+      u.freshSortie = true;
+      Bus.emit('order:freeAction', { unit: u });
+      return true;
+    },
   },
 
   stormyAttack: {

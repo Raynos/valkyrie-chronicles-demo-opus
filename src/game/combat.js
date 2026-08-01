@@ -446,6 +446,26 @@ export function hasLOS(ax, ay, az, bx, by, bz, world = Ctx.world) {
   return !h;
 }
 
+/**
+ * True if a ROUND can get from a to b — the projectile question, not the eyes'.
+ *
+ * `hasLOS` above is the eyes': it runs the LOS filter, so a sandbag parapet
+ * (blocksLos:false, blocksProjectile:true — 47 of this map's colliders are that
+ * shape) is invisible to it. Predicting a shot with the sight trace is how the
+ * HUD came to advertise 99% on a burst that buried every round in the parapet
+ * 7 m short of the target. Anything that predicts a hit must use THIS.
+ */
+export function hasFireLane(ax, ay, az, bx, by, bz, world = Ctx.world) {
+  _dir.set(bx - ax, by - ay, bz - az);
+  const dist = _dir.length();
+  if (dist < 0.001) return true;
+  _dir.multiplyScalar(1 / dist);
+  // Stop short of the target's own surface so the body being shot at is not
+  // mistaken for the thing blocking the shot.
+  const h = traceWorld(ax, ay, az, _dir.x, _dir.y, _dir.z, dist - 0.15, world, false);
+  return !h;
+}
+
 /** LOS between two units' natural sight/target points. */
 export function unitsHaveLOS(a, b, world = Ctx.world) {
   a.headPoint(_a);
@@ -504,7 +524,12 @@ export function canSee(observer, target, world = Ctx.world) {
 export function coverFor(target, fromX, fromY, fromZ, world = Ctx.world) {
   let cov = 0;
   if (world?.coverAt) {
-    _dir.set(target.pos.x - fromX, 0, target.pos.z - fromZ);
+    // World.coverAt's `fromDir` points FROM the covered unit TOWARD the threat
+    // (src/world/world.js): it runs a +-70 degree bearing test and only counts
+    // volumes lying that way. This used to pass (target - shooter), i.e. the
+    // exact opposite, so every unit was credited with whatever happened to be
+    // standing BEHIND him and got nothing from the wall he was hiding behind.
+    _dir.set(fromX - target.pos.x, 0, fromZ - target.pos.z);
     if (_dir.lengthSq() > 1e-6) _dir.normalize();
     try { cov = world.coverAt(target.pos, _dir) || 0; } catch { cov = 0; }
   }
@@ -592,7 +617,10 @@ export function hitProbability(shooter, target, opts = {}) {
 
   _hp.p = clamp(p, 0, 0.99);
   _hp.sigma = sigma; _hp.theta = theta; _hp.range = range; _hp.cover = cover; _hp.accuracy = acc;
-  _hp.blocked = !hasLOS(_a.x, _a.y, _a.z, _b.x, _b.y, _b.z, opts.world);
+  // The muzzle/centre components must be read out BEFORE the trace: traceWorld
+  // reuses _a.._d as collider scratch.
+  const ax = _a.x, ay = _a.y, az = _a.z, bx = _b.x, by = _b.y, bz = _b.z;
+  _hp.blocked = !hasFireLane(ax, ay, az, bx, by, bz, opts.world);
   if (_hp.blocked) _hp.p *= 0.12;
   return _hp;
 }
